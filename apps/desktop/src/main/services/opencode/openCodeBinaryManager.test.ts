@@ -149,7 +149,7 @@ describe("openCodeBinaryManager", () => {
 
   it("prefers ADE's bundled OpenCode runtime over a user-installed binary", () => {
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
-    const bundledPath = path.join(tempRoot, "node_modules", "opencode-ai", "bin", "opencode.exe");
+    const bundledPath = path.join(tempRoot, "node_modules", "@opencode", "cli", "bin", "opencode.exe");
     const userPath = path.join(homeDir, ".npm-global", "bin", "opencode");
     makeExecutable(bundledPath);
     makeExecutable(userPath);
@@ -162,7 +162,7 @@ describe("openCodeBinaryManager", () => {
 
   it("keeps an explicit bundle root ahead of the tools cache and user install", () => {
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
-    const bundledPath = path.join(tempRoot, "node_modules", "opencode-ai", "bin", "opencode");
+    const bundledPath = path.join(tempRoot, "node_modules", "@opencode", "cli", "bin", "opencode");
     const cachedPath = path.join(tempRoot, "cache", "opencode");
     const userPath = path.join(homeDir, ".npm-global", "bin", "opencode");
     makeExecutable(bundledPath);
@@ -183,7 +183,7 @@ describe("openCodeBinaryManager", () => {
   it("accepts an explicit node_modules root with a trailing separator", () => {
     const nodeModulesRoot = path.join(tempRoot, "node_modules");
     process.env.ADE_OPENCODE_BUNDLE_ROOT = `${nodeModulesRoot}${path.sep}`;
-    const bundledPath = path.join(nodeModulesRoot, "opencode-ai", "bin", "opencode");
+    const bundledPath = path.join(nodeModulesRoot, "@opencode", "cli", "bin", "opencode");
     makeExecutable(bundledPath);
 
     expect(resolveOpenCodeBinary()).toEqual({
@@ -194,28 +194,28 @@ describe("openCodeBinaryManager", () => {
 
   it("resolves the packaged Windows x64 layout to the baseline package", () => {
     // Mirrors what afterPack materializes for win32: the `-baseline` native
-    // package plus an `opencode-ai` shell whose bin/ has been pruned. The AVX2
-    // `opencode-windows-x64` package is deliberately absent from the installer.
+    // package plus an `@opencode/cli` shell whose bin/ has been pruned. The AVX2
+    // `@opencode/cli-windows-x64` package is deliberately absent from the installer.
     setProcessPlatform("win32");
     setProcessArch("x64");
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
     const baselinePath = path.join(
-      tempRoot, "node_modules", "opencode-windows-x64-baseline", "bin", "opencode.exe",
+      tempRoot, "node_modules", "@opencode", "cli-windows-x64-baseline", "bin", "opencode.exe",
     );
     makeExecutable(baselinePath);
-    fs.mkdirSync(path.join(tempRoot, "node_modules", "opencode-ai", "bin"), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, "node_modules", "@opencode", "cli", "bin"), { recursive: true });
 
     expect(resolveOpenCodeBinary()).toEqual({ path: baselinePath, source: "bundled" });
   });
 
-  it("does not resolve the AVX2 opencode-windows-x64 package on win32 x64", () => {
+  it("does not resolve the AVX2 @opencode/cli-windows-x64 package on win32 x64", () => {
     // Guards the packaging saving: nothing in the resolver's candidate list names
     // the AVX2 package, so any copy of it in the installer is unreachable weight.
     setProcessPlatform("win32");
     process.env.ADE_OPENCODE_BUNDLE_ROOT = tempRoot;
-    const avx2Path = path.join(tempRoot, "node_modules", "opencode-windows-x64", "bin", "opencode.exe");
+    const avx2Path = path.join(tempRoot, "node_modules", "@opencode", "cli-windows-x64", "bin", "opencode.exe");
     makeExecutable(avx2Path);
-    fs.mkdirSync(path.join(tempRoot, "node_modules", "opencode-ai", "bin"), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, "node_modules", "@opencode", "cli", "bin"), { recursive: true });
 
     expect(resolveOpenCodeBinary().path).not.toBe(avx2Path);
   });
@@ -223,7 +223,7 @@ describe("openCodeBinaryManager", () => {
   it("finds the bundled OpenCode runtime from NODE_PATH for static ADE runtimes", () => {
     const runtimeNodeModules = path.join(tempRoot, "ade-darwin-arm64.native", "node_modules");
     process.env.NODE_PATH = runtimeNodeModules;
-    const bundledPath = path.join(runtimeNodeModules, "opencode-ai", "bin", "opencode.exe");
+    const bundledPath = path.join(runtimeNodeModules, "@opencode", "cli", "bin", "opencode.exe");
     makeExecutable(bundledPath);
 
     expect(resolveOpenCodeBinary()).toEqual({

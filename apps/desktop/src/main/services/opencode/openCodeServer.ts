@@ -1,19 +1,17 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { Config as OpenCodeConfig } from "@opencode-ai/sdk/v2/client";
+import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
-import { stableStringify } from "../shared/utils";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
   ADE_OPENCODE_XDG_LAYOUT_VERSION,
   resolveAdeOpenCodeIsolationPaths,
   resolveAdeOpenCodeRuntimeRoot,
   type OpenCodeIsolationPaths,
-  resolveUserOpenCodeAuthPath,
 } from "../../../shared/opencodeDataHome";
 import {
   killWindowsProcessTree,
@@ -25,21 +23,23 @@ import {
 import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
 import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
-export type OpenCodeServerLeaseKind = "shared" | "dedicated";
-export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
-export type OpenCodeServerShutdownReason =
-  | "handle_close"
-  | "attach_failed"
-  | "idle_ttl"
-  | "paused_run"
-  | "ended_session"
-  | "model_switch"
-  | "project_close"
-  | "budget_eviction"
-  | "pool_compaction"
-  | "shutdown"
-  | "config_changed"
-  | "error";
+/**
+ * ADE's OpenCode 2.0 servers.
+ *
+ * One long-lived `opencode serve` per *profile*. Every ordinary chat, the model
+ * inventory, auth, and one-shot tasks share the `shared` profile. A chat whose
+ * OpenCode config must differ from everyone else's (its own MCP servers, a
+ * harness preset provider, a strict MCP surface) gets a profile of its own,
+ * because OpenCode config is per server.
+ *
+ * Config reaches the server as a file named by `OPENCODE_CONFIG`, which
+ * OpenCode 2.0 watches and hot-reloads, so an API key or a local model added
+ * while a server runs applies without a restart.
+ *
+ * The server writes ADE's owned data home, never the user's personal store:
+ * OpenCode 2.0 migrates a v1 database in place when it opens one, and the
+ * user's own OpenCode may still be 1.x.
+ */
 
 /**
  * Typed classification of an OpenCode binary/server launch failure. Surfaced to
@@ -55,35 +55,73 @@ export type OpenCodeDiagnostic =
   | { kind: "launch-timeout" }
   | { kind: "unknown"; message: string };
 
+/** The generated config ADE hands a server. Opaque here; built by `openCodeConfig.ts`. */
+export type OpenCodeServerConfig = Record<string, unknown>;
+
+/**
+ * Which server a caller needs. `key` names the profile; callers with the same
+ * key share one process. `isolated` hides the user's global config (and with it
+ * their MCP servers, agents, and skills) behind ADE's own config.
+ */
+export type OpenCodeServerProfile = {
+  key: string;
+  isolated: boolean;
+};
+
+export const SHARED_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared", isolated: false };
+
+export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "auth" | "terminal";
+
+export type OpenCodeEventListener = {
+  /** Every event the server publishes. Listeners filter by session id themselves. */
+  onEvent(event: OpenCodeEvent): void;
+  /**
+   * The event stream dropped and came back. OpenCode streams are live-only:
+   * whatever was published during the gap is gone, so a listener with an open
+   * turn must reconcile against the server (`session.active`, messages).
+   */
+  onReconnected?(): void;
+  /** The server process exited. Every listener of that server gets this once. */
+  onServerExit?(error: Error): void;
+};
+
+export type OpenCodeServerLease = {
+  readonly key: string;
+  readonly url: string;
+  /** Basic-auth header value a separate client (the terminal app) can reuse. */
+  readonly authorization: string;
+  readonly password: string;
+  readonly client: OpenCodeClient;
+  /** False once the process exited or was shut down. */
+  isAlive(): boolean;
+  listen(listener: OpenCodeEventListener): () => void;
+  /** Rewrite the server's config file; OpenCode hot-reloads it. */
+  updateConfig(config: OpenCodeServerConfig): void;
+  release(): void;
+};
+
+export type OpenCodeRuntimeDiagnosticsEntry = {
+  key: string;
+  url: string;
+  pid: number | null;
+  isolated: boolean;
+  refCount: number;
+  listenerCount: number;
+  startedAt: number;
+  lastUsedAt: number;
+};
+
 type OpenCodeServerInstance = {
   url: string;
+  pid: number | null;
   close(): void;
+  onExit(handler: (error: Error) => void): void;
 };
 
 type OpenCodeServerLaunchArgs = {
   port: number;
-  config: OpenCodeConfig;
-  /** Keep user/project OpenCode config available when the caller is not a lead. */
-  isolatedConfig?: boolean;
-  /** Where the server's data/state/cache live. See {@link OpenCodeDataHome}. */
-  dataHome?: OpenCodeDataHome;
+  env: NodeJS.ProcessEnv;
 };
-
-/**
- * Which OpenCode data home a managed server writes.
- *
- * ADE-managed servers default to `"ade"`: their `opencode.db`, snapshots,
- * tool-output and logs live under ADE's own runtime root, so ADE chats stop
- * growing the user's personal OpenCode store (which reached 12.5 GB on one real
- * machine, 88% of it `message.updated` event snapshots) and stop sharing a
- * database with the user's own OpenCode install. The user's provider auth is
- * seeded in, so login keeps working.
- *
- * `"user"` is the compatibility path for a session whose `providerSessionId`
- * only exists in the user's store: ADE opens that one session there rather than
- * silently starting a fresh, empty session. New sessions never use it.
- */
-export type OpenCodeDataHome = "ade" | "user";
 
 type OpenCodeServeLaunchSpec = {
   executable: string;
@@ -91,7 +129,6 @@ type OpenCodeServeLaunchSpec = {
   env: NodeJS.ProcessEnv;
   useShell: boolean;
   windowsVerbatimArguments: boolean;
-  xdgPaths: OpenCodeIsolationPaths;
 };
 
 type OpenCodeProcessSnapshot = {
@@ -114,7 +151,6 @@ export type OpenCodeOrphanRecoveryResult = {
   skippedPids: number[];
 };
 
-type OpenCodeServerLauncher = (args: OpenCodeServerLaunchArgs) => Promise<OpenCodeServerInstance>;
 type ElectronLikeModule = {
   app?: {
     getPath(name: string): string;
@@ -124,59 +160,39 @@ type ElectronLikeModule = {
 type OpenCodeServerEntry = {
   id: string;
   key: string;
-  leaseKind: OpenCodeServerLeaseKind;
-  ownerKind: OpenCodeServerOwnerKind;
-  ownerId: string | null;
-  configFingerprint: string;
-  isolatedConfig: boolean;
-  dataHome: OpenCodeDataHome;
+  isolated: boolean;
   server: OpenCodeServerInstance;
-  idleTtlMs: number | null;
+  password: string;
+  authorization: string;
+  client: OpenCodeClient;
+  configFile: string;
+  configJson: string;
+  refCount: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
-  refCount: number;
-  busy: boolean;
-  onEvict: ((reason: OpenCodeServerShutdownReason) => void) | null;
-  startedAt: number;
-  lastUsedAt: number;
-};
-
-export type OpenCodeServerLease = {
-  url: string;
-  release(reason?: OpenCodeServerShutdownReason): void;
-  close(reason?: OpenCodeServerShutdownReason): void;
-  touch(): void;
-  setBusy(busy: boolean): void;
-  setEvictionHandler(handler: ((reason: OpenCodeServerShutdownReason) => void) | null): void;
-};
-
-export type OpenCodeRuntimeDiagnosticsEntry = {
-  id: string;
-  key: string;
-  leaseKind: OpenCodeServerLeaseKind;
-  ownerKind: OpenCodeServerOwnerKind;
-  ownerId: string | null;
-  configFingerprint: string;
-  url: string;
-  busy: boolean;
-  refCount: number;
+  closed: boolean;
+  listeners: Set<OpenCodeEventListener>;
+  streamAbort: AbortController | null;
+  streamRunning: boolean;
   startedAt: number;
   lastUsedAt: number;
 };
 
 const PORT_RETRY_ATTEMPTS = 3;
-const DEFAULT_SHARED_IDLE_TTL_MS = 15_000;
-const MAX_DEDICATED_OPENCODE_SERVERS = 6;
-const OPEN_CODE_SERVER_START_TIMEOUT_MS = 15_000;
+const OPEN_CODE_SERVER_START_TIMEOUT_MS = 20_000;
 const ORPHAN_RECOVERY_TERM_GRACE_MS = 250;
+/** The shared server outlives a quiet spell; restarting it costs a cold boot. */
+const SHARED_SERVER_IDLE_MS = 10 * 60_000;
+/** A per-chat profile has no other users; free its memory soon after release. */
+const PROFILE_SERVER_IDLE_MS = 60_000;
+const EVENT_STREAM_RETRY_MIN_MS = 250;
+const EVENT_STREAM_RETRY_MAX_MS = 5_000;
+const OPENCODE_BASIC_AUTH_USER = "opencode";
 const ADE_OPENCODE_MANAGED_ENV = "ADE_OPENCODE_MANAGED";
 const ADE_OPENCODE_OWNER_PID_ENV = "ADE_OPENCODE_OWNER_PID";
 
-const sharedEntries = new Map<string, OpenCodeServerEntry>();
-const dedicatedEntries = new Map<string, OpenCodeServerEntry>();
+const serverEntries = new Map<string, OpenCodeServerEntry>();
 const inFlightEntries = new Map<string, Promise<OpenCodeServerEntry>>();
-const acquireQueues = new Map<string, Array<() => void>>();
 const protectedLaunchPorts = new Set<number>();
-let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
 
 function commandLooksLikeOpenCodeServe(command: string): boolean {
   return /\bopencode(?:\.cmd|\.bat|\.exe)?\b/i.test(command) && /\bserve\b/i.test(command);
@@ -436,40 +452,6 @@ let lastOrphanRecoveryResult: OpenCodeOrphanRecoveryResult = {
 };
 let orphanRecoveryCompleted = false;
 
-function serializeConfigFingerprint(config: OpenCodeConfig): string {
-  return createHash("sha256").update(stableStringify(config)).digest("hex");
-}
-
-async function withAcquireLock<T>(lockKey: string, fn: () => Promise<T>): Promise<T> {
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queue = acquireQueues.get(lockKey);
-  if (queue) {
-    queue.push(release);
-    await gate;
-  } else {
-    acquireQueues.set(lockKey, [release]);
-    release();
-  }
-
-  try {
-    return await fn();
-  } finally {
-    const currentQueue = acquireQueues.get(lockKey);
-    if (currentQueue) {
-      currentQueue.shift();
-      const next = currentQueue[0];
-      if (next) {
-        next();
-      } else {
-        acquireQueues.delete(lockKey);
-      }
-    }
-  }
-}
-
 async function findAvailablePort(): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const server = createServer();
@@ -622,7 +604,7 @@ function parseManagedOpenCodePort(command: string): number | null {
 
 function activeManagedOpenCodePorts(): Set<number> {
   const ports = new Set<number>(protectedLaunchPorts);
-  for (const entry of [...sharedEntries.values(), ...dedicatedEntries.values()]) {
+  for (const entry of serverEntries.values()) {
     try {
       const parsed = new URL(entry.server.url);
       const port = Number(parsed.port);
@@ -721,8 +703,6 @@ function resolveKnownAdeManagedOpenCodeRoots(): string[] {
   return [...roots];
 }
 
-
-
 function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
   for (const dir of [
     paths.root,
@@ -734,173 +714,6 @@ function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
   ]) {
     fs.mkdirSync(dir, { recursive: true });
   }
-}
-
-function buildIsolatedOpenCodeEnv(
-  config: OpenCodeConfig,
-  paths: OpenCodeIsolationPaths,
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (key.startsWith("OPENCODE_")) continue;
-    env[key] = value;
-  }
-  return {
-    ...env,
-    XDG_CONFIG_HOME: paths.configHome,
-    XDG_DATA_HOME: paths.dataHome,
-    XDG_STATE_HOME: paths.stateHome,
-    XDG_CACHE_HOME: paths.cacheHome,
-    XDG_RUNTIME_DIR: paths.runtimeDir,
-    OPENCODE_CONFIG_DIR: path.join(paths.configHome, "opencode"),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    // This builder strips every OPENCODE_* var from process.env, so the
-    // suppression set in buildUserOpenCodeEnv does not reach an isolated lead.
-    OPENCODE_DISABLE_AUTOUPDATE: "1",
-    [ADE_OPENCODE_MANAGED_ENV]: "1",
-    [ADE_OPENCODE_OWNER_PID_ENV]: String(process.pid),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function mergeOpenCodeConfig(
-  base: Record<string, unknown>,
-  overlay: Record<string, unknown>,
-): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(overlay)) {
-    const existing = merged[key];
-    merged[key] = isRecord(existing) && isRecord(value)
-      ? mergeOpenCodeConfig(existing, value)
-      : value;
-  }
-  return merged;
-}
-
-/**
- * Layer ADE's generated config onto whatever the environment already carries.
- *
- * `OPENCODE_CONFIG_CONTENT` merges last, so ADE's keys must be unioned into an
- * inherited user value rather than replacing it — except that a malformed user
- * value is preserved untouched: OpenCode reports the parse error to the user,
- * and turning an invalid setting into a different, valid one would hide it.
- */
-function assignOpenCodeConfigContent(env: NodeJS.ProcessEnv, config: OpenCodeConfig): NodeJS.ProcessEnv {
-  const inheritedContent = env.OPENCODE_CONFIG_CONTENT?.trim();
-  if (inheritedContent) {
-    try {
-      const parsed = JSON.parse(inheritedContent);
-      if (!isRecord(parsed)) return addUserOpenCodeOwnershipMarkers(env);
-      env.OPENCODE_CONFIG_CONTENT = JSON.stringify(
-        mergeOpenCodeConfig(parsed, withInheritedSkillPaths(config, parsed)),
-      );
-      return addUserOpenCodeOwnershipMarkers(env);
-    } catch {
-      return addUserOpenCodeOwnershipMarkers(env);
-    }
-  }
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config as Record<string, unknown>);
-  return addUserOpenCodeOwnershipMarkers(env);
-}
-
-function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = userProcessEnv();
-  // ADE resolves and pins the OpenCode binary, so its updater must stay off.
-  // OpenCode's dedicated env var does this without occupying a config key.
-  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
-  return assignOpenCodeConfigContent(env, config);
-}
-
-/**
- * The env for an ADE-owned server: the user's config still loads and their
- * `OPENCODE_*` overrides survive, but the data/state/cache homes are forced to
- * ADE's runtime root. These three are overridden rather than inherited because
- * they ARE the ownership guarantee — inheriting a user `XDG_DATA_HOME` would
- * put ADE chat traffic straight back into the user's personal OpenCode store,
- * which is the bug this exists to fix.
- */
-export function buildOwnedOpenCodeEnv(
-  config: OpenCodeConfig,
-  paths: OpenCodeIsolationPaths,
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = userProcessEnv();
-  env.XDG_DATA_HOME = paths.dataHome;
-  env.XDG_STATE_HOME = paths.stateHome;
-  env.XDG_CACHE_HOME = paths.cacheHome;
-  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
-  return assignOpenCodeConfigContent(env, config);
-}
-
-/**
- * Copy the user's provider auth into an ADE-owned data root once.
- *
- * Never overwrites an existing file: after the first launch the owned copy is
- * the live credential store (OAuth refresh rewrites it), and copying over it
- * would resurrect a stale refresh token. Seeding only when absent is what makes
- * "reuse the user's auth so login still works" and "never touch the user's
- * store" true at the same time.
- */
-function seedOwnedOpenCodeAuth(paths: OpenCodeIsolationPaths): void {
-  try {
-    const target = path.join(paths.dataHome, "opencode", "auth.json");
-    if (fs.existsSync(target)) return;
-    const source = resolveUserOpenCodeAuthPath();
-    if (!source || !fs.existsSync(source)) return;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(source, target);
-    try {
-      fs.chmodSync(target, 0o600);
-    } catch {
-      // Best effort; Windows ACLs do not map onto POSIX modes.
-    }
-  } catch {
-    // A missing auth seed is not fatal: config-provided API keys still work and
-    // the user can sign in from Settings, which writes the owned store.
-  }
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
-
-/**
- * `mergeOpenCodeConfig` replaces arrays, so ADE's `skills.paths` would drop any
- * the user already had in `OPENCODE_CONFIG_CONTENT`. Union them, user paths
- * first, so ADE's bundled skills add to the user's rather than replacing them.
- */
-export function withInheritedSkillPaths(
-  config: OpenCodeConfig,
-  inherited: Record<string, unknown>,
-): Record<string, unknown> {
-  const adeSkills = isRecord(config.skills) ? config.skills : null;
-  const adePaths = isStringArray(adeSkills?.paths) ? adeSkills.paths : [];
-  if (!adePaths.length) return config as Record<string, unknown>;
-  const inheritedSkills = isRecord(inherited.skills) ? inherited.skills : null;
-  const inheritedPaths = isStringArray(inheritedSkills?.paths) ? inheritedSkills.paths : [];
-  if (!inheritedPaths.length) return config as Record<string, unknown>;
-  const seen = new Set<string>();
-  const union: string[] = [];
-  for (const entry of [...inheritedPaths, ...adePaths]) {
-    const trimmed = entry.trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    union.push(trimmed);
-  }
-  return { ...config, skills: { ...adeSkills, paths: union } };
-}
-
-function addUserOpenCodeOwnershipMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  // Preserve every user-provided OpenCode setting, including XDG paths, API
-  // keys, config-dir overrides, and an intentional disable-project-config flag.
-  // Only ADE's ownership markers are added for orphan recovery.
-  env[ADE_OPENCODE_MANAGED_ENV] = "1";
-  env[ADE_OPENCODE_OWNER_PID_ENV] = String(process.pid);
-  return env;
 }
 
 function buildManagedConfigMarkers(): string[] {
@@ -1047,17 +860,6 @@ async function terminateOrphanProcess(pid: number): Promise<boolean> {
   return outcome === "exited";
 }
 
-function pruneIdleSharedEntries(
-  excludeKey: string | null,
-  logger?: Logger | null,
-): void {
-  for (const entry of [...sharedEntries.values()]) {
-    if (excludeKey && entry.key === excludeKey) continue;
-    if (entry.refCount > 0) continue;
-    shutdownEntry(entry, "pool_compaction", logger);
-  }
-}
-
 export async function recoverManagedOpenCodeOrphans(args: {
   force?: boolean;
   logger?: Logger | null;
@@ -1195,76 +997,113 @@ export async function recoverManagedOpenCodeOrphans(args: {
   return await recoveryPromise;
 }
 
+/** Where a profile's generated config file lives. One file per profile. */
+function profileConfigFile(paths: OpenCodeIsolationPaths, key: string): string {
+  const safe = createHash("sha256").update(key).digest("hex").slice(0, 24);
+  return path.join(paths.root, "config-ade", `${safe}.json`);
+}
+
+/**
+ * Write the config atomically: OpenCode watches the file, and a reader that
+ * lands between truncate and write would load an empty config.
+ */
+function writeProfileConfig(file: string, json: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  fs.writeFileSync(tmp, json, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * The env of an ADE-owned server.
+ *
+ * - Data/state/cache are forced into ADE's runtime root. These three ARE the
+ *   ownership guarantee; inheriting a user `XDG_DATA_HOME` would open (and
+ *   migrate in place) the user's own OpenCode store.
+ * - The user's config home still loads for an ordinary profile, so their
+ *   providers, agents, skills, and MCP servers work in ADE. An isolated profile
+ *   points it at an empty ADE directory and disables project config.
+ * - `OPENCODE_CONFIG` carries ADE's generated config; it layers over the user's
+ *   global config and hot-reloads.
+ */
+function buildOpenCodeServerEnv(args: {
+  paths: OpenCodeIsolationPaths;
+  isolated: boolean;
+  configFile: string;
+  password: string;
+}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = userProcessEnv();
+  // ADE owns these; a user value would redirect the server's config, auth, or
+  // listener away from what ADE manages.
+  delete env.OPENCODE_CONFIG;
+  delete env.OPENCODE_DB;
+  delete env.OPENCODE_SERVER_PASSWORD;
+  delete env.OPENCODE_PASSWORD;
+  env.XDG_DATA_HOME = args.paths.dataHome;
+  env.XDG_STATE_HOME = args.paths.stateHome;
+  env.XDG_CACHE_HOME = args.paths.cacheHome;
+  if (args.isolated) {
+    env.XDG_CONFIG_HOME = args.paths.configHome;
+    delete env.OPENCODE_CONFIG_DIR;
+    delete env.OPENCODE_CONFIG_CONTENT;
+    env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
+  }
+  env.OPENCODE_CONFIG = args.configFile;
+  env.OPENCODE_SERVER_PASSWORD = args.password;
+  // ADE resolves and pins the binary, so OpenCode's own updater stays off.
+  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+  env[ADE_OPENCODE_MANAGED_ENV] = "1";
+  env[ADE_OPENCODE_OWNER_PID_ENV] = String(process.pid);
+  return env;
+}
+
 function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeServeLaunchSpec {
   const executable = resolveOpenCodeBinaryPath();
   if (!executable) {
     throw new Error("OpenCode executable is not available.");
   }
-  const xdgPaths = resolveAdeOpenCodeIsolationPaths();
-  const isolatedConfig = args.isolatedConfig === true;
-  const dataHome = args.dataHome ?? "ade";
-  if (isolatedConfig || dataHome === "ade") {
-    ensureOpenCodeIsolationDirs(xdgPaths);
-    // Reuse the user's provider auth in the owned home without ever writing
-    // their store. A copy (not a symlink) so OAuth refresh lands in ADE's home
-    // and cannot mutate the credentials the user's own OpenCode is holding.
-    seedOwnedOpenCodeAuth(xdgPaths);
-  }
-  const env = isolatedConfig
-    ? buildIsolatedOpenCodeEnv(args.config, xdgPaths)
-    : dataHome === "user"
-      ? buildUserOpenCodeEnv(args.config)
-      : buildOwnedOpenCodeEnv(args.config, xdgPaths);
+  const serveArgs = ["serve", "--hostname=127.0.0.1", `--port=${args.port}`];
   // Only shim through cmd.exe when the resolved target actually needs it (a
   // `.cmd`/`.bat` shim, or an extensionless file), matching
-  // {@link shouldUseWindowsCmdWrapper} — the policy every other ADE CLI launch
-  // path uses. The bundled runtime is a real `.exe`, so wrapping it added a
-  // cmd.exe parent that owned the server process. When that parent died without
-  // taking its tree down, the surviving `opencode.exe` was unreachable: Windows
-  // process listings do not expose a child's environment, so the managed markers
-  // that identify ADE's servers on macOS/Linux were absent from its command line
-  // and orphan recovery could never reap it.
+  // {@link shouldUseWindowsCmdWrapper}. The bundled runtime is a real `.exe`, so
+  // wrapping it would add a cmd.exe parent that owns the server; when that
+  // parent died without its tree, the surviving `opencode.exe` carried no
+  // managed markers on its command line and orphan recovery could not reap it.
   if (process.platform === "win32" && shouldUseWindowsCmdWrapper(executable)) {
-    const serveCmdLine = [
-      executable,
-      "serve",
-      "--hostname=127.0.0.1",
-      `--port=${args.port}`,
-    ].map(quoteWindowsCmdArg).join(" ");
+    const serveCmdLine = [executable, ...serveArgs].map(quoteWindowsCmdArg).join(" ");
     const assignments = [
       `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_MANAGED_ENV}=1`)}`,
-      ...(isolatedConfig ? [`set ${quoteWindowsCmdArg("OPENCODE_DISABLE_PROJECT_CONFIG=1")}`] : []),
       `set ${quoteWindowsCmdArg(`${ADE_OPENCODE_OWNER_PID_ENV}=${process.pid}`)}`,
     ];
     const cmdLine = `${assignments.join("&&")}&&${serveCmdLine}`;
-    const invocation = resolveWindowsCmdLineInvocation(cmdLine, env);
+    const invocation = resolveWindowsCmdLineInvocation(cmdLine, args.env);
     return {
       executable: invocation.command,
       args: invocation.args,
-      env,
+      env: args.env,
       useShell: false,
       windowsVerbatimArguments: true,
-      xdgPaths,
     };
   }
-
   return {
     executable,
-    args: [
-      "serve",
-      "--hostname=127.0.0.1",
-      `--port=${args.port}`,
-    ],
-    env,
+    args: serveArgs,
+    env: args.env,
     useShell: false,
     windowsVerbatimArguments: false,
-    xdgPaths,
   };
 }
 
-async function defaultOpenCodeServerLauncher(
-  args: OpenCodeServerLaunchArgs,
-): Promise<OpenCodeServerInstance> {
+/** `server listening on http://127.0.0.1:<port>` (2.0); older builds prefixed `opencode`. */
+function parseOpenCodeServerListenUrl(line: string): string | null {
+  const normalized = line.trim();
+  if (!/\bserver\s+listening\b/i.test(normalized)) return null;
+  const match = normalized.match(/\bon\s+(https?:\/\/[^\s]+)/i)
+    ?? normalized.match(/\b(https?:\/\/[^\s]+)/i);
+  return match?.[1] ?? null;
+}
+
+async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<OpenCodeServerInstance> {
   const launchSpec = buildOpenCodeServeLaunchSpec(args);
   const proc = spawn(launchSpec.executable, launchSpec.args, {
     env: launchSpec.env,
@@ -1284,18 +1123,18 @@ async function defaultOpenCodeServerLauncher(
 
   let output = "";
   let resolved = false;
+  const exitHandlers: Array<(error: Error) => void> = [];
 
   return await new Promise<OpenCodeServerInstance>((resolve, reject) => {
-    const cleanup = (): void => {
+    const cleanupStartup = (): void => {
       clearTimeout(timeoutId);
       proc.stdout?.off("data", onStdout);
       proc.stderr?.off("data", onStderr);
-      proc.off("exit", onExit);
       proc.off("error", onError);
     };
 
     const fail = (error: Error): void => {
-      cleanup();
+      cleanupStartup();
       stopChildProcess(proc);
       if (proc.pid) removeManagedServerRecord(proc.pid);
       reject(error);
@@ -1308,19 +1147,24 @@ async function defaultOpenCodeServerLauncher(
     const onStdout = (chunk: Buffer): void => {
       if (resolved) return;
       output += chunk.toString();
-      const lines = output.split("\n");
-      for (const line of lines) {
+      for (const line of output.split("\n")) {
         const url = parseOpenCodeServerListenUrl(line);
         if (!url) continue;
         resolved = true;
-        cleanup();
+        cleanupStartup();
+        // Keep draining the pipes: a full stdout buffer blocks the server.
+        proc.stdout?.resume();
+        proc.stderr?.resume();
         const listenerPid = resolveOpenCodeListenerPid(args.port) ?? proc.pid ?? null;
         resolve({
           url,
+          pid: listenerPid,
           close() {
-            cleanup();
             terminateOpenCodeServerProcesses(proc, listenerPid);
             if (proc.pid) removeManagedServerRecord(proc.pid);
+          },
+          onExit(handler) {
+            exitHandlers.push(handler);
           },
         });
         return;
@@ -1328,44 +1172,35 @@ async function defaultOpenCodeServerLauncher(
     };
 
     const onStderr = (chunk: Buffer): void => {
+      if (resolved) return;
       output += chunk.toString();
     };
 
-    const onExit = (code: number | null): void => {
+    proc.on("exit", (code, signal) => {
       if (proc.pid) removeManagedServerRecord(proc.pid);
-      if (resolved) return;
-      cleanup();
-      let message = `Server exited with code ${code}`;
-      if (output.trim()) {
-        message += `\nServer output: ${output}`;
+      if (!resolved) {
+        cleanupStartup();
+        let message = `Server exited with code ${code}`;
+        if (output.trim()) message += `\nServer output: ${output}`;
+        reject(new Error(message));
+        return;
       }
-      reject(new Error(message));
-    };
+      const error = new Error(`OpenCode server exited (code ${code ?? "null"}, signal ${signal ?? "none"}).`);
+      for (const handler of exitHandlers.splice(0)) handler(error);
+    });
 
     const onError = (error: Error): void => {
-      cleanup();
+      cleanupStartup();
       reject(error);
     };
 
     proc.stdout?.on("data", onStdout);
     proc.stderr?.on("data", onStderr);
-    proc.on("exit", onExit);
     proc.on("error", onError);
   });
 }
 
-function parseOpenCodeServerListenUrl(line: string): string | null {
-  const normalized = line.trim();
-  if (!/\bopencode\s+server\s+listening\b/i.test(normalized)) return null;
-  const match = normalized.match(/\bon\s+(https?:\/\/[^\s]+)/i)
-    ?? normalized.match(/\b(https?:\/\/[^\s]+)/i);
-  return match?.[1] ?? null;
-}
-
-async function createOpencodeServerWithRetry(
-  config: OpenCodeConfig,
-  options: { isolatedConfig: boolean; dataHome: OpenCodeDataHome },
-): Promise<OpenCodeServerInstance> {
+async function launchOpenCodeServerWithRetry(env: NodeJS.ProcessEnv): Promise<OpenCodeServerInstance> {
   const binaryPath = resolveOpenCodeBinaryPath();
   let lastError: unknown;
   let lastPort = 0;
@@ -1374,12 +1209,7 @@ async function createOpencodeServerWithRetry(
     lastPort = port;
     protectedLaunchPorts.add(port);
     try {
-      return await openCodeServerLauncher({
-        port,
-        config,
-        isolatedConfig: options.isolatedConfig,
-        dataHome: options.dataHome,
-      });
+      return await launchOpenCodeServer({ port, env });
     } catch (error) {
       protectedLaunchPorts.delete(port);
       lastError = error;
@@ -1391,18 +1221,18 @@ async function createOpencodeServerWithRetry(
   throw toOpenCodeLaunchError(lastError, { port: lastPort, binaryPath });
 }
 
-function logRuntimeEvent(
+function logServerEvent(
   logger: Logger | null | undefined,
   event: string,
   entry: OpenCodeServerEntry,
   extra: Record<string, unknown> = {},
 ): void {
   logger?.info(event, {
-    leaseKind: entry.leaseKind,
-    ownerKind: entry.ownerKind,
-    ownerId: entry.ownerId,
-    configFingerprint: entry.configFingerprint,
+    profile: entry.key,
+    isolated: entry.isolated,
     url: entry.server.url,
+    pid: entry.server.pid,
+    refCount: entry.refCount,
     ...extra,
   });
 }
@@ -1414,420 +1244,295 @@ function clearIdleTimer(entry: OpenCodeServerEntry): void {
   }
 }
 
-function removeEntry(entry: OpenCodeServerEntry): void {
+function closeEntry(entry: OpenCodeServerEntry, reason: string, logger?: Logger | null): void {
+  if (entry.closed) return;
+  entry.closed = true;
   clearIdleTimer(entry);
-  if (entry.leaseKind === "shared") {
-    sharedEntries.delete(entry.key);
-    return;
-  }
-  dedicatedEntries.delete(entry.key);
-}
-
-function shutdownEntry(
-  entry: OpenCodeServerEntry,
-  reason: OpenCodeServerShutdownReason,
-  logger?: Logger | null,
-): void {
-  removeEntry(entry);
+  entry.streamAbort?.abort();
+  if (serverEntries.get(entry.key) === entry) serverEntries.delete(entry.key);
+  unprotectLaunchPortForUrl(entry.server.url);
   try {
     entry.server.close();
   } catch {
     // ignore shutdown failures
   }
-  logRuntimeEvent(logger, "opencode.server_shutdown", entry, { reason });
-  if (reason === "error" || reason === "attach_failed") {
-    void recoverManagedOpenCodeOrphans({ force: true, logger }).catch(() => {});
-  }
+  logServerEvent(logger, "opencode.server_shutdown", entry, { reason });
 }
 
-function scheduleSharedIdleTimer(
-  entry: OpenCodeServerEntry,
-  logger?: Logger | null,
-): void {
+function scheduleIdleShutdown(entry: OpenCodeServerEntry, logger?: Logger | null): void {
   clearIdleTimer(entry);
-  if (!entry.idleTtlMs || entry.refCount > 0) return;
+  if (entry.refCount > 0 || entry.closed) return;
+  const idleMs = entry.key === SHARED_OPENCODE_PROFILE.key ? SHARED_SERVER_IDLE_MS : PROFILE_SERVER_IDLE_MS;
   entry.idleTimer = setTimeout(() => {
-    const current = sharedEntries.get(entry.key);
-    if (!current || current.id !== entry.id || current.refCount > 0) return;
-    shutdownEntry(current, "idle_ttl", logger);
-  }, entry.idleTtlMs);
-  if (entry.idleTimer.unref) entry.idleTimer.unref();
+    if (entry.refCount > 0) return;
+    closeEntry(entry, "idle", logger);
+  }, idleMs);
+  entry.idleTimer.unref?.();
+}
+
+/**
+ * The server's one event stream, fanned out to every listener.
+ *
+ * OpenCode 2.0 subscriptions are live-only and do not reconnect by themselves.
+ * The loop resubscribes with backoff and tells listeners about the gap once the
+ * new stream is up, so a chat with an open turn can reconcile what it missed.
+ */
+function ensureEventStream(entry: OpenCodeServerEntry, logger?: Logger | null): void {
+  if (entry.streamRunning || entry.closed) return;
+  entry.streamRunning = true;
+  void (async () => {
+    let backoffMs = EVENT_STREAM_RETRY_MIN_MS;
+    let hadGap = false;
+    while (!entry.closed) {
+      const abort = new AbortController();
+      entry.streamAbort = abort;
+      try {
+        for await (const event of entry.client.event.subscribe({ signal: abort.signal })) {
+          if (event.type === "server.connected") {
+            backoffMs = EVENT_STREAM_RETRY_MIN_MS;
+            if (hadGap) {
+              hadGap = false;
+              for (const listener of [...entry.listeners]) {
+                try {
+                  listener.onReconnected?.();
+                } catch (error) {
+                  logger?.warn("opencode.event_listener_failed", { phase: "reconnected", error: String(error) });
+                }
+              }
+            }
+            continue;
+          }
+          for (const listener of [...entry.listeners]) {
+            try {
+              listener.onEvent(event);
+            } catch (error) {
+              logger?.warn("opencode.event_listener_failed", {
+                type: event.type,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+      } catch (error) {
+        if (entry.closed || abort.signal.aborted) break;
+        logger?.warn("opencode.event_stream_error", {
+          profile: entry.key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (entry.closed) break;
+      hadGap = true;
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      backoffMs = Math.min(backoffMs * 2, EVENT_STREAM_RETRY_MAX_MS);
+    }
+    entry.streamRunning = false;
+  })();
+}
+
+async function startEntry(args: {
+  profile: OpenCodeServerProfile;
+  config: OpenCodeServerConfig;
+  logger?: Logger | null;
+}): Promise<OpenCodeServerEntry> {
+  await recoverManagedOpenCodeOrphans({ logger: args.logger });
+  const paths = resolveAdeOpenCodeIsolationPaths();
+  ensureOpenCodeIsolationDirs(paths);
+  const configFile = profileConfigFile(paths, args.profile.key);
+  const configJson = JSON.stringify(args.config);
+  writeProfileConfig(configFile, configJson);
+  const password = randomBytes(24).toString("base64url");
+  const env = buildOpenCodeServerEnv({
+    paths,
+    isolated: args.profile.isolated,
+    configFile,
+    password,
+  });
+  const server = await launchOpenCodeServerWithRetry(env);
+  const authorization = `Basic ${Buffer.from(`${OPENCODE_BASIC_AUTH_USER}:${password}`).toString("base64")}`;
+  const client = OpenCode.make({ baseUrl: server.url, headers: { authorization } });
+  const entry: OpenCodeServerEntry = {
+    id: randomUUID(),
+    key: args.profile.key,
+    isolated: args.profile.isolated,
+    server,
+    password,
+    authorization,
+    client,
+    configFile,
+    configJson,
+    refCount: 0,
+    idleTimer: null,
+    closed: false,
+    listeners: new Set(),
+    streamAbort: null,
+    streamRunning: false,
+    startedAt: Date.now(),
+    lastUsedAt: Date.now(),
+  };
+  server.onExit((error) => {
+    const wasClosed = entry.closed;
+    entry.closed = true;
+    clearIdleTimer(entry);
+    entry.streamAbort?.abort();
+    if (serverEntries.get(entry.key) === entry) serverEntries.delete(entry.key);
+    if (wasClosed) return;
+    args.logger?.warn("opencode.server_exited", { profile: entry.key, error: error.message });
+    for (const listener of [...entry.listeners]) {
+      try {
+        listener.onServerExit?.(error);
+      } catch {
+        // A listener failing to react must not stop the others.
+      }
+    }
+  });
+  // A new server answers before its model catalog has loaded; a session
+  // created with a model in that window races it. `integration.list` blocks
+  // until the catalog is ready.
+  await client.integration.list().catch((error: unknown) => {
+    args.logger?.warn("opencode.server_catalog_wait_failed", {
+      profile: args.profile.key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  logServerEvent(args.logger, "opencode.server_started", entry);
+  return entry;
 }
 
 function buildLease(entry: OpenCodeServerEntry, logger?: Logger | null): OpenCodeServerLease {
   let released = false;
-  const touch = (): void => {
-    entry.lastUsedAt = Date.now();
-  };
-  const release = (reason: OpenCodeServerShutdownReason = "handle_close"): void => {
-    if (released) return;
-    released = true;
-    entry.refCount = Math.max(0, entry.refCount - 1);
-    entry.lastUsedAt = Date.now();
-    logRuntimeEvent(logger, "opencode.server_released", entry, { reason, refCount: entry.refCount });
-    if (entry.leaseKind === "shared") {
-      if (entry.refCount === 0 && reason === "error") {
-        shutdownEntry(entry, reason, logger);
-        return;
-      }
-      scheduleSharedIdleTimer(entry, logger);
-      return;
-    }
-    if (entry.refCount === 0) {
-      shutdownEntry(entry, reason, logger);
-    }
-  };
-  touch();
+  const ownListeners = new Set<OpenCodeEventListener>();
   return {
+    key: entry.key,
     url: entry.server.url,
-    release,
-    close(reason = "handle_close") {
-      release(reason);
+    authorization: entry.authorization,
+    password: entry.password,
+    client: entry.client,
+    isAlive: () => !entry.closed,
+    listen(listener) {
+      entry.listeners.add(listener);
+      ownListeners.add(listener);
+      ensureEventStream(entry, logger);
+      return () => {
+        entry.listeners.delete(listener);
+        ownListeners.delete(listener);
+      };
     },
-    touch,
-    setBusy(busy: boolean) {
-      entry.busy = busy;
+    updateConfig(config) {
+      if (entry.closed) return;
+      const json = JSON.stringify(config);
+      if (json === entry.configJson) return;
+      entry.configJson = json;
+      writeProfileConfig(entry.configFile, json);
+      logServerEvent(logger, "opencode.server_config_updated", entry);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      for (const listener of ownListeners) entry.listeners.delete(listener);
+      ownListeners.clear();
+      entry.refCount = Math.max(0, entry.refCount - 1);
       entry.lastUsedAt = Date.now();
-    },
-    setEvictionHandler(handler) {
-      entry.onEvict = handler;
+      scheduleIdleShutdown(entry, logger);
     },
   };
 }
 
-function pickDedicatedEvictionCandidate(excludeKey?: string): OpenCodeServerEntry | null {
-  let oldest: OpenCodeServerEntry | null = null;
-  for (const entry of dedicatedEntries.values()) {
-    if (entry.key === excludeKey) continue;
-    if (entry.busy || entry.refCount > 0) continue;
-    if (!oldest || entry.lastUsedAt < oldest.lastUsedAt) {
-      oldest = entry;
-    }
-  }
-  return oldest;
-}
-
-function enforceDedicatedBudget(
-  logger?: Logger | null,
-  excludeKey?: string,
-): void {
-  if (dedicatedEntries.size < MAX_DEDICATED_OPENCODE_SERVERS) return;
-  const candidate = pickDedicatedEvictionCandidate(excludeKey);
-  if (!candidate) {
-    throw new Error(
-      `OpenCode runtime limit reached (${MAX_DEDICATED_OPENCODE_SERVERS} dedicated servers). Close or wait for an idle chat runtime before starting another OpenCode session.`,
-    );
-  }
-  candidate.onEvict?.("budget_eviction");
-  const stillPresent = dedicatedEntries.get(candidate.key);
-  if (stillPresent) {
-    if (stillPresent.refCount > 0 || stillPresent.busy) {
-      throw new Error(
-        `OpenCode runtime limit reached (${MAX_DEDICATED_OPENCODE_SERVERS} dedicated servers). The selected eviction candidate is still leased and cannot be reclaimed safely.`,
-      );
-    }
-    shutdownEntry(stillPresent, "budget_eviction", logger);
-  }
-}
-
-async function createEntry(args: {
-  key: string;
-  leaseKind: OpenCodeServerLeaseKind;
+/**
+ * A lease on the server for `profile`, starting it when none runs.
+ *
+ * A caller's config replaces the profile's config file when it differs, so
+ * the running server hot-reloads it. Concurrent first acquires share one launch.
+ */
+export async function acquireOpenCodeServer(args: {
+  profile?: OpenCodeServerProfile;
+  /**
+   * The profile's config. Omit it to use a running server as it is (a caller
+   * that only needs a client); a server started without one gets ADE's
+   * defaults until a caller with a config updates it.
+   */
+  config?: OpenCodeServerConfig;
+  /**
+   * "replace" (default) writes the caller's config to a running server.
+   * "if-starting" uses it only to start one: callers that build a narrower
+   * config (inventory, auth, terminal) must not overwrite the chats' fuller one.
+   * "providers" replaces only the running config's `providers`: a key change
+   * reaches a running server and leaves the chats' skills and agents alone.
+   */
+  configMode?: "replace" | "if-starting" | "providers";
   ownerKind: OpenCodeServerOwnerKind;
   ownerId?: string | null;
-  config: OpenCodeConfig;
-  configFingerprint: string;
-  isolatedConfig: boolean;
-  dataHome: OpenCodeDataHome;
-  idleTtlMs?: number | null;
-  logger?: Logger | null;
-}): Promise<OpenCodeServerEntry> {
-  const inflightKey = `${args.leaseKind}:${args.key}:${args.configFingerprint}:${args.isolatedConfig ? "isolated" : "user"}:${args.dataHome}`;
-  const existingPromise = inFlightEntries.get(inflightKey);
-  if (existingPromise) return await existingPromise;
-
-  const createPromise = (async () => {
-    await recoverManagedOpenCodeOrphans({ logger: args.logger });
-    const server = await createOpencodeServerWithRetry(args.config, {
-      isolatedConfig: args.isolatedConfig,
-      dataHome: args.dataHome,
-    });
-    const entry: OpenCodeServerEntry = {
-      id: randomUUID(),
-      key: args.key,
-      leaseKind: args.leaseKind,
-      ownerKind: args.ownerKind,
-      ownerId: args.ownerId?.trim() || null,
-      configFingerprint: args.configFingerprint,
-      isolatedConfig: args.isolatedConfig,
-      dataHome: args.dataHome,
-      server,
-      idleTtlMs: args.leaseKind === "shared" ? args.idleTtlMs ?? DEFAULT_SHARED_IDLE_TTL_MS : null,
-      idleTimer: null,
-      refCount: 0,
-      busy: false,
-      onEvict: null,
-      startedAt: Date.now(),
-      lastUsedAt: Date.now(),
-    };
-    logRuntimeEvent(args.logger, "opencode.server_started", entry);
-    return entry;
-  })().finally(() => {
-    inFlightEntries.delete(inflightKey);
-  });
-
-  inFlightEntries.set(inflightKey, createPromise);
-  return await createPromise;
-}
-
-export async function acquireSharedOpenCodeServer(args: {
-  config: OpenCodeConfig;
-  key?: string;
-  ownerKind?: OpenCodeServerOwnerKind;
-  ownerId?: string | null;
-  idleTtlMs?: number | null;
-  isolatedConfig?: boolean;
-  dataHome?: OpenCodeDataHome;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
-  const configFingerprint = serializeConfigFingerprint(args.config);
-  const isolatedConfig = args.isolatedConfig === true;
-  const dataHome = args.dataHome ?? "ade";
-  const key = args.key?.trim() || configFingerprint;
-  return await withAcquireLock(`shared:${key}`, async () => {
-    while (true) {
-      const existing = sharedEntries.get(key);
-      if (
-        existing
-        && existing.configFingerprint === configFingerprint
-        && existing.isolatedConfig === isolatedConfig
-        && existing.dataHome === dataHome
-      ) {
-        clearIdleTimer(existing);
-        existing.refCount += 1;
-        existing.lastUsedAt = Date.now();
-        logRuntimeEvent(args.logger, "opencode.server_reused", existing, { refCount: existing.refCount });
-        pruneIdleSharedEntries(key, args.logger);
-        return buildLease(existing, args.logger);
-      }
-      if (existing && existing.refCount > 0) {
-        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_rejected", existing, {
-          requestedConfigFingerprint: configFingerprint,
-          refCount: existing.refCount,
-        });
-        throw new Error(
-          `Shared OpenCode server for key "${key}" is still in use (refCount=${existing.refCount}) with a different config. Cannot acquire a lease with the requested configuration.`
-        );
-      }
-      if (existing) {
-        shutdownEntry(existing, "config_changed", args.logger);
-      }
-      const entry = await createEntry({
-        key,
-        leaseKind: "shared",
-        ownerKind: args.ownerKind ?? "oneshot",
-        ownerId: args.ownerId,
-        config: args.config,
-        configFingerprint,
-        isolatedConfig,
-        dataHome,
-        idleTtlMs: args.idleTtlMs,
-        logger: args.logger,
-      });
-      if (
-        entry.configFingerprint !== configFingerprint
-        || entry.isolatedConfig !== isolatedConfig
-        || entry.dataHome !== dataHome
-      ) {
-        unprotectLaunchPortForUrl(entry.server.url);
-        shutdownEntry(entry, "config_changed", args.logger);
-        continue;
-      }
-      entry.refCount = 1;
-      sharedEntries.set(key, entry);
-      unprotectLaunchPortForUrl(entry.server.url);
-      pruneIdleSharedEntries(key, args.logger);
-      return buildLease(entry, args.logger);
-    }
-  });
-}
-
-export async function acquireDedicatedOpenCodeServer(args: {
-  ownerKey: string;
-  config: OpenCodeConfig;
-  ownerKind: OpenCodeServerOwnerKind;
-  ownerId?: string | null;
-  isolatedConfig?: boolean;
-  dataHome?: OpenCodeDataHome;
-  logger?: Logger | null;
-}): Promise<OpenCodeServerLease> {
-  const ownerKey = args.ownerKey.trim();
-  if (!ownerKey.length) {
-    throw new Error("ownerKey is required for dedicated OpenCode servers.");
+  const profile = args.profile ?? SHARED_OPENCODE_PROFILE;
+  let entry = serverEntries.get(profile.key);
+  if (entry?.closed) {
+    serverEntries.delete(profile.key);
+    entry = undefined;
   }
-  const configFingerprint = serializeConfigFingerprint(args.config);
-  const isolatedConfig = args.isolatedConfig === true;
-  const dataHome = args.dataHome ?? "ade";
-  return await withAcquireLock(`dedicated:${ownerKey}`, async () => {
-    while (true) {
-      const existing = dedicatedEntries.get(ownerKey);
-      if (
-        existing
-        && existing.configFingerprint === configFingerprint
-        && existing.isolatedConfig === isolatedConfig
-        && existing.dataHome === dataHome
-      ) {
-        existing.refCount += 1;
-        existing.lastUsedAt = Date.now();
-        logRuntimeEvent(args.logger, "opencode.server_reused", existing, { refCount: existing.refCount });
-        return buildLease(existing, args.logger);
-      }
-      if (existing && existing.refCount > 0) {
-        logRuntimeEvent(args.logger, "opencode.server_config_mismatch_rejected", existing, {
-          requestedConfigFingerprint: configFingerprint,
-          refCount: existing.refCount,
-        });
-        throw new Error(
-          `Dedicated OpenCode server for "${ownerKey}" is still in use (refCount=${existing.refCount}) with a different config. Cannot acquire a lease with the requested configuration.`
-        );
-      }
-      if (existing) {
-        shutdownEntry(existing, "config_changed", args.logger);
-      }
-      enforceDedicatedBudget(args.logger, ownerKey);
-      const entry = await createEntry({
-        key: ownerKey,
-        leaseKind: "dedicated",
-        ownerKind: args.ownerKind,
-        ownerId: args.ownerId,
-        config: args.config,
-        configFingerprint,
-        isolatedConfig,
-        dataHome,
+  if (!entry) {
+    let pending = inFlightEntries.get(profile.key);
+    if (!pending) {
+      pending = startEntry({
+        profile,
+        config: args.config ?? { share: "disabled", update: "disable" },
         logger: args.logger,
+      }).finally(() => {
+        inFlightEntries.delete(profile.key);
       });
-      if (
-        entry.configFingerprint !== configFingerprint
-        || entry.isolatedConfig !== isolatedConfig
-        || entry.dataHome !== dataHome
-      ) {
-        unprotectLaunchPortForUrl(entry.server.url);
-        shutdownEntry(entry, "config_changed", args.logger);
-        continue;
-      }
-      entry.refCount = 1;
-      dedicatedEntries.set(ownerKey, entry);
-      unprotectLaunchPortForUrl(entry.server.url);
-      return buildLease(entry, args.logger);
+      inFlightEntries.set(profile.key, pending);
     }
+    entry = await pending;
+    serverEntries.set(profile.key, entry);
+  }
+  clearIdleTimer(entry);
+  entry.refCount += 1;
+  entry.lastUsedAt = Date.now();
+  const lease = buildLease(entry, args.logger);
+  const configMode = args.configMode ?? "replace";
+  if (args.config && configMode === "replace") lease.updateConfig(args.config);
+  if (args.config && configMode === "providers") {
+    const running = JSON.parse(entry.configJson) as OpenCodeServerConfig;
+    const providers = (args.config as { providers?: unknown }).providers;
+    const merged: Record<string, unknown> = { ...running };
+    if (providers === undefined) delete merged.providers;
+    else merged.providers = providers;
+    lease.updateConfig(merged);
+  }
+  logServerEvent(args.logger, "opencode.server_acquired", entry, {
+    ownerKind: args.ownerKind,
+    ownerId: args.ownerId ?? null,
   });
+  return lease;
 }
 
-export function shutdownOpenCodeServers(filter: {
-  leaseKind?: OpenCodeServerLeaseKind;
-  ownerKind?: OpenCodeServerOwnerKind;
-  ownerId?: string | null;
-} = {}): void {
-  const matches = (entry: OpenCodeServerEntry): boolean => {
-    if (filter.leaseKind && entry.leaseKind !== filter.leaseKind) return false;
-    if (filter.ownerKind && entry.ownerKind !== filter.ownerKind) return false;
-    if (filter.ownerId !== undefined && entry.ownerId !== (filter.ownerId?.trim() || null)) return false;
-    return true;
-  };
-  for (const entry of [...sharedEntries.values(), ...dedicatedEntries.values()]) {
-    if (!matches(entry)) continue;
-    shutdownEntry(entry, "shutdown");
+/** The running shared server, if any, without starting one. */
+export function peekSharedOpenCodeServerUrl(): string | null {
+  const entry = serverEntries.get(SHARED_OPENCODE_PROFILE.key);
+  return entry && !entry.closed ? entry.server.url : null;
+}
+
+export function shutdownOpenCodeServers(filter: { key?: string } = {}, logger?: Logger | null): void {
+  for (const entry of [...serverEntries.values()]) {
+    if (filter.key && entry.key !== filter.key) continue;
+    closeEntry(entry, "shutdown", logger);
   }
 }
 
 export function getOpenCodeRuntimeDiagnostics(): {
-  sharedCount: number;
-  dedicatedCount: number;
-  entries: OpenCodeRuntimeDiagnosticsEntry[];
+  servers: OpenCodeRuntimeDiagnosticsEntry[];
+  orphanRecovery: OpenCodeOrphanRecoveryResult;
 } {
-  const entries = [...sharedEntries.values(), ...dedicatedEntries.values()].map((entry) => ({
-    id: entry.id,
-    key: entry.key,
-    leaseKind: entry.leaseKind,
-    ownerKind: entry.ownerKind,
-    ownerId: entry.ownerId,
-    configFingerprint: entry.configFingerprint,
-    url: entry.server.url,
-    busy: entry.busy,
-    refCount: entry.refCount,
-    startedAt: entry.startedAt,
-    lastUsedAt: entry.lastUsedAt,
-  }));
   return {
-    sharedCount: sharedEntries.size,
-    dedicatedCount: dedicatedEntries.size,
-    entries,
+    servers: [...serverEntries.values()].map((entry) => ({
+      key: entry.key,
+      url: entry.server.url,
+      pid: entry.server.pid,
+      isolated: entry.isolated,
+      refCount: entry.refCount,
+      listenerCount: entry.listeners.size,
+      startedAt: entry.startedAt,
+      lastUsedAt: entry.lastUsedAt,
+    })),
+    orphanRecovery: lastOrphanRecoveryResult,
   };
-}
-
-export function __resetOpenCodeServerManagerForTests(): void {
-  shutdownOpenCodeServers();
-  inFlightEntries.clear();
-  acquireQueues.clear();
-  openCodeServerLauncher = defaultOpenCodeServerLauncher;
-  openCodeProcessController = defaultOpenCodeProcessController;
-  orphanRecoveryPromise = null;
-  lastOrphanRecoveryResult = { recoveredPids: [], skippedPids: [] };
-  orphanRecoveryCompleted = false;
-}
-
-export function __setOpenCodeServerLauncherForTests(
-  launcher: OpenCodeServerLauncher | null,
-): void {
-  openCodeServerLauncher = launcher ?? defaultOpenCodeServerLauncher;
-}
-
-export function __setOpenCodeProcessControllerForTests(
-  controller: Partial<OpenCodeProcessController> | null,
-): void {
-  openCodeProcessController = controller
-    ? {
-        listProcesses: controller.listProcesses ?? (() => []),
-        listListeningPids: controller.listListeningPids ?? (() => []),
-        isProcessAlive: controller.isProcessAlive ?? (() => false),
-        killProcess: controller.killProcess ?? (() => {}),
-        killProcessTree: controller.killProcessTree ?? (() => false),
-        waitForMs: controller.waitForMs ?? (async () => {}),
-      }
-    : defaultOpenCodeProcessController;
-  orphanRecoveryPromise = null;
-  lastOrphanRecoveryResult = { recoveredPids: [], skippedPids: [] };
-  orphanRecoveryCompleted = false;
-}
-
-export function __buildOpenCodeServeLaunchSpecForTests(args: {
-  config: OpenCodeConfig;
-  port?: number;
-  isolatedConfig?: boolean;
-}): OpenCodeServeLaunchSpec {
-  return buildOpenCodeServeLaunchSpec({
-    port: args.port ?? 4096,
-    config: args.config,
-    isolatedConfig: args.isolatedConfig,
-  });
-}
-
-export function __resolveOpenCodeListenerPidForTests(port: number): number | null {
-  return resolveOpenCodeListenerPid(port);
-}
-
-export function __parseOpenCodeServerListenUrlForTests(line: string): string | null {
-  return parseOpenCodeServerListenUrl(line);
-}
-
-/** Test hook: whether a WMIC/CIM command line would be treated as an ADE-managed OpenCode serve. */
-export function __isManagedOpenCodeServeCommandForTests(command: string): boolean {
-  return isManagedOpenCodeServeCommand(command, buildManagedConfigMarkers());
-}
-
-export function __terminateOpenCodeServerProcessesForTests(
-  proc: ChildProcess,
-  listenerPid: number | null,
-): void {
-  terminateOpenCodeServerProcesses(proc, listenerPid);
 }

@@ -114,6 +114,16 @@ const TOOL_META: Record<string, ToolMeta> = {
 // Without them these rows fell through to the warning glyph.
 for (const alias of ["webSearch", "websearch", "web_search"]) TOOL_META[alias] = TOOL_META.WebSearch!;
 for (const alias of ["webFetch", "webfetch", "web_fetch", "FetchUrl", "fetch_url"]) TOOL_META[alias] = TOOL_META.WebFetch!;
+// OpenCode 2.0 names its built-in tools in lower case, and calls the shell
+// tool `shell` and the child-agent tool `subagent`.
+for (const [alias, canonical] of [
+  ["read", "Read"],
+  ["edit", "Edit"],
+  ["write", "Write"],
+  ["shell", "Bash"],
+  ["subagent", "Task"],
+  ["question", "askUser"],
+] as const) TOOL_META[alias] ??= TOOL_META[canonical]!;
 
 export function isCodeChangeTool(toolName: string): boolean {
   return getToolMeta(toolName).category === "write";

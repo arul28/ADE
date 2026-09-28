@@ -37,7 +37,7 @@ const TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win3
  * - `@factory/droid-sdk` — pure JS, ~15 MB, and it is force-inlined into the
  *   ade-cli bundle (`noExternal` in tsup.config.ts). There is no platform
  *   package to fetch.
- * - `@opencode-ai/sdk` — pure JS, ESM-only, force-inlined for the same reason.
+ * - `@opencode/client` — pure JS, ESM-only, force-inlined for the same reason.
  *   Only opencode's *native* binary is fetched.
  */
 const TOOLS = [
@@ -70,16 +70,16 @@ const TOOLS = [
     description: "OpenCode native binary.",
     entry: { kind: "binary", path: "bin/opencode", windowsPath: "bin/opencode.exe" },
     packages: {
-      "darwin-arm64": "opencode-darwin-arm64",
-      "darwin-x64": "opencode-darwin-x64",
-      "linux-arm64": "opencode-linux-arm64",
-      "linux-x64": "opencode-linux-x64",
-      // NOT `opencode-windows-x64`. The desktop bundle excludes that package
-      // outright (`"!node_modules/opencode-windows-x64/**"` in
+      "darwin-arm64": "@opencode/cli-darwin-arm64",
+      "darwin-x64": "@opencode/cli-darwin-x64",
+      "linux-arm64": "@opencode/cli-linux-arm64",
+      "linux-x64": "@opencode/cli-linux-x64",
+      // NOT `@opencode/cli-windows-x64`. The desktop bundle excludes that package
+      // outright (`"!node_modules/@opencode/cli-windows-x64/**"` in
       // apps/desktop/package.json) and `openCodeBinaryManager.ts` maps win32/x64
       // to the baseline build, which does not require AVX2. Shipping the
       // non-baseline build would crash on pre-Haswell CPUs.
-      "win32-x64": "opencode-windows-x64-baseline",
+      "win32-x64": "@opencode/cli-windows-x64-baseline",
     },
   },
 ];

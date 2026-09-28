@@ -23,7 +23,7 @@ const buildFiles = pkg.build?.files ?? [];
 const REQUIRED_SHIPPING_PACKAGES = [
   "@anthropic-ai/claude-agent-sdk",
   "@openai/codex",
-  "opencode-ai",
+  "@opencode/cli",
   "@cursor/sdk",
   "node-pty",
 ];
@@ -146,7 +146,7 @@ test("the grep pattern spares the JS entry points that must ship", () => {
     );
   }
   // A bare name with no trailing slash must not match a longer sibling either.
-  assert.equal(pattern.test("./node_modules/opencode-linux-x64-extra/x"), false);
+  assert.equal(pattern.test("./node_modules/@opencode/cli-linux-x64-extra/x"), false);
 });
 
 // The release workflow captures this stdout straight into a shell variable under
@@ -169,17 +169,16 @@ test("running the script with no recognised flag fails loudly", () => {
 });
 
 // A prefix match on "@anthropic-ai/claude-agent-sdk" would swallow the SDK that
-// ADE calls query() on, and a prefix match on "opencode-" would swallow the
-// opencode-ai launcher. Both are exact-name misses by construction.
+// ADE calls query() on, and a prefix match on "@opencode/cli" would swallow the
+// @opencode/cli launcher. Both are exact-name misses by construction.
 test("matchesRuntimeFetchedToolPackage does not swallow the JS entry points", () => {
   assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@anthropic-ai/claude-agent-sdk/**"), false);
   assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@openai/codex/**"), false);
-  assert.equal(matchesRuntimeFetchedToolPackage("node_modules/opencode-ai/**"), false);
-  assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@opencode-ai/sdk/**"), false);
+  assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@opencode/cli/**"), false);
   assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@cursor/sdk-darwin-arm64/**"), false);
 
   assert.equal(matchesRuntimeFetchedToolPackage("node_modules/@openai/codex-darwin-arm64/**"), true);
-  assert.equal(matchesRuntimeFetchedToolPackage("!node_modules/opencode-windows-x64-baseline/**"), true);
+  assert.equal(matchesRuntimeFetchedToolPackage("!node_modules/@opencode/cli-windows-x64-baseline/**"), true);
   assert.equal(
     matchesRuntimeFetchedToolPackage("node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl/**"),
     true,

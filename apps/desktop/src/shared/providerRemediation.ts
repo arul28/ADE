@@ -103,7 +103,7 @@ export const PROVIDER_REMEDIATION = {
   },
   opencode: {
     displayName: "OpenCode",
-    installCommand: "npm install -g opencode-ai",
+    installCommand: "npm install -g @opencode/cli",
     loginCommand: "opencode auth login",
     docsUrl: "https://opencode.ai/",
   },

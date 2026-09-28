@@ -1,118 +1,184 @@
 # OpenCode integration
 
-How ADE drives OpenCode: which data home a server writes, how a turn is
-dispatched, how steering behaves, and the invariants that keep a wedged child
-session from looking healthy. Read this before changing
-`apps/desktop/src/main/services/opencode/**` or the OpenCode branch of
-`agentChatService.ts`.
+How ADE drives OpenCode 2.0: which server a chat uses, which data home it
+writes, how a turn maps to an OpenCode execution, how steering and the queue
+work, and how subagents, permissions, and questions reach ADE. Read this before
+changing `apps/desktop/src/main/services/opencode/**`, the OpenCode branch of
+`agentChatService.ts`, or `openCodeEventMapper.ts`.
+
+ADE pins OpenCode **2.0.18** exactly (`@opencode/cli`, `@opencode/client`).
+There is no 1.x code path.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/opencode/openCodeServerManager.ts` | Owns the `opencode serve` processes: lease kinds (`shared` / `dedicated`), the generated `OPENCODE_CONFIG_CONTENT` (ADE's `ade-plan`/`ade-edit`/`ade-full-auto`/`ade-helper` agents and provider keys), the ADE-owned XDG data/state/cache home, auth seeding, orphan recovery, and the launch spec per data home. |
-| `apps/desktop/src/main/services/opencode/openCodeRuntime.ts` | The SDK client boundary: session start (including legacy-home continuity), the `/event` stream, prompt-part construction, and the one-shot `runOpenCodeTextPrompt` helper. |
-| `apps/desktop/src/main/services/opencode/openCodeIdleProbe.ts` | Wraps the event stream: when it is quiet, asks `GET /session/status` and synthesizes an idle for sessions the server no longer reports busy. Bounded probe failures end the turn instead of waiting forever. |
-| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts` | Login/logout through the OpenCode server, plus ADE's encrypted key store. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | The turn loop: dispatch, the `AgentChatEvent` mapping, pending approvals/questions (parent and child), subagent lifecycle, and status. |
-| `apps/ade-cli/src/commands/openCodeCleanup.ts`, `apps/ade-cli/src/services/opencode/openCodeStoreMaintenance.ts` | `ade storage opencode`: dry-run/apply pruning of whole old sessions from an OpenCode store, with opt-in VACUUM. |
+| `apps/desktop/src/main/services/opencode/openCodeServer.ts` | The `opencode serve` processes: one per profile, password auth, the owned data home, the hot-reloaded config file, the shared event stream with reconnect, idle shutdown, orphan recovery (including the Windows process listing and the on-disk registry), and launch diagnostics. |
+| `apps/desktop/src/main/services/opencode/openCodeConfig.ts` | ADE's generated config in the native 2.0 shape: providers (ADE API keys, local providers, custom providers, preset providers), the `ade-plan` / `ade-edit` / `ade-full-auto` / `ade-helper` agents with ordered `permissions`, MCP servers, skills; and the profile a config belongs on. |
+| `apps/desktop/src/main/services/opencode/openCodeSession.ts` | Create or resume a chat session, attach ADE's instruction entry and shell environment, prompt files, the personal-store guard, and the one-shot helper prompt. |
+| `apps/desktop/src/main/services/chat/openCodeEventMapper.ts` | Pure mapping of one execution's content events (text, reasoning, tools, steps, usage, compaction, retries, tool images) to ADE chat events, and of stored messages to subagent transcript rows. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` (OpenCode 2.0 runtime block, `startOpenCodeSessionRuntime`) | The chat runtime: the persistent session listener, turn start and finish, inbox rows (steer/queue), permission asks, question forms, child sessions, reconnect reconciliation, server exit. |
+| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts` | Turn usage and cost from step tokens, and the account that paid. |
+| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts`, `openCodeInventory.ts` | Provider login through 2.0 integrations/credentials; the model list with a long-lived disk cache. |
 
-## Data homes
+## Servers and profiles
 
-ADE-managed servers write **ADE's owned data home**, not the user's personal
-OpenCode store: `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` are
-forced to `<ADE runtime root>/xdg-v1/{data,state,cache}`. The user's *config*
-still loads (project config and `~/.config/opencode` are untouched), and ADE's
-generated config merges last through `OPENCODE_CONFIG_CONTENT`.
+- A **profile** is a set of chats that can share one config. Every ordinary
+  lane chat, the model inventory, auth, and one-shot tasks use the `shared`
+  profile. Personal chats use `shared:personal` (they get no ADE skills). A
+  chat whose config must differ — its own MCP servers (CTO tools), a harness
+  preset provider, a strict MCP surface — gets a profile keyed by that content.
+- One `opencode serve --hostname=127.0.0.1 --port=<p>` runs per profile. The
+  shared server stays up for 10 minutes after its last lease; a per-chat
+  profile for 1 minute. There is no pool of per-chat servers and no model-list
+  server churn. The idle timer dies with its process, so both the Electron main
+  process and the brain (`ade serve` disposal) stop every server on exit.
+- Every server is password-protected: `OPENCODE_SERVER_PASSWORD` is random per
+  start, and the client sends Basic auth (user `opencode`). ADE never uses the
+  CLI's shared background service (`serve --service`,
+  `~/.local/state/opencode/service.json`).
+- Config reaches the server as a file named by `OPENCODE_CONFIG`
+  (`<runtime root>/config-ade/<hash>.json`), written atomically. OpenCode
+  watches and hot-reloads it, so a new API key or local model applies to a
+  running server. It layers over the user's global config
+  (`XDG_CONFIG_HOME/opencode`), so the user's own providers, agents, skills,
+  and MCP servers still load. An isolated profile points `XDG_CONFIG_HOME` at an
+  empty ADE directory and sets `OPENCODE_DISABLE_PROJECT_CONFIG=1`.
+- One `/api/event` subscription per server receives every session's events
+  (all directories) and fans them out. 2.0 streams do not replay or reconnect,
+  so the server loop resubscribes with backoff and tells listeners about the
+  gap; a chat then reconciles against `session.active` and `session.get`.
 
-- Why: OpenCode's `event` table is append-only and snapshots whole messages,
-  `summary.diffs[].patch` included. On one real machine it was 11.5 GB of a
-  12.5 GB store, with 621 rows over 1 MB and a largest row of 88 MB. ADE chats
-  were the writers. Restarting from a deleted store only regrows the same way.
-- Auth: the first launch copies the user's `<user data>/opencode/auth.json` into
-  the owned home (never overwriting an existing copy, so OAuth refresh in the
-  owned copy survives). Config-provided API keys from ADE's encrypted store flow
-  through `OPENCODE_CONFIG_CONTENT` as before.
-- Continuity: a chat whose persisted `providerSessionId` predates owned storage
-  exists only in the user's store. On resume, the owned home's 404 for that id
-  falls back to a **user-home server for that session** rather than creating a
-  fresh empty session. A session missing from both homes is recreated and logged
-  `opencode.session_recreated_missing`. New sessions never use the user home.
-- Pruning: `ade storage opencode` targets ADE's store by default (`--store user`
-  for the personal one), is a dry run unless `--apply`, deletes whole sessions
-  including their `event_sequence` row (which cascades the event log) exactly
-  like OpenCode's own `Session.remove`, and only shrinks the file with
-  `--vacuum` while no server is writing.
+## Data home
 
-## Turns and steering
+Servers write ADE's owned data home (`XDG_DATA_HOME/STATE/CACHE` under
+`<ADE_HOME>/opencode-runtime/xdg-v1`). OpenCode 2.0 uses the same default
+database path as 1.x and **migrates any v1 store it opens in place**, so ADE
+never starts OpenCode on the user's personal store. ADE's own earlier sessions
+in the owned store are migrated at the first 2.0 start and keep their ids.
 
-Turns are dispatched with OpenCode's legacy `session.promptAsync`
-(`/session/{id}/prompt_async`) and consumed from `/event`; the ADE
-`AgentChatEvent` contract is the boundary, and no OpenCode wire shape reaches the
-renderer.
+A chat whose persisted session exists only in the user's personal store (from
+before ADE owned a data home) stays readable from ADE's transcript but cannot
+take new turns (`OpenCodeSessionInPersonalStoreError`).
 
-**OpenCode is queue-only for active-turn messages**
-(`ACTIVE_TURN_DISPATCH_MODES.opencode = ["queue"]`, mirrored by iOS). The legacy
-runner has no drain for mid-turn input: a v2 `delivery: "steer"` admission lands
-in the server's `session_input` table and is never promoted by the loop that is
-actually running (the promotion code lives in the v2 runner, which the legacy
-path never calls). Marking such a row "Steered" was a lie — the model never read
-the message. The truthful behavior is staging: the message is delivered as the
-next turn at the turn boundary, labeled as sent after the turn.
+2.0 stores no event log (the 1.x `event` table held 98% of a 16 GB store), so
+ADE runs no retention or pruning.
 
-Re-enabling inline steering requires moving turns to the v2 runner
-(`POST /api/session/{id}/prompt` with `delivery: "steer"`, model/agent switched
-first). That migration is **not** a transport swap:
+Credentials: API keys ADE manages are passed in the generated config. OAuth
+providers are connected through the 2.0 integration flow into the owned store.
+2.0.18 does not import OAuth tokens from a 1.x `auth.json`; users sign in once.
+Every OAuth method 2.0.18 offers (OpenAI browser and headless, GitHub Copilot,
+xAI SuperGrok, OpenCode Console account, GitLab, Poe, DigitalOcean, Snowflake)
+starts in `auto` mode: a browser page or a device code ADE shows, with no code
+pasted back. `startOAuth` reads the provider from `integration.list`, which
+waits for the location's catalog; `integration.get` just after a server start
+reports real providers as missing. OpenCode Go has no OAuth method of its own:
+its models come with the opencode.ai account sign-in on the `opencode` provider
+(what `opencode auth login opencode` does; verified 2026-09-27, 33 Go models and
+a completed Go turn). The Go dialog signs in through that provider; a Go key
+stays an optional second method.
 
-- Legacy and v2 read models are disjoint (`message`/`part` vs
-  `session_message`/`session_input`), so an existing chat has no v2 history and
-  a v2 runner would answer from an empty context.
-- The v2 catalog does not read `OPENCODE_CONFIG_CONTENT`; providers and agents
-  must be present as a config file in a config home the v2 config service loads.
-- There is no per-prompt `system` on the v2 body; the legacy path passes ADE's
-  assembled system prompt directly.
-- The v2 stream has no `session.idle`; completion must come from
-  `/api/session/{id}/wait` plus `/api/session/active`.
+ADE names OpenCode's own services for users: the `opencode` provider (2.0 calls
+it "OpenCode Console") is **OpenCode Zen**, and `opencode-go` is **OpenCode Go**.
+Settings pins both above the provider catalog. Zen serves free models with no
+sign-in, so the inventory's `connected` is true for it before any login;
+`signedIn` (the integration has a connection) is what "Connected" means for a
+provider that offers a sign-in.
 
-Until all four are handled, the table must not advertise inline steering.
+## Turns
 
-## Child sessions, permissions, and status
+- A chat runtime listens to its session for its whole life. **One OpenCode
+  execution is one ADE turn.** `session.execution.started` opens it (ADE opens
+  its own turns before sending, so the prompt cannot race the event);
+  `session.execution.succeeded | failed | interrupted` settles it.
+- An execution ADE did not start — a background subagent finished and woke the
+  parent — becomes a turn with no user message, exactly like Claude and Codex.
+- Before a prompt, the runtime switches the session's agent (permissions) and
+  model (with the effort/Fast variant) only when they changed, and updates the
+  instruction entry when ADE's context changed.
+- A prompt OpenCode admitted but never ran is checked after 20 s against the
+  server rather than left on "Working".
+- If the server process exits, the open turn fails with a clear message and
+  the runtime is torn down with its session pointer kept; the next send starts a
+  new server and reopens the session.
 
-- A subagent is an OpenCode child session (`parentID` = the chat's session).
-  Child `permission.asked` / `question.asked` events are **admitted into the
-  parent chat's pending inputs** and attributed to the child. Dropping them was
-  what left a parent turn "running" for an hour while a child sat on an
-  unanswered prompt.
-- `full-auto` auto-approves `external_directory` asks whose literal patterns sit
-  inside `<project>/.ade` (which includes lane worktrees and ADE artifacts)
-  before any card exists — for child asks too.
-- A child parked on an ask reports `blockedReason` on its `subagent_progress`
-  snapshot and the session-level `awaitingInput` state, so `ade chat status`
-  returns `blocked` (exit 2). The child stays in the active tree (its status
-  remains `running`); the reason field is what distinguishes parked from
-  progressing, because the pane's snapshot reducer has no third lifecycle state.
-- OpenCode's `task` tool has no directory argument; the child inherits the
-  parent's directory, and the only path it reads is one the model typed. The
-  system prompt therefore states the worktree path verbatim and forbids
-  retyping, so a mistyped path cannot turn into an out-of-worktree ask.
+## Steering and the queue
 
-## Idle and liveness
+`ACTIVE_TURN_DISPATCH_MODES.opencode = ["inline", "queue"]` (iOS mirrors it).
 
-OpenCode's idle can be lost between SSE reconnections. While the stream is
-quiet, the probe asks the server for status: sessions missing from the map (or
-reported `idle`) get a synthetic idle. A `busy`/`retry` answer is a real
-decision and is waited on indefinitely — a long tool call must never be killed.
-A probe that fails outright or answers with only unusable statuses is bounded:
-after `probeFailureLimit` consecutive failures the turn ends with an explicit
-`session.error` instead of hanging. Ids that leave the wait set are forgotten so
-a resumed child can be synthesized again.
+- A message sent while a turn runs is admitted to OpenCode's session inbox:
+  "inline" with `delivery: "steer"` (delivered at the next step boundary),
+  "queue" with `delivery: "queue"` (delivered after the current reply). Both are
+  delivered **inside the running execution**.
+- OpenCode's inbox is the single source of truth. ADE's rows mirror it: a row
+  reads "Steering…" or queued until `session.inbox.delivered` (then "Steered")
+  or `session.inbox.cancelled`. An outcome that arrives before the prompt
+  request returns its inbox id is held and applied when the id arrives.
+- Cancel is `inbox.cancel`; "send now" is `inbox.update(delivery: "steer")`.
+- Stop (`stop_and_clear`) cancels the inbox rows, then interrupts. `stop_only`
+  keeps them, and OpenCode continues with them after the interrupt.
+- A steer reaches the model only at a step boundary. While a foreground
+  subagent runs, the parent is inside one step, so a steer waits for the child.
 
-## Subagent transcript times
+## System prompt and environment
 
-OpenCode messages carry `info.time.created`; the transcript mapping lifts it to
-`AgentChatClaudeSessionMessage.timestamp`. Codex items inherit their turn's
-`startedAt`; Claude's SDK object is read defensively. When no provider time
-exists the row is marked `provenance.timestampSynthetic` and the client hides the
-clock — the old `2026-01-01T00:00:00Z` placeholder rendered as "7:00 PM Dec 31"
-in negative UTC offsets. Ordering still uses the placeholder; only display is
-suppressed.
+- The agent's `system` text is the first block of the real system prompt. ADE's
+  per-chat context (worktree, lineage, activity guidance) is the session
+  instruction entry `ade`, which OpenCode puts in the system prompt as
+  `<context key="ade">`; a later change reaches the model as a context message
+  at the next step, which keeps the prompt cache stable.
+- 2.0 has no OpenCode base prompt; `AGENTS.md` and skills are included. It reads
+  only `AGENTS.md` (no `CLAUDE.md` fallback) and runs no LSP.
+- `session.environment` sets the shell environment of the session's commands
+  to ADE's agent environment, so `ade` resolves and knows the chat, lane, and
+  workspace.
+
+## Permissions and questions
+
+- Rules are ordered and the last match wins, after OpenCode's base policy
+  (`* allow`, asks for external directories and `.env` reads). `ade-full-auto`
+  is `* allow`; `ade-plan` denies edits, web search, and skills and
+  asks for shell; `ade-edit` asks for edits and shell; `ade-helper` denies all
+  side effects.
+- Agent rules stop at the agent: a child runs under its own agent (`general`
+  allows edits). So ADE also puts the mode's rules on the session itself
+  (`session.create` / `session.update` `permissions`, `openCodeSessionRulesFor`),
+  and a child session inherits those. `config-toml` clears them.
+- `permission.asked` (parent or child) becomes an ADE approval card, attributed
+  to the subagent for a child ask, with the child marked blocked. The pending
+  entry is keyed by the card's item id (the tool call id), which is what an
+  answer carries back. The reply goes to `permission.reply` with the asking
+  session's id and the request id. "Allow always" saves a
+  project-scoped allow rule in OpenCode, as OpenCode does.
+- The `question` tool arrives as `form.created`. Its fields map to ADE's
+  structured question card (string with options → single choice, multiselect →
+  multiple choice, `custom` → free text, boolean → yes/no); the answer goes to
+  `session.form.reply` keyed by field `key`. A form answered elsewhere cancels
+  only its own card.
+
+## Subagents
+
+- The `subagent` tool starts a child session; its `session.created` carries
+  `parentID` (nested children are tracked too). The child card links to the
+  tool call that started it and carries the call's description.
+- Children report usage from their steps and settle on their own execution
+  events. A background child keeps running after the parent's turn ends; its
+  completion starts a new parent turn.
+- Drill-in reads the child's stored messages (`message.list`) and maps each
+  part to a formed chat event.
+
+## Fork and handoff
+
+- Local fork: `session.fork`.
+- Cross-machine fork: `session.export` (sanitized) on the source; on the
+  destination `session.import`, then `session.fork` and `session.move` to the
+  destination lane, then the runtime opens on the fork.
+
+## Known boundaries
+
+- A model change still starts a fresh OpenCode session with ADE's
+  reconstruction context, as before.
+- `session.wait`, instruction entries, export/import, and `generate` are marked
+  experimental in 2.0.18; ADE depends on events more than on `wait`.
+- OpenCode issue [#49765](https://github.com/anomalyco/opencode/issues/49765):
+  a subagent ignores its agent's configured model in 2.0.8+.

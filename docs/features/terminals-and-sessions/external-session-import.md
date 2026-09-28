@@ -46,7 +46,7 @@ ADE first learns it.
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from `CODEX_HOME/state_5.sqlite` (default `~/.codex`): top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when the thread store is unusable. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
-| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
+| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. Never shells out to the CLI and never starts a 2.0 server on that store. |
 | `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the one Pi session store that ADE chat and tracked Pi terminals also use. |
 | `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the four ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
@@ -71,7 +71,7 @@ ADE first learns it.
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions`, `work.getExternalSessionDetail` (the phone preview: the service's `getDetail` with 120-event pages, mobile-wire compacted), and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/detail/import payloads and results. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | The desktop Import session dialog: a fixed-size split view (`LaneDialogShell`, up to 1180 × 860 px). Owns the scan, the filters, the selection, the target lane, the surface choice, and the import run. Asks for 200 rows per provider to match the service's project-scope discovery window. A provider that fails its scan leaves a muted per-provider notice ("OpenCode CLI not found…") instead of an unexplained empty list, and only a total scan failure becomes the blocking error state. See [Desktop dialog](#desktop-dialog). |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | The desktop Import session dialog: a fixed-size split view (`LaneDialogShell`, up to 1180 × 860 px). Owns the scan, the filters, the selection, the target lane, the surface choice, and the import run. Asks for 200 rows per provider to match the service's project-scope discovery window. A provider that fails its scan leaves a muted per-provider notice ("Droid CLI not found…") instead of an unexplained empty list, and only a total scan failure becomes the blocking error state. See [Desktop dialog](#desktop-dialog). |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportTopBar.tsx` | The dialog's top bar: provider chips, the lane filter (`LaneCombobox` with per-lane counts and "Other folders"), search, refresh, and the computer (source) picker. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionList.tsx` | The left session list, grouped by date ("Today", "Yesterday", weekday, date). Keyboard moves keep the selected row in view and move roving focus. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionPreview.tsx` | The right pane: a who/where header, then the conversation rendered read-only by `AgentChatMessageList` in its own scroll box that opens at the bottom. |
@@ -115,12 +115,11 @@ rollout inventory (see "Codex thread store" below). The cheap JSONL read is boun
 `JSONL_SCAN_BYTE_LIMIT` and `JSONL_SCAN_LINE_LIMIT`; meaningful user prompt
 counts are only computed for files under `MESSAGE_COUNT_MAX_BYTES`.
 Provider metadata, assistant/tool rows, local-command wrappers, and duplicate
-Codex storage representations do not inflate `messageCount`. OpenCode is the
-exception because its supported interface is the CLI list command, so discovery
-runs `opencode session list --pure --format json --max-count <limit>` in the
-requested cwd, project root, or home directory. The list schema does not expose
-a preview or prompt count, and discovery deliberately avoids an expensive
-per-session `opencode export` fan-out. The four ACP discoverers read a history
+Codex storage representations do not inflate `messageCount`. OpenCode reads
+its user-message count straight out of the store's own SQL query
+(`userMessageCount`), so no separate pass is needed, but it exposes no
+preview text: discovery deliberately avoids a per-session read of the
+message/part rows just to render a snippet. The four ACP discoverers read a history
 file whole when it is at most 768 KB, so the prompt count is exact. A larger
 file gets a bounded head and tail and a null count, the same contract as the
 other discoverers.
@@ -198,8 +197,8 @@ Titles and previews are deliberately separate:
   `sessionId` lookup) and skips `.jsonl.zst` rollouts entirely. The four ACP
   discoverers derive it from the head + tail window they already read. Cursor,
   Droid, and OpenCode leave it absent rather than paying for new I/O — OpenCode
-  in particular must not gain a per-session `opencode export` fan-out. (The
-  preview reads the full conversation separately; see
+  in particular must not read a session's message/part rows just to preview
+  it. (The preview reads the full conversation separately; see
   [Conversation events](#conversation-events).)
 
 `messages` is **optional and nullable**, and must stay that way. The iOS mirror
@@ -515,8 +514,8 @@ keyed to that folder. The resume selector per ACP provider is:
 
 When an import does not explicitly override model or permission mode, the
 resume command preserves provider state. ADE does not inject Claude plan mode,
-Cursor `--model auto`, Droid spec/off settings, or an OpenCode ask-policy
-config merely because the import UI omitted an override.
+Cursor `--model auto`, Droid spec/off settings, or an OpenCode ADE agent
+merely because the import UI omitted an override.
 
 Fork commands mostly reuse the same builder and provider-specific flags:
 
@@ -595,8 +594,10 @@ runtime opens the pointer from the store that the CLI writes:
 
 - Droid: `droidSdkSessionId`, opened by the Droid SDK `resumeSession` from
   `~/.factory/sessions`.
-- OpenCode: `providerSessionId`, opened by `session.get` on the user-env
-  server, which uses the same data directory as the CLI.
+- OpenCode: `providerSessionId`, opened by `session.get` on ADE's own shared
+  server. ADE's server never opens the user's personal data directory, so a
+  pointer that lives only there stays readable from the transcript but cannot
+  take a new turn (`OpenCodeSessionInPersonalStoreError`).
 - Pi: `piSessionId`, opened by `SessionManager.list(cwd)` over the one Pi
   session store that chat and CLI share.
 - Copilot: `acpSessionId`, opened by `session/load` on `copilot --acp`, which
@@ -696,7 +697,7 @@ Converters and their fidelity:
 | Claude, Droid | The session JSONL (same message shape) | Text, tool calls, tool results (failed status kept). Thinking blocks are dropped, as on import. Shares `claudeRecordsToContentEvents` with the import. |
 | Codex | The rollout JSONL | Three layouts: current (`event_msg` `item_completed` items, plus `function_call`s no item covers, such as `spawn_agent`), legacy (`user_message` / `agent_message` plus `response_item` tool calls), and bare (`response_item` only). Commands, file changes, reasoning, and MCP tool calls map through `codexTurnsToContentEvents`. The code-mode `exec` wrapper and its `wait` polls are dropped because the commands and patches they ran are already items. |
 | Cursor | `agent-transcripts/<id>/<id>.jsonl`, else `store.db` | From the transcript: text and tool calls. The transcript has no timestamps, tool ids, or tool results, so each call gets an empty completed result. A chat known only through `store.db` goes through `loadCursorStorePage`: user text, assistant text, readable reasoning, tool calls, and tool results (failed status kept), plus a `context_compact` marker where a summarization replaced earlier turns. The cursor's `end` is a message index (the store's list only grows at its end), and a page reads back one message at a time until it holds the page's events or bytes. A message blob over 8 MB (`CURSOR_STORE_MAX_MESSAGE_BYTES`) is left out with an info notice ("One message (N MB) was left out…") instead of silently vanishing. Cursor's `<user_info>` environment message is dropped. |
-| OpenCode | `opencode export --pure <id>` | The full export. Stdout goes to a temp file, because OpenCode 1.18 exits before a piped stdout drains and cuts the JSON at 128 KB. The file is created exclusive and owner-only (`0600`), since it holds a whole session and the temp folder can be shared. 15 s timeout, 96 MB cap. A timeout kills the process tree (a Windows `opencode.cmd` shim runs under `cmd.exe`) and waits up to 2 s for it to close before the file is deleted. |
+| OpenCode | The user's own OpenCode SQLite store, read-only (`loadOpenCodeStoreEvents`) | Every message/part row for the session, up to a 96 MB cap that drops the oldest messages first. Handles both a 1.x store's `session`/`message`/`part` shape and a 2.0 store's `session_v2`/`session_message` shape. Falls back to the sampled preview messages when the store or the session cannot be read. |
 | Pi | The session JSONL | Text, thinking, tool calls, and tool results. |
 | Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. User rows that Qwen injected (a `provenance` other than `real_user`) are dropped, the same test discovery uses (`isQwenPromptRecord`). Verified only for text turns; tool shapes follow the Gemini CLI format. |
 | Grok | `chat_history.jsonl` | Text, `tool_calls`, tool results, and reasoning summaries. Injected (`synthetic_reason`) user rows are dropped. Rows have no timestamps. |
@@ -1030,21 +1031,25 @@ cwd-locked.
 
 ### OpenCode
 
-OpenCode discovery uses `opencode session list --pure --format json`; ADE does not
-walk OpenCode's private storage. Resume and fork commands use OpenCode's
-`--session`, `--continue`, and `--fork` flags.
+OpenCode discovery (`openCodeStore.ts`) reads the user's own OpenCode SQLite
+store directly, read-only, and never shells out to the CLI: a piped
+`opencode session list` truncated its own stdout at 64 KiB, and ADE never
+starts a 2.0 server on the user's store (2.0 migrates a v1 database in place
+the moment it opens one, and the user's own install may still be 1.x). Two
+schemas are handled — a 1.x store's `session`/`message`/`part` tables, and a
+2.0 store's `session_v2`/`session_message` — because a migrated store keeps
+both, and only `session_v2` lists every session. `ADE_BACKGROUND_TASK_TITLES`
+filters out ADE's own background prompts (terminal summaries, commit
+messages, chat titles, …), which otherwise dominate the user's OpenCode
+history.
 
-A missing `opencode` binary throws rather than returning `[]`. An empty array is
-exactly what "no sessions yet" looks like, so the old behavior showed a machine
-without OpenCode installed an empty list and no reason for it. The service
-propagates that error to a caller that asked only for OpenCode — which is every
-call the desktop browser makes, since it scans one provider per request — and
-logs `external_sessions.discovery_failed` for a mixed-provider scan instead of
-failing the whole list. Note that binary resolution also searches HOME-derived
-CLI directories, so a test that wants "OpenCode is not installed" has to
-redirect `HOME` as well as `PATH`. Sessions are per-project by cwd,
-so ADE resumes or forks in the source project cwd rather than transplanting
-them into another lane cwd.
+No store (OpenCode never ran on this machine) or an unrecognized schema reads
+as an empty list, never an error — resume and fork commands still use
+OpenCode's `--session`, `--continue`, and `--fork` flags on a tracked launch,
+which `attachOpenCodeTerminal` then points at ADE's own shared server (see
+[OpenCode CLI: attach to ADE's server](README.md#opencode-cli-attach-to-ades-server)).
+Sessions are per-project by cwd, so ADE resumes or forks in the source
+project cwd rather than transplanting them into another lane cwd.
 
 ### Pi
 

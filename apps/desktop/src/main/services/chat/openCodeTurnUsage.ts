@@ -4,7 +4,8 @@ import { isLocalProviderFamily, openCodeRegistryIdFor } from "../../../shared/mo
 import { urlOriginOnly } from "../../../shared/remoteLoopbackUrl";
 import type { AgentChatEvent, AgentChatUsageAccount } from "../../../shared/types/chat";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
-import { openCodeDataDirs } from "../shared/providerConfigHomes";
+import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
+import { readOpenCodeCredentials } from "../opencode/openCodeCredentials";
 import { asRecord, evictOldestEntries, finiteNumberOrNull, positiveCountOrZero } from "../shared/utils";
 import { contextPercentage, liveContextUsageEvent } from "./liveContextUsageEvent";
 
@@ -189,7 +190,7 @@ export function resolveOpenCodeServedModel(
 
 // ── Who paid for the turn ─────────────────────────────────────────────────
 
-/** Only the non-secret fields of one `auth.json` entry. */
+/** Only the non-secret fields of one stored credential. */
 export type OpenCodeAuthEntry = { type: string | null; accountId: string | null };
 
 const OPENCODE_PLAN_PROVIDERS = new Set(["opencode", "opencode-go"]);
@@ -197,8 +198,9 @@ const OPENCODE_PLAN_PROVIDERS = new Set(["opencode", "opencode-go"]);
 /**
  * Maps OpenCode's credential for the upstream provider to an account. Local
  * servers are free and named by endpoint; OpenCode Zen/Go are OpenCode's own
- * plans; everything else is whatever `auth.json` says the credential is.
- * A provider with no entry (a key from the environment or config) is `unknown`.
+ * plans; everything else is whatever the stored credential says it is. A
+ * provider with no credential (a key from the environment or ADE's config) is
+ * `unknown`.
  */
 export function resolveOpenCodeUsageAccount(args: {
   providerID: string;
@@ -228,7 +230,7 @@ export function resolveOpenCodeUsageAccount(args: {
     };
   }
   const type = args.auth?.type?.toLowerCase() ?? null;
-  const kind = type === "api" ? "api_key" : type === "oauth" ? "subscription" : "unknown";
+  const kind = type === "key" ? "api_key" : type === "oauth" ? "subscription" : "unknown";
   return {
     provider: "opencode",
     kind,
@@ -238,33 +240,23 @@ export function resolveOpenCodeUsageAccount(args: {
 }
 
 /**
- * Parses `auth.json` keeping only `type` and `accountId` per provider. Token
- * fields are never copied out of the parsed object.
+ * The credential per integration from an OpenCode 2.0 store: the active one,
+ * else the most recently updated. Token fields never leave SQLite.
  */
-export function parseOpenCodeAuthEntries(raw: string): Map<string, OpenCodeAuthEntry> {
+export function readOpenCodeAuthEntries(dbPath: string): Map<string, OpenCodeAuthEntry> {
   const entries = new Map<string, OpenCodeAuthEntry>();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return entries;
-  }
-  const record = asRecord(parsed);
-  if (!record) return entries;
-  for (const [providerID, value] of Object.entries(record)) {
-    const entry = asRecord(value);
-    if (!entry) continue;
-    const type = typeof entry.type === "string" && entry.type.trim() ? entry.type.trim() : null;
-    const accountId = typeof entry.accountId === "string" && entry.accountId.trim() ? entry.accountId.trim() : null;
-    entries.set(providerID, { type, accountId });
+  for (const credential of readOpenCodeCredentials(dbPath)) {
+    // Rows arrive active-first, newest-first, so the first one wins.
+    if (entries.has(credential.integrationId)) continue;
+    entries.set(credential.integrationId, { type: credential.type, accountId: credential.accountId });
   }
   return entries;
 }
 
 /**
  * Email of the OpenCode Zen/Go account, from the tiny `account` table. The
- * database itself can be tens of gigabytes, so this touches nothing else and
- * never selects a token column.
+ * database itself can be large, so this touches nothing else and never selects
+ * a token column.
  */
 export function readOpenCodePlanEmail(dbPath: string): string | null {
   if (!fs.existsSync(dbPath)) return null;
@@ -297,37 +289,29 @@ export function readOpenCodePlanEmail(dbPath: string): string | null {
 const OPENCODE_ACCOUNT_CACHE_TTL_MS = 5 * 60_000;
 /** A local endpoint is ADE's own setting, so a change shows up sooner. */
 const OPENCODE_LOCAL_ENDPOINT_TTL_MS = 60_000;
-/** Distinct OpenCode data homes remembered at once (the user's, plus isolated servers). */
+/** Distinct OpenCode data homes remembered at once (the owned one, plus isolated servers). */
 const OPENCODE_ACCOUNT_CACHE_MAX_HOMES = 8;
 
 type TimedValue<T> = { at: number; value: T };
 
 /**
- * Per-provider account lookup with a cache, so a turn never re-reads
- * `auth.json`, the database, or ADE's config. A re-login shows up within the
- * TTL.
+ * Per-provider account lookup with a cache, so a turn never re-reads the
+ * database or ADE's config. A re-login shows up within the TTL.
  *
  * `dataDirs` on a call names the data home of the OpenCode server that ran the
- * turn; without it `openCodeDataDirs()` is read, which leads with ADE's owned
- * store and falls back to the user's for a legacy session re-opened on its
- * original home.
+ * turn; without it ADE's owned store is read. ADE never runs a turn on the
+ * user's personal store, so that store is never consulted.
  */
 export function createOpenCodeUsageAccountResolver(options: {
   dataDirs?: () => string[];
   /** The endpoint ADE hands OpenCode for a local server (`lmstudio`, `ollama`). */
   localEndpoint?: (providerID: string) => string | null;
-  readText?: (filePath: string) => string | null;
+  readAuthEntries?: (dbPath: string) => Map<string, OpenCodeAuthEntry>;
   readPlanEmail?: (dbPath: string) => string | null;
   now?: () => number;
 } = {}): (args: { providerID: string; dataDirs?: readonly string[] }) => AgentChatUsageAccount {
-  const defaultDataDirs = options.dataDirs ?? (() => openCodeDataDirs());
-  const readText = options.readText ?? ((filePath: string) => {
-    try {
-      return fs.readFileSync(filePath, "utf8");
-    } catch {
-      return null;
-    }
-  });
+  const defaultDataDirs = options.dataDirs ?? (() => [resolveAdeOpenCodeStoreDir()]);
+  const readAuthEntries = options.readAuthEntries ?? readOpenCodeAuthEntries;
   const readPlanEmail = options.readPlanEmail ?? readOpenCodePlanEmail;
   const now = options.now ?? Date.now;
   const authCache = new Map<string, TimedValue<Map<string, OpenCodeAuthEntry>>>();
@@ -347,8 +331,8 @@ export function createOpenCodeUsageAccountResolver(options: {
   const authEntries = (dirs: readonly string[]): Map<string, OpenCodeAuthEntry> =>
     cached(authCache, dirs.join("\0"), OPENCODE_ACCOUNT_CACHE_TTL_MS, () => {
       for (const dir of dirs) {
-        const raw = readText(path.join(dir, "auth.json"));
-        if (raw != null) return parseOpenCodeAuthEntries(raw);
+        const entries = readAuthEntries(path.join(dir, "opencode.db"));
+        if (entries.size) return entries;
       }
       return new Map<string, OpenCodeAuthEntry>();
     });

@@ -26,9 +26,10 @@ export default defineConfig({
   // Electron provides the "electron" module at runtime; bundling the npm package breaks it.
   // node-pty is native and must be resolved at runtime for Electron.
   external: ["electron", "node-pty", "@cursor/sdk", "@factory/droid-sdk"],
-  // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
+  // @opencode/client is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
-  noExternal: ["@opencode-ai/sdk", /^@opencode-ai\/sdk\/v2(?:\/.*)?$/],
+  // It is a devDependency, so neither it nor its `effect` dependency ships.
+  noExternal: [/^@opencode\/client(?:\/.*)?$/],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.

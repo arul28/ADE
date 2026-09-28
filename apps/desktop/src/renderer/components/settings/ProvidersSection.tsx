@@ -483,8 +483,15 @@ export function ProvidersSection({
     // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
     // the 30s runtime budget; OpenCode's Re-check still refreshes it.
     void (async () => {
-      await refreshStatus({ force: forceRefreshOnMount });
+      const next = await refreshStatus({ force: forceRefreshOnMount });
       void loadAuthMethods();
+      // No cached OpenCode catalog (first run, or a cache from an older
+      // layout): without one probe the provider list is only the fallback
+      // names, and providers such as OpenCode Console cannot be found.
+      if (next?.opencodeBinaryInstalled && !next.opencodeProviders?.length) {
+        await refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+        void loadAuthMethods();
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceRefreshOnMount]);
@@ -628,6 +635,7 @@ export function ProvidersSection({
         name: patch.name ?? prev?.name ?? inventory?.name ?? apiSpec?.label ?? prettifyProviderId(id),
         methods,
         connected: patch.connected ?? prev?.connected ?? inventory?.connected === true,
+        signedIn: patch.signedIn ?? prev?.signedIn ?? inventory?.signedIn === true,
         hasKey: hasKeyFor(id) || Boolean(patch.credentialSource ?? prev?.credentialSource ?? inventory?.credentialSource),
         modelCount: patch.modelCount ?? prev?.modelCount ?? inventory?.modelCount,
         envVars: patch.envVars
@@ -650,9 +658,12 @@ export function ProvidersSection({
 
     for (const p of opencodeProviders) {
       upsert(p.id, {
-        name: p.name,
+        // OpenCode 2.0 calls its own model service "OpenCode Console"; users
+        // know it as Zen, and the Console is only the account behind it.
+        name: p.id === "opencode" ? "OpenCode Zen" : p.name,
         modelCount: p.modelCount,
         connected: p.connected,
+        signedIn: p.signedIn === true,
         envVars: p.envVars,
       });
     }
@@ -721,6 +732,14 @@ export function ProvidersSection({
     () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
     [detailProviderId, openCodeCatalog],
   );
+  // OpenCode Go has no sign-in of its own; it comes with the opencode.ai
+  // account sign-in on the `opencode` (Zen) provider.
+  const openCodeGoSignIn = useMemo(() => {
+    if (detailProvider?.id !== "opencode-go") return undefined;
+    const zen = openCodeCatalog.find((p) => p.id === "opencode");
+    if (!zen?.methods.some((m) => m.type === "oauth")) return undefined;
+    return { providerId: zen.id, providerName: zen.name, methods: zen.methods };
+  }, [detailProvider?.id, openCodeCatalog]);
   const openProviderDetail = useCallback((id: string) => {
     // Always use the unified provider modal (OAuth + API key), including Kimi.
     setDetailProviderId(id);
@@ -1247,6 +1266,7 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
+          signInVia={openCodeGoSignIn}
           keySource={apiKeySources.get(detailProvider.id)
             ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}

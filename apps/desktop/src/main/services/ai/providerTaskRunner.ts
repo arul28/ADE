@@ -17,7 +17,7 @@ import {
 } from "./acpExecutables";
 import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
-import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
+import { runOpenCodeTextPrompt } from "../opencode/openCodeSession";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
@@ -560,9 +560,8 @@ async function runOpenCodeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTa
   const timeoutHandle = setTimeout(() => controller.abort(new Error(`OpenCode task timed out after ${timeoutMs}ms.`)), timeoutMs);
   try {
     const result = await runOpenCodeTextPrompt({
+      config: { projectConfig: args.projectConfig },
       directory: args.cwd,
-      title: `ADE ${args.feature}`,
-      projectConfig: args.projectConfig,
       modelDescriptor: args.descriptor,
       prompt: appendStructuredOutputInstruction(args.prompt, args.jsonSchema),
       system: args.system,

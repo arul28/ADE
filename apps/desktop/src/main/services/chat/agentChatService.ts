@@ -56,7 +56,6 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
-import { hasNonEmptyRecord } from "../../../shared/agentObservationNormalizers";
 import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
@@ -71,11 +70,6 @@ import {
   mapClaudeStructuredActivityBlock,
   type ClaudeStructuredActivityState,
 } from "./claudeStructuredActivity";
-import {
-  isOpenCodeImageGenerationToolName,
-  mapOpenCodeImageAttachment,
-  mapOpenCodeImagePart,
-} from "./openCodeStructuredActivity";
 import {
   isCorruptThinkingTranscriptError,
   repairClaudeResumeTranscript,
@@ -248,7 +242,6 @@ import {
   claudeMessageCitationSourceRefs,
   claudeWebToolSourceRefs,
   codexMemoryCitationSourceRefs,
-  openCodeWebToolSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -288,9 +281,6 @@ import {
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
-  buildOpenCodeLiveContextUsage,
-  createOpenCodeTurnUsage,
-  recordOpenCodeStepFinish,
   resolveOpenCodeServedModel,
 } from "./openCodeTurnUsage";
 import {
@@ -908,27 +898,40 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/openCodeIdleProbe";
-import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
 import {
   createLaneAppleDeviceLookup,
   resolveLaneAppleDeviceDirective,
   type LaneAppleDeviceLookup,
 } from "./laneAppleDeviceDirective";
+import type { OpenCodeEvent } from "@opencode/client";
 import {
-  buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
-  openCodeEventStream,
-  openCodePartUpdatedDelta,
-  resolveOpenCodeExecutablePath,
-  resolveOpenCodeModelSelection,
-  startOpenCodeSession,
+  openCodeSessionRulesFor,
+  PERSONAL_OPENCODE_PROFILE,
+  resolveOpenCodeModelRef,
   type DiscoveredLocalModelEntry,
+  type OpenCodeAgentProfile,
+} from "../opencode/openCodeConfig";
+import { acquireOpenCodeServer, SHARED_OPENCODE_PROFILE } from "../opencode/openCodeServer";
+import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import {
+  applyOpenCodeSessionContext,
+  buildOpenCodePromptFiles,
+  isOpenCodeTaggedError,
+  OpenCodeSessionInPersonalStoreError,
+  startOpenCodeChatSession,
+  type OpenCodeModelRef,
   type OpenCodePromptFile,
-  type OpenCodeQuestionInfo,
   type OpenCodeSessionHandle,
-} from "../opencode/openCodeRuntime";
+} from "../opencode/openCodeSession";
+import {
+  createOpenCodeTurnMapper,
+  mapOpenCodeMessagesToTranscript,
+  openCodeEventSessionId,
+  type OpenCodeStructuredError,
+  type OpenCodeTurnMapper,
+} from "./openCodeEventMapper";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
@@ -2643,111 +2646,34 @@ function isAdeBundledSkillSlashCommand(command: { name: string }): boolean {
 
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
-  permissionId: string;
-  protocol?: "legacy" | "v2";
+  requestId: string;
+  /** Session that owns the ask: the chat's own, or a child (subagent) session. */
+  sessionId: string;
   request?: PendingInputRequest;
-  /**
-   * Session that owns the ask. Absent means the chat's primary session. Child
-   * (subagent) asks carry their own session id, and the legacy
-   * `permission.respond` endpoint is keyed by it.
-   */
-  sessionId?: string;
 };
 
-/** Stable id for one OpenCode todo entry, which carries no id of its own. */
-function openCodeTodoId(todo: unknown, index: number): string {
-  const candidate = (todo as { id?: unknown } | null | undefined)?.id;
-  return typeof candidate === "string" && candidate.trim().length
-    ? candidate.trim()
-    : `todo-${index}`;
-}
-
-/**
- * The pre-`permission.asked` approval event.
- *
- * OpenCode 1.18.31 — the version ADE pins and bundles — publishes only
- * `permission.asked` and `permission.replied`; `permission.updated` is gone from
- * both its source and the current SDK types. But `resolveOpenCodeBinaryPath`
- * falls back to a *user-installed* binary when the tools cache and the bundle
- * both miss, and `ADE_DISABLE_BUNDLED_OPENCODE=1` selects one outright, so an
- * older install can still be the server ADE is talking to. Dropping this handler
- * would leave those users' approvals unanswered forever. It is declared here
- * rather than narrowed from the event union because the union no longer contains
- * it.
- */
-type LegacyOpenCodePermissionUpdatedEvent = {
-  type: "permission.updated";
-  properties: {
-    id: string;
-    type: string;
-    sessionID: string;
-    title: string;
-    callID?: string;
-    metadata: Record<string, unknown>;
-  };
+/** An OpenCode question (`question` tool) waiting on ADE's question card. */
+type PendingOpenCodeForm = {
+  formId: string;
+  sessionId: string;
+  fieldKeys: string[];
 };
 
-function asLegacyOpenCodePermissionUpdated(
-  event: { type: string },
-): LegacyOpenCodePermissionUpdatedEvent | null {
-  if (event.type !== "permission.updated") return null;
-  const properties = (event as { properties?: unknown }).properties;
-  if (!properties || typeof properties !== "object") return null;
-  const record = properties as Record<string, unknown>;
-  if (typeof record.id !== "string" || typeof record.sessionID !== "string") return null;
-  return {
-    type: "permission.updated",
-    properties: {
-      id: record.id,
-      sessionID: record.sessionID,
-      type: typeof record.type === "string" ? record.type : "",
-      title: typeof record.title === "string" ? record.title : "",
-      ...(typeof record.callID === "string" ? { callID: record.callID } : {}),
-      metadata: (record.metadata && typeof record.metadata === "object"
-        ? record.metadata
-        : {}) as Record<string, unknown>,
-    },
-  };
-}
-
 /**
- * Answer one pending OpenCode approval.
- *
- * The two protocols are different endpoints, not different spellings of one:
- * `permission.asked` carries a request id answered at `/permission/{id}/reply`,
- * while the legacy `permission.updated` flow is keyed by session + permission id
- * at `/session/{id}/permissions/{permissionID}`. Both are reachable from the v2
- * client. Routing every reply through here keeps teardown, interrupt, and the
- * user-facing decision path on one implementation — they had drifted onto
- * different call shapes before, and only the user-facing one had `throwOnError`.
+ * Answer one pending OpenCode permission ask. OpenCode 2.0 keys a reply by
+ * the asking session and the request id; a child's ask is answered with the
+ * child's session id, or OpenCode keeps waiting.
  */
 async function replyToOpenCodePendingApproval(
   handle: OpenCodeSessionHandle,
   pending: PendingOpenCodeApproval,
   reply: "once" | "always" | "reject",
 ): Promise<void> {
-  if (pending.protocol === "v2") {
-    await handle.client.permission.reply(
-      {
-        requestID: pending.permissionId,
-        directory: handle.directory,
-        reply,
-      },
-      { throwOnError: true },
-    );
-    return;
-  }
-  await handle.client.permission.respond(
-    {
-      // A child-session ask belongs to the child, not the chat's primary
-      // session; answering with the parent's id leaves OpenCode waiting.
-      sessionID: pending.sessionId ?? handle.sessionId,
-      permissionID: pending.permissionId,
-      directory: handle.directory,
-      response: reply,
-    },
-    { throwOnError: true },
-  );
+  await handle.client.permission.reply({
+    sessionID: pending.sessionId,
+    requestID: pending.requestId,
+    decision: reply,
+  });
 }
 
 /** Best-effort rejection used by teardown and interrupt, where failures are ignorable. */
@@ -2758,84 +2684,78 @@ async function rejectOpenCodePendingApproval(
   await replyToOpenCodePendingApproval(handle, pending, "reject");
 }
 
+
 /**
- * Whether every external-directory pattern names somewhere inside the
- * project's own `.ade` state.
- *
- * The blocked ask in the test drive was `external_directory:
- * /Users/<user>/Projects/ADE/.ade/*` — the observations, artifacts and cache
- * the mac-desktop commands read and write. Those paths are outside the lane
- * worktree (the lane lives under `<project>/.ade/worktrees/<lane>`), so
- * OpenCode's default asks, and full-auto never answered: the chat sat blocked
- * on a prompt for its own workspace.
- *
- * Only literal paths with an optional trailing glob are accepted. A pattern
- * with wildcards in the middle cannot be proven inside the root without a glob
- * engine, and guessing it allowed is how a rule meant for `.ade/cache` ends up
- * covering `~/.ssh`. Anything unproven keeps the approval card.
+ * One OpenCode execution as an ADE turn. OpenCode runs an execution until its
+ * agent loop idles, delivering every steered or queued message on the way, so
+ * the turn spans all of them.
  */
-export function isOpenCodeExternalDirectoryInsideAdeRoot(
-  projectRoot: string,
-  patterns: readonly string[],
-): boolean {
-  const adeRoot = path.resolve(projectRoot, ".ade");
-  const normalizedPatterns = patterns
-    .map((pattern) => pattern.trim())
-    .filter((pattern) => pattern.length > 0);
-  if (!normalizedPatterns.length) return false;
-  return normalizedPatterns.every((pattern) => {
-    const literal = pattern.replace(/\/\*\*$|\/\*$|\*$/, "");
-    if (/[*?[\]{}]/.test(literal)) return false;
-    const absolute = path.isAbsolute(literal)
-      ? path.resolve(literal)
-      : path.resolve(projectRoot, literal);
-    const relative = path.relative(adeRoot, absolute);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-  });
-}
+type OpenCodeActiveTurn = {
+  turnId: string;
+  /** "ade": ADE sent the prompt. "opencode": OpenCode started it (a background child finished). */
+  origin: "ade" | "opencode";
+  mapper: OpenCodeTurnMapper;
+  startedAt: number;
+  /** The model ADE asked for, to name a served-model fallback in `done`. */
+  requestedModel: { providerID: string; modelID: string };
+  laneDirectiveKey: string | null;
+  /** Set once OpenCode reports the execution started; a prompt that never starts is failed. */
+  executionStarted: boolean;
+  /** Resolves when the turn has been settled (done emitted). */
+  settled: Promise<void>;
+  settle: () => void;
+};
+
+/** An ADE row for a message admitted to OpenCode's inbox during a turn. */
+type OpenCodeInboxRow = QueuedSteer & {
+  inboxId: string;
+  delivery: "steer" | "queue";
+};
+
+type OpenCodeSubagent = {
+  description: string;
+  turnId: string;
+  model: string | null;
+  settled: boolean;
+  usage: { totalTokens: number; costUsd: number };
+};
 
 type OpenCodeRuntime = {
   kind: "opencode";
   handle: OpenCodeSessionHandle;
   busy: boolean;
-  eventAbortController: AbortController | null;
+  activeTurn: OpenCodeActiveTurn | null;
   activeTurnId: string | null;
   permissionMode: AgentChatOpenCodePermissionMode;
-  pendingApprovals: Map<string, PendingOpenCodeApproval>;
-  pendingSteers: QueuedSteer[];
-  interrupted: boolean;
+  /** Agent currently selected on the OpenCode session. */
+  agent: OpenCodeAgentProfile | null;
+  /** Session-level rules as last applied, keyed by the mode they came from. */
+  sessionRulesKey: string;
   modelDescriptor: ModelDescriptor;
-  textByPartId: Map<string, string>;
-  reasoningByPartId: Map<string, string>;
+  /** Model currently selected on the OpenCode session (with the effort variant). */
+  model: OpenCodeModelRef | null;
+  /** ADE's instruction entry as last applied, so an unchanged one is not resent. */
+  instructions: string | null;
+  pendingApprovals: Map<string, PendingOpenCodeApproval>;
+  pendingForms: Map<string, PendingOpenCodeForm>;
   /**
-   * Part id -> OpenCode part kind ("text", "reasoning", "tool", ...), recorded
-   * from the part-start `message.part.updated`. A `message.part.delta` names the
-   * *property* it appends to, not the kind of part: a reasoning part's deltas
-   * arrive with `field: "text"` because a reasoning part's property is also
-   * called `text`. The part kind is therefore the only correct classifier.
+   * Messages admitted to OpenCode's inbox during a turn, in admission order.
+   * OpenCode owns the queue; these rows mirror it so the transcript, cancel,
+   * and send-now can address each one. The field name is the one the shared
+   * steer helpers read.
    */
-  partTypeByPartId: Map<string, string>;
-  toolStateByPartId: Map<string, string>;
+  pendingSteers: OpenCodeInboxRow[];
   /**
-   * Tool parts whose latest serialized input has gone out. OpenCode opens a
-   * tool part while `pending`, before the input exists, so the first emit
-   * carries `{}` and the call is re-emitted as its input arrives or changes.
+   * Inbox outcomes for ids no row claims yet. A steer can be delivered before
+   * the prompt request that admitted it returns its id; the outcome waits here.
    */
-  toolInputByPartId: Map<string, string>;
-  compactionStartedPartIds: Set<string>;
-  /** OpenCode child sessions whose own terminal event has not arrived yet. */
-  subagentSessions: Map<string, {
-    summary: string;
-    turnId: string;
-    /** Human-readable child title, used to attribute child permission asks. */
-    description?: string;
-  }>;
-  /**
-   * Trigger (manual/auto) captured from the most recent compaction "begin" part, so
-   * the matching session.compacted end event can report the same trigger. Cleared
-   * once consumed.
-   */
-  lastCompactionTrigger: "manual" | "auto" | null;
+  inboxOutcomes: Map<string, "delivered" | "cancelled">;
+  interrupted: boolean;
+  /** Set by a `stop_only` interrupt so the turn's end keeps the inbox. Consumed once. */
+  preserveQueuedSteersOnInterrupt?: boolean;
+  /** Child sessions of this chat's session (subagents), including nested ones. */
+  subagents: Map<string, OpenCodeSubagent>;
+  stopListening: () => void;
 };
 
 type CursorPermissionWaiter =
@@ -3570,10 +3490,12 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
     case "opencode":
       return Boolean(
         runtime.busy
-        || runtime.activeTurnId
-        || runtime.eventAbortController
+        || runtime.activeTurn
         || runtime.pendingApprovals.size > 0
+        || runtime.pendingForms.size > 0
         || runtime.pendingSteers.length > 0
+        // A background child still running wakes the parent when it finishes.
+        || [...runtime.subagents.values()].some((child) => !child.settled)
       );
     case "cursor":
       return Boolean(
@@ -4604,21 +4526,6 @@ const AUTO_TITLE_MAX_CHARS = 48;
  * rendered. A part update carries the whole part, so it has to diff against the
  * running text or the answer prints twice.
  */
-function openCodeFullPartDelta(previous: string, nextText: string, delta: string | undefined): string {
-  if (typeof delta === "string") return delta;
-  if (nextText.startsWith(previous)) return nextText.slice(previous.length);
-  return nextText;
-}
-
-/**
- * Messages for OpenCode session errors whose payload carries none of its own.
- * `MessageOutputLengthError.data` is an empty bag, so the generic fallback was
- * the only thing a user ever saw for a truncated answer. Every other member of
- * the union declares a required `data.message`.
- */
-const OPEN_CODE_ERROR_MESSAGES_BY_NAME: Record<string, string | undefined> = {
-  MessageOutputLengthError: "The model hit its output length limit before it finished the answer.",
-};
 
 /** Ceiling on a raw provider response body shown as a chat error message. */
 const MAX_OPEN_CODE_ERROR_BODY_CHARS = 500;
@@ -4652,7 +4559,6 @@ const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
  * normal tool call never triggers it; short enough that a lost `session.idle`
  * costs half a minute, not a turn that never ends.
  */
-const OPENCODE_IDLE_PROBE_QUIET_MS = 30 * 1000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
@@ -5216,19 +5122,6 @@ function optionalSubagentModelFields(model?: string | null, reasoningEffort?: st
   };
 }
 
-function openCodeChildSessionModel(info: unknown): string | null {
-  const record = asRecord(info);
-  if (!record) return null;
-  if (typeof record.model === "string") return stringOrNull(record.model);
-  const nested = asRecord(record.model);
-  if (nested) {
-    const providerID = stringOrNull(nested.providerID) ?? stringOrNull(nested.providerId);
-    const modelID = stringOrNull(nested.modelID) ?? stringOrNull(nested.modelId) ?? stringOrNull(nested.id);
-    if (providerID && modelID) return `opencode/${providerID}/${modelID}`;
-    return modelID;
-  }
-  return stringOrNull(record.modelID) ?? stringOrNull(record.modelId);
-}
 
 export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion | null {
   if (typeof userAgent !== "string") return null;
@@ -7890,7 +7783,8 @@ function activityForToolName(
   const normalized = toolName.trim();
   const lower = normalized.toLowerCase();
   if (!normalized.length) return { activity: "tool_calling", detail: "Running tool" };
-  if (lower === "bash" || lower === "exec_command" || lower === "bashoutput") {
+  // `shell` is OpenCode 2.0's command tool.
+  if (lower === "bash" || lower === "shell" || lower === "exec_command" || lower === "bashoutput") {
     return { activity: "running_command", detail: normalized };
   }
   if (lower.includes("edit") || lower.includes("write") || lower === "apply_patch") {
@@ -8784,14 +8678,14 @@ function buildOpenCodeSystemPrompt(args: {
     adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
     sessionActivityGuidance: args.sessionActivityGuidance,
   });
-  // OpenCode's `task` tool has no directory argument: the child inherits this
-  // session's directory, and the only path the child ever reads is the one the
-  // model typed into the spawn prompt. A paraphrased/truncated path is not a
-  // no-op — it is a real out-of-worktree filesystem access that stalls the
-  // child on an approval card. Naming the exact string here gives the model
+  // OpenCode's `subagent` tool has no directory argument: the child inherits
+  // this session's directory, and the only path the child ever reads is the
+  // one the model typed into the spawn prompt. A paraphrased/truncated path is
+  // not a no-op — it is a real out-of-worktree filesystem access that stalls
+  // the child on an approval card. Naming the exact string here gives the model
   // something to copy instead of reconstruct.
   const delegationPathGuidance = [
-    "When you delegate with OpenCode's `task` tool, copy this session's working directory verbatim into the child's prompt:",
+    "When you delegate with OpenCode's `subagent` tool, copy this session's working directory verbatim into the child's prompt:",
     `\`${args.laneWorktreePath}\``,
     "Never retype, abbreviate, or reconstruct a path from memory; the child inherits this directory, so a mistyped path only creates out-of-worktree accesses that park the child on an approval.",
   ].join(" ");
@@ -14290,10 +14184,10 @@ export function createAgentChatService(args: {
       }
     }
     if (runtime.kind === "opencode") {
-      if (runtime.busy || runtime.activeTurnId || runtime.eventAbortController) {
+      if (runtime.busy || runtime.activeTurn) {
         return "Wait for the current response to finish before handing off this chat.";
       }
-      if (runtime.pendingApprovals.size > 0) {
+      if (runtime.pendingApprovals.size > 0 || runtime.pendingForms.size > 0) {
         return "Resolve the current approval or question before handing off this chat.";
       }
     }
@@ -15414,6 +15308,29 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  /**
+   * An OpenCode client for work that needs no chat runtime (export, import):
+   * the chat's own server when its runtime is live, else a short lease on the
+   * shared one.
+   */
+  const withOpenCodeClient = async <T,>(
+    managed: ManagedChatSession,
+    fn: (client: OpenCodeSessionHandle["client"]) => Promise<T>,
+  ): Promise<T> => {
+    if (managed.runtime?.kind === "opencode") return await fn(managed.runtime.handle.client);
+    const lease = await acquireOpenCodeServer({
+      profile: isPersonalSession(managed.session) ? PERSONAL_OPENCODE_PROFILE : SHARED_OPENCODE_PROFILE,
+      ownerKind: "chat",
+      ownerId: managed.session.id,
+      logger,
+    });
+    try {
+      return await fn(lease.client);
+    } finally {
+      lease.release();
+    }
+  };
+
   const startOpenCodeSessionRuntime = async (managed: ManagedChatSession): Promise<"handled" | "fallthrough"> => {
     const modelId = managed.session.modelId;
     if (!modelId) return "fallthrough";
@@ -15483,9 +15400,11 @@ export function createAgentChatService(args: {
         ...(opencodeCallerMcpServers
           ? callerMcpServersToOpenCodeConfig(opencodeCallerMcpServers)
           : {}),
+        // ADE's own tools are exposed directly, not behind OpenCode's Code Mode,
+        // matching how every other provider sees them.
         ...Object.fromEntries(opencodeMcpLeases.map((lease) => [
           lease.serverName,
-          { type: "remote" as const, url: lease.url, enabled: true, timeout: 10_000 },
+          { type: "remote" as const, url: lease.url, disabled: false as const, codemode: false },
         ])),
       }
       : undefined;
@@ -15502,25 +15421,37 @@ export function createAgentChatService(args: {
       delivered: openCodeAgentSkillRoots.length > 0,
       ...(openCodeAgentSkillRoots.length ? {} : { reason: "no_existing_roots" }),
     });
+    const runtimeShell = {
+      permissionMode: permMode,
+      modelDescriptor: descriptor,
+    };
+    const agent = permMode === "config-toml" ? null : mapPermissionModeToOpenCodeAgent(permMode);
+    const model = openCodeModelRefFor(managed, descriptor);
+    const instructions = buildOpenCodeSessionInstructions(managed, runtimeShell.permissionMode);
     let handle: OpenCodeSessionHandle;
     try {
-      handle = await startOpenCodeSession({
+      handle = await startOpenCodeChatSession({
+        config: {
+          projectConfig: configSnapshot.effective,
+          discoveredLocalModels,
+          isolated: openCodeIsolatedConfig,
+          personal: isPersonalSession(managed.session),
+          // A preset's provider block is resolved per chat and merged last, so
+          // it changes this session only (and gives it a server of its own).
+          ...(openCodePresetProviders ? { presetProviders: openCodePresetProviders } : {}),
+          ...(openCodeAgentSkillRoots.length ? { agentSkillRoots: openCodeAgentSkillRoots } : {}),
+          ...(opencodeMcpConfig ? { mcpServers: opencodeMcpConfig } : {}),
+        },
         directory: managed.laneWorktreePath,
+        agent: agent ?? "ade-edit",
+        model,
+        permissions: openCodeSessionRulesFor(permMode).rules,
         title: manualSessionTitleForRuntime(managed),
         sessionId: persisted?.providerSessionId,
-        projectConfig: configSnapshot.effective,
-        discoveredLocalModels,
-        // OpenCode has no env var for "use this key against this endpoint" — a
-        // provider is a config block or it does not exist. A preset's block is
-        // resolved per chat and merged last, so it changes this session only.
-        ...(openCodePresetProviders ? { presetProviders: openCodePresetProviders } : {}),
-        ...(openCodeAgentSkillRoots.length ? { agentSkillRoots: openCodeAgentSkillRoots } : {}),
-        ...(opencodeMcpConfig ? { mcp: opencodeMcpConfig } : {}),
+        instructions,
+        environment: openCodeSessionEnvironment(managed),
         ownerKind: "chat",
         ownerId: managed.session.id,
-        ownerKey: `chat:${managed.session.id}`,
-        leaseKind: openCodeIsolatedConfig ? "dedicated" : "shared",
-        isolatedConfig: openCodeIsolatedConfig,
         logger,
       });
     } catch (error) {
@@ -15533,34 +15464,29 @@ export function createAgentChatService(args: {
       kind: "opencode",
       handle,
       busy: false,
-      eventAbortController: null,
+      activeTurn: null,
       activeTurnId: null,
       permissionMode: permMode,
-      pendingApprovals: new Map(),
-      pendingSteers: [],
-      interrupted: false,
+      agent,
+      sessionRulesKey: openCodeSessionRulesFor(permMode).key,
       modelDescriptor: descriptor,
-      textByPartId: new Map(),
-      reasoningByPartId: new Map(),
-      partTypeByPartId: new Map(),
-      toolStateByPartId: new Map(),
-      toolInputByPartId: new Map(),
-      compactionStartedPartIds: new Set(),
-      subagentSessions: new Map(),
-      lastCompactionTrigger: null,
+      model,
+      instructions,
+      pendingApprovals: new Map(),
+      pendingForms: new Map(),
+      pendingSteers: [],
+      inboxOutcomes: new Map(),
+      interrupted: false,
+      subagents: new Map(),
+      stopListening: () => {},
     };
-    handle.setEvictionHandler((reason) => {
-      if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
-        teardownRuntime(
-          managed,
-          reason === "error" || reason === "config_changed" || reason === "attach_failed"
-            ? "handle_close"
-            : reason,
-        );
-      }
+    runtime.stopListening = handle.lease.listen({
+      onEvent: (event) => handleOpenCodeEvent(managed, runtime, event),
+      onReconnected: () => {
+        void reconcileOpenCodeRuntime(managed, runtime);
+      },
+      onServerExit: (error) => handleOpenCodeServerExit(managed, runtime, error),
     });
-    handle.setBusy(false);
-    handle.touch();
 
     runtimeBudget.enforce(managed.session.id);
     managed.runtime = runtime;
@@ -15571,6 +15497,9 @@ export function createAgentChatService(args: {
     enforceManagedLocalHarnessPermissionMode(managed, descriptor);
     managed.session.capabilityMode = isLightweightSession(managed.session) ? "fallback" : "full_tooling";
     persistChatState(managed);
+    // A reopened session may still be running (a background child woke it
+    // while no runtime listened). Pick that execution up as a turn.
+    if (handle.resumed) void reconcileOpenCodeRuntime(managed, runtime);
     return "handled";
   };
 
@@ -22045,10 +21974,6 @@ export function createAgentChatService(args: {
 
   const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
     runtime.busy = busy;
-    runtime.handle.setBusy(busy);
-    if (!busy) {
-      runtime.handle.touch();
-    }
   };
 
   /**
@@ -22172,6 +22097,18 @@ export function createAgentChatService(args: {
         questions: pending.request?.questions ?? [],
       }),
     );
+  };
+
+  /** Cancel OpenCode question cards; the form on the server is cancelled too. */
+  const settleOpenCodePendingForms = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+  ): void => {
+    for (const [formId, form] of runtime.pendingForms) {
+      runtime.pendingForms.delete(formId);
+      void runtime.handle.client.session.form.cancel({ sessionID: form.sessionId, formID: formId }).catch(() => {});
+    }
+    cancelPendingInputsFrom(managed, "opencode", "ade");
   };
 
   const settleCursorPermissionWaiters = (
@@ -22476,17 +22413,23 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "opencode") {
-      // Mark interrupted so the streaming catch block takes the graceful path
-      managed.runtime.interrupted = true;
-      managed.runtime.eventAbortController?.abort();
-      managed.runtime.handle.setBusy(false);
-      settleOpenCodePendingApprovals(managed, managed.runtime);
-      managed.runtime.handle.setEvictionHandler(null);
+      const runtime = managed.runtime;
+      runtime.interrupted = true;
+      runtime.stopListening();
+      // The OpenCode server outlives this runtime and would keep running an
+      // execution nobody listens to, so a live one is stopped here.
+      if (runtime.activeTurn) {
+        void runtime.handle.client.session.interrupt({ sessionID: runtime.handle.sessionId }).catch(() => {});
+        finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
+      }
+      settleOpenCodePendingApprovals(managed, runtime);
+      settleOpenCodePendingForms(managed, runtime);
+      cancelQueuedSteers(managed, runtime, "disposed");
       // Written while the handle is still here, so the pointer comes from the
       // live session id and not from whatever the last persist happened to
       // hold.
       if (preserveProviderResumeState) persistChatState(managed);
-      try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
+      try { runtime.handle.close(); } catch { /* ignore */ }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -24057,40 +24000,6 @@ export function createAgentChatService(args: {
     };
   };
 
-  const openCodeSessionErrorMessage = (error: unknown): string => {
-    const record = asRecord(error);
-    const data = asRecord(record?.data);
-    const nested = asRecord(record?.error);
-    const nestedData = asRecord(nested?.data);
-    const byName = typeof record?.name === "string"
-      ? OPEN_CODE_ERROR_MESSAGES_BY_NAME[record.name]
-      : undefined;
-    return (
-      (typeof data?.message === "string" && data.message.trim())
-      || (typeof nestedData?.message === "string" && nestedData.message.trim())
-      || (typeof record?.message === "string" && record.message.trim())
-      || byName
-      || "OpenCode session failed."
-    );
-  };
-
-  const openCodeQuestionsToPendingQuestions = (questions: OpenCodeQuestionInfo[]): PendingInputQuestion[] =>
-    questions.map((question, index) => ({
-      id: `q_${index + 1}`,
-      header: question.header?.trim().length ? question.header.trim() : `Question ${index + 1}`,
-      question: question.question.trim(),
-      ...(question.multiple === true ? { multiSelect: true } : {}),
-      allowsFreeform: question.custom !== false || !question.options?.length,
-      ...(question.options?.length ? {
-        options: question.options.map((option) => ({
-          label: option.label,
-          value: option.label,
-          ...(typeof option.description === "string" && option.description.trim().length
-            ? { description: option.description.trim() }
-            : {}),
-        })),
-      } : {}),
-    }));
 
   // ── Claude SDK streaming turn ──
 
@@ -29584,6 +29493,773 @@ export function createAgentChatService(args: {
   /** Chat, model, and effort triples already warned that Fast did not apply. */
   const loggedOpenCodeFastFallbacks = new Set<string>();
 
+  // ── OpenCode 2.0 runtime ──
+  //
+  // A chat's runtime listens to its OpenCode session for its whole life, not
+  // per turn: OpenCode starts executions on its own (a background subagent
+  // finished) and delivers every steered or queued message inside the running
+  // execution. One execution is one ADE turn.
+
+  const OPENCODE_EXECUTION_START_TIMEOUT_MS = 20_000;
+
+  const openCodeMapperDeps = {
+    activityForToolName,
+    reasoningDetail: REASONING_ACTIVITY_DETAIL,
+    workingDetail: WORKING_ACTIVITY_DETAIL,
+  };
+
+  /** Model reference with the effort/Fast variant OpenCode should run. */
+  const openCodeModelRefFor = (managed: ManagedChatSession, descriptor: ModelDescriptor): OpenCodeModelRef => {
+    const selection = resolveOpenCodeFastEffortSelection(descriptor, {
+      fastMode: managed.session.fastMode,
+      reasoningEffort: managed.session.reasoningEffort,
+    });
+    const base = resolveOpenCodeModelRef(descriptor);
+    if (selection.fastUnavailableReason) {
+      const fallbackKey = [managed.session.id, descriptor.id, managed.session.reasoningEffort ?? ""].join("\u0000");
+      if (!loggedOpenCodeFastFallbacks.has(fallbackKey)) {
+        rememberBoundedId(loggedOpenCodeFastFallbacks, fallbackKey, 256);
+        logger.warn("agent_chat.opencode_fast_not_applied", {
+          sessionId: managed.session.id,
+          modelId: descriptor.id,
+          reasoningEffort: managed.session.reasoningEffort ?? null,
+          reason: selection.fastUnavailableReason,
+        });
+      }
+    }
+    return {
+      providerID: base.providerID,
+      id: selection.modelId ?? base.id,
+      ...(selection.variant ? { variant: selection.variant } : {}),
+    };
+  };
+
+  /** ADE's per-session context, delivered as the session's instruction entry. */
+  const buildOpenCodeSessionInstructions = (
+    managed: ManagedChatSession,
+    permissionMode: AgentChatOpenCodePermissionMode,
+  ): string => buildOpenCodeSystemPrompt({
+    laneWorktreePath: managed.laneWorktreePath,
+    session: managed.session,
+    spawnGuidance: spawnSelfReportOpts(managed.session),
+    sessionActivityGuidance: buildOpenCodeSessionActivityGuidance(
+      managed.session,
+      permissionMode !== "plan"
+        && permissionMode !== "config-toml"
+        && managed.session.permissionMode !== "plan"
+        && managed.session.interactionMode !== "plan",
+    ),
+  });
+
+  /**
+   * The shell environment OpenCode runs this chat's commands with: the same
+   * one every other provider's agent shell gets, so `ade` resolves and knows
+   * which chat, lane, and workspace it acts for.
+   */
+  const openCodeSessionEnvironment = (managed: ManagedChatSession): Record<string, string> => {
+    const env = buildAgentRuntimeEnv(managed);
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return out;
+  };
+
+  const sameOpenCodeModel = (a: OpenCodeModelRef | null, b: OpenCodeModelRef): boolean =>
+    Boolean(a && a.providerID === b.providerID && a.id === b.id && (a.variant ?? null) === (b.variant ?? null));
+
+  const beginOpenCodeTurn = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    args: {
+      origin: OpenCodeActiveTurn["origin"];
+      turnId?: string;
+      requestedModel?: { providerID: string; modelID: string };
+      laneDirectiveKey?: string | null;
+    },
+  ): OpenCodeActiveTurn => {
+    const turnId = args.turnId ?? randomUUID();
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const model = runtime.model ?? openCodeModelRefFor(managed, runtime.modelDescriptor);
+    const turn: OpenCodeActiveTurn = {
+      turnId,
+      origin: args.origin,
+      mapper: createOpenCodeTurnMapper({
+        turnId,
+        deps: openCodeMapperDeps,
+        reasoningModel: runtime.modelDescriptor.capabilities.reasoning === true,
+        contextWindow: runtime.modelDescriptor.contextWindow,
+        model: managed.session.model,
+      }),
+      startedAt: Date.now(),
+      requestedModel: args.requestedModel ?? { providerID: model.providerID, modelID: model.id },
+      laneDirectiveKey: args.laneDirectiveKey ?? null,
+      executionStarted: args.origin === "opencode",
+      settled,
+      settle,
+    };
+    runtime.activeTurn = turn;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    setOpenCodeRuntimeBusy(runtime, true);
+    setSessionActive(managed);
+    if (args.origin === "opencode") {
+      // No user message opened this turn: OpenCode resumed on its own.
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    }
+    return turn;
+  };
+
+  /**
+   * Settle every inbox row the turn did not deliver. OpenCode keeps an
+   * undelivered item after an interrupt or failure, so ADE cancels it on the
+   * server as well: Stop means stop, and a failed turn does not silently
+   * resume later with the rest of the queue.
+   */
+  const cancelOpenCodeInboxRows = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    reason: "interrupted" | "failed" | "disposed",
+  ): void => {
+    if (reason === "interrupted" && runtime.preserveQueuedSteersOnInterrupt) {
+      runtime.preserveQueuedSteersOnInterrupt = false;
+      return;
+    }
+    for (const row of runtime.pendingSteers) {
+      void runtime.handle.client.session.inbox
+        .cancel({ sessionID: runtime.handle.sessionId, inboxID: row.inboxId })
+        .catch(() => {});
+    }
+    cancelQueuedSteers(managed, runtime, reason);
+  };
+
+  const finishOpenCodeTurn = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    outcome: { status: "completed" | "failed" | "interrupted"; error?: unknown },
+  ): void => {
+    const turn = runtime.activeTurn;
+    if (!turn) return;
+    runtime.activeTurn = null;
+    runtime.activeTurnId = null;
+    setOpenCodeRuntimeBusy(runtime, false);
+    const { turnId } = turn;
+    void emitTurnDiffSummaryIfChanged(managed, turnId);
+    markSessionIdleWithFreshCache(managed);
+
+    if (outcome.status === "completed") {
+      persistDeliveredLaneDirectiveKey(managed, turn.laneDirectiveKey);
+      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+      const doneUsage = buildOpenCodeDoneUsage(turn.mapper.usage, runtime.modelDescriptor.contextWindow);
+      const served = turn.mapper.servedModel();
+      const servedModel = resolveOpenCodeServedModel(turn.requestedModel, served);
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "completed",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+        ...(doneUsage ? { usage: doneUsage.usage } : {}),
+        ...(doneUsage?.costSource ? { costUsd: doneUsage.costUsd, costSource: doneUsage.costSource } : {}),
+        ...(servedModel ? { servedModel } : {}),
+        account: turnUsageAccounts.openCode(managed, served?.providerID || turn.requestedModel.providerID),
+      });
+      const finalText = turn.mapper.finalText();
+      if (finalText.trim().length > 0) appendCtoTurnJournal(managed, { assistantText: finalText });
+      void computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed))
+        .then((endSha) => {
+          if (endSha) sessionService.setHeadShaEnd(managed.session.id, endSha);
+        })
+        .catch(() => {});
+      persistChatState(managed);
+      turn.settle();
+      return;
+    }
+
+    // Every other ending leaves cards nobody can answer.
+    settleOpenCodePendingApprovals(managed, runtime);
+    settleOpenCodePendingForms(managed, runtime);
+    cancelPendingInputsFrom(managed, "opencode", "ade");
+    cancelOpenCodeInboxRows(managed, runtime, outcome.status === "interrupted" ? "interrupted" : "failed");
+    if (outcome.status === "interrupted") {
+      emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "interrupted",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+    } else {
+      const { message, errorInfo } = classifyOpenCodeError(
+        outcome.error ?? turn.mapper.lastStepError() ?? new Error("OpenCode turn failed."),
+        runtime.modelDescriptor.family,
+        runtime.modelDescriptor.displayName,
+      );
+      emitChatEvent(managed, { type: "error", message, turnId, errorInfo });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "failed",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
+    }
+    persistChatState(managed);
+    turn.settle();
+  };
+
+  const openCodeFormFieldsToPendingQuestions = (fields: readonly unknown[]): PendingInputQuestion[] => {
+    const questions: PendingInputQuestion[] = [];
+    fields.forEach((raw, index) => {
+      const field = asRecord(raw);
+      if (!field || typeof field.key !== "string" || field.hidden === true) return;
+      const title = typeof field.title === "string" && field.title.trim() ? field.title.trim() : null;
+      const description = typeof field.description === "string" && field.description.trim()
+        ? field.description.trim()
+        : null;
+      const optionList = Array.isArray(field.options) ? field.options : [];
+      const options = field.type === "boolean"
+        ? [{ label: "Yes", value: "true" }, { label: "No", value: "false" }]
+        : optionList.flatMap((entry) => {
+          const option = asRecord(entry);
+          if (!option || typeof option.value !== "string") return [];
+          const label = typeof option.label === "string" && option.label.trim() ? option.label.trim() : option.value;
+          return [{
+            label,
+            value: option.value,
+            ...(typeof option.description === "string" && option.description.trim()
+              ? { description: option.description.trim() }
+              : {}),
+          }];
+        });
+      const external = field.type === "external" && typeof field.url === "string" ? field.url : null;
+      questions.push({
+        id: field.key,
+        header: title ?? `Question ${index + 1}`,
+        question: [description ?? title ?? "OpenCode needs an answer.", external ? `(${external})` : null]
+          .filter(Boolean)
+          .join(" "),
+        ...(field.type === "multiselect" ? { multiSelect: true } : {}),
+        allowsFreeform: field.custom !== false || options.length === 0,
+        ...(options.length ? { options } : {}),
+      });
+    });
+    return questions;
+  };
+
+  /** One answer per field key, typed the way the field expects. */
+  const buildOpenCodeFormAnswer = (
+    fields: readonly unknown[],
+    response: { answers: Record<string, string[]>; responseText: string | null },
+  ): Record<string, string | number | boolean | string[]> => {
+    const answer: Record<string, string | number | boolean | string[]> = {};
+    for (const raw of fields) {
+      const field = asRecord(raw);
+      if (!field || typeof field.key !== "string" || field.type === "external") continue;
+      const picked = ownQuestionValue(response.answers, field.key) ?? [];
+      const values = picked.length ? picked : response.responseText?.trim() ? [response.responseText.trim()] : [];
+      if (!values.length) continue;
+      if (field.type === "multiselect") answer[field.key] = values;
+      else if (field.type === "boolean") answer[field.key] = values[0] === "true";
+      else if (field.type === "number" || field.type === "integer") {
+        const parsed = Number(values[0]);
+        if (Number.isFinite(parsed)) answer[field.key] = parsed;
+      } else answer[field.key] = values[0]!;
+    }
+    return answer;
+  };
+
+  /** Mark a child (subagent) blocked on an ask, or clear it. */
+  const emitOpenCodeChildBlocked = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    childId: string,
+    reason: string | null,
+  ): void => {
+    const child = runtime.subagents.get(childId);
+    if (!child) return;
+    emitChatEvent(managed, {
+      type: "subagent_progress",
+      taskId: childId,
+      parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
+      description: child.description,
+      summary: reason ? `Waiting for approval — ${reason}` : child.description,
+      blockedReason: reason,
+      turnId: child.turnId,
+    });
+  };
+
+  const onOpenCodePermissionAsked = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    ask: Extract<OpenCodeEvent, { type: "permission.asked" }>["data"],
+  ): void => {
+    const action = ask.action.trim().toLowerCase();
+    const resources = ask.resources ?? [];
+    const description = ask.message?.trim()
+      || (resources.length ? `${action}: ${resources.join(", ")}` : action || "Approval required");
+    const child = ask.sessionID !== runtime.handle.sessionId ? runtime.subagents.get(ask.sessionID) : undefined;
+    // A child ask is attributed to its subagent, so the card and status read
+    // "Subagent X is waiting", not an anonymous parent ask.
+    const attributed = child ? `${child.description} · ${description}` : description;
+    const category: PendingOpenCodeApproval["category"] = action === "shell" ? "bash" : "write";
+    const itemId = ask.source?.id ?? ask.id;
+    const request: PendingInputRequest = {
+      requestId: ask.id,
+      itemId,
+      source: "opencode",
+      kind: "approval",
+      description: attributed,
+      questions: [],
+      allowsFreeform: false,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: {
+        type: action,
+        resources,
+        metadata: ask.metadata ?? {},
+        callId: ask.source?.id ?? null,
+        childSessionId: child ? ask.sessionID : null,
+      },
+      turnId: runtime.activeTurnId ?? undefined,
+    };
+    // Keyed by the card's item id, which is what an answer carries back. One
+    // tool call asks one thing at a time (an external-directory ask is answered
+    // before the edit ask that follows it), so the key does not collide.
+    runtime.pendingApprovals.set(itemId, { category, requestId: ask.id, sessionId: ask.sessionID, request });
+    if (child) emitOpenCodeChildBlocked(managed, runtime, ask.sessionID, attributed);
+    emitPendingInputRequest(managed, request, {
+      kind: category === "bash" ? "command" : "file_change",
+      description: attributed,
+      detail: ask.metadata ?? {},
+    });
+  };
+
+  const onOpenCodePermissionReplied = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    replied: Extract<OpenCodeEvent, { type: "permission.replied" }>["data"],
+  ): void => {
+    const entry = [...runtime.pendingApprovals].find(([, candidate]) => candidate.requestId === replied.requestID);
+    if (!entry) return;
+    const [itemId, pending] = entry;
+    runtime.pendingApprovals.delete(itemId);
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: replied.reply === "reject" ? "decline" : "accept",
+      questions: pending.request?.questions ?? [],
+      turnId: pending.request?.turnId ?? null,
+    });
+    if (pending.sessionId !== runtime.handle.sessionId) {
+      emitOpenCodeChildBlocked(managed, runtime, pending.sessionId, null);
+    }
+  };
+
+  /**
+   * An OpenCode question (the `question` tool) arrives as a form. It is asked on
+   * ADE's structured question card, detached: the card must not stall the
+   * event stream while it waits for the person.
+   */
+  const onOpenCodeFormCreated = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    form: Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"],
+  ): void => {
+    const fields = form.fields as readonly unknown[];
+    const questions = openCodeFormFieldsToPendingQuestions(fields);
+    const child = form.sessionID !== runtime.handle.sessionId ? runtime.subagents.get(form.sessionID) : undefined;
+    runtime.pendingForms.set(form.id, {
+      formId: form.id,
+      sessionId: form.sessionID,
+      fieldKeys: questions.map((question) => question.id),
+    });
+    const firstQuestion = questions[0];
+    if (child) emitOpenCodeChildBlocked(managed, runtime, form.sessionID, firstQuestion?.question ?? "Waiting for an answer");
+    const cancelForm = async (): Promise<void> => {
+      await runtime.handle.client.session.form.cancel({ sessionID: form.sessionID, formID: form.id });
+    };
+    void (async () => {
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title: child ? `${child.description} asks` : questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
+        body: firstQuestion?.question ?? waitingOnYouDescription(questions.length),
+        source: "opencode",
+        providerMetadata: { openCodeForm: true, formId: form.id },
+        eventDescription: "OpenCode question",
+        eventDetail: { openCodeForm: form },
+        questions: questions.map(({ options, ...question }) => ({ ...question, ...(options ? { options } : {}) })),
+      });
+      if (managed.runtime !== runtime || !runtime.pendingForms.has(form.id)) return;
+      runtime.pendingForms.delete(form.id);
+      if (response.decision === "decline" || response.decision === "cancel") {
+        await cancelForm();
+        return;
+      }
+      await runtime.handle.client.session.form.reply({
+        sessionID: form.sessionID,
+        formID: form.id,
+        answer: buildOpenCodeFormAnswer(fields, response),
+      });
+    })().catch(async (error) => {
+      if (runtime.interrupted) return;
+      logger.warn("agent_chat.opencode_question_failed", {
+        sessionId: managed.session.id,
+        formId: form.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (managed.runtime !== runtime) return;
+      runtime.pendingForms.delete(form.id);
+      await cancelForm().catch(() => {});
+    });
+  };
+
+  const onOpenCodeFormSettled = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    formId: string,
+    sessionId: string,
+  ): void => {
+    if (runtime.pendingForms.delete(formId)) {
+      // Answered or cancelled elsewhere (the OpenCode app on the same server):
+      // only this form's card is stale now.
+      for (const [itemId, pending] of [...managed.localPendingInputs]) {
+        if (asRecord(pending.request.providerMetadata)?.formId !== formId) continue;
+        managed.localPendingInputs.delete(itemId);
+        pending.resolve({ decision: "cancel" });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: "cancel",
+          turnId: pending.request.turnId ?? null,
+          questions: pending.request.questions,
+        });
+      }
+    }
+    if (sessionId !== runtime.handle.sessionId) emitOpenCodeChildBlocked(managed, runtime, sessionId, null);
+  };
+
+  /** Subagent calls the parent made whose child session has not appeared yet. */
+  const pendingOpenCodeSubagentCalls = new WeakMap<OpenCodeRuntime, Array<{ callId: string; description: string }>>();
+
+  const onOpenCodeChildCreated = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    child: Extract<OpenCodeEvent, { type: "session.created" }>["data"],
+  ): void => {
+    if (runtime.subagents.has(child.sessionID)) return;
+    const pendingCalls = pendingOpenCodeSubagentCalls.get(runtime) ?? [];
+    const call = child.parentID === runtime.handle.sessionId ? pendingCalls.shift() : undefined;
+    const model = child.model?.providerID && child.model.id ? `${child.model.providerID}/${child.model.id}` : null;
+    const description = call?.description ?? (child.agent ? `${child.agent} subagent` : "Subagent");
+    const turnId = runtime.activeTurnId ?? randomUUID();
+    runtime.subagents.set(child.sessionID, {
+      description,
+      turnId,
+      model,
+      settled: false,
+      usage: { totalTokens: 0, costUsd: 0 },
+    });
+    emitChatEvent(managed, {
+      type: "subagent_started",
+      taskId: child.sessionID,
+      parentToolUseId: call?.callId ?? null,
+      description,
+      turnId,
+      ...optionalSubagentModelFields(model),
+    });
+  };
+
+  const settleOpenCodeChild = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    childId: string,
+    status: "completed" | "failed" | "stopped",
+    summary: string,
+  ): void => {
+    const child = runtime.subagents.get(childId);
+    if (!child || child.settled) return;
+    child.settled = true;
+    const usage = child.usage.totalTokens > 0
+      ? { totalTokens: child.usage.totalTokens, ...(child.usage.costUsd > 0 ? { costUsd: child.usage.costUsd } : {}) }
+      : undefined;
+    emitChatEvent(managed, {
+      type: "subagent_result",
+      taskId: childId,
+      parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
+      status,
+      summary,
+      finalSummary: summary,
+      ...(usage ? { usage } : {}),
+      turnId: child.turnId,
+    });
+  };
+
+  const openCodeChildLastText = new WeakMap<OpenCodeSubagent, string>();
+
+  const handleOpenCodeChildEvent = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    childId: string,
+    child: OpenCodeSubagent,
+    event: OpenCodeEvent,
+  ): void => {
+    switch (event.type) {
+      case "session.text.ended":
+        openCodeChildLastText.set(child, event.data.text);
+        return;
+      case "session.step.ended": {
+        const tokens = event.data.tokens;
+        child.usage.totalTokens += (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0)
+          + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0);
+        child.usage.costUsd += typeof event.data.cost === "number" ? event.data.cost : 0;
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: childId,
+          parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
+          description: child.description,
+          summary: child.description,
+          usage: { totalTokens: child.usage.totalTokens, ...(child.usage.costUsd > 0 ? { costUsd: child.usage.costUsd } : {}) },
+          turnId: child.turnId,
+        });
+        return;
+      }
+      case "session.execution.started":
+        // A finished child continued by id is running again.
+        if (child.settled) {
+          child.settled = false;
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId: childId,
+            parentToolUseId: null,
+            description: child.description,
+            summary: child.description,
+            turnId: child.turnId,
+          });
+        }
+        return;
+      case "session.execution.succeeded":
+        settleOpenCodeChild(managed, runtime, childId, "completed", openCodeChildLastText.get(child)?.trim() || child.description);
+        return;
+      case "session.execution.failed":
+        settleOpenCodeChild(managed, runtime, childId, "failed", event.data.error?.message || "Subagent failed");
+        return;
+      case "session.execution.interrupted":
+        settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
+        return;
+      case "session.deleted":
+        settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent session deleted");
+        runtime.subagents.delete(childId);
+        return;
+      case "permission.asked":
+        onOpenCodePermissionAsked(managed, runtime, event.data);
+        return;
+      case "permission.replied":
+        onOpenCodePermissionReplied(managed, runtime, event.data);
+        return;
+      case "form.created":
+        onOpenCodeFormCreated(managed, runtime, event.data.form);
+        return;
+      case "form.replied":
+      case "form.cancelled":
+        onOpenCodeFormSettled(managed, runtime, event.data.id, event.data.sessionID);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const onOpenCodeInboxEvent = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    event: OpenCodeEvent,
+  ): void => {
+    if (
+      event.type !== "session.inbox.delivered"
+      && event.type !== "session.inbox.cancelled"
+      && event.type !== "session.inbox.delivery.changed"
+    ) return;
+    const index = runtime.pendingSteers.findIndex((row) => row.inboxId === event.data.inboxID);
+    if (index < 0) {
+      if (event.type !== "session.inbox.delivery.changed") {
+        runtime.inboxOutcomes.set(event.data.inboxID, event.type === "session.inbox.delivered" ? "delivered" : "cancelled");
+        evictOldestEntries(runtime.inboxOutcomes, 64);
+      }
+      return;
+    }
+    const row = runtime.pendingSteers[index]!;
+    if (event.type === "session.inbox.delivery.changed") {
+      row.delivery = event.data.delivery === "queue" ? "queue" : "steer";
+      return;
+    }
+    settleOpenCodeInboxRow(managed, runtime, row, event.type === "session.inbox.delivered" ? "delivered" : "cancelled");
+  };
+
+  const settleOpenCodeInboxRow = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    row: OpenCodeInboxRow,
+    outcome: "delivered" | "cancelled",
+  ): void => {
+    const index = runtime.pendingSteers.indexOf(row);
+    if (index >= 0) runtime.pendingSteers.splice(index, 1);
+    if (outcome === "delivered") {
+      // `session.inbox.delivered` is the one signal that the model received the
+      // message; only then does the row read "Steered".
+      takeAcceptedSteerRow(managed, row.steerId);
+      emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
+    } else {
+      settleCancelledSteerRow(managed, row);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId: row.steerId,
+        message: "Queued message cancelled.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+    }
+    persistChatState(managed);
+  };
+
+  const handleOpenCodeEvent = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    event: OpenCodeEvent,
+  ): void => {
+    if (managed.runtime !== runtime) return;
+    const parentId = runtime.handle.sessionId;
+    if (event.type === "session.created") {
+      const parent = event.data.parentID;
+      if (parent && (parent === parentId || runtime.subagents.has(parent))) {
+        onOpenCodeChildCreated(managed, runtime, event.data);
+      }
+      return;
+    }
+    const sessionId = openCodeEventSessionId(event);
+    if (!sessionId) return;
+    if (sessionId !== parentId) {
+      const child = runtime.subagents.get(sessionId);
+      if (child) handleOpenCodeChildEvent(managed, runtime, sessionId, child, event);
+      return;
+    }
+
+    switch (event.type) {
+      case "session.execution.started":
+        if (runtime.activeTurn) runtime.activeTurn.executionStarted = true;
+        else beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
+        return;
+      case "session.execution.succeeded":
+        finishOpenCodeTurn(managed, runtime, { status: "completed" });
+        return;
+      case "session.execution.failed":
+        finishOpenCodeTurn(managed, runtime, { status: "failed", error: event.data.error });
+        return;
+      case "session.execution.interrupted":
+        runtime.interrupted = true;
+        finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
+        return;
+      case "session.inbox.delivered":
+      case "session.inbox.cancelled":
+      case "session.inbox.delivery.changed":
+        onOpenCodeInboxEvent(managed, runtime, event);
+        return;
+      case "session.renamed":
+        adoptRuntimeSessionTitle(managed, event.data.title, "opencode_session_renamed");
+        return;
+      case "permission.asked":
+        onOpenCodePermissionAsked(managed, runtime, event.data);
+        return;
+      case "permission.replied":
+        onOpenCodePermissionReplied(managed, runtime, event.data);
+        return;
+      case "form.created":
+        onOpenCodeFormCreated(managed, runtime, event.data.form);
+        return;
+      case "form.replied":
+      case "form.cancelled":
+        onOpenCodeFormSettled(managed, runtime, event.data.id, event.data.sessionID);
+        return;
+      default:
+        break;
+    }
+
+    const turn = runtime.activeTurn;
+    if (!turn) return;
+    for (const mapped of turn.mapper.map(event)) {
+      if (mapped.liveOnly) emitLiveOnlyChatEvent(managed, mapped.event);
+      else emitChatEvent(managed, mapped.event);
+    }
+    // A `subagent` call's child session appears right after it; remember the
+    // call so the child's card links to it and carries its description.
+    if (event.type === "session.tool.called" && turn.mapper.toolName(event.data.id) === "subagent") {
+      const input = asRecord(event.data.input);
+      const description = typeof input?.description === "string" && input.description.trim()
+        ? input.description.trim()
+        : typeof input?.agent === "string" ? `${input.agent} subagent` : "Subagent";
+      const calls = pendingOpenCodeSubagentCalls.get(runtime) ?? [];
+      calls.push({ callId: event.data.id, description });
+      pendingOpenCodeSubagentCalls.set(runtime, calls);
+    }
+  };
+
+  /**
+   * Bring the runtime in line with the server after a gap in the event stream
+   * (or on reopen): a turn whose execution ended while nobody listened is
+   * settled with the server's recorded outcome, and an execution that started
+   * during the gap becomes a turn.
+   */
+  const reconcileOpenCodeRuntime = async (managed: ManagedChatSession, runtime: OpenCodeRuntime): Promise<void> => {
+    if (managed.runtime !== runtime) return;
+    const client = runtime.handle.client;
+    let active: Record<string, unknown>;
+    try {
+      active = await client.session.active() as unknown as Record<string, unknown>;
+    } catch (error) {
+      logger.warn("agent_chat.opencode_reconcile_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (managed.runtime !== runtime) return;
+    const parentRunning = Boolean(active[runtime.handle.sessionId]);
+    if (parentRunning && !runtime.activeTurn) {
+      beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
+    } else if (!parentRunning && runtime.activeTurn?.executionStarted) {
+      const info = await client.session.get({ sessionID: runtime.handle.sessionId }).catch(() => null);
+      if (managed.runtime !== runtime || !runtime.activeTurn) return;
+      if (info?.outcome === "failed") finishOpenCodeTurn(managed, runtime, { status: "failed" });
+      else if (info?.outcome === "interrupted") finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
+      else finishOpenCodeTurn(managed, runtime, { status: "completed" });
+    }
+    for (const [childId, child] of runtime.subagents) {
+      if (child.settled || active[childId]) continue;
+      const info = await client.session.get({ sessionID: childId }).catch(() => null);
+      if (managed.runtime !== runtime) return;
+      if (info?.outcome === "failed") settleOpenCodeChild(managed, runtime, childId, "failed", "Subagent failed");
+      else if (info?.outcome === "interrupted") settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
+      else if (info) settleOpenCodeChild(managed, runtime, childId, "completed", child.description);
+    }
+  };
+
+  const handleOpenCodeServerExit = (managed: ManagedChatSession, runtime: OpenCodeRuntime, error: Error): void => {
+    if (managed.runtime !== runtime) return;
+    logger.warn("agent_chat.opencode_server_exited", { sessionId: managed.session.id, error: error.message });
+    finishOpenCodeTurn(managed, runtime, {
+      status: "failed",
+      error: new Error("The OpenCode server stopped unexpectedly. Send again to continue; ADE starts a new server."),
+    });
+    // The session itself is intact in OpenCode's store; the next send reopens it.
+    teardownRuntime(managed, "shutdown");
+  };
+
+
   const runTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -29628,10 +30304,6 @@ export function createAgentChatService(args: {
       throw new Error(validation.reason);
     }
     const turnId = randomUUID();
-    setOpenCodeRuntimeBusy(runtime, true);
-    runtime.activeTurnId = turnId;
-    runtime.interrupted = false;
-    setSessionActive(managed);
     const attachments = args.attachments ?? [];
     const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
@@ -29641,6 +30313,15 @@ export function createAgentChatService(args: {
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    const model = openCodeModelRefFor(managed, runtime.modelDescriptor);
+    // Registered before the prompt goes out: OpenCode can report the execution
+    // started (and even finished) before the prompt request returns.
+    const turn = beginOpenCodeTurn(managed, runtime, {
+      origin: "ade",
+      turnId,
+      requestedModel: { providerID: model.providerID, modelID: model.id },
+      laneDirectiveKey: args.laneDirectiveKey ?? null,
+    });
     emitPreparedUserMessage(managed, {
       text: userText,
       displayText,
@@ -29660,1384 +30341,68 @@ export function createAgentChatService(args: {
       turnId,
     });
 
-    // Every parent-session `step-finish` of this turn (one per model request):
-    // the done event reports their sum, and the last one's input side is the
-    // context the next request starts from.
-    const turnUsage = createOpenCodeTurnUsage();
-    // `providerID/modelID` of the latest assistant message, which names the
-    // model that actually answered.
-    let servedOpenCodeModel: { providerID?: string | null; modelID?: string | null } | null = null;
-    let finalAssistantText = "";
-    const turnStartedAt = Date.now();
-    let firstStreamEventLogged = false;
-    const markFirstStreamEvent = (kind: string): void => {
-      if (firstStreamEventLogged) return;
-      firstStreamEventLogged = true;
-      logger.info("agent_chat.turn_first_event", {
-        sessionId: managed.session.id,
-        provider: managed.session.provider,
-        ...(managed.session.provider === "claude" ? CLAUDE_AGENT_SDK_TELEMETRY_TAGS : {}),
-        turnId,
-        kind,
-        latencyMs: Date.now() - turnStartedAt,
-      });
-    };
-    const childUsageBySession = new Map<string, { totalTokens: number; costUsd: number }>();
-    const childUsageEvent = (childId: string): { totalTokens: number; costUsd?: number } | undefined => {
-      const acc = childUsageBySession.get(childId);
-      if (!acc || acc.totalTokens <= 0) return undefined;
-      return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
-    };
-    // Children this turn has already settled. OpenCode keeps publishing
-    // `session.updated` for a finished child (its summary, its `time.updated`
-    // when the parent reads the result) AFTER that child's `session.idle`, and
-    // the "missed the created event" synthesis below used to re-add the child
-    // on that update. Nothing settles it a second time, so the parent's idle
-    // then waited on a child that had already reported, and the turn never
-    // ended: 2026-09-21, two dev-loop turns with start → result → start in the
-    // transcript and no `done`.
-    const settledOpenCodeSubagentKeys = new Set<string>();
-    const settleOpenCodeSubagent = (
-      childKey: string,
-      status: "completed" | "failed" | "stopped",
-      summaryOverride?: string,
-    ): boolean => {
-      settledOpenCodeSubagentKeys.add(childKey);
-      const child = runtime.subagentSessions.get(childKey);
-      if (!child) return false;
-      const summary = summaryOverride ?? child.summary;
-      const childUsage = childUsageEvent(childKey);
-      emitChatEvent(managed, {
-        type: "subagent_result",
-        taskId: childKey,
-        parentToolUseId: null,
-        status,
-        summary,
-        finalSummary: summary,
-        ...(childUsage ? { usage: childUsage } : {}),
-        turnId: child.turnId,
-      });
-      runtime.subagentSessions.delete(childKey);
-      return true;
-    };
-
+    const client = runtime.handle.client;
+    const sessionID = runtime.handle.sessionId;
+    let startWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
+      // Agent (permissions) and model (with the effort/Fast variant) live on the
+      // OpenCode session; only a change is sent.
+      const agent = runtime.permissionMode === "config-toml" ? null : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
+      if (agent && agent !== runtime.agent) {
+        await client.session.switchAgent({ sessionID, agent });
+        runtime.agent = agent;
+      }
+      const sessionRules = openCodeSessionRulesFor(runtime.permissionMode);
+      if (sessionRules.key !== runtime.sessionRulesKey) {
+        await client.session.update({ sessionID, permissions: sessionRules.rules });
+        runtime.sessionRulesKey = sessionRules.key;
+      }
+      if (!sameOpenCodeModel(runtime.model, model)) {
+        await client.session.switchModel({ sessionID, model });
+        runtime.model = model;
+      }
+      const instructions = buildOpenCodeSessionInstructions(managed, runtime.permissionMode);
+      if (instructions !== runtime.instructions) {
+        await applyOpenCodeSessionContext(runtime.handle, { instructions });
+        runtime.instructions = instructions;
+      }
+
       const providerSlashCommand = args.providerSlashCommand === true;
       const attachmentHint = formatAttachedContextHint(attachments);
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
-      const userContent = providerSlashCommand
-        ? args.promptText
-        : [
-            pendingContext,
-            `${args.promptText}${attachmentHint}`,
-          ].filter((section): section is string => Boolean(section)).join("\n\n");
-
-      const previousEventAbort = runtime.eventAbortController;
-      const abortController = new AbortController();
-      runtime.eventAbortController = abortController;
-      previousEventAbort?.abort();
-      runtime.textByPartId.clear();
-      runtime.reasoningByPartId.clear();
-      runtime.partTypeByPartId.clear();
-      runtime.toolStateByPartId.clear();
-      runtime.toolInputByPartId.clear();
-      runtime.compactionStartedPartIds.clear();
-
-      const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
-      // Fast and the effort share OpenCode's one `variant`, so Fast can move
-      // the turn to the model's fast sibling. The served-model check at the end
-      // of the turn compares against this request, not the row's own model.
-      const openCodeSelection = resolveOpenCodeFastEffortSelection(runtime.modelDescriptor, {
-        fastMode: managed.session.fastMode,
-        reasoningEffort: managed.session.reasoningEffort,
-      });
-      const baseOpenCodeModel = resolveOpenCodeModelSelection(runtime.modelDescriptor);
-      const requestedOpenCodeModel = {
-        providerID: baseOpenCodeModel.providerID,
-        modelID: openCodeSelection.modelId ?? baseOpenCodeModel.modelID,
-      };
-      if (openCodeSelection.fastUnavailableReason) {
-        const fallbackKey = [
-          managed.session.id,
-          runtime.modelDescriptor.id,
-          managed.session.reasoningEffort ?? "",
-        ].join("\u0000");
-        if (!loggedOpenCodeFastFallbacks.has(fallbackKey)) {
-          rememberBoundedId(loggedOpenCodeFastFallbacks, fallbackKey, 256);
-          logger.warn("agent_chat.opencode_fast_not_applied", {
-            sessionId: managed.session.id,
-            turnId,
-            modelId: runtime.modelDescriptor.id,
-            reasoningEffort: managed.session.reasoningEffort ?? null,
-            reason: openCodeSelection.fastUnavailableReason,
-          });
-        }
-      }
-      const openCodeAgent = runtime.permissionMode === "config-toml"
-        ? null
-        : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
-      const openCodeSystemPrompt = buildOpenCodeSystemPrompt({
-        laneWorktreePath: managed.laneWorktreePath,
-        session: managed.session,
-        spawnGuidance: spawnSelfReportOpts(managed.session),
-        sessionActivityGuidance: buildOpenCodeSessionActivityGuidance(
-          managed.session,
-          runtime.permissionMode !== "plan"
-            && runtime.permissionMode !== "config-toml"
-            && managed.session.permissionMode !== "plan"
-            && managed.session.interactionMode !== "plan",
-        ),
-      });
-      const openCodePromptBody = {
-        sessionID: runtime.handle.sessionId,
-        directory: runtime.handle.directory,
-        ...(openCodeAgent ? { agent: openCodeAgent } : {}),
-        model: requestedOpenCodeModel,
-        ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
-        ...(openCodeSelection.variant ? { variant: openCodeSelection.variant } : {}),
-        parts: buildOpenCodePromptParts({
-          prompt: userContent,
-          files: toPromptFiles,
-        }),
-      };
-
-      // Subscribe BEFORE dispatching. The event stream is live-only — it never
-      // replays events published before the connection lands — so a prompt
-      // request that wins this race would have its assistant `message.updated`
-      // role announcement (and first parts) lost, and the role gate below
-      // would then drop every part of that message.
-      const eventStream = await openCodeEventStream({
-        client: runtime.handle.client,
-        directory: runtime.handle.directory,
-        signal: abortController.signal,
-        // The stream is bounded now (see OPENCODE_SSE_MAX_RETRY_ATTEMPTS), so a
-        // dropped socket ends the loop instead of hanging the turn forever. Log
-        // the cause: the turn then fails through the "ended before idle" path,
-        // whose message alone does not say the connection broke. Stop aborts the
-        // same socket, and that is the user getting what they asked for.
-        onSseError: (error) => {
-          if (abortController.signal.aborted) return;
-          logger.warn("agent_chat.opencode_event_stream_error", {
-            sessionId: managed.session.id,
-            turnId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
-
-      let promptFailure: unknown = null;
-      const promptAccepted = runtime.handle.client.session.promptAsync(
-        openCodePromptBody,
-        { throwOnError: true },
-      ).then(() => {
-        args.onBackendDispatched?.();
-      }).catch((error: unknown) => {
-        promptFailure = error;
-        abortController.abort();
-        throw error;
-      });
-      // Drain the live-only SSE immediately. Awaiting promptAsync first loses
-      // `message.updated` on fast follow-up turns; the role gate then drops
-      // every assistant part while `session.idle` still completes the turn.
-
-      let stepNumber = 0;
-      // Role of every message OpenCode tells us about, keyed by message id.
-      // Part events alone carry no role, and user-message parts (including
-      // synthetic/ignored prompt context) ride the same `message.part.updated`
-      // stream as assistant output — so content emission must be gated on a
-      // known assistant role, never on the part shape alone. OpenCode publishes
-      // `message.updated` before the first part of a message, so the role is
-      // always resolved by the time its parts arrive.
-      const openCodeMessageRoleById = new Map<string, "assistant" | "user">();
-      // Assistant messages OpenCode created to hold an auto-compaction summary.
-      // They carry `summary: true` and stream the summary as ordinary text parts
-      // under the assistant role, so the role gate alone lets a recap of the
-      // conversation render as the model's reply to the user. The compaction
-      // part and `session.compacted` already show that compaction happened.
-      const openCodeSummaryMessageIds = new Set<string>();
-      /**
-       * Assistant output is what a message renders as when it is the model
-       * talking to the user — not a user-message part echoing back, and not an
-       * auto-compaction summary.
-       */
-      const rendersAsAssistantOutput = (messageID: string): boolean =>
-        openCodeMessageRoleById.get(messageID) === "assistant"
-        && !openCodeSummaryMessageIds.has(messageID);
-      // A ContextOverflowError is usually recoverable — OpenCode compacts and
-      // carries on. It is NOT always: with `compaction.auto` off it idles without
-      // compacting, and the compaction turn can overflow again and stop. Either
-      // way the turn produces no further assistant text, and reporting that as a
-      // completed turn tells the user their question was answered when it was
-      // not. `finalAssistantText` already counts every emitted character, so
-      // marking its length at the overflow costs nothing in the streaming path.
-      let contextOverflow: { message: string; textLengthAtOverflow: number } | null = null;
-      const emittedOpenCodeImagePartIds = new Set<string>();
-      const emitOpenCodeImagePart = (part: unknown): void => {
-        const imageEvent = mapOpenCodeImagePart({
-          part,
-          turnId,
-          emittedPartIds: emittedOpenCodeImagePartIds,
+      const files = buildOpenCodePromptFiles(toOpenCodePromptFiles(resolvedAttachments).files);
+      const slash = providerSlashCommand ? /^\/(\S+)\s*([\s\S]*)$/.exec(args.promptText.trim()) : null;
+      if (slash) {
+        await client.session.command({
+          sessionID,
+          name: slash[1]!,
+          text: slash[2] ?? "",
+          ...(files.length ? { files } : {}),
         });
-        if (imageEvent) emitChatEvent(managed, imageEvent);
-      };
-      /**
-       * Tool-returned images are views, not generations: the same `file` shape
-       * backs both, and labeling a `read` of a screenshot "Image generated"
-       * invented model output that never happened. Shared dedupe set with the
-       * generated-image path so one wire part can never render twice.
-       */
-      const emitOpenCodeImageAttachment = (part: unknown): void => {
-        const viewEvent = mapOpenCodeImageAttachment({
-          part,
-          turnId,
-          emittedPartIds: emittedOpenCodeImagePartIds,
-        });
-        if (viewEvent) emitChatEvent(managed, viewEvent);
-      };
-      let parentSessionIdle = false;
-      // The stream is not trusted alone for the end of the turn: an idle that
-      // lands while the socket is between connections is gone, and the loop
-      // used to wait forever with the chat showing "Working". While the stream
-      // is quiet the server is asked directly, and a session it reports idle
-      // gets its idle synthesized here. See `openCodeIdleProbe.ts`.
-      const probedStream = withOpenCodeIdleProbe<OpenCodeRuntimeEvent>(eventStream, {
-        quietMs: OPENCODE_IDLE_PROBE_QUIET_MS,
-        waitingOn: () => [
-          ...(parentSessionIdle ? [] : [runtime.handle.sessionId]),
-          ...runtime.subagentSessions.keys(),
-        ],
-        probe: async () => {
-          const status = runtime.handle.client.session.status;
-          if (typeof status !== "function") return null;
-          const reply = await status.call(
-            runtime.handle.client.session,
-            { directory: runtime.handle.directory },
-            { throwOnError: true },
-          );
-          return readOpenCodeSessionStatuses((reply as { data?: unknown }).data);
-        },
-        makeIdleEvent: (sessionID) => ({
-          type: "session.idle",
-          properties: { sessionID },
-        }) as OpenCodeRuntimeEvent,
-        // A server that stops answering status probes while this turn is quiet
-        // would otherwise hold the chat on "Working" forever. After a bounded
-        // run of unusable probes the turn fails visibly with this error.
-        makeProbeFailureEvent: (sessionIDs) => ({
-          type: "session.error",
-          properties: {
-            sessionID: sessionIDs[0] ?? runtime.handle.sessionId,
-            error: {
-              name: "OpenCodeStatusProbeFailed",
-              data: {
-                message: "OpenCode stopped answering status checks while this turn was still running, so ADE ended it. Check the OpenCode server and retry.",
-              },
-            },
-          },
-        }) as unknown as OpenCodeRuntimeEvent,
-        onSynthesized: (sessionIDs) => {
-          logger.warn("agent_chat.opencode_idle_recovered_by_probe", {
-            sessionId: managed.session.id,
-            turnId,
-            sessionIDs: [...sessionIDs],
-          });
-        },
-        onProbeFailed: (sessionIDs) => {
-          logger.warn("agent_chat.opencode_idle_probe_failed", {
-            sessionId: managed.session.id,
-            turnId,
-            sessionIDs: [...sessionIDs],
-          });
-        },
-      });
-      for await (const event of probedStream) {
-        const resolveSessionId = (): string | null => {
-          const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
-          if (legacyPermission) return legacyPermission.properties.sessionID;
-          switch (event.type) {
-            case "message.updated":
-              return event.properties.info.sessionID;
-            case "session.created":
-            case "session.updated":
-            case "session.deleted":
-              return event.properties.info.id;
-            case "message.part.updated":
-              return event.properties.part.sessionID;
-            case "message.part.delta":
-            case "message.part.removed":
-            case "message.removed":
-              return event.properties.sessionID;
-            case "permission.asked":
-              return event.properties.sessionID;
-            case "permission.replied":
-              return event.properties.sessionID;
-            case "question.asked":
-              return event.properties.sessionID;
-            case "question.replied":
-              return event.properties.sessionID;
-            case "question.rejected":
-              return event.properties.sessionID;
-            case "session.status":
-            case "session.idle":
-            case "todo.updated":
-            case "session.diff":
-              return event.properties.sessionID;
-            case "session.error":
-              return event.properties.sessionID ?? null;
-            case "command.executed":
-              return event.properties.sessionID;
-            case "session.compacted":
-              return event.properties.sessionID;
-            default:
-              return null;
-          }
-        };
-
-        if (event.type === "session.idle" && event.properties.sessionID !== runtime.handle.sessionId) {
-          const childKey = event.properties.sessionID;
-          settleOpenCodeSubagent(childKey, "completed");
-          if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
-          continue;
-        }
-
-        if (event.type === "session.error") {
-          const childKey = event.properties.sessionID ?? null;
-          const child = childKey ? runtime.subagentSessions.get(childKey) : null;
-          if (childKey && child) {
-            const summary = openCodeSessionErrorMessage(event.properties.error);
-            settleOpenCodeSubagent(childKey, "failed", summary);
-            if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
-            continue;
-          }
-          if (!childKey || childKey === runtime.handle.sessionId) {
-            const sessionError = event.properties.error;
-            const errorName = sessionError?.name ?? null;
-
-            // Usually recoverable: OpenCode compacts the conversation itself and
-            // keeps going without idling, so throwing killed a turn that was
-            // about to continue. It is not a promise, though — see
-            // `contextOverflow` at the idle check below.
-            if (errorName === "ContextOverflowError") {
-              contextOverflow = {
-                message: openCodeSessionErrorMessage(sessionError),
-                textLengthAtOverflow: finalAssistantText.length,
-              };
-              emitChatEvent(managed, {
-                type: "system_notice",
-                noticeKind: "provider_health",
-                severity: "info",
-                message: "Context limit reached — OpenCode will try to compact the conversation.",
-                detail: contextOverflow.message,
-                turnId,
-              });
-              continue;
-            }
-
-            // Somebody else stopped this turn: the OpenCode TUI or CLI sharing
-            // this server can abort a session ADE is streaming. That is an
-            // interruption, not a failure, and OpenCode idles right after — so
-            // let the normal idle path render it the way ADE's own stop button
-            // renders.
-            if (errorName === "MessageAbortedError") {
-              runtime.interrupted = true;
-              continue;
-            }
-
-            // Keep the structured error reachable: classifyOpenCodeError walks
-            // `cause` for the status code and the nested messages that decide
-            // auth vs rate-limit vs network, and a bare message string throws
-            // all of that away.
-            throw new Error(openCodeSessionErrorMessage(sessionError), { cause: sessionError });
-          }
-          continue;
-        }
-
-        // Surface OpenCode child sessions (spawned via the `task` subagent
-        // tool) as subagent lifecycle events. Child sessions carry a
-        // `parentID` pointing at this runtime's primary session.
-        if (
-          event.type === "session.created"
-          || event.type === "session.updated"
-          || event.type === "session.deleted"
-        ) {
-          const childInfo = event.properties.info;
-          if (
-            childInfo.parentID
-            && childInfo.parentID === runtime.handle.sessionId
-            && childInfo.id !== runtime.handle.sessionId
-          ) {
-            const childKey = childInfo.id;
-            const childDescription = (childInfo.title && childInfo.title.length)
-              ? childInfo.title
-              : "subagent";
-            const childModel = openCodeChildSessionModel(childInfo);
-            const formatSummary = (): string => {
-              const summary = childInfo.summary;
-              return summary
-                ? `+${summary.additions} −${summary.deletions} · ${summary.files} files`
-                : childDescription;
-            };
-            const ensureSubagentStarted = (): void => {
-              if (runtime.subagentSessions.has(childKey)) return;
-              if (settledOpenCodeSubagentKeys.has(childKey)) return;
-              runtime.subagentSessions.set(childKey, {
-                summary: formatSummary(),
-                turnId,
-                description: childDescription,
-              });
-              // We intentionally do NOT set `agentType` here. OpenCode encodes
-              // the human-readable identity in `session.title`, which we surface
-              // as `description`. The renderer prefers `agentType` when present,
-              // so omitting it lets the description drive the row label.
-              emitChatEvent(managed, {
-                type: "subagent_started",
-                taskId: childKey,
-                parentToolUseId: null,
-                description: childDescription,
-                turnId,
-                ...optionalSubagentModelFields(childModel),
-              });
-            };
-
-            if (event.type === "session.created") {
-              ensureSubagentStarted();
-            } else if (event.type === "session.updated") {
-              // A finished child keeps publishing updates; they are not a new
-              // run and must not re-add it (see `settledOpenCodeSubagentKeys`).
-              if (settledOpenCodeSubagentKeys.has(childKey)) {
-                if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
-                continue;
-              }
-              // Synthesize started first if we missed the created event so the
-              // panel has a row to update.
-              ensureSubagentStarted();
-              runtime.subagentSessions.set(childKey, {
-                summary: formatSummary(),
-                turnId,
-                description: childDescription,
-              });
-              emitChatEvent(managed, {
-                type: "subagent_progress",
-                taskId: childKey,
-                parentToolUseId: null,
-                description: childDescription,
-                summary: formatSummary(),
-                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
-                turnId,
-                ...optionalSubagentModelFields(childModel),
-              });
-            } else {
-              // Deletion is distinct from normal completion (`session.idle`).
-              settleOpenCodeSubagent(childKey, "stopped", "Subagent session deleted");
-            }
-            if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
-            continue;
-          }
-        }
-
-        // Accumulate per-child (subagent) usage from the child's own
-        // `step-finish` parts. These belong to a child session, so they fall
-        // outside the parent-session filter below; catch them here first. The
-        // running total rides along on the next subagent progress/result event.
-        if (event.type === "message.part.updated") {
-          const childPart = event.properties.part;
-          if (
-            childPart.type === "step-finish"
-            && childPart.sessionID
-            && childPart.sessionID !== runtime.handle.sessionId
-            && runtime.subagentSessions.has(childPart.sessionID)
-          ) {
-            const prev = childUsageBySession.get(childPart.sessionID) ?? { totalTokens: 0, costUsd: 0 };
-            const t = childPart.tokens;
-            const stepTokens = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0)
-              + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
-            childUsageBySession.set(childPart.sessionID, {
-              totalTokens: prev.totalTokens + stepTokens,
-              costUsd: prev.costUsd + (typeof childPart.cost === "number" ? childPart.cost : 0),
-            });
-            // Don't emit here — the running total rides along on the next child
-            // session.updated (progress) / session.idle (result) event via
-            // childUsageEvent(), so we avoid empty-summary "dead" progress events.
-            continue;
-          }
-        }
-
-        const eventSessionId = resolveSessionId();
-        const childAskSessionId = eventSessionId !== null && eventSessionId !== runtime.handle.sessionId
-          ? eventSessionId
-          : null;
-        if (childAskSessionId !== null) {
-          // An ask raised by a tracked child session (subagent) blocks the whole
-          // turn: dropping it here is exactly what left the parent "running"
-          // for an hour while a child sat on an unanswered permission prompt.
-          // Admit it through the same handlers below. v2 replies are keyed by
-          // request id; the legacy responder carries the child's session id.
-          const isChildAsk = event.type === "permission.asked"
-            || event.type === "question.asked"
-            || asLegacyOpenCodePermissionUpdated(event) !== null;
-          if (!isChildAsk || !runtime.subagentSessions.has(childAskSessionId)) continue;
-        }
-        const childAskLabel = childAskSessionId !== null
-          ? runtime.subagentSessions.get(childAskSessionId)?.description ?? "Subagent"
-          : null;
-        /**
-         * A child ask is the reason the child is not progressing, so the
-         * subagent row must say "blocked" rather than keep drawing a spinner.
-         * Emitting a plain progress event on reply clears it.
-         */
-        const markChildAskBlocked = (reason: string): void => {
-          if (childAskSessionId === null) return;
-          const child = runtime.subagentSessions.get(childAskSessionId);
-          const usage = childUsageEvent(childAskSessionId);
-          emitChatEvent(managed, {
-            type: "subagent_progress",
-            taskId: childAskSessionId,
-            parentToolUseId: null,
-            ...(child?.description ? { description: child.description } : {}),
-            summary: `Waiting for approval — ${reason}`,
-            blockedReason: reason,
-            ...(usage ? { usage } : {}),
-            turnId: child?.turnId ?? turnId,
-          });
-        };
-        const clearChildAskBlocked = (): void => {
-          if (childAskSessionId === null) return;
-          const child = runtime.subagentSessions.get(childAskSessionId);
-          if (!child) return;
-          emitChatEvent(managed, {
-            type: "subagent_progress",
-            taskId: childAskSessionId,
-            parentToolUseId: null,
-            ...(child.description ? { description: child.description } : {}),
-            summary: child.summary,
-            blockedReason: null,
-            turnId: child.turnId,
-          });
-        };
-
-        // Incremental assistant output. OpenCode's processor calls
-        // `updatePartDelta` for every `text-delta` and only calls `updatePart`
-        // at text-start and text-end, so `message.part.updated` carries an
-        // empty part, then the finished one — nothing in between. Without this
-        // branch the whole answer lands in a single jump at the end of the
-        // turn and the chat looks frozen while the model is talking. The
-        // running text is tracked here so the closing full-part update diffs to
-        // an empty delta instead of re-emitting the entire message.
-        if (event.type === "message.part.delta") {
-          const { messageID, partID, field, delta } = event.properties;
-          if (!rendersAsAssistantOutput(messageID)) continue;
-          if (typeof delta !== "string" || !delta.length) continue;
-          // `field` is the name of the part property being appended to, NOT the
-          // kind of part. OpenCode's processor publishes reasoning deltas with
-          // `field: "text"`, because a reasoning part's property is also called
-          // `text`. Classifying on `field` therefore rendered the whole chain of
-          // thought as the assistant's answer (and re-rendered it as a thought
-          // when the closing full part arrived). The part-start
-          // `message.part.updated` always precedes the first delta of a part, so
-          // the recorded part kind is the correct classifier. Older binaries that
-          // never send the part-start fall back to the previous `field` rule.
-          const partKind = runtime.partTypeByPartId.get(partID)
-            ?? (runtime.reasoningByPartId.has(partID) || field === "reasoning" ? "reasoning" : "text");
-          if (partKind === "reasoning") {
-            runtime.reasoningByPartId.set(partID, (runtime.reasoningByPartId.get(partID) ?? "") + delta);
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: "thinking",
-              detail: REASONING_ACTIVITY_DETAIL,
-              turnId,
-            });
-            emitChatEvent(managed, { type: "reasoning", text: delta, turnId, itemId: partID });
-            continue;
-          }
-          if (partKind === "text") {
-            runtime.textByPartId.set(partID, (runtime.textByPartId.get(partID) ?? "") + delta);
-            finalAssistantText += delta;
-            emitChatEvent(managed, { type: "text", text: delta, turnId, itemId: partID });
-          }
-          continue;
-        }
-
-        if (event.type === "message.updated") {
-          const info = event.properties.info;
-          if (info.role === "assistant" || info.role === "user") {
-            openCodeMessageRoleById.set(info.id, info.role);
-          }
-          if (info.role === "assistant" && info.summary === true) {
-            openCodeSummaryMessageIds.add(info.id);
-          } else if (info.role === "assistant") {
-            // A compaction summary can run on its own model; only a reply
-            // message says which model answered the user.
-            servedOpenCodeModel = { providerID: info.providerID, modelID: info.modelID };
-          }
-          continue;
-        }
-
-        // Revert/undo. Drop the per-part accumulators so a later part id reused
-        // by OpenCode cannot diff against text that no longer exists, and so a
-        // removed reasoning part stops being treated as reasoning. No renderer
-        // event goes out: `transcript_retraction` matches rows by `messageId`,
-        // which OpenCode text events do not carry, and adding one would make
-        // every part of a message merge into a single row.
-        if (event.type === "message.part.removed") {
-          const removedPartId = event.properties.partID;
-          runtime.textByPartId.delete(removedPartId);
-          runtime.reasoningByPartId.delete(removedPartId);
-          runtime.partTypeByPartId.delete(removedPartId);
-          runtime.toolStateByPartId.delete(removedPartId);
-          runtime.toolInputByPartId.delete(removedPartId);
-          runtime.compactionStartedPartIds.delete(removedPartId);
-          emittedOpenCodeImagePartIds.delete(removedPartId);
-          continue;
-        }
-
-        if (event.type === "message.removed") {
-          const removedMessageId = event.properties.messageID;
-          openCodeMessageRoleById.delete(removedMessageId);
-          openCodeSummaryMessageIds.delete(removedMessageId);
-          continue;
-        }
-
-        // A failing provider is otherwise invisible: OpenCode retries with
-        // exponential backoff and publishes nothing else, so the chat shows a
-        // spinner for minutes and the user assumes it is wedged. `session.status`
-        // retry events are the only signal, so surface one replaceable activity
-        // status rather than a durable notice for every attempt.
-        if (event.type === "session.status") {
-          const status = event.properties.status;
-          if (status.type !== "retry") continue;
-          // The SDK declares these required, but this is the wire: a field that
-          // arrives missing or mistyped must not become "Retrying in NaNs."
-          const { attempt: wireAttempt, message: wireMessage, next: wireNext, action } = status;
-          const attempt = typeof wireAttempt === "number" ? wireAttempt : 0;
-          const providerMessage = typeof wireMessage === "string" ? wireMessage.trim() : "";
-          const nextAtMs = typeof wireNext === "number" ? wireNext : null;
-          const nowMs = Date.now();
-          const retryInSeconds = nextAtMs === null
-            ? null
-            : Math.max(0, Math.round((nextAtMs - nowMs) / 1000));
-          const classificationText = [
-            providerMessage.length ? providerMessage : "The provider request failed.",
-            typeof action?.title === "string" ? action.title.trim() : null,
-            typeof action?.message === "string" ? action.message.trim() : null,
-            typeof action?.link === "string" ? action.link.trim() : null,
-          ].filter((line): line is string => Boolean(line)).join(" ");
-          emitLiveOnlyChatEvent(managed, {
-            type: "activity",
-            activity: "working",
-            providerRetry: true,
-            detail: formatProviderRetryActivityDetail({
-              provider: "opencode",
-              attempt,
-              retryDelayMs: retryInSeconds === null ? null : retryInSeconds * 1_000,
-              cause: classifyProviderRetryCause(classificationText),
-            }),
-            turnId,
-          });
-          continue;
-        }
-
-        if (event.type === "session.created" || event.type === "session.updated") {
-          adoptRuntimeSessionTitle(managed, event.properties.info, `opencode_${event.type}`);
-          continue;
-        }
-
-        if (event.type === "session.compacted") {
-          // End marker. The begin is emitted from the "compaction" message part below
-          // (which also carries the real manual/auto trigger).
-          emitChatEvent(managed, {
-            type: "context_compact",
-            trigger: runtime.lastCompactionTrigger ?? "auto",
-            state: "completed",
-            turnId,
-          });
-          runtime.lastCompactionTrigger = null;
-          runtime.compactionStartedPartIds.clear();
-          continue;
-        }
-
-        if (event.type === "message.part.updated") {
-          const { part } = event.properties;
-          const delta = openCodePartUpdatedDelta(event.properties);
-          markFirstStreamEvent(part.type);
-
-          // Record the part kind so the delta branch above can classify by it.
-          // OpenCode publishes this part-start update (with an empty body) before
-          // the first delta of every part.
-          runtime.partTypeByPartId.set(part.id, part.type);
-
-          // Compaction begin marker. OpenCode has no dedicated "started" event, but it
-          // streams a compaction part as soon as it begins summarizing; the matching
-          // session.compacted lands when it finishes. Surface this as a live begin so
-          // the chat shows "compacting…" instead of feeling stuck.
-          if (part.type === "compaction") {
-            const compactionKey = part.id || `turn:${turnId}`;
-            if (runtime.compactionStartedPartIds.has(compactionKey)) continue;
-            runtime.compactionStartedPartIds.add(compactionKey);
-            const trigger = part.auto === false ? "manual" : "auto";
-            runtime.lastCompactionTrigger = trigger;
-            emitChatEvent(managed, {
-              type: "context_compact",
-              trigger,
-              state: "started",
-              turnId,
-            });
-            continue;
-          }
-
-          if (part.type === "step-start") {
-            stepNumber += 1;
-            emitChatEvent(managed, {
-              type: "step_boundary",
-              stepNumber,
-              turnId,
-            });
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: runtime.modelDescriptor.capabilities.reasoning ? "thinking" : "working",
-              detail: runtime.modelDescriptor.capabilities.reasoning ? REASONING_ACTIVITY_DETAIL : WORKING_ACTIVITY_DETAIL,
-              turnId,
-            });
-            continue;
-          }
-
-          if (part.type === "step-finish") {
-            const describesContext = !openCodeSummaryMessageIds.has(part.messageID);
-            const step = recordOpenCodeStepFinish(
-              turnUsage,
-              part.id || `step:${turnUsage.steps.size}`,
-              part,
-              { describesContext },
-            );
-            // One live meter sample per step, shaped like Claude's automatic
-            // snapshots. A compaction summary's input is the conversation it
-            // replaces, so it never moves the meter.
-            const liveContext = describesContext
-              ? buildOpenCodeLiveContextUsage(step, runtime.modelDescriptor.contextWindow, managed.session.model, turnId)
-              : null;
-            if (liveContext) emitChatEvent(managed, { ...liveContext, capturedAt: nowIso() });
-            // Without this the activity line keeps naming the step's last tool
-            // until the next step-start, so a long gap between steps reads as a
-            // command that never finished.
-            emitChatEvent(managed, {
-              type: "activity",
-              activity: "working",
-              detail: WORKING_ACTIVITY_DETAIL,
-              turnId,
-            });
-            continue;
-          }
-
-          if (part.type === "text") {
-            // Skip synthetic/ignored prompt parts (e.g. ADE launch directives
-            // injected as system context) — they should not be rendered in chat.
-            if (part.synthetic || part.ignored) continue;
-            if (!rendersAsAssistantOutput(part.messageID)) {
-              continue;
-            }
-            const previous = runtime.textByPartId.get(part.id) ?? "";
-            const nextDelta = openCodeFullPartDelta(previous, part.text, delta);
-            runtime.textByPartId.set(part.id, part.text);
-            if (nextDelta.length) {
-              finalAssistantText += nextDelta;
-              emitChatEvent(managed, {
-                type: "text",
-                text: nextDelta,
-                turnId,
-                itemId: part.id,
-              });
-            }
-            continue;
-          }
-
-          if (part.type === "reasoning") {
-            if (!rendersAsAssistantOutput(part.messageID)) {
-              continue;
-            }
-            const previous = runtime.reasoningByPartId.get(part.id) ?? "";
-            const nextDelta = openCodeFullPartDelta(previous, part.text, delta);
-            runtime.reasoningByPartId.set(part.id, part.text);
-            if (nextDelta.length) {
-              emitChatEvent(managed, {
-                type: "activity",
-                activity: "thinking",
-                detail: REASONING_ACTIVITY_DETAIL,
-                turnId,
-              });
-              emitChatEvent(managed, {
-                type: "reasoning",
-                text: nextDelta,
-                turnId,
-                itemId: part.id,
-              });
-            }
-            continue;
-          }
-
-          if (part.type === "file") {
-            // Prompt attachments use the same wire part. Only assistant-owned
-            // files are output; tool attachments are handled below directly. Role
-            // alone is the right gate here, not `rendersAsAssistantOutput`: a
-            // compaction summary carries no attachments to suppress, and an
-            // unannounced message has no role yet, so it stays unrendered.
-            if (openCodeMessageRoleById.get(part.messageID) === "assistant") {
-              emitOpenCodeImagePart(part);
-            }
-            continue;
-          }
-
-          if (part.type === "tool") {
-            const previousStatus = runtime.toolStateByPartId.get(part.id) ?? null;
-            const nextStatus = part.state.status;
-            runtime.toolStateByPartId.set(part.id, nextStatus);
-            const itemId = part.callID || part.id;
-            const toolMetadata = {
-              partId: part.id,
-            };
-
-            const input = part.state.input;
-            const hasInput = hasNonEmptyRecord(input);
-            const serializedInput = hasInput ? JSON.stringify(input) : null;
-            const newInputArrived = serializedInput !== null
-              && runtime.toolInputByPartId.get(part.id) !== serializedInput;
-            if (!previousStatus) {
-              const nextActivity = activityForToolName(part.tool);
-              emitChatEvent(managed, {
-                type: "activity",
-                activity: nextActivity.activity,
-                detail: nextActivity.detail,
-                turnId,
-              });
-            }
-            // Re-emitting the same item merges into its row (args replace the
-            // empty ones). It must precede the result below: a `tool_call`
-            // after its `tool_result` would flip the finished row to running.
-            if (!previousStatus || newInputArrived) {
-              if (serializedInput !== null) runtime.toolInputByPartId.set(part.id, serializedInput);
-              emitChatEvent(managed, {
-                type: "tool_call",
-                tool: part.tool,
-                args: input,
-                itemId,
-                logicalItemId: part.id,
-                turnId,
-              });
-            }
-
-            if (nextStatus === "completed" && (previousStatus !== "completed" || newInputArrived)) {
-              if (previousStatus !== "completed") {
-                // A media-producing tool's attachment is its output, so it keeps
-                // the generation card; every other tool's images are views. Do
-                // not duplicate attachments when a late input re-emits the result.
-                const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
-                for (const attachment of part.state.attachments ?? []) {
-                  if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
-                  else emitOpenCodeImageAttachment(attachment);
-                }
-              }
-              const webSources = openCodeWebToolSourceRefs(
-                part.tool,
-                part.state.input,
-                part.state.output,
-                part.state.title,
-              );
-              emitChatEvent(managed, {
-                type: "tool_result",
-                tool: part.tool,
-                result: {
-                  ...toolMetadata,
-                  output: part.state.output,
-                  metadata: part.state.metadata ?? part.metadata ?? {},
-                  attachments: part.state.attachments,
-                },
-                ...(webSources.length ? { sources: webSources } : {}),
-                itemId,
-                logicalItemId: part.id,
-                turnId,
-                status: "completed",
-              });
-            } else if (nextStatus === "error" && (previousStatus !== "error" || newInputArrived)) {
-              emitChatEvent(managed, {
-                type: "tool_result",
-                tool: part.tool,
-                result: {
-                  ...toolMetadata,
-                  error: part.state.error,
-                  metadata: part.state.metadata ?? part.metadata ?? {},
-                },
-                itemId,
-                logicalItemId: part.id,
-                turnId,
-                status: "failed",
-              });
-              if (previousStatus !== "error") {
-                emitChatEvent(managed, {
-                  type: "error",
-                  message: `Tool '${part.tool}' failed: ${part.state.error}`,
-                  itemId,
-                  turnId,
-                });
-              }
-            }
-            continue;
-          }
-
-          if (part.type === "patch") {
-            for (const file of part.files) {
-              emitChatEvent(managed, {
-                type: "file_change",
-                path: file,
-                diff: `OpenCode updated ${file}`,
-                kind: "modify",
-                itemId: `${part.id}:${file}`,
-                logicalItemId: part.id,
-                turnId,
-                status: "completed",
-              });
-            }
-            continue;
-          }
-
-          if (part.type === "subtask") {
-            // Child session events are the canonical lifecycle. A subtask part
-            // describes the invocation but has no terminal-state contract.
-            continue;
-          }
-
-          continue;
-        }
-
-        if (event.type === "question.asked") {
-          const questionRequest = event.properties;
-          const questions = openCodeQuestionsToPendingQuestions(questionRequest.questions ?? []);
-          const firstQuestion = questions[0];
-          // Ask on a detached task. Awaiting the user here stalled the whole
-          // event stream: while the modal was open nothing else drained, so a
-          // subagent's approval prompt, its streamed text, and every tool result
-          // sat in the socket until the person answered. On 1.18.x OpenCode's
-          // question tool blocks server-side until it gets a reply, so the parent
-          // session is not expected to idle underneath an open card — see the
-          // completion path, which does NOT cancel these cards for that reason.
-          const rejectOpenCodeQuestion = async (): Promise<void> => {
-            await runtime.handle.client.question.reject({
-              requestID: questionRequest.id,
-              directory: runtime.handle.directory,
-            }, { throwOnError: true });
-          };
-          const questionTitle = childAskLabel
-            ? `${childAskLabel} asks`
-            : questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode";
-          markChildAskBlocked(firstQuestion?.question ?? "Waiting for an answer");
-          const resolveOpenCodeQuestion = async (): Promise<void> => {
-            const response = await requestChatInput({
-              chatSessionId: managed.session.id,
-              title: questionTitle,
-              body: firstQuestion?.question ?? waitingOnYouDescription(questions.length),
-              source: "opencode",
-              providerMetadata: {
-                openCodeQuestion: true,
-                requestId: questionRequest.id,
-                tool: questionRequest.tool ?? null,
-              },
-              eventDescription: "OpenCode question",
-              eventDetail: { openCodeQuestion: questionRequest },
-              questions: questions.map(({ options, ...question }) => ({
-                ...question,
-                ...(options ? { options } : {}),
-              })),
-            });
-            if (managed.runtime !== runtime) return;
-            if (response.decision === "decline" || response.decision === "cancel") {
-              await rejectOpenCodeQuestion();
-              return;
-            }
-            const answerList = questions.map((question) => {
-              const answers = ownQuestionValue(response.answers, question.id) ?? [];
-              if (answers.length > 0) return answers;
-              return response.responseText?.trim() ? [response.responseText.trim()] : [];
-            });
-            await runtime.handle.client.question.reply({
-              requestID: questionRequest.id,
-              directory: runtime.handle.directory,
-              answers: answerList,
-            }, { throwOnError: true });
-          };
-          void resolveOpenCodeQuestion().catch(async (error) => {
-            // Stop already cancelled this card and aborted the session, so the
-            // rejection would fail against a dead session and the warning would
-            // report the user's own action as a failure.
-            if (runtime.interrupted) return;
-            logger.warn("agent_chat.opencode_question_failed", {
-              sessionId: managed.session.id,
-              turnId,
-              requestId: questionRequest.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            // The turn no longer fails on this path, so reject the question
-            // rather than leave OpenCode waiting for an answer that is not coming.
-            if (managed.runtime !== runtime) return;
-            await rejectOpenCodeQuestion().catch(() => {});
-          });
-          continue;
-        }
-
-        if (event.type === "question.replied" || event.type === "question.rejected") {
-          clearChildAskBlocked();
-          continue;
-        }
-
-        if (event.type === "permission.asked") {
-          const permission = event.properties;
-          const normalizedType = permission.permission.trim().toLowerCase();
-          const description = permission.patterns?.length
-            ? `${normalizedType}: ${permission.patterns.join(", ")}`
-            : normalizedType || "Approval required";
-          // Full access means no prompts, including for the project's own
-          // `.ade` state (`isOpenCodeExternalDirectoryInsideAdeRoot`). The
-          // reply goes out before any card exists, so there is no card for a
-          // later sweep to close while `chat status` still calls it blocked.
-          if (
-            runtime.permissionMode === "full-auto"
-            && normalizedType === "external_directory"
-            && isOpenCodeExternalDirectoryInsideAdeRoot(projectRoot, permission.patterns ?? [])
-          ) {
-            try {
-              await replyToOpenCodePendingApproval(
-                runtime.handle,
-                { category: "write", permissionId: permission.id, protocol: "v2" },
-                "always",
-              );
-              continue;
-            } catch (error) {
-              // Answering failed. Falling through re-raises the card rather
-              // than dropping an ask, which is the better of the two failures.
-              logger.warn("agent_chat.opencode_external_directory_auto_approve_failed", {
-                sessionId: managed.session.id,
-                turnId,
-                requestId: permission.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-          const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
-            || normalizedType.includes("command")
-            || description.toLowerCase().includes("command")
-            || description.toLowerCase().includes("bash")
-            ? "bash"
-            : "write";
-          // A child ask is attributed to its subagent so the card and status
-          // read as "Subagent X is waiting", not as an anonymous parent ask.
-          const attributedDescription = childAskLabel ? `${childAskLabel} · ${description}` : description;
-          const request: PendingInputRequest = {
-            requestId: permission.id,
-            itemId: permission.id,
-            source: "opencode",
-            kind: "approval",
-            description: attributedDescription,
-            questions: [],
-            allowsFreeform: false,
-            blocking: true,
-            canProceedWithoutAnswer: false,
-            providerMetadata: {
-              type: permission.permission,
-              metadata: permission.metadata,
-              callId: permission.tool?.callID ?? null,
-              protocol: "v2",
-              childSessionId: childAskSessionId,
-            },
-            turnId,
-          };
-          runtime.pendingApprovals.set(permission.id, {
-            category,
-            permissionId: permission.id,
-            protocol: "v2",
-            request,
-            ...(childAskSessionId ? { sessionId: childAskSessionId } : {}),
-          });
-          markChildAskBlocked(attributedDescription);
-          emitPendingInputRequest(managed, request, {
-            kind: category === "bash" ? "command" : "file_change",
-            description: attributedDescription,
-            detail: permission.metadata,
-          });
-          continue;
-        }
-
-        const legacyPermissionUpdated = asLegacyOpenCodePermissionUpdated(event);
-        if (legacyPermissionUpdated) {
-          const permission = legacyPermissionUpdated.properties;
-          const normalizedType = permission.type.trim().toLowerCase();
-          const description = permission.title.trim() || normalizedType || "Approval required";
-          const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
-            || normalizedType.includes("command")
-            || description.toLowerCase().includes("command")
-            || description.toLowerCase().includes("bash")
-            ? "bash"
-            : "write";
-          const attributedDescription = childAskLabel ? `${childAskLabel} · ${description}` : description;
-          const request: PendingInputRequest = {
-            requestId: permission.id,
-            itemId: permission.id,
-            source: "opencode",
-            kind: "approval",
-            description: attributedDescription,
-            questions: [],
-            allowsFreeform: false,
-            blocking: true,
-            canProceedWithoutAnswer: false,
-            providerMetadata: {
-              type: permission.type,
-              metadata: permission.metadata,
-              callId: permission.callID ?? null,
-              childSessionId: childAskSessionId,
-            },
-            turnId,
-          };
-          runtime.pendingApprovals.set(permission.id, {
-            category,
-            permissionId: permission.id,
-            protocol: "legacy",
-            request,
-            ...(childAskSessionId ? { sessionId: childAskSessionId } : {}),
-          });
-          markChildAskBlocked(attributedDescription);
-          emitPendingInputRequest(managed, request, {
-            kind: category === "bash" ? "command" : "file_change",
-            description: attributedDescription,
-            detail: permission.metadata,
-          });
-          continue;
-        }
-
-        if (event.type === "permission.replied") {
-          const replied = event.properties as {
-            permissionID?: string;
-            requestID?: string;
-            response?: string;
-            reply?: string;
-          };
-          const permissionId = replied.permissionID ?? replied.requestID;
-          if (!permissionId) continue;
-          const pending = runtime.pendingApprovals.get(permissionId);
-          if (!pending) continue;
-          runtime.pendingApprovals.delete(permissionId);
-          emitPendingInputResolved(managed, {
-            itemId: permissionId,
-            decision: (replied.response ?? replied.reply) === "reject"
-              ? "decline"
-              : "accept",
-            questions: pending.request?.questions ?? [],
-            turnId: pending.request?.turnId ?? null,
-          });
-          clearChildAskBlocked();
-          continue;
-        }
-
-        if (event.type === "todo.updated") {
-          emitChatEvent(managed, {
-            type: "todo_update",
-            items: event.properties.todos
-              .map((todo, index) => ({
-                // OpenCode's todo entries carry no id — the field the legacy SDK
-                // types advertised does not exist on the wire, so every item was
-                // emitted with `id: undefined` and the renderer keyed them all
-                // alike. Fall back to the list position, matching how the Claude
-                // todo mapper above already derives a stable id.
-                id: openCodeTodoId(todo, index),
-                description: todo.content,
-                // `cancelled` (the SDK's fourth status) is settled: the wire
-                // keeps `completed` for clients that know no cancelled state,
-                // and the flag lets the task list draw it as skipped.
-                status: todo.status === "completed" || todo.status === "cancelled"
-                  ? "completed"
-                  : todo.status === "in_progress"
-                    ? "in_progress"
-                    : "pending",
-                ...(todo.status === "cancelled" ? { cancelled: true as const } : {}),
-              })),
-            turnId,
-          });
-          continue;
-        }
-
-        if (event.type === "command.executed") {
-          emitChatEvent(managed, {
-            type: "activity",
-            activity: "running_command",
-            detail: `${event.properties.name} ${event.properties.arguments}`.trim(),
-            turnId,
-          });
-          continue;
-        }
-
-        if (event.type === "session.idle") {
-          parentSessionIdle = true;
-          if (runtime.subagentSessions.size === 0) break;
-          continue;
-        }
-      }
-      try {
-        await promptAccepted;
-      } catch (error) {
-        if (!parentSessionIdle) throw promptFailure ?? error;
-      }
-      abortController.abort();
-      if (!parentSessionIdle || runtime.subagentSessions.size > 0) {
-        throw new Error("OpenCode event stream ended before the parent and child sessions became idle");
-      }
-
-      // The overflow did NOT recover: OpenCode went idle without answering. That
-      // happens when the user turned `compaction.auto` off, and when compaction
-      // itself overflows. Reporting it as a completed turn would tell the user
-      // their question was answered.
-      if (
-        contextOverflow
-        && finalAssistantText.length === contextOverflow.textLengthAtOverflow
-        && !runtime.interrupted
-      ) {
-        throw new Error(contextOverflow.message);
-      }
-
-      // ── Shared turn completion ──
-      // The invariant for open OpenCode question cards: cancel them on EVERY
-      // turn end except a clean, non-interrupted completion. Only that one case
-      // can still be answered — ADE replies after the turn settles and OpenCode
-      // resumes the session — and it is pinned by "bridges OpenCode question
-      // events through ADE's question UI". Every other ending leaves a card
-      // nobody can answer: `hasLivePendingInput` then refuses the next send, and
-      // a late answer targets a session that is gone.
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-      void emitTurnDiffSummaryIfChanged(managed, turnId);
-      if (runtime.interrupted) {
-        // Reached both by ADE's own Stop (which also cancels in the interrupt
-        // branch, making this idempotent) and by an EXTERNAL abort: the OpenCode
-        // TUI or CLI on the same server aborts, `session.error` sets
-        // `interrupted`, and the loop settles here instead of throwing. Without
-        // this call that second route stranded the card.
-        cancelPendingInputsFrom(managed, "opencode", "ade");
-        setOpenCodeRuntimeBusy(runtime, false);
-        runtime.activeTurnId = null;
-        runtime.eventAbortController = null;
-        markSessionIdleWithFreshCache(managed);
-        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        });
-        persistChatState(managed);
       } else {
-        // No cancel here — this is the one ending whose card is still answerable.
-        setOpenCodeRuntimeBusy(runtime, false);
-        runtime.activeTurnId = null;
-        runtime.eventAbortController = null;
-        markSessionIdleWithFreshCache(managed);
-
-        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-        const doneUsage = buildOpenCodeDoneUsage(turnUsage, runtime.modelDescriptor.contextWindow);
-        const servedModel = resolveOpenCodeServedModel(requestedOpenCodeModel, servedOpenCodeModel);
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "completed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-          ...(doneUsage ? { usage: doneUsage.usage } : {}),
-          ...(doneUsage?.costSource ? { costUsd: doneUsage.costUsd, costSource: doneUsage.costSource } : {}),
-          ...(servedModel ? { servedModel } : {}),
-          account: turnUsageAccounts.openCode(
-            managed,
-            servedOpenCodeModel?.providerID?.trim() || requestedOpenCodeModel.providerID,
-          ),
-        });
-
-        if (finalAssistantText.trim().length > 0) {
-          appendCtoTurnJournal(managed, { assistantText: finalAssistantText });
-        }
-
-        const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
-        if (endSha) {
-          sessionService.setHeadShaEnd(managed.session.id, endSha);
-        }
-
-        persistChatState(managed);
-
-        // Process queued steers (skip if session was disposed during execution)
-        if (runtime.pendingSteers.length) {
-          await deliverNextQueuedSteer(managed, runtime);
-        }
+        const text = [pendingContext, `${args.promptText}${attachmentHint}`]
+          .filter((section): section is string => Boolean(section))
+          .join("\n\n");
+        await client.session.prompt({ sessionID, text, ...(files.length ? { files } : {}) });
       }
+      args.onBackendDispatched?.();
+      // A prompt OpenCode admitted but never ran would otherwise hold the chat
+      // on "Working": after a bound, ask the server what happened.
+      startWatchdog = setTimeout(() => {
+        if (runtime.activeTurn === turn && !turn.executionStarted) void reconcileOpenCodeRuntime(managed, runtime);
+      }, OPENCODE_EXECUTION_START_TIMEOUT_MS);
+      startWatchdog.unref?.();
     } catch (error) {
-      const stoppedSummary = runtime.interrupted || isAbortRelatedError(error)
-        ? "Parent turn interrupted before the child session became idle"
-        : "OpenCode event stream ended before the child session became idle";
-      for (const [childKey, child] of runtime.subagentSessions) {
-        if (child.turnId !== turnId) continue;
-        settleOpenCodeSubagent(childKey, "stopped", stoppedSummary);
+      if (error instanceof OpenCodeSessionInPersonalStoreError || isOpenCodeTaggedError(error, "SessionNotFoundError")) {
+        managed.runtimeInvalidated = true;
       }
-      setOpenCodeRuntimeBusy(runtime, false);
-      runtime.activeTurnId = null;
-      runtime.eventAbortController = null;
-      cancelPendingInputsFrom(managed, "opencode", "ade");
-      void emitTurnDiffSummaryIfChanged(managed, turnId);
-
-      if (runtime.interrupted) {
-        markSessionIdleWithFreshCache(managed);
-        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        });
-      } else if (isAbortRelatedError(error)) {
-        // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
-        markSessionIdleWithFreshCache(managed);
-        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "interrupted",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        });
-      } else {
-        markSessionIdleWithFreshCache(managed);
-
-        const { message: errorMessage, errorInfo } = classifyOpenCodeError(
-          error,
-          runtime.modelDescriptor.family,
-          runtime.modelDescriptor.displayName,
-        );
-
-        emitChatEvent(managed, {
-          type: "error",
-          message: errorMessage,
-          turnId,
-          errorInfo,
-        });
-
-        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "failed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        });
-
-        appendCtoTurnJournal(managed, {
-          failureNote: error instanceof Error
-            ? `Turn failed: ${error.message}`
-            : `Turn failed: ${String(error)}`,
-        });
-      }
-
-      persistChatState(managed);
-      cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
+      finishOpenCodeTurn(managed, runtime, { status: "failed", error });
       return;
+    }
+    try {
+      await turn.settled;
+    } finally {
+      if (startWatchdog) clearTimeout(startWatchdog);
     }
   };
 
@@ -38268,7 +37633,8 @@ export function createAgentChatService(args: {
   /** Enqueue a steer or drop it if the queue is full. Returns true if queued. */
   const enqueueSteerOrDrop = (
     managed: ManagedChatSession,
-    runtime: ChatRuntime,
+    // OpenCode's inbox owns its queue; its rows are admitted, never staged here.
+    runtime: Exclude<ChatRuntime, OpenCodeRuntime>,
     sessionId: string,
     steerId: string,
     text: string,
@@ -40617,11 +39983,8 @@ export function createAgentChatService(args: {
         throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
       }
       const handle = managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork(
-        { sessionID: handle.sessionId, directory: handle.directory },
-        { throwOnError: true },
-      );
-      const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
+      const forked = await handle.client.session.fork({ sessionID: handle.sessionId });
+      const forkedId = forked.id?.trim() ?? "";
       if (!forkedId) {
         throw new Error(`OpenCode session fork did not return a new session id for '${handle.sessionId}'.`);
       }
@@ -41287,23 +40650,12 @@ export function createAgentChatService(args: {
       if (!sessionId) {
         throw new Error("Full-history fork requires an OpenCode session id. Send an OpenCode message first, then try again.");
       }
-      const bin = resolveOpenCodeExecutablePath();
-      if (!bin) throw new Error("The OpenCode CLI is required to fork this chat.");
-      const exported = await runCliCapture(bin, ["export", sessionId, "--sanitize"], {
-        cwd: laneWorktreePath,
-        timeoutMs: 60_000,
-      });
-      if (exported.exitCode !== 0) {
-        throw new Error(`OpenCode export failed: ${exported.stderr.trim() || `exit code ${exported.exitCode}`}`);
-      }
-      if (!exported.stdout.length) throw new Error("OpenCode export returned no session data.");
-      try {
-        JSON.parse(exported.stdout.toString("utf8"));
-      } catch {
-        throw new Error("OpenCode export returned invalid JSON.");
-      }
-      if (exported.stdout.length > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) {
-        throw crossMachineForkOversizeError(exported.stdout.length);
+      // The export API returns the session and its messages as one object;
+      // `sanitize` strips secrets such as tool environment values.
+      const exported = await withOpenCodeClient(managed, (client) => client.session.export({ sessionID: sessionId, sanitize: true }));
+      const exportedJson = Buffer.from(JSON.stringify(exported), "utf8");
+      if (exportedJson.length > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) {
+        throw crossMachineForkOversizeError(exportedJson.length);
       }
       return {
         provider,
@@ -41311,7 +40663,7 @@ export function createAgentChatService(args: {
         kind: "opencode-export",
         mainFile: {
           name: `${sessionId}.json`,
-          ...gzipToBase64(exported.stdout),
+          ...gzipToBase64(exportedJson),
         },
       };
     }
@@ -41767,7 +41119,7 @@ export function createAgentChatService(args: {
           }
         }
         const openCodeExecutable = sourceProvider === "opencode"
-          ? resolveOpenCodeExecutablePath()
+          ? resolveOpenCodeBinaryPath()
           : "not-required";
         const supported = providerUsable && openCodeExecutable != null;
         forkHandoffSupport = supported
@@ -41775,7 +41127,7 @@ export function createAgentChatService(args: {
           : {
               supported: false,
               reason: sourceProvider === "opencode" && openCodeExecutable == null
-                ? "Install the OpenCode CLI on this machine to accept a fork."
+                ? "OpenCode is not available on this machine yet, so it cannot accept a fork."
                 : `Sign in to ${sourceProvider} on this machine to accept a fork.`,
             };
       }
@@ -42064,57 +41416,26 @@ export function createAgentChatService(args: {
     }
 
     if (transport.provider === "opencode" && transport.kind === "opencode-export") {
-      const bin = resolveOpenCodeExecutablePath();
-      if (!bin) throw new Error("The OpenCode CLI is required to accept this fork.");
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-import-"));
-      const tempPath = path.join(tempDir, "session.json");
-      let importedId = "";
+      let exported: unknown;
       try {
-        fs.writeFileSync(tempPath, mainContent);
-        const imported = await runCliCapture(bin, ["import", tempPath], {
-          cwd: args.destinationLanePath,
-          timeoutMs: 60_000,
-        });
-        if (imported.exitCode !== 0) {
-          throw new Error(`OpenCode import failed: ${imported.stderr.trim() || `exit code ${imported.exitCode}`}`);
-        }
-        const stdout = imported.stdout.toString("utf8");
-        try {
-          const parsed = JSON.parse(stdout) as Record<string, any>;
-          const candidate = parsed.sessionID ?? parsed.id ?? parsed.session?.id ?? parsed.data?.id;
-          importedId = typeof candidate === "string" ? candidate.trim() : "";
-        } catch {
-          // Current OpenCode releases print a human-readable import result.
-        }
-        if (!importedId) {
-          importedId = stdout.match(/\bses_[A-Za-z0-9]+\b/)?.[0]
-            ?? imported.stderr.match(/\bses_[A-Za-z0-9]+\b/)?.[0]
-            ?? "";
-        }
-      } finally {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        } catch {
-          // Best-effort cleanup.
-        }
+        exported = JSON.parse(mainContent.toString("utf8"));
+      } catch {
+        throw new Error("The OpenCode fork data is not valid JSON.");
       }
-      if (!importedId) throw new Error("OpenCode import did not return a session id.");
-      seedForkedProviderPointer(args.managed, { providerSessionId: importedId });
-      if (args.managed.runtime?.kind !== "opencode") {
-        await startOpenCodeSessionRuntime(args.managed);
-      }
+      const forkedId = await withOpenCodeClient(args.managed, async (client) => {
+        const imported = await client.session.import(exported as Parameters<typeof client.session.import>[0]);
+        // A fork gives this machine its own session, and the move points it at
+        // this machine's lane: the import still names the source machine's path.
+        const forked = await client.session.fork({ sessionID: imported.id });
+        await client.session.move({ sessionID: forked.id, directory: args.destinationLanePath });
+        return forked.id;
+      });
+      seedForkedProviderPointer(args.managed, { providerSessionId: forkedId });
+      if (args.managed.runtime?.kind === "opencode") teardownRuntime(args.managed, "shutdown");
+      await startOpenCodeSessionRuntime(args.managed);
       if (args.managed.runtime?.kind !== "opencode") {
         throw new Error("Unable to start the OpenCode runtime for the imported fork.");
       }
-      const handle = args.managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork(
-        { sessionID: importedId, directory: handle.directory },
-        { throwOnError: true },
-      );
-      const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
-      if (!forkedId) throw new Error("OpenCode session fork did not return a new session id.");
-      handle.sessionId = forkedId;
-      seedForkedProviderPointer(args.managed, { providerSessionId: forkedId });
       sessionService.setResumeCommand(args.managed.session.id, `chat:opencode:${args.managed.session.id}`);
       persistChatState(args.managed);
       return;
@@ -43807,9 +43128,13 @@ export function createAgentChatService(args: {
       }
     }
     if (managed.runtime?.kind === "opencode" && !isBusyError) {
-      setOpenCodeRuntimeBusy(managed.runtime, false);
+      // The send failed before OpenCode took a turn; the error is reported by
+      // this path, so the half-open turn is dropped without a second one.
+      const openTurn = managed.runtime.activeTurn;
+      managed.runtime.activeTurn = null;
       managed.runtime.activeTurnId = null;
-      managed.runtime.eventAbortController = null;
+      setOpenCodeRuntimeBusy(managed.runtime, false);
+      openTurn?.settle();
     }
     if (managed.runtime?.kind === "claude" && !isBusyError) {
       managed.runtime.busy = false;
@@ -49541,10 +48866,13 @@ export function createAgentChatService(args: {
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
-    // OpenCode runtime steer
+    // OpenCode runtime steer. OpenCode's inbox owns every message sent while a
+    // turn runs: `steer` is delivered at the next step boundary, `queue` after
+    // the current reply, both inside the running execution. ADE's rows mirror
+    // the inbox and change only on OpenCode's own delivered/cancelled events.
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
-      if (runtime.busy || managed.session.status === "active") {
+      if (runtime.busy || runtime.activeTurn) {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
@@ -49553,49 +48881,67 @@ export function createAgentChatService(args: {
           contextAttachments,
           metadata,
           allowPendingInput: options?.allowPendingInput,
+          allowActiveSession: true,
         });
-        if (!preparedSteer) {
+        if (!preparedSteer || managed.closed) {
           return { steerId, queued: false };
         }
-        // OpenCode is queue-only (see ACTIVE_TURN_DISPATCH_MODES): its running
-        // turn is the legacy `prompt_async` loop, which never drains a mid-turn
-        // input, so an admitted `delivery: "steer"` was invisible to the model
-        // while its row read "Steered". The message is staged here and delivered
-        // as the next turn by `deliverNextQueuedSteer`; nothing is sent twice.
-        //
-        // A close or runtime swap tears a non-Claude queue down with the
-        // runtime, so re-route onto whatever owns the session now: stage on a
-        // live replacement, or send it as its own turn when there is none.
-        let stageRuntime = runtime;
-        if (managed.closed) {
-          return { steerId, queued: false };
-        }
-        if (managed.runtime !== runtime) {
-          const current = managed.runtime;
-          if (current?.kind === "opencode" && (current.busy || managed.session.status === "active")) {
-            stageRuntime = current;
-          } else {
-            preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
-            await executePreparedSendMessage(preparedSteer);
-            return { steerId, queued: false };
-          }
-        }
-        const queued = enqueueSteerOrDrop(
-          managed,
-          stageRuntime,
-          sessionId,
-          steerId,
-          preparedSteer.submittedText,
-          preparedSteer.attachments,
-          preparedSteer.contextAttachments,
-          preparedSteer.resolvedAttachments,
-          preparedSteer.metadata,
-          { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
-        );
-        if (!queued) {
+        if (runtime.pendingSteers.length >= MAX_PENDING_STEERS && !metadata?.scheduledWake) {
+          logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Steer dropped — the queue is full. Wait for the current turn to finish.",
+            turnId: runtime.activeTurnId ?? undefined,
+          });
           return { steerId, queued: false, reason: "queue_full" };
         }
-        return { steerId, queued: true };
+        const delivery: OpenCodeInboxRow["delivery"] = dispatchMode === "inline" ? "steer" : "queue";
+        const row: OpenCodeInboxRow = {
+          steerId,
+          uuid: randomUUID(),
+          text: preparedSteer.submittedText,
+          ...(preparedSteer.visibleText !== preparedSteer.submittedText ? { displayText: preparedSteer.visibleText } : {}),
+          attachments: preparedSteer.attachments,
+          contextAttachments: preparedSteer.contextAttachments,
+          resolvedAttachments: preparedSteer.resolvedAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          ...(reasoningEffort != null ? { reasoningEffort } : {}),
+          ...(executionMode ? { executionMode } : {}),
+          ...(interactionMode ? { interactionMode } : {}),
+          inboxId: "",
+          delivery,
+        };
+        const turnId = runtime.activeTurnId ?? undefined;
+        emitSteerUserRow(managed, row, delivery === "steer" ? "accepted" : "queued", turnId);
+        persistChatState(managed);
+        try {
+          const files = buildOpenCodePromptFiles(toOpenCodePromptFiles(preparedSteer.resolvedAttachments).files);
+          const text = [buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null, preparedSteer.submittedText]
+            .filter((section): section is string => Boolean(section))
+            .join("\n\n");
+          const admitted = await runtime.handle.client.session.prompt({
+            sessionID: runtime.handle.sessionId,
+            text,
+            delivery,
+            ...(files.length ? { files } : {}),
+          });
+          row.inboxId = admitted.id;
+        } catch (error) {
+          failAcceptedSteerRow(managed, row, turnId);
+          throw error;
+        }
+        preparedSteer.onDispatched?.();
+        options?.onAcceptedDispatch?.();
+        const earlyOutcome = runtime.inboxOutcomes.get(row.inboxId);
+        runtime.inboxOutcomes.delete(row.inboxId);
+        if (earlyOutcome) {
+          settleOpenCodeInboxRow(managed, runtime, row, earlyOutcome);
+          return { steerId, queued: false };
+        }
+        runtime.pendingSteers.push(row);
+        persistChatState(managed);
+        return { steerId, queued: delivery === "queue" };
       }
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -50433,6 +49779,20 @@ export function createAgentChatService(args: {
       if (!runtime) {
         throw new Error("Scheduled wake delivery requires an active queueable chat runtime.");
       }
+      // OpenCode's inbox is its queue: the wake is admitted there and delivered
+      // inside the running execution.
+      if (runtime.kind === "opencode") {
+        const result = await steerWithOptions({ sessionId, text, attachments, contextAttachments, metadata });
+        return {
+          sessionId,
+          kind: normalizedKind,
+          routedAction: "sendMessage",
+          statusBefore,
+          awaitingInputBefore,
+          delivery: result.queued ? "queued" : "sent",
+          queued: result.queued,
+        };
+      }
       const preparedWake = prepareSendMessage({
         sessionId,
         text,
@@ -50645,6 +50005,25 @@ export function createAgentChatService(args: {
       // A torn-down session holds no local queue, so the staged chip is the
       // only thing left to cancel. The shared finalizer also drops the steer
       // from persisted state before a future runtime can hydrate it.
+    } else if (runtime.kind === "opencode") {
+      // The message lives in OpenCode's inbox; only a cancel there takes it back.
+      const idx = runtime.pendingSteers.findIndex((row) => row.steerId === steerId);
+      if (idx === -1) {
+        if (requireQueued) throw new Error("This message is no longer queued.");
+      } else {
+        const row = runtime.pendingSteers[idx]!;
+        try {
+          await runtime.handle.client.session.inbox.cancel({
+            sessionID: runtime.handle.sessionId,
+            inboxID: row.inboxId,
+          });
+        } catch (error) {
+          throw new Error(
+            `OpenCode would not drop the queued message: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        [removedSteer] = runtime.pendingSteers.splice(idx, 1);
+      }
     } else {
       const queue = runtime.pendingSteers;
       // The runtimes that track in-flight dispatches splice the row out of the
@@ -50852,6 +50231,24 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     if (!runtime) return { dispatchedAt: null };
+    // OpenCode: "send now" turns a queued inbox item into a steer, which
+    // OpenCode delivers at the next step boundary. The row reads "Steering…"
+    // until OpenCode reports the delivery.
+    if (runtime.kind === "opencode") {
+      const row = runtime.pendingSteers.find((entry) => entry.steerId === steerId);
+      if (!row) return { dispatchedAt: null };
+      if (row.delivery !== "steer") {
+        await runtime.handle.client.session.inbox.update({
+          sessionID: runtime.handle.sessionId,
+          inboxID: row.inboxId,
+          delivery: "steer",
+        });
+        row.delivery = "steer";
+        emitSteerUserRow(managed, row, "accepted", runtime.activeTurnId ?? undefined);
+        persistChatState(managed);
+      }
+      return { dispatchedAt: Date.now() };
+    }
     // Cursor: a staged row can be promoted into the live run (inline) or into
     // the interrupt-and-continue redirect.
     if (runtime.kind === "cursor") {
@@ -51020,9 +50417,6 @@ export function createAgentChatService(args: {
         },
       });
     }
-    // OpenCode never reaches here: it is queue-only in
-    // ACTIVE_TURN_DISPATCH_MODES, so the provider guard above rejects both
-    // "inline" and "interrupt" before this point.
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
     }
@@ -51173,29 +50567,27 @@ export function createAgentChatService(args: {
     };
     abortActiveBashControllers(managed, "Session interrupt requested.");
 
-    // OpenCode runtime interrupt
+    // OpenCode runtime interrupt. `session.execution.interrupted` ends the turn;
+    // queued follow-ups stay in OpenCode's inbox only for `stop_only`.
     if (managed.runtime?.kind === "opencode") {
-      if (managed.runtime.interrupted) return result;
-      managed.runtime.interrupted = true;
-      managed.runtime.eventAbortController?.abort();
+      const runtime = managed.runtime;
+      if (!runtime.activeTurn && runtime.interrupted) return result;
+      runtime.interrupted = true;
+      if (stopModeClearsQueue(mode)) cancelOpenCodeInboxRows(managed, runtime, "interrupted");
+      else runtime.preserveQueuedSteersOnInterrupt = true;
+      settleOpenCodePendingApprovals(managed, runtime);
+      settleOpenCodePendingForms(managed, runtime);
       try {
-        await managed.runtime.handle.client.session.abort({
-          sessionID: managed.runtime.handle.sessionId,
-          directory: managed.runtime.handle.directory,
+        await runtime.handle.client.session.interrupt({ sessionID: runtime.handle.sessionId });
+      } catch (error) {
+        logger.warn("agent_chat.opencode_interrupt_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
         });
-      } catch {
-        // Ignore provider abort failures; SSE cancellation still tears the turn down.
+        // The server did not take the stop, so no terminal event will come.
+        finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
       }
-      // `stop_only` exists so settle teardown can stop a turn WITHOUT
-      // discarding the user's queued follow-ups. Only the Claude path honoured
-      // it, so a settle on these providers silently deleted queued prompts —
-      // unrecoverable, and the opposite of the rule that losing a settle costs
-      // one click while losing the user's work does not. Default is
-      // `stop_and_clear`, so the Stop button is unaffected.
-      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
-      settleOpenCodePendingApprovals(managed, managed.runtime);
-      cancelPendingInputsFrom(managed, "opencode", "ade");
       return result;
     }
 
@@ -54304,8 +53696,8 @@ export function createAgentChatService(args: {
         runtime.activeTurnId = null;
       } else if (runtime?.kind === "opencode") {
         runtime.pendingApprovals.clear();
-        runtime.busy = false;
-        runtime.activeTurnId = null;
+        runtime.pendingForms.clear();
+        finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
       } else if (runtime?.kind === "cursor") {
         for (const waiter of runtime.permissionWaiters.values()) {
           cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
@@ -55968,9 +55360,12 @@ export function createAgentChatService(args: {
     }
 
     // Mark streaming runtimes as interrupted so the catch block handles gracefully
-    if (managed.runtime?.kind === "claude" || managed.runtime?.kind === "opencode") {
+    if (managed.runtime?.kind === "claude") {
       managed.runtime.interrupted = true;
       cancelQueuedSteers(managed, managed.runtime, "disposed");
+    } else if (managed.runtime?.kind === "opencode") {
+      managed.runtime.interrupted = true;
+      cancelOpenCodeInboxRows(managed, managed.runtime, "disposed");
     }
 
     await finishSession(managed, terminalStatus, {
@@ -58204,67 +57599,32 @@ export function createAgentChatService(args: {
       ? Math.trunc(offset)
       : undefined;
 
-    if (runtimeKind === "opencode" && managed?.runtime?.kind === "opencode") {
+    if (provider === "opencode" && managed) {
+      // A child is its own OpenCode session, so its stored messages are the
+      // full transcript. Pages are read in order up to what was asked for.
       try {
-        const response = await managed.runtime.handle.client.session.messages({
-          sessionID: normalizedAgentId,
-          directory: managed.runtime.handle.directory,
+        return await withOpenCodeClient(managed, async (client) => {
+          const wanted = (normalizedOffset ?? 0) + (normalizedLimit ?? 500);
+          const messages: Awaited<ReturnType<typeof client.message.list>>["data"] = [];
+          let cursor: string | undefined;
+          do {
+            if (signal?.aborted) break;
+            const page = await client.message.list({
+              sessionID: normalizedAgentId,
+              limit: 100,
+              order: "asc",
+              ...(cursor ? { cursor } : {}),
+            });
+            messages.push(...page.data);
+            cursor = page.cursor.next ?? undefined;
+          } while (cursor && messages.length < wanted);
+          const mapped = mapOpenCodeMessagesToTranscript(normalizedAgentId, messages);
+          const sliced = normalizedOffset !== undefined ? mapped.slice(normalizedOffset) : mapped;
+          return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
         });
-        const rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
-          ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
-        if (!Array.isArray(rows)) return [];
-        const mapped = rows.map((row): AgentChatSubagentTranscriptMessage | null => {
-          const info = row?.info && typeof row.info === "object"
-            ? (row.info as Record<string, unknown>)
-            : null;
-          if (!info) return null;
-          const role = typeof info.role === "string" ? info.role : "";
-          const messageType: AgentChatSubagentTranscriptMessage["type"] =
-            role === "user" ? "user" : role === "assistant" ? "assistant" : "system";
-          const id = typeof info.id === "string" ? info.id : "";
-          const sId = typeof info.sessionID === "string" ? info.sessionID : normalizedAgentId;
-          const parts = Array.isArray(row.parts) ? row.parts : [];
-          const textBlocks: string[] = [];
-          let earliestPartTimeMs: number | null = null;
-          for (const part of parts) {
-            if (!part || typeof part !== "object") continue;
-            const block = part as { type?: unknown; text?: unknown; time?: unknown };
-            if (typeof block.text === "string" && block.text.length
-                && (block.type === "text" || block.type === "reasoning")) {
-              textBlocks.push(block.text);
-            }
-            const partTime = block.time && typeof block.time === "object"
-              ? (block.time as { created?: unknown; start?: unknown })
-              : null;
-            for (const candidate of [partTime?.created, partTime?.start]) {
-              if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
-                earliestPartTimeMs = earliestPartTimeMs === null
-                  ? candidate
-                  : Math.min(earliestPartTimeMs, candidate);
-              }
-            }
-          }
-          const text = textBlocks.join("");
-          const infoTime = info.time && typeof info.time === "object"
-            ? (info.time as { created?: unknown }).created
-            : undefined;
-          const timestamp = coerceProviderTimestampToIso(infoTime)
-            ?? coerceProviderTimestampToIso(earliestPartTimeMs);
-          return {
-            type: messageType,
-            uuid: id,
-            sessionId: sId,
-            parentToolUseId: null,
-            message: { info, parts },
-            ...(text.length ? { text } : {}),
-            ...(timestamp ? { timestamp } : {}),
-          };
-        }).filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
-        const sliced = normalizedOffset !== undefined ? mapped.slice(normalizedOffset) : mapped;
-        return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`OpenCode session.messages failed for ${normalizedAgentId}: ${message}`);
+        throw new Error(`OpenCode messages failed for ${normalizedAgentId}: ${message}`);
       }
     }
 

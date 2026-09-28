@@ -25,9 +25,12 @@ four independent renderers that disagree about what an answer *is*:
 No provider forces any of this. Verified end to end:
 
 - **Claude** (`v2Client.question.reply`) takes `answers: string[][]` — an array *per question*.
-- **Codex / Cursor / OpenCode** go through ADE's own `askUser` tool
+- **Codex / Cursor** go through ADE's own `askUser` tool
   (`universalTools.ts:2619`), which returns free-form JSON
   `{answer, answers, responseText, decision}`. No constraint at all.
+- **OpenCode** has its own native `question` tool, which arrives as
+  `form.created`; the answer goes back through `session.form.reply` keyed by
+  field `key` (see [OpenCode integration](../features/chat/opencode-integration.md#permissions-and-questions)).
 - **Droid** (`onAskUserRequest`) takes a single `answer: string`; ADE currently flattens
   with `.join(", ")`.
 

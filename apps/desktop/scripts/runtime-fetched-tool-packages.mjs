@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 
 import { RUNTIME_FETCHED_TOOL_PACKAGES } from "../../ade-cli/scripts/native-deps-entry-filter.mjs";
 
-/** Sorted package names, e.g. "@openai/codex-darwin-arm64", "opencode-linux-x64". */
+/** Sorted package names, e.g. "@openai/codex-darwin-arm64", "@opencode/cli-linux-x64". */
 export const runtimeFetchedToolPackageNames = Object.freeze(
   [...RUNTIME_FETCHED_TOOL_PACKAGES].sort(),
 );
@@ -80,7 +80,7 @@ function escapeEre(value) {
  *
  * Anchored at the listing's `./node_modules/` prefix and terminated by `/` or
  * end-of-entry so that a name is never a prefix match for a longer one
- * (`opencode-linux-x64` must not claim `opencode-linux-x64-musl`'s entries --
+ * (`@opencode/cli-linux-x64` must not claim `@opencode/cli-linux-x64-musl`'s entries --
  * both are in the list, but a partial match would misreport which one leaked).
  */
 export function runtimeFetchedToolPackageGrepPattern() {

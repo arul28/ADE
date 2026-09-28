@@ -515,25 +515,22 @@ export type RuntimeDiagnosticsStatus = {
   fallbackLanes: string[];
 };
 
-export type OpenCodeRuntimeLeaseKind = "shared" | "dedicated";
-export type OpenCodeRuntimeOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
-
+/** One running ADE-owned OpenCode server. */
 export type OpenCodeRuntimeEntry = {
-  id: string;
+  /** Server profile: `shared`, or a per-config profile key. */
   key: string;
-  leaseKind: OpenCodeRuntimeLeaseKind;
-  ownerKind: OpenCodeRuntimeOwnerKind;
-  ownerId: string | null;
-  configFingerprint: string;
   url: string;
-  busy: boolean;
+  pid: number | null;
+  isolated: boolean;
   refCount: number;
+  listenerCount: number;
   startedAt: number;
   lastUsedAt: number;
 };
 
 export type OpenCodeRuntimeSnapshot = {
   sharedCount: number;
+  /** Servers of per-config profiles (own MCP servers, a preset, an isolated surface). */
   dedicatedCount: number;
   entries: OpenCodeRuntimeEntry[];
 };
@@ -1648,7 +1645,10 @@ export type PiLoginProvider = {
 export type OpenCodeProviderSummary = {
   id: string;
   name: string;
+  /** OpenCode can use the provider now (free models count). */
   connected: boolean;
+  /** OpenCode holds a login or key for it; `connected` alone may be free models. */
+  signedIn?: boolean;
   modelCount: number;
   availableModelCount?: number;
   /** Environment variable names OpenCode associates with credentials. */

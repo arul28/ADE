@@ -11,11 +11,10 @@ import type {
   TerminalToolType,
 } from "../../shared/types";
 import {
-  buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand as buildCanonicalTrackedCliResumeCommand,
   normalizeCliFlagValue,
-  OPENCODE_RESUME_REPLAY_LIMIT as CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT,
   preassignedSessionIdInArgs,
+  readOpenCodeLaunchIntent,
   type PreassignedSessionIdProvider,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
@@ -99,10 +98,6 @@ function extractClaudeFastMode(command: string): boolean | undefined {
   return undefined;
 }
 
-function extractOpenCodeVariant(command: string): string | null {
-  return extractCliFlagValue(command, "--variant");
-}
-
 function extractDroidSettings(command: string): Record<string, unknown> | null {
   const match = command.match(/\bprintf\s+%s\s+(.+?)\s+>\s+(?:"\$ADE_DROID_SETTINGS"|'?\$ADE_DROID_SETTINGS'?)/i);
   const encoded = match?.[1]?.trim();
@@ -181,25 +176,6 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   return null;
-}
-
-export const OPENCODE_RESUME_REPLAY_LIMIT = CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT;
-
-export function buildOpenCodeReplayResumeCommand(args: {
-  permissionMode: AgentChatPermissionMode | null | undefined;
-  targetId: string | null;
-  model?: string | null;
-  prompt: string;
-  replayLimit?: number | null;
-}): string {
-  return buildCanonicalOpenCodeReplayResumeCommand({
-    permissionMode: args.permissionMode,
-    model: args.model,
-    prompt: args.prompt,
-    resumeTarget: args.targetId,
-    continueLast: !args.targetId,
-    replayLimit: args.replayLimit,
-  });
 }
 
 function extractTrackedCliPermissionMode(command: string, provider: TerminalResumeProvider): AgentChatPermissionMode | undefined {
@@ -292,18 +268,8 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
   }
 
   if (provider === "opencode") {
-    if (
-      normalized.includes("opencode_config_content=")
-      && (
-        normalized.includes("\"permission\":\"allow\"")
-        || normalized.includes("\\\"permission\\\":\\\"allow\\\"")
-      )
-    ) return "full-auto";
-    if (normalized.includes("opencode_permission='\"allow\"'") || normalized.includes("opencode_permission=\"\\\"allow\\\"\"")) return "full-auto";
-    if (normalized.includes("--agent plan")) return "plan";
-    if (normalized.includes("\"edit\":\"allow\"") || normalized.includes("\\\"edit\\\":\\\"allow\\\"")) return "edit";
-    if (normalized.includes("opencode_config_content=") || normalized.includes("opencode_permission=")) return "default";
-    return "config-toml";
+    // No intent means ADE set no policy: the user's own OpenCode config rules.
+    return readOpenCodeLaunchIntent(command)?.permissionMode ?? "config-toml";
   }
 
   return undefined;
@@ -324,8 +290,10 @@ export function parseTrackedCliLaunchConfig(
     : null;
   const permissionMode = droidPermissionModeFromSettings(droidSettings)
     ?? extractTrackedCliPermissionMode(normalized, provider);
+  const openCodeIntent = provider === "opencode" ? readOpenCodeLaunchIntent(normalized) : null;
   const model = droidStringSetting(droidSettings, "model")
     ?? droidSpecStringSetting(droidSettings, "specModeModel")
+    ?? openCodeIntent?.model
     ?? extractCliFlagValue(normalized, "--model")
     ?? (provider === "qwen" || provider === "kimi" || provider === "grok"
       ? extractCliFlagValue(normalized, "-m")
@@ -335,19 +303,14 @@ export function parseTrackedCliLaunchConfig(
     ?? (provider === "codex"
     ? extractCodexReasoningEffort(normalized)
     : provider === "opencode"
-      ? (() => {
-          const variant = extractOpenCodeVariant(normalized);
-          return variant?.toLowerCase() === "fast" ? null : variant;
-        })()
+      ? openCodeIntent?.reasoningEffort ?? null
       : (extractCliFlagValue(normalized, provider === "pi" ? "--thinking" : "--effort")
         ?? extractCliFlagValue(normalized, "--reasoning-effort")));
   const fastMode = provider === "codex"
     ? extractFastMode(normalized)
     : provider === "claude"
       ? extractClaudeFastMode(normalized)
-      : extractOpenCodeVariant(normalized)?.toLowerCase() === "fast"
-        ? true
-        : undefined;
+      : undefined;
 
   if (provider === "claude") {
     const effectivePermissionMode = permissionMode ?? "default";

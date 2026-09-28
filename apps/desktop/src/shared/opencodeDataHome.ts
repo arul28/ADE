@@ -2,9 +2,8 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * The one resolver for OpenCode data-home paths, shared by the desktop process
- * (which launches servers and runs the auth flow) and the `ade` CLI (which
- * prunes stores).
+ * The one resolver for OpenCode data-home paths, shared by every process that
+ * launches ADE's servers or reads their store.
  *
  * It MUST be process-independent. The desktop Electron main and the runtime
  * brain are different processes; when the main preferred Electron `userData`

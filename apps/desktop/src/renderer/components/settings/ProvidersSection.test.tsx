@@ -1286,7 +1286,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection("opencode");
 
-    expect(await screen.findByText("npm i -g opencode-ai")).toBeTruthy();
+    expect(await screen.findByText("npm i -g @opencode/cli")).toBeTruthy();
     expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
     // The group body is hidden while uninstalled.

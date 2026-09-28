@@ -12,6 +12,8 @@ export type OpenCodeProviderDetail = {
   name: string;
   methods: OpenCodeProviderAuthMethod[];
   connected: boolean;
+  /** OpenCode holds a login for it. `connected` alone can mean free models. */
+  signedIn?: boolean;
   hasKey: boolean;
   modelCount?: number;
   /** Non-secret environment variable names advertised by OpenCode. */
@@ -37,6 +39,7 @@ const sectionLabelStyle: React.CSSProperties = {
 
 export function OpenCodeProviderDetailModal({
   provider,
+  signInVia,
   keySource,
   verification,
   verifying,
@@ -60,10 +63,17 @@ export function OpenCodeProviderDetailModal({
   onSaveKey: (key: string) => Promise<void>;
   onDeleteKey: () => Promise<void>;
   onVerifyKey: () => Promise<void>;
+  /**
+   * Sign in through another provider's methods. OpenCode Go has no sign-in of
+   * its own: it comes with the opencode.ai account sign-in (`opencode auth
+   * login opencode`), which belongs to the `opencode` provider.
+   */
+  signInVia?: { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };
 }) {
+  const signInTarget = signInVia ?? { providerId: provider.id, providerName: provider.name, methods: provider.methods };
   const oauthMethods = useMemo(
-    () => provider.methods.filter((m) => m.type === "oauth"),
-    [provider.methods],
+    () => signInTarget.methods.filter((m) => m.type === "oauth"),
+    [signInTarget.methods],
   );
   const credentialEnvVars = provider.envVars?.length
     ? provider.envVars
@@ -80,8 +90,17 @@ export function OpenCodeProviderDetailModal({
   // Connected OpenCode sessions (OAuth or key mirrored into OpenCode) must always
   // offer Disconnect — even when auth-method discovery failed and methods[] is empty.
   const externallyManaged = keySource === "env" || keySource === "config";
-  const canDisconnect = !externallyManaged && (provider.connected || keySource === "store");
+  // A provider signed in through another one is disconnected there, not here.
+  const canDisconnect = !externallyManaged && ((!signInVia && provider.connected) || keySource === "store");
   const showOauthSection = oauthMethods.length > 0 || (provider.connected && !provider.hasKey);
+  // A provider with free models is usable before any sign-in. With a sign-in
+  // on offer, "Connected via OpenCode" is claimed only for a real login or key.
+  // Through another provider's sign-in, this provider's own models are the proof.
+  const signedIn = signInVia
+    ? provider.connected
+    : oauthMethods.length > 0
+      ? provider.signedIn === true || provider.hasKey
+      : provider.connected;
   const [oauthOpen, setOauthOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState("");
@@ -159,7 +178,9 @@ export function OpenCodeProviderDetailModal({
                   <div style={sectionLabelStyle}>Subscription / OAuth</div>
                   {oauthMethods.length > 0 ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                      {oauthMethods.map((m) => m.label).join(" · ")}
+                      {signInVia
+                        ? `${provider.name} comes with your opencode.ai account. Sign in with it, as \`opencode auth login opencode\` does.`
+                        : oauthMethods.map((m) => m.label).join(" · ")}
                     </div>
                   ) : provider.connected ? (
                     <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -168,7 +189,12 @@ export function OpenCodeProviderDetailModal({
                         : "Connected by a credential managed outside ADE. Clear that env/config value to disconnect."}
                     </div>
                   ) : null}
-                  {provider.connected ? (
+                  {provider.connected && !signedIn ? (
+                    <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                      Free models work without signing in.
+                    </div>
+                  ) : null}
+                  {signedIn ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ display: "inline-flex", alignItems: "center", gap: 6, color: COLORS.success, fontSize: 11, fontFamily: MONO_FONT }}>
                         <CheckCircle size={14} weight="fill" /> Connected via OpenCode
@@ -215,6 +241,11 @@ export function OpenCodeProviderDetailModal({
               {supportsApi ? (
                 <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={sectionLabelStyle}>API key</div>
+                  {signInVia ? (
+                    <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                      Optional. The sign-in above is enough; a key is only for a setup without it.
+                    </div>
+                  ) : null}
                   {credentialEnvVars.length > 0 ? (
                     <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
                       {credentialEnvVars.join(" · ")}
@@ -321,9 +352,9 @@ export function OpenCodeProviderDetailModal({
 
       {oauthOpen ? (
         <OAuthConnectModal
-          providerId={provider.id}
-          providerName={provider.name}
-          methods={provider.methods}
+          providerId={signInTarget.providerId}
+          providerName={signInTarget.providerName}
+          methods={signInTarget.methods}
           onClose={() => setOauthOpen(false)}
           onConnected={() => {
             setOauthOpen(false);

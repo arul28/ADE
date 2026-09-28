@@ -579,9 +579,9 @@ enum WorkActiveSendMode: String, Equatable {
 /// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
 /// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
 /// keeps its own meaning — it cancels the run and resends on the same agent
-/// thread — so its button still says "continue". OpenCode's v2 session prompt
-/// admits `delivery: "steer"` into the live agent loop, so it also has "send
-/// during turn" and no interrupt. Everything else is queue-only,
+/// thread — so its button still says "continue". OpenCode 2.0 admits
+/// `delivery: "steer"` into the live agent loop, so it also has "send during
+/// turn" and no interrupt. Everything else is queue-only,
 /// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
@@ -665,12 +665,11 @@ struct WorkActiveSendCapability: Equatable {
         inlineCarriesAttachments: false
       )
     case "opencode":
-      // Queue-only, matching desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode
-      // turns still run on the legacy `prompt_async` loop, which does not drain
-      // a mid-turn input, so a `delivery: "steer"` admission was never promoted
-      // and the row claimed "Steered" for a message the model never read. No
-      // interrupt either: like Codex there is no cancel-and-resend.
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "OpenCode", interruptContinues: false)
+      // Matches desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode 2.0 admits a
+      // mid-turn message to its session inbox, delivered at the next step
+      // boundary ("send during turn") or after the current reply (queue). No
+      // interrupt: like Codex there is no cancel-and-resend.
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
