@@ -38,6 +38,7 @@ import {
   OpenCodeProviderDetailModal,
   type ApiKeySource,
   type OpenCodeProviderDetail,
+  type OpenCodeSignInVia,
 } from "./OpenCodeProviderDetailModal";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsToggle } from "./primitives";
@@ -54,6 +55,7 @@ import { useProviderAccountCounts } from "./providers/accounts/useProviderInstan
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { pinKey } from "../../state/projectMachines";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
 import {
   AlertBanner,
@@ -479,6 +481,14 @@ export function ProvidersSection({
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
   }, [status?.customModelSlugs]);
 
+  // The Cursor status feed is keyed on the machine only. Re-subscribing when
+  // `refreshStatus` changes identity would re-anchor a pinned feed at its live
+  // head and drop a "success" emitted in between.
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const machineKey = pinKey(pin);
   useEffect(() => {
     const unsubscribe = window.ade.ai.onCursorAuthStatus((event: CursorSdkAuthEvent) => {
       if (event.url) setCursorLoginUrl(event.url);
@@ -488,15 +498,15 @@ export function ProvidersSection({
         if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
           setCursorLoginUrl(null);
         }
-        void refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+        void refreshStatusRef.current({ force: true, refreshOpenCodeInventory: true, silent: true });
       }
       if (event.state === "error" && event.error) setError(event.error);
       if (event.state === "success") {
         setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
       }
-    }, pin);
+    }, pinRef.current);
     return unsubscribe;
-  }, [pin, refreshStatus]);
+  }, [machineKey]);
 
   useEffect(() => {
     // A convenience refresh when this machine's chats change model state.
@@ -706,18 +716,33 @@ export function ProvidersSection({
       .sort((a, b) => (b.modelCount ?? 0) - (a.modelCount ?? 0));
   }, [openCodeCatalog, providerSearch]);
 
-  const detailProvider = useMemo(
-    () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
-    [detailProviderId, openCodeCatalog],
-  );
+  // The open detail view (and any sign-in running inside it) holds its last
+  // known row: a refresh that briefly drops the provider or its sign-in
+  // methods must not unmount the dialog or retarget it, which would cancel an
+  // in-flight sign-in and filter out its "connected" event.
+  const lastDetailRef = useRef<{
+    provider: OpenCodeProviderDetail;
+    signInVia: OpenCodeSignInVia | undefined;
+  } | null>(null);
+  const detailProvider = useMemo(() => {
+    if (!detailProviderId) return null;
+    const found = openCodeCatalog.find((p) => p.id === detailProviderId);
+    if (found) return found;
+    const last = lastDetailRef.current?.provider;
+    return last?.id === detailProviderId ? last : null;
+  }, [detailProviderId, openCodeCatalog]);
   // A provider with no sign-in of its own (OpenCode Go) signs in through
   // another one's methods.
-  const detailSignInVia = useMemo(() => {
+  const detailSignInVia = useMemo((): OpenCodeSignInVia | undefined => {
     const viaId = detailProvider ? openCodeSignInViaProvider(detailProvider.id) : null;
     const via = viaId ? openCodeCatalog.find((p) => p.id === viaId) : undefined;
-    if (!via?.methods.some((m) => m.type === "oauth")) return undefined;
-    return { providerId: via.id, providerName: via.name, methods: via.methods };
+    if (via?.methods.some((m) => m.type === "oauth")) {
+      return { providerId: via.id, providerName: via.name, methods: via.methods };
+    }
+    const last = lastDetailRef.current;
+    return viaId && last && last.provider.id === detailProvider?.id ? last.signInVia : undefined;
   }, [detailProvider, openCodeCatalog]);
+  lastDetailRef.current = detailProvider ? { provider: detailProvider, signInVia: detailSignInVia } : null;
   const openProviderDetail = useCallback((id: string) => {
     // Always use the unified provider modal (OAuth + API key), including Kimi.
     setDetailProviderId(id);

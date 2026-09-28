@@ -29,6 +29,9 @@ export type OpenCodeProviderDetail = {
 
 export type ApiKeySource = "config" | "env" | "store";
 
+/** Another provider's sign-in, for a provider with none of its own. */
+export type OpenCodeSignInVia = { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };
+
 const sectionLabelStyle: React.CSSProperties = {
   fontSize: 10,
   fontFamily: MONO_FONT,
@@ -67,7 +70,7 @@ export function OpenCodeProviderDetailModal({
    * Sign in through another provider's methods, for a provider with no sign-in
    * of its own (`openCodeSignInViaProvider` in `shared/opencodeProviders.ts`).
    */
-  signInVia?: { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };
+  signInVia?: OpenCodeSignInVia;
 }) {
   const signInTarget = signInVia ?? { providerId: provider.id, providerName: provider.name, methods: provider.methods };
   const oauthMethods = useMemo(

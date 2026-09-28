@@ -55,6 +55,7 @@ import {
   type SettingsMachinePage,
 } from "../settings/SettingsMachinesNav";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
+import { useStableBinding } from "../../state/laneMachineRouting";
 import { WebSettingsSection } from "../settings/WebScopePill";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
@@ -855,10 +856,20 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   );
 
   // The machine a Machines page is about, as the section components see it.
-  const machinePageScope = useMemo<SettingsMachinePage | null>(
+  const derivedMachinePageScope = useMemo<SettingsMachinePage | null>(
     () => (selectedMachine && isMachineSettingsTab(section) ? settingsMachinePageFor(selectedMachine) : null),
     [section, selectedMachine],
   );
+  // The machine list re-derives on every sync tick with fresh pin objects.
+  // Sections key effects on `pin` (an in-flight OAuth sign-in cancels itself
+  // when its pin changes), so the pin keeps its identity until its key changes.
+  const stableMachinePin = useStableBinding(derivedMachinePageScope?.pin ?? null);
+  const machinePageScope = useMemo<SettingsMachinePage | null>(() => {
+    if (!derivedMachinePageScope || !stableMachinePin || derivedMachinePageScope.pin === stableMachinePin) {
+      return derivedMachinePageScope;
+    }
+    return { ...derivedMachinePageScope, pin: stableMachinePin, target: { kind: "pinned", binding: stableMachinePin } };
+  }, [derivedMachinePageScope, stableMachinePin]);
 
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)

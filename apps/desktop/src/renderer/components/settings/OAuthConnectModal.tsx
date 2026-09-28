@@ -14,6 +14,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { pinKey } from "../../state/projectMachines";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -125,6 +126,16 @@ export function OAuthConnectModal({
   // The OAuth flow runs in the page's machine's runtime; start, cancel and the
   // status feed must all name that machine.
   const { pin } = useSettingsMachineScope();
+  // Effects below key on the machine, not on the pin object or the parent's
+  // callbacks: re-running them mid-flow cancels the sign-in (unmount cleanup)
+  // or re-anchors the status feed past the "connected" event.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const machineKey = pinKey(pin);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const oauthMethods = useMemo(
     () => methods.map((method, index) => ({ method, index })).filter((entry) => entry.method.type === "oauth"),
     [methods],
@@ -160,10 +171,10 @@ export function OAuthConnectModal({
     () => () => {
       cancelRequestedRef.current = true;
       if (startPendingRef.current || flowActiveRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pinRef.current).catch(() => undefined);
       }
     },
-    [pin, providerId],
+    [machineKey, providerId],
   );
 
   // Subscribe to backend OAuth status pushes for this provider.
@@ -172,8 +183,8 @@ export function OAuthConnectModal({
       if (event.providerId !== providerId) return;
       if (event.state !== "pending") flowActiveRef.current = false;
       if (event.state === "connected") {
-        onConnected();
-        onClose();
+        onConnectedRef.current();
+        onCloseRef.current();
       } else if (event.state === "failed" || event.state === "timeout" || event.state === "cancelled") {
         setPhase("error");
         setErrorMessage(
@@ -185,11 +196,11 @@ export function OAuthConnectModal({
                 : "Sign-in failed."),
         );
       }
-    }, pin);
+    }, pinRef.current);
     return () => {
       unsubscribe();
     };
-  }, [pin, providerId, onClose, onConnected]);
+  }, [machineKey, providerId]);
 
   const startFlow = async () => {
     cancelRequestedRef.current = false;

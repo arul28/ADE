@@ -44,6 +44,7 @@ import {
   type PiProviderRow,
 } from "./piProviderRow";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { pinKey } from "../../state/projectMachines";
 
 export function getPiTone(
   connection: AiProviderConnectionStatus | null | undefined,
@@ -582,6 +583,12 @@ export function PiProvidersPanel({
   // Pi signs in inside the page's machine's runtime; every call and the status
   // feed name that machine.
   const { pin } = useSettingsMachineScope();
+  // Subscriptions key on the machine, not the pin object: re-subscribing a
+  // pinned status feed re-anchors it at the live head and drops what was
+  // emitted in between.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const machineKey = pinKey(pin);
   const [providers, setProviders] = useState<PiLoginProvider[] | null>(null);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
@@ -605,7 +612,7 @@ export function PiProvidersPanel({
   const loadProviders = useCallback(async () => {
     setLoadingProviders(true);
     try {
-      const listed = await window.ade.ai.piLoginProviders(pin);
+      const listed = await window.ade.ai.piLoginProviders(pinRef.current);
       setProviders(listed);
       setProvidersError(null);
     } catch (err) {
@@ -613,7 +620,8 @@ export function PiProvidersPanel({
     } finally {
       setLoadingProviders(false);
     }
-  }, [pin]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the machine; pinRef holds its binding
+  }, [machineKey]);
 
   useEffect(() => {
     if (!installation.sdkAvailable) return;
@@ -677,9 +685,9 @@ export function PiProvidersPanel({
         setPromptValue((current) => (lastPromptRequestIdRef.current === event.prompt!.requestId ? current : ""));
         lastPromptRequestIdRef.current = event.prompt.requestId;
       }
-    }, pin);
+    }, pinRef.current);
     return unsubscribe;
-  }, [pin]);
+  }, [machineKey]);
 
   // A device-code or OAuth step cannot proceed until the page is open, and Pi
   // is already polling by the time the URL arrives. Open it once per URL and
