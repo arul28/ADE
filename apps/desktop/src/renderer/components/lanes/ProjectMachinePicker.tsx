@@ -1,29 +1,29 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Dialog } from "../ui/dialog";
-import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
-import type { LaneMachineOption } from "../lanes/laneMachines";
-import type { ProjectMachineTarget } from "./projectMachines";
+import { LaneMachineSelector } from "./LaneMachineSelector";
+import type { LaneMachineOption } from "./laneMachines";
+import type { LaneMachine } from "../../state/laneMachineRouting";
 
 /**
- * "Which machine?" for create actions outside the create-lane dialog (a new
- * automation, a lane from a PR). Reuses the lane dialog's machine cards so the
- * choice reads the same everywhere. There is no default: nothing submits until
- * a machine is picked.
+ * "Which machine?" for a lane created outside the create-lane dialog (a lane
+ * from a PR's branch). Reuses the lane dialog's machine cards so the choice
+ * reads the same everywhere. There is no default: nothing submits until a
+ * machine is picked.
  */
 
-function optionForTarget(target: ProjectMachineTarget): LaneMachineOption {
-  const binding = target.binding;
+function optionFor(machine: LaneMachine, laneCount: number | null): LaneMachineOption {
+  const binding = machine.binding;
   return {
-    id: target.machineId,
-    name: target.machineName,
+    id: machine.machineId,
+    name: machine.machineName,
     targetId: binding?.kind === "remote" ? binding.targetId : null,
     hostname: binding?.kind === "remote" ? binding.hostname ?? null : null,
     ...(binding?.kind === "remote" ? { transport: binding.transport ?? "ssh" } : {}),
-    version: null,
+    version: machine.version,
     freeBytes: null,
-    activeLaneCount: target.lanes.length,
-    // Every target is a checkout of this repo by construction: the union only
-    // carries machines matched on the repo's origin.
+    activeLaneCount: laneCount,
+    // Every offered machine is a checkout of this repo by construction: the
+    // union only carries machines matched on the repo's origin.
     repoMatch: "matched",
     project: binding
       ? {
@@ -33,7 +33,7 @@ function optionForTarget(target: ProjectMachineTarget): LaneMachineOption {
           matchedBy: "origin",
         }
       : null,
-    isBound: target.isActive,
+    isBound: machine.isActiveBinding,
   };
 }
 
@@ -41,33 +41,40 @@ type MachineRequest = {
   title: string;
   description: string;
   confirmLabel: string;
-  targets: ProjectMachineTarget[];
-  resolve: (target: ProjectMachineTarget | null) => void;
+  machines: LaneMachine[];
+  laneCountByMachineId: ReadonlyMap<string, number>;
+  resolve: (machine: LaneMachine | null) => void;
 };
 
 export type AskForMachine = (
-  targets: readonly ProjectMachineTarget[],
-  copy: { title: string; description: string; confirmLabel?: string },
-) => Promise<ProjectMachineTarget | null>;
+  machines: readonly LaneMachine[],
+  copy: {
+    title: string;
+    description: string;
+    confirmLabel?: string;
+    /** Lanes each machine already has, for the placement hint. */
+    laneCountByMachineId?: ReadonlyMap<string, number>;
+  },
+) => Promise<LaneMachine | null>;
 
 /**
- * `ask(targets, copy)` resolves with the chosen machine, or null on cancel.
- * Offline machines are not offered. With one reachable machine there is no
+ * `ask(machines, copy)` resolves with the chosen machine, or null on cancel.
+ * Only reachable machines are offered. With one reachable machine there is no
  * choice to make, so it resolves to that machine without a dialog.
  */
 export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactNode } {
   const [request, setRequest] = useState<MachineRequest | null>(null);
   const requestRef = useRef<MachineRequest | null>(null);
 
-  const settle = useCallback((target: ProjectMachineTarget | null) => {
+  const settle = useCallback((machine: LaneMachine | null) => {
     const current = requestRef.current;
     requestRef.current = null;
     setRequest(null);
-    current?.resolve(target);
+    current?.resolve(machine);
   }, []);
 
-  const ask = useCallback<AskForMachine>((targets, copy) => {
-    const reachable = targets.filter((target) => target.online);
+  const ask = useCallback<AskForMachine>((machines, copy) => {
+    const reachable = machines.filter((machine) => machine.online && machine.routable);
     if (reachable.length <= 1) return Promise.resolve(reachable[0] ?? null);
     // A second ask supersedes the first; the first resolves as cancelled.
     requestRef.current?.resolve(null);
@@ -76,7 +83,8 @@ export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactN
         title: copy.title,
         description: copy.description,
         confirmLabel: copy.confirmLabel ?? "Continue",
-        targets: reachable,
+        machines: reachable,
+        laneCountByMachineId: copy.laneCountByMachineId ?? new Map(),
         resolve,
       };
       requestRef.current = next;
@@ -95,11 +103,14 @@ function ProjectMachinePickerDialog({
   onSettle,
 }: {
   request: MachineRequest;
-  onSettle: (target: ProjectMachineTarget | null) => void;
+  onSettle: (machine: LaneMachine | null) => void;
 }) {
   const [selectedMachineId, setSelectedMachineId] = useState("");
-  const options = useMemo(() => request.targets.map(optionForTarget), [request.targets]);
-  const selected = request.targets.find((target) => target.machineId === selectedMachineId) ?? null;
+  const options = useMemo(
+    () => request.machines.map((machine) => optionFor(machine, request.laneCountByMachineId.get(machine.machineId) ?? null)),
+    [request.laneCountByMachineId, request.machines],
+  );
+  const selected = request.machines.find((machine) => machine.machineId === selectedMachineId) ?? null;
   return (
     <Dialog
       open

@@ -14,7 +14,7 @@ import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
 import { AutomationsEmptyState, AutomationsFilterEmptyState } from "./AutomationsEmptyState";
 import { RuleRow, ruleOrigin } from "./RuleRow";
-import type { MachineChipModel } from "../../history/projectMachines";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 
 /** How a rule row shows the machine it runs on. */
 export type RuleMachineView = {
@@ -23,7 +23,7 @@ export type RuleMachineView = {
   /** Non-null while that machine is unreachable. */
   offlineMessage: string | null;
   /** False for rules on another machine: the tab's ingress status says nothing about them. */
-  isBound: boolean;
+  isActiveBinding: boolean;
 };
 
 /** Provenance axis for the list: everything, the CTO's rules, or handoffs. */
@@ -256,7 +256,7 @@ export function RuleList({
                 <RuleRow
                   key={key}
                   rule={rule}
-                  delivery={machine && !machine.isBound ? null : delivery}
+                  delivery={machine && !machine.isActiveBinding ? null : delivery}
                   selected={key === selectedRuleId}
                   machineChip={machine?.chip ?? null}
                   offlineMessage={machine?.offlineMessage ?? null}

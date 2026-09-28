@@ -870,8 +870,7 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(screen.queryByTitle("/Users/arul/ADE")).toBeTruthy();
     });
-    // The machine is named on the tab's status icon now, not as its own text
-    // node — the picker that used to carry a standalone label is gone.
+    // The machine is named on the tab's status icon, not as its own text node.
     expect(screen.getByLabelText("Machine: MacBook Pro (97)")).toBeTruthy();
 
     // Each tab reaches its own checkout directly — no machine menu detour.

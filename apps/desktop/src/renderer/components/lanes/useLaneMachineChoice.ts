@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type {
-  LaneSummary,
-  OpenProjectBinding,
-  RemoteRuntimeConnectionSnapshot,
-} from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { buildAllMachineLanes } from "../../state/laneMachineRouting";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import {
   canCreateLaneOnMachine,
   deriveLaneMachineOptions,
@@ -44,40 +42,13 @@ export function useLaneMachineChoice(open: boolean) {
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
   const unionMachines = useRootAppStore((s) => s.crossMachineLanesByMachineId);
 
-  const [remoteSnapshot, setRemoteSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  const [snapshotLoaded, setSnapshotLoaded] = useState(false);
+  const { snapshot: remoteSnapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(open);
   /** The machine the user picked; "" until they pick one. */
   const [pickedMachineId, setPickedMachineId] = useState<string>("");
 
   useEffect(() => {
-    if (!open) {
-      setSnapshotLoaded(false);
-      // Every open asks again.
-      setPickedMachineId("");
-      return;
-    }
-    const remoteRuntime = window.ade.remoteRuntime;
-    if (!remoteRuntime?.getConnectionSnapshot) {
-      // No other machines can exist without the remote runtime bridge.
-      setSnapshotLoaded(true);
-      return;
-    }
-    let cancelled = false;
-    const apply = (snapshot: RemoteRuntimeConnectionSnapshot) => {
-      if (cancelled) return;
-      setRemoteSnapshot((current) =>
-        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
-      );
-      setSnapshotLoaded(true);
-    };
-    void remoteRuntime.getConnectionSnapshot().then(apply).catch(() => {
-      if (!cancelled) setSnapshotLoaded(true);
-    });
-    const unsubscribe = remoteRuntime.onConnectionSnapshotChanged?.(apply) ?? (() => {});
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
+    // Every open asks again.
+    if (!open) setPickedMachineId("");
   }, [open]);
 
   const boundProject = useMemo<LaneMachineProjectRef | null>(() => {
@@ -134,6 +105,12 @@ export function useLaneMachineChoice(open: boolean) {
    * snapshot. A checkout matched only by folder name is never a target: it may
    * be a different repository with the same name.
    */
+  // The union's view of each machine: its binding (and so its pin) and lanes.
+  const unionView = useMemo(
+    () => buildAllMachineLanes({ activeBinding: projectBinding ?? null, activeLanes: [], machines: unionMachines ?? {} }),
+    [projectBinding, unionMachines],
+  );
+
   const machineTargets = useMemo(() => {
     const targets = new Map<string, { pin: OpenProjectBinding | null; lanes: LaneSummary[] | null }>();
     for (const machine of machines) {
@@ -141,10 +118,10 @@ export function useLaneMachineChoice(open: boolean) {
         targets.set(machine.id, { pin: null, lanes: null });
         continue;
       }
-      const entry = unionMachines?.[machine.id];
-      if (entry?.binding) {
-        const pin = entry.binding.key === projectBinding?.key ? null : entry.binding;
-        targets.set(machine.id, { pin, lanes: pin ? entry.lanes : null });
+      const unionMachine = unionView.machinesById.get(machine.id);
+      if (unionMachine?.binding) {
+        const pin = unionMachine.pin;
+        targets.set(machine.id, { pin, lanes: pin ? unionView.lanesByMachineId.get(machine.id) ?? [] : null });
         continue;
       }
       const checkout = machine.project;
@@ -177,7 +154,7 @@ export function useLaneMachineChoice(open: boolean) {
       }
     }
     return targets;
-  }, [machines, projectBinding?.key, unionMachines]);
+  }, [machines, unionView]);
 
   const eligibleMachineIds = useMemo(
     () => machines

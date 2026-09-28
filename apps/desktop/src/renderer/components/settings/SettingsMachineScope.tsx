@@ -3,13 +3,24 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 
 /**
+ * How a settings page reaches its machine.
+ *
+ * - `this`: This computer through the tab's own binding. Preload calls go
+ *   unpinned, and plain IPC reaches the same machine.
+ * - `pinned`: any other case, including the tab's own machine when that is
+ *   another computer. Every runtime call carries `binding`, so no call can fall
+ *   through to plain IPC on This computer while the page names another one.
+ */
+export type SettingsMachineTarget =
+  | { kind: "this" }
+  | { kind: "pinned"; binding: OpenProjectBinding };
+
+/**
  * Which machine a settings section under "Machines" reads from and writes to.
  *
  * The Settings page renders the same section components for every machine and
  * hands each subtree its machine through this context, the way
- * `ChatRuntimeScope` does for a chat. A section that supports it passes `pin`
- * to its preload calls; `pin === null` means the tab's own binding, exactly as
- * before this existed.
+ * `ChatRuntimeScope` does for a chat.
  *
  * The one rule a section must keep: a plain-IPC call (one that is not a runtime
  * action) always reaches the main process of the computer ADE is running on.
@@ -20,27 +31,38 @@ export type SettingsMachineScope = {
   machineId: string;
   /** Absolute machine name. Never "remote". */
   machineName: string;
-  /** Pass to pin-aware preload calls. Null = the tab's binding. */
+  /**
+   * How runtime calls reach this machine. Null when none can (no checkout of
+   * this repo is reachable): only sections that use plain IPC on This computer
+   * are rendered then.
+   */
+  target: SettingsMachineTarget | null;
+  /** The pin for pin-aware preload calls, derived from `target`. */
   pin: OpenProjectBinding | null;
-  /** The physical computer ADE runs on — the only one plain IPC reaches. */
+  /** The physical computer ADE runs on, the only one plain IPC reaches. */
   isThisMachine: boolean;
   /** The machine the project tab is bound to. */
-  isBound: boolean;
+  isActiveBinding: boolean;
   online: boolean;
 };
 
+/** A scope whose `pin` always agrees with its `target`. */
+export function settingsMachineScope(input: Omit<SettingsMachineScope, "pin">): SettingsMachineScope {
+  return { ...input, pin: input.target?.kind === "pinned" ? input.target.binding : null };
+}
+
 /**
- * Outside the Machines group (and in tests) a section behaves as it always
- * did: unpinned calls against the tab's binding, IPC against this computer.
+ * Outside the Machines group (and in tests) a section keeps its default:
+ * unpinned calls against the tab's binding, IPC against this computer.
  */
-const FALLBACK_SCOPE: SettingsMachineScope = {
+const FALLBACK_SCOPE: SettingsMachineScope = settingsMachineScope({
   machineId: THIS_MACHINE_ID,
   machineName: THIS_MACHINE_NAME,
-  pin: null,
+  target: { kind: "this" },
   isThisMachine: true,
-  isBound: true,
+  isActiveBinding: true,
   online: true,
-};
+});
 
 const SettingsMachineScopeContext = createContext<SettingsMachineScope | null>(null);
 

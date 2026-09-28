@@ -3,7 +3,6 @@ import {
   activeMachineForGroup,
   groupRecentProjects,
   groupProjectTabs,
-  isMultiMachine,
   LOCAL_MACHINE_NAME,
   type RemoteProjectTabBinding,
 } from "./projectTabGrouping";
@@ -70,7 +69,6 @@ describe("groupProjectTabs", () => {
       LOCAL_MACHINE_NAME,
       "MacBook Pro (97)",
     ]);
-    expect(isMultiMachine(groups[0])).toBe(true);
   });
 
   it("matches SSH and HTTPS forms of the same origin", () => {
@@ -177,7 +175,7 @@ describe("groupProjectTabs", () => {
       remoteTabs: [],
     });
     expect(activeMachineForGroup(groups[0])?.isLocal).toBe(true);
-    expect(isMultiMachine(groups[0])).toBe(false);
+    expect(groups[0].machines).toHaveLength(1);
   });
 
   it("treats a remote binding with unknown origin as its own tab", () => {

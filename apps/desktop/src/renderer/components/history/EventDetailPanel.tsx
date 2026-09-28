@@ -296,7 +296,7 @@ function PanelContent({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => onNavigateToLane(event.laneId!, event.machineIsBound === false ? event.machineId ?? null : null)}
+                onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
               >
                 <span className="inline-flex items-center gap-1">
                   Open Lane
@@ -363,7 +363,7 @@ function PanelContent({
       <div className="mt-auto flex flex-wrap items-center gap-2 p-3 pt-4">
         {/* The commit graph reads the bound machine's worktrees; a commit
             recorded on another machine can't be opened there. */}
-        {event.postHeadSha && event.laneId && navigate && event.machineIsBound !== false ? (
+        {event.postHeadSha && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -389,7 +389,7 @@ function PanelContent({
         ) : null}
         {/* The Work deep link names a lane by bare id; for another machine's
             lane, "Open Lane" (which carries the machine) is the way there. */}
-        {event.category === "session" && event.laneId && navigate && event.machineIsBound !== false ? (
+        {event.category === "session" && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -405,7 +405,7 @@ function PanelContent({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onNavigateToLane(event.laneId!, event.machineIsBound === false ? event.machineId ?? null : null)}
+            onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
           >
             <span className="inline-flex items-center gap-1">
               <ArrowSquareOut size={10} weight="bold" />

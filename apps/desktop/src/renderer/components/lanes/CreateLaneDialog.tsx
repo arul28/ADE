@@ -191,7 +191,7 @@ export function CreateLaneDialog({
   /**
    * Connected machines a lane can be created on. A lane owns its machine, so
    * this is the only place one is picked. Rendered only when there is more than
-   * one machine to choose from — a single-machine setup looks exactly as before.
+   * one machine to choose from; a single-machine setup shows no selector.
    */
   machines?: LaneMachineOption[];
   /** "" (or omitted) while no machine is chosen. Never defaulted here. */
@@ -224,7 +224,7 @@ export function CreateLaneDialog({
     return map;
   }, [lanes]);
 
-  // One machine behaves exactly as before: no selector, no extra chrome.
+  // One machine: no selector, no extra chrome.
   const machineOptions = machines ?? [];
   const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 

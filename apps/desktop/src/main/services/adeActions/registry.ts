@@ -226,6 +226,7 @@ export {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,

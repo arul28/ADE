@@ -9935,14 +9935,13 @@ const adeBridge = {
   /*
    * Provider API keys, several per provider.
    *
-   * Local IPC only, on purpose. The store desktop main writes is Electron
-   * `safeStorage` on THIS machine, so routing a key write at a remote runtime
-   * would file it on a computer that is not the one the harness runs on. And
-   * nothing here reads a secret back: `get` answers with the same non-secret
-   * summary `list` does, so the key travels one way only — in, on `store`.
+   * Unpinned calls go to desktop IPC: this computer's store, Electron
+   * `safeStorage` written by desktop main. A pin names another machine, and the
+   * call goes to that machine's runtime, which holds the keys its harnesses
+   * use. Nothing here reads a secret back: `get` answers with the same
+   * non-secret summary `list` does, so a key travels one way only — in, on
+   * `store`.
    */
-  // Unpinned stays on desktop IPC (This computer's store, as before). A pin
-  // names another machine, whose own runtime holds its keys.
   apiCredentials: {
     list: (
       args: ApiCredentialListArgs = {},

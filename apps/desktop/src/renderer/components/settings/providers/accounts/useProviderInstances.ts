@@ -176,7 +176,7 @@ export function useSmartBalanceProviders(): ReadonlySet<ProviderInstanceProvider
 
   useEffect(() => {
     // Outside Settings (the chat picker) there is no machine scope, so this is
-    // the tab's own binding, as before.
+    // the tab's own binding.
     const api = pinnedProviderInstances(null);
     if (!api) return;
     let cancelled = false;

@@ -229,43 +229,6 @@
 .ade-welcome-empty .ade-welcome-link { margin: 6px 0 0 -4px; color: var(--color-accent); }
 .ade-welcome-empty .ade-welcome-link:hover { color: var(--color-fg); }
 
-/* ── project filter (lives in the list head) ──────────────────────── */
-
-.ade-welcome-filter {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 1 220px;
-  min-width: 120px;
-  height: 28px;
-  margin-left: auto;
-  padding: 0 9px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
-  color: var(--color-muted-fg);
-  transition: background-color 120ms ease, box-shadow 120ms ease;
-}
-.ade-welcome-filter:focus-within {
-  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
-  color: var(--color-fg);
-}
-.ade-welcome-filter input {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--color-fg);
-  font: inherit;
-  font-size: 12.5px;
-}
-.ade-welcome-filter input:focus,
-.ade-welcome-filter input:focus-visible { outline: none; box-shadow: none; }
-.ade-welcome-filter input::placeholder { color: var(--color-muted-fg); }
-
 .ade-welcome-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -557,13 +520,6 @@ button.ade-welcome-item:focus-visible {
   white-space: nowrap;
   font-size: 11px;
   color: var(--color-muted-fg);
-}
-.ade-welcome-item-trail {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--color-muted-fg);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 .ade-welcome-item-glyph {
   display: inline-flex;

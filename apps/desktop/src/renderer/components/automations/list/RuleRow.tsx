@@ -9,8 +9,8 @@ import { formatDate } from "../../../lib/format";
 import { buildRuleSentence } from "../automationCopy";
 import { sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog";
 import { RuleSentence } from "./RuleSentence";
-import { MachineChip } from "../../history/EventMachineChip";
-import type { MachineChipModel } from "../../history/projectMachines";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 
 /** Rules written before `origin` existed read as the user's own. */
 export function ruleOrigin(rule: Pick<AutomationRule, "origin">): AutomationRule["origin"] {

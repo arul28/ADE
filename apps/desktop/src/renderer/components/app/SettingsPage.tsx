@@ -6,7 +6,6 @@ import {
   Brain,
   ChartLineUp,
   ChatCircle,
-  Desktop,
   GearSix,
   GitBranch,
   HardDrives,
@@ -46,11 +45,17 @@ import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
+import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import {
-  SettingsMachineScopeProvider,
-  type SettingsMachineScope,
-} from "../settings/SettingsMachineScope";
-import { useProjectMachines, type ProjectMachine } from "../../lib/projectMachines";
+  MachineUnavailableNotice,
+  SettingsMachineEyebrow,
+  SettingsMachineNavRow,
+  machineSectionAvailable,
+  settingsMachinePageFor,
+  type MachineSectionKind,
+  type SettingsMachinePage,
+} from "../settings/SettingsMachinesNav";
+import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { WebSettingsSection } from "../settings/WebScopePill";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
@@ -273,35 +278,11 @@ function AgentsTabContent() {
 type TabSection = {
   entryIds: readonly string[] | "tab";
   render: () => React.ReactNode;
-  /**
-   * For pages under Machines: how the section reaches its machine.
-   *  - `routed`: every call takes the machine's pin, so it works for any
-   *    reachable machine.
-   *  - `local`: plain IPC to the main process ADE runs in (Electron power
-   *    blocker, the desktop updater, the `ade` shell installer, the ADE
-   *    browser), so it is only ever about This computer.
-   *  - `bound`: unpinned calls that follow the tab's binding, so it is shown
-   *    for the machine the project tab is bound to and nowhere else.
-   */
+  /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
   /** How the section is named in "not available here" notes. */
   title?: string;
 };
-
-type MachineSectionKind = "routed" | "local" | "bound";
-
-/**
- * Whether a machine page section can be shown for a machine without any of its
- * calls landing on a different one.
- */
-function machineSectionAvailable(kind: MachineSectionKind, machine: SettingsMachineScope & { routable: boolean }): boolean {
-  if (!machine.online) return false;
-  if (kind === "local") return machine.isThisMachine;
-  if (kind === "bound") return machine.isBound;
-  // Routed: the tab's own machine is always reachable unpinned (and with no
-  // project open, unpinned calls fall back to This computer's main process).
-  return machine.isBound || machine.routable;
-}
 
 /**
  * What each tab renders, as data rather than as an eleven-arm switch.
@@ -442,7 +423,7 @@ function TabContent({
 }: {
   tab: SettingsTabId;
   /** The machine a Machines page is for. Null for Account and Project pages. */
-  machine: MachineScopeWithRouting | null;
+  machine: SettingsMachinePage | null;
 }) {
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
@@ -478,55 +459,6 @@ function TabContent({
         <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
       ) : null}
     </>
-  );
-}
-
-type MachineScopeWithRouting = SettingsMachineScope & {
-  routable: boolean;
-  hasRepo: boolean;
-  /** The ADE version another machine reported; its About card can't be shown here. */
-  version: string | null;
-};
-
-/**
- * Why some (or all) of a machine's settings are not on screen. Calm, and
- * specific about the reason, because "missing" reads as a bug.
- */
-function MachineUnavailableNotice({
-  machine,
-  unavailableTitles,
-}: {
-  machine: MachineScopeWithRouting;
-  unavailableTitles?: string[];
-}) {
-  let message: string;
-  if (!machine.online) {
-    message = `${machine.machineName} is offline. Its settings come back when it does.`;
-  } else if (!machine.isThisMachine && !machine.isBound && !machine.hasRepo) {
-    message = `ADE reaches ${machine.machineName}'s settings through its copy of this repository. Open this repository on ${machine.machineName} to manage it from here.`;
-  } else if (machine.isThisMachine) {
-    const list = unavailableTitles?.join(", ") ?? "These settings";
-    message = `${list} can't be reached on ${THIS_MACHINE_NAME} from this project tab yet.`;
-  } else {
-    const list = unavailableTitles?.join(", ") ?? "These settings";
-    message = `${list} can only be changed on ${machine.machineName} itself for now.`;
-  }
-  return (
-    <div
-      data-testid="settings-machine-unavailable"
-      style={{
-        padding: "12px 14px",
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        lineHeight: 1.5,
-        color: COLORS.textMuted,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 10,
-      }}
-    >
-      {message}
-    </div>
   );
 }
 
@@ -615,17 +547,16 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // keeps the single bound-machine view it always had.
   const machineParam = searchParams.get("machine");
   const machinesEnabled = !isWebClientMode();
-  const projectBinding = useAppStore((state) => state.projectBinding);
   const { machines } = useProjectMachines(active && machinesEnabled);
   // With no `?machine=`, a link to a setting that only works on the tab's own
   // machine (GitHub, Linear, link opening) lands on that machine; anything else
   // lands on This computer. For a tab open on this computer the two agree.
   const linkedEntryId = location.hash ? resolveSettingsHash(decodeSettingsHash(location.hash))?.id ?? null : null;
   const defaultMachineId = linkedEntryId && BOUND_MACHINE_ENTRY_IDS.has(linkedEntryId)
-    ? (machines.find((machine) => machine.isBound)?.id ?? THIS_MACHINE_ID)
+    ? (machines.find((machine) => machine.isActiveBinding)?.machineId ?? THIS_MACHINE_ID)
     : THIS_MACHINE_ID;
   const selectedMachine: ProjectMachine | null = machinesEnabled
-    ? (machines.find((machine) => machine.id === (machineParam ?? defaultMachineId)) ?? machines[0] ?? null)
+    ? (machines.find((machine) => machine.machineId === (machineParam ?? defaultMachineId)) ?? machines[0] ?? null)
     : null;
   // Machine-scoped settings write to the machine the active project tab is
   // bound to, so on web they exist only while one is open. The manifest is what
@@ -822,8 +753,8 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
 
   const renderTabButton = (tab: SettingsTab, machine?: ProjectMachine) => {
     const Icon = TAB_ICONS[tab.id];
-    const isActive = section === tab.id && (!machine || selectedMachine?.id === machine.id);
-    const hoverKey = machine ? `${machine.id}:${tab.id}` : tab.id;
+    const isActive = section === tab.id && (!machine || selectedMachine?.machineId === machine.machineId);
+    const hoverKey = machine ? `${machine.machineId}:${tab.id}` : tab.id;
     const isHovered = hoveredId === hoverKey;
     // Tour anchors stay on This computer's copy of each page.
     const tourId = !machine || machine.isThisMachine ? `settings.${TOUR_IDS[tab.id] ?? tab.id}` : undefined;
@@ -832,7 +763,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         key={hoverKey}
         type="button"
         data-tour={tourId}
-        onClick={() => navigateToTab(tab.id, undefined, machine?.id)}
+        onClick={() => navigateToTab(tab.id, undefined, machine?.machineId)}
         onMouseEnter={() => setHoveredId(hoverKey)}
         onMouseLeave={() => setHoveredId(null)}
         style={{
@@ -873,26 +804,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   );
 
   // The machine a Machines page is about, as the section components see it.
-  const machinePageScope = useMemo<MachineScopeWithRouting | null>(() => {
-    if (!selectedMachine || !isMachineSettingsTab(section)) return null;
-    return {
-      machineId: selectedMachine.id,
-      machineName: selectedMachine.name,
-      // Explicit for every machine but This computer. The tab's own remote
-      // machine would otherwise be `null` ("the tab's binding"), which is right
-      // for runtime actions but wrong for any section whose unpinned fallback
-      // is plain IPC to This computer. A concrete pin can't be misread.
-      // Only the bound machine may fall back to the tab's binding; any other
-      // unroutable machine keeps null and its sections stay gated off.
-      pin: selectedMachine.pin ?? (selectedMachine.isBound && !selectedMachine.isThisMachine ? projectBinding : null),
-      isThisMachine: selectedMachine.isThisMachine,
-      isBound: selectedMachine.isBound,
-      online: selectedMachine.online,
-      routable: selectedMachine.routable,
-      hasRepo: selectedMachine.hasRepo,
-      version: selectedMachine.version,
-    };
-  }, [projectBinding, section, selectedMachine]);
+  const machinePageScope = useMemo<SettingsMachinePage | null>(
+    () => (selectedMachine && isMachineSettingsTab(section) ? settingsMachinePageFor(selectedMachine) : null),
+    [section, selectedMachine],
+  );
 
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
@@ -902,56 +817,20 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
 
   // Inside a project the section list lives in the project sidebar. Outside
   // one (the hosted web client, tests) the page keeps its own column.
-  /**
-   * One machine in the Machines group. The selected one opens to its pages;
-   * the rest stay a single row. Offline machines are dimmed, not hidden.
-   */
   const renderMachineRow = (machine: ProjectMachine, machineTabs: SettingsTab[]) => {
-    const isSelected = selectedMachine?.id === machine.id;
     const onMachinePage = isMachineSettingsTab(section);
-    const rowActive = isSelected && onMachinePage;
-    const hoverKey = `machine:${machine.id}`;
-    const isHovered = hoveredId === hoverKey;
-    const Icon = machine.isThisMachine ? Desktop : HardDrives;
+    const selected = selectedMachine?.machineId === machine.machineId;
     const landingTab = onMachinePage ? section : (machineTabs[0]?.id ?? DEFAULT_SETTINGS_TAB);
     return (
-      <div key={machine.id} data-testid={`settings-machine-${machine.id}`}>
-        <button
-          type="button"
-          onClick={() => navigateToTab(landingTab, undefined, machine.id)}
-          onMouseEnter={() => setHoveredId(hoverKey)}
-          onMouseLeave={() => setHoveredId(null)}
-          title={machine.online ? undefined : `${machine.name} is offline`}
-          style={{
-            display: "flex",
-            width: "100%",
-            alignItems: "center",
-            gap: 9,
-            padding: "6px 10px",
-            border: "none",
-            background: isHovered && !rowActive ? "var(--shell-sidebar-item-hover-bg)" : "transparent",
-            color: rowActive || isHovered ? "var(--shell-sidebar-item-hover-fg)" : "var(--shell-sidebar-item-fg)",
-            opacity: machine.online ? 1 : 0.5,
-            fontFamily: SANS_FONT,
-            fontSize: 12.5,
-            fontWeight: rowActive ? 600 : 500,
-            letterSpacing: "-0.01em",
-            cursor: "pointer",
-            borderRadius: 7,
-            textAlign: "left",
-            transition: "background 120ms ease, color 120ms ease",
-          }}
-        >
-          <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
-          <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {machine.name}
-          </span>
-          {machine.online ? null : (
-            <span style={{ fontSize: 10.5, fontWeight: 500, opacity: 0.8 }}>offline</span>
-          )}
-        </button>
-        {isSelected ? machineTabs.map((tab) => renderTabButton(tab, machine)) : null}
-      </div>
+      <SettingsMachineNavRow
+        key={machine.machineId}
+        machine={machine}
+        selected={selected}
+        active={selected && onMachinePage}
+        onOpen={() => navigateToTab(landingTab, undefined, machine.machineId)}
+      >
+        {machineTabs.map((tab) => renderTabButton(tab, machine))}
+      </SettingsMachineNavRow>
     );
   };
 
@@ -1064,30 +943,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             }}
           >
             <div style={{ minWidth: 0 }}>
-              {machinePageScope ? (
-                <div
-                  data-testid="settings-machine-eyebrow"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    marginBottom: 4,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11.5,
-                    color: COLORS.textMuted,
-                    opacity: machinePageScope.online ? 1 : 0.6,
-                  }}
-                >
-                  {machinePageScope.isThisMachine
-                    ? <Desktop size={12} weight="regular" />
-                    : <HardDrives size={12} weight="regular" />}
-                  <span>{machinePageScope.machineName}</span>
-                  {machinePageScope.version && !machinePageScope.isThisMachine
-                    ? <span>· ADE {machinePageScope.version}</span>
-                    : null}
-                  {machinePageScope.online ? null : <span>· offline</span>}
-                </div>
-              ) : null}
+              {machinePageScope ? <SettingsMachineEyebrow page={machinePageScope} /> : null}
               <h1
                 style={{
                   margin: 0,

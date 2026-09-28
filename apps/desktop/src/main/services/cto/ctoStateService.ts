@@ -434,7 +434,7 @@ function resolvePreferredChatProvider(raw: Record<string, unknown>): string {
  * shape of its id, so a model this build has never listed still resolves and is
  * still kept. Only an id no rule can make sense of clears the pick. A
  * preference written before `modelId` was stored has nothing to check and keeps
- * the family fold above as its only gate, exactly as before — its `model` is a
+ * the family fold above as its only gate — its `model` is a
  * provider-side name, not a registry id, and failing it here would clear picks
  * that work.
  */
@@ -561,6 +561,9 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
   const voiceBackchannels = typeof source.voiceBackchannels === "boolean"
     ? source.voiceBackchannels
     : undefined;
+  const crossMachineEnabled = typeof source.crossMachineEnabled === "boolean"
+    ? source.crossMachineEnabled
+    : undefined;
 
   return {
     name,
@@ -572,6 +575,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ...(onboardingState ? { onboardingState } : {}),
     ...(voiceName ? { voiceName } : {}),
     ...(voiceBackchannels === undefined ? {} : { voiceBackchannels }),
+    ...(crossMachineEnabled === undefined ? {} : { crossMachineEnabled }),
     updatedAt,
   };
 }
@@ -1456,6 +1460,14 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return snapshot;
   };
 
+  /** The cross-machine switch, as the brain's bridge reads it on every call. */
+  const getCrossMachineAccess = (): { enabled: boolean } => {
+    // A read only: `getIdentity` also rewrites the file and the row, which is
+    // too much for a check made on every cross-machine call and every turn.
+    const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
+    return { enabled: identity.crossMachineEnabled !== false };
+  };
+
   /* ── System prompt preview ── */
 
   const previewSystemPrompt = (identityOverride?: Partial<CtoIdentity>): CtoSystemPromptPreview => {
@@ -1543,6 +1555,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     getLiveStateSnapshot,
     getOnboardingState,
     completeOnboardingStep,
+    getCrossMachineAccess,
     previewSystemPrompt,
     syncDerivedContextDoc,
   };

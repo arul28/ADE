@@ -8,7 +8,8 @@ import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { LaneSidebarGroupHeader, LaneSidebarGroupMenu, laneGroupHasActions } from "./LaneSidebarGroupHeader";
-import { LaneSidebarCreatingRow, LaneSidebarRow, type LaneMachineChip } from "./LaneSidebarRow";
+import { LaneSidebarCreatingRow, LaneSidebarRow } from "./LaneSidebarRow";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   laneStateGroupSectionId,
   type LaneGroupBulkAction,
@@ -63,7 +64,7 @@ export type LaneSidebarListProps = {
   onOpenAgent: (agent: LaneAgent) => void;
   onClearMultiSelection: () => void;
   /** Machine chip per row key; absent on a single-machine project. */
-  machineChipByLaneId?: ReadonlyMap<string, LaneMachineChip>;
+  machineChipByLaneId?: ReadonlyMap<string, MachineChipModel>;
   /** Why a row cannot be acted on (its machine is offline), per row key. */
   disabledReasonByLaneId?: ReadonlyMap<string, string>;
   /** Row keys of lanes on machines other than the tab's. */

@@ -7,12 +7,7 @@ import { cn } from "../../ui/cn";
 import { extractError } from "../shared";
 import { RunRow } from "./RunRow";
 import { RunDetail } from "./RunDetail";
-import { withMachineTimeout } from "../../history/projectMachines";
-
-/** Pinned reads are timed out; the bound machine keeps its existing path. */
-function readOn<T>(promise: Promise<T>, pin: OpenProjectBinding | null, machineName: string | null): Promise<T> {
-  return pin ? withMachineTimeout(promise, machineName ?? "That machine") : promise;
-}
+import { onMachine } from "../../../state/projectMachines";
 
 export function RuleHistory({
   automationId,
@@ -45,10 +40,9 @@ export function RuleHistory({
     setLoading(true);
     setError(null);
     try {
-      const next = await readOn(
+      const next = await onMachine(
         window.ade.automations.listRuns({ automationId, limit: 80 }, pin),
-        pin,
-        machineName,
+        { pin, machineName: machineName ?? "That machine" },
       );
       setRuns(next);
       setSelectedRunId((current) => current ?? next[0]?.id ?? null);
@@ -66,7 +60,10 @@ export function RuleHistory({
     setDetailLoading(true);
     setError(null);
     try {
-      const next = await readOn(window.ade.automations.getRunDetail(runId, pin), pin, machineName);
+      const next = await onMachine(
+        window.ade.automations.getRunDetail(runId, pin),
+        { pin, machineName: machineName ?? "That machine" },
+      );
       if (detailRequestId.current !== requestId) return;
       setDetail(next);
     } catch (err) {

@@ -18,6 +18,7 @@ import type { ExportHistoryResult, GitConflictState } from "../../../shared/type
 import { useAppStore } from "../../state/appStore";
 import {
   foreignLaneKey,
+  machineBlockedReason,
   shouldShowMachineChips,
   useAllMachineLanes,
 } from "../../state/laneMachineRouting";
@@ -225,7 +226,7 @@ export function TimelineToolbar({
   // the project spans more than one. Option values are lane row keys — the
   // bare id on the tab's machine, `machineId:laneId` elsewhere.
   const allMachineLanes = useAllMachineLanes(surface === "commits");
-  const multiMachine = shouldShowMachineChips(allMachineLanes);
+  const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
   const laneGroups = useMemo<MachineLaneSelectGroup[]>(() => {
     if (!multiMachine) {
       return [{
@@ -241,13 +242,7 @@ export function TimelineToolbar({
         key: machine.machineId,
         machineName: machine.machineName,
         online: machine.online,
-        disabledReason: machine.isActiveBinding
-          ? null
-          : !machine.online
-            ? `${machine.machineName} is offline`
-            : !machine.routable
-              ? `${machine.machineName} is unavailable`
-              : null,
+        disabledReason: machine.isActiveBinding ? null : machineBlockedReason(machine),
         options: allMachineLanes.lanes
           .filter((row) => row.machineId === machine.machineId)
           .map((row) => ({

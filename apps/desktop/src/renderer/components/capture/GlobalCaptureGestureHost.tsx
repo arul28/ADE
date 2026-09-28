@@ -13,7 +13,7 @@ import { filesProjectSessionKey } from "../files/treeHelpers";
 import { useEditorGroupsStore } from "../files/v2/editorGroupsStore";
 import { supportsCaptureGesturePlatform } from "../../lib/platform";
 import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
-import { cachedCtoHomeResolution, waitForCtoHomeResolution } from "../cto/ctoHomeMachine";
+import { cachedCtoHomeResolution, waitForCtoHomeResolution } from "../../state/ctoHome";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
 import { Banner } from "../ui/notice/Banner";

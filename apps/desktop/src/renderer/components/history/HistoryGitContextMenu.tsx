@@ -8,6 +8,7 @@ import {
   type HistoryGitActionId,
 } from "./historyGitActions";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 
 type HistoryGitContextMenuProps = {
   laneId: string;
@@ -52,7 +53,8 @@ export function HistoryGitContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
-          className="z-50 min-w-[220px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl"
+          className="min-w-[220px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl"
+          style={{ zIndex: Z_LAYERS.contextMenu }}
         >
           {groups.map((group, groupIndex) => (
             <React.Fragment key={group.id}>

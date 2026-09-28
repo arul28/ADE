@@ -1,5 +1,6 @@
 import React from "react";
-import { pinArg, usePrRuntimePin } from "../state/prMachines";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 import { CaretDown, CaretRight, CircleNotch, Sparkle, X } from "@phosphor-icons/react";
 import type {
   PrAgentPermissionMode,
@@ -332,6 +333,9 @@ export function PrAiResolverPanel({
           <div className="min-h-0 flex-1">
             <AgentChatPane
               laneId={sessionLaneId}
+              // The resolver's chat lives on the lane's machine; its lane id is
+              // only unique there, so it is never resolved against this tab's.
+              runtimePin={runtimePin ?? undefined}
               lockSessionId={sessionId}
               lockSessionProvider={activeSession?.provider ?? null}
               hideSessionTabs

@@ -1,4 +1,5 @@
 import type { OperationRecord } from "../../../shared/types";
+import type { LaneMachine } from "../../state/laneMachineRouting";
 import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
 // ── History surface (activity timeline vs git commit graph) ───────
@@ -14,16 +15,14 @@ export type ViewMode = "graph" | "list" | "compact";
  * from. Absent on records from sources that are not per-machine.
  */
 export type TimelineMachineTag = {
-  /** `ProjectMachineTarget.key` of the machine the record was read from. */
-  machineKey?: string;
-  machineId?: string;
-  machineName?: string;
-  machineOnline?: boolean;
-  /** True when the record is from the physical Mac this app runs on. */
-  machineIsHere?: boolean;
-  /** True when the record is from the machine the project tab is bound to. */
-  machineIsBound?: boolean;
+  machine?: HistoryMachineSource;
 };
+
+/** One machine the timeline reads from: a view of the shared machine model. */
+export type HistoryMachineSource = Pick<
+  LaneMachine,
+  "machineId" | "machineName" | "pin" | "online" | "isThisMachine" | "isActiveBinding"
+>;
 
 export type TimelineRecord = OperationRecord & TimelineMachineTag;
 

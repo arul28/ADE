@@ -1,7 +1,7 @@
 import { Desktop, DesktopTower } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { inputCls } from "../designTokens";
-import type { ProjectMachineTarget } from "../../history/projectMachines";
+import type { LaneMachine } from "../../../state/laneMachineRouting";
 
 /**
  * "Runs on [machine ▾]" — the machine a rule runs on, as part of the recipe.
@@ -12,24 +12,24 @@ import type { ProjectMachineTarget } from "../../history/projectMachines";
  * machine is a move, which the workspace confirms on Save.
  */
 export function RuleMachineField({
-  targets,
-  valueKey,
+  machines,
+  valueMachineId,
   onChange,
-  savedKey,
+  savedMachineId,
   disabled,
 }: {
-  targets: readonly ProjectMachineTarget[];
-  /** Selected machine key, or null while nothing is chosen. */
-  valueKey: string | null;
-  onChange: (key: string) => void;
+  machines: readonly LaneMachine[];
+  /** Selected machine, or null while nothing is chosen. */
+  valueMachineId: string | null;
+  onChange: (machineId: string) => void;
   /** Where the saved rule lives today; null for a new rule. */
-  savedKey: string | null;
+  savedMachineId: string | null;
   disabled?: boolean;
 }) {
-  const selected = valueKey ? targets.find((target) => target.key === valueKey) ?? null : null;
+  const selected = valueMachineId ? machines.find((machine) => machine.machineId === valueMachineId) ?? null : null;
   const Icon = selected?.isThisMachine ? Desktop : DesktopTower;
-  const moving = Boolean(savedKey && valueKey && savedKey !== valueKey);
-  const savedName = savedKey ? targets.find((target) => target.key === savedKey)?.machineName ?? null : null;
+  const moving = Boolean(savedMachineId && valueMachineId && savedMachineId !== valueMachineId);
+  const savedName = savedMachineId ? machines.find((machine) => machine.machineId === savedMachineId)?.machineName ?? null : null;
   return (
     <div className="mb-3 space-y-1" data-testid="automation-machine-field">
       <label className="flex min-w-0 items-center gap-2">
@@ -37,26 +37,26 @@ export function RuleMachineField({
         <span className="relative flex min-w-0 flex-1 items-center">
           <Icon size={12} weight="duotone" className="pointer-events-none absolute left-2 text-muted-fg/60" aria-hidden />
           <select
-            className={cn(inputCls, "h-7 min-w-0 flex-1 pl-7", !valueKey && "text-muted-fg/60")}
-            value={valueKey ?? ""}
+            className={cn(inputCls, "h-7 min-w-0 flex-1 pl-7", !valueMachineId && "text-muted-fg/60")}
+            value={valueMachineId ?? ""}
             disabled={disabled}
             aria-label="Machine this automation runs on"
-            aria-invalid={!valueKey}
+            aria-invalid={!valueMachineId}
             onChange={(event) => {
               if (event.target.value) onChange(event.target.value);
             }}
           >
-            {!valueKey ? <option value="" disabled>Choose a machine</option> : null}
-            {targets.map((target) => (
-              <option key={target.key} value={target.key} disabled={!target.online}>
-                {target.machineName}
-                {target.online ? "" : " (offline)"}
+            {!valueMachineId ? <option value="" disabled>Choose a machine</option> : null}
+            {machines.map((machine) => (
+              <option key={machine.machineId} value={machine.machineId} disabled={!machine.online}>
+                {machine.machineName}
+                {machine.online ? "" : " (offline)"}
               </option>
             ))}
           </select>
         </span>
       </label>
-      {!valueKey ? (
+      {!valueMachineId ? (
         <div className="text-[10.5px] text-amber-300/80" data-testid="automation-machine-required">
           Choose the machine this automation runs on before saving.
         </div>

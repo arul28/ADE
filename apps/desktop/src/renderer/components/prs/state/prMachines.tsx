@@ -18,17 +18,21 @@
 import { createContext, useContext, useMemo } from "react";
 import type { GitHubPrListItem, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import {
-  machineChipForTarget,
+  machineBlockedReason,
+  machineChipFor,
+  routableMachines,
+  shouldShowMachineChips,
+  useAllMachineLanes,
+  type AllMachineLanes,
+  type LaneMachine,
   type MachineChipModel,
-  offlineMessage,
-  useProjectMachineTargets,
-  type ProjectMachineTarget,
-} from "../../history/projectMachines";
+} from "../../../state/laneMachineRouting";
 
 export type ForeignPrLink = {
   pr: PrSummary;
   lane: LaneSummary | null;
-  target: ProjectMachineTarget;
+  /** The machine that owns the PR's lane. */
+  machine: LaneMachine;
   /** Null when the project is on one machine. */
   chip: MachineChipModel | null;
   /** Non-null while the owning machine is unreachable. */
@@ -36,9 +40,12 @@ export type ForeignPrLink = {
 };
 
 export type PrMachineIndex = {
-  targets: readonly ProjectMachineTarget[];
+  /** The machines a PR call can be sent to, the tab's own first. */
+  machines: readonly LaneMachine[];
+  /** Each machine's lanes, by machine id. */
+  lanesByMachineId: ReadonlyMap<string, readonly LaneSummary[]>;
   /** The machine the tab is bound to. */
-  boundTarget: ProjectMachineTarget | null;
+  boundMachine: LaneMachine | null;
   /** Chip for rows whose lane is on the tab's machine; null on a one-machine project. */
   boundChip: MachineChipModel | null;
   /** Coordinate key → the other machine that owns this PR's lane. */
@@ -52,50 +59,62 @@ export function prCoordKey(pr: { repoOwner: string; repoName: string; githubPrNu
 }
 
 const EMPTY_INDEX: PrMachineIndex = {
-  targets: [],
-  boundTarget: null,
+  machines: [],
+  lanesByMachineId: new Map(),
+  boundMachine: null,
   boundChip: null,
   foreignByCoord: new Map(),
   allLanes: [],
 };
 
-export function buildPrMachineIndex(targets: readonly ProjectMachineTarget[]): PrMachineIndex {
-  const boundTarget = targets.find((target) => target.isActive) ?? null;
+const NO_LANES: readonly LaneSummary[] = [];
+const NO_PRS: readonly PrSummary[] = [];
+
+export function buildPrMachineIndex(all: AllMachineLanes): PrMachineIndex {
+  const machines = routableMachines(all.machines);
+  // The chip rule counts the machines this index can route to, not every
+  // machine the union knows: an unaddressable machine holds no PR's lane here.
+  const showChips = shouldShowMachineChips(machines.length);
+  const chipFor = (machine: LaneMachine | null) => (machine && showChips ? machineChipFor(machine) : null);
+  const boundMachine = machines.find((machine) => machine.isActiveBinding) ?? null;
   const foreignByCoord = new Map<string, ForeignPrLink>();
   const allLanes: LaneSummary[] = [];
-  for (const target of targets) {
-    for (const lane of target.lanes) {
+  for (const machine of machines) {
+    const lanes = all.lanesByMachineId.get(machine.machineId) ?? NO_LANES;
+    for (const lane of lanes) {
       if (!lane.archivedAt) allLanes.push(lane);
     }
-    if (target.isActive) continue;
-    const chip = machineChipForTarget(target, targets);
-    for (const pr of target.prs) {
+    // The tab's own PRs come from PrsContext, never from here.
+    if (machine.isActiveBinding) continue;
+    const chip = chipFor(machine);
+    for (const pr of all.prsByMachineId.get(machine.machineId) ?? NO_PRS) {
       if (!pr.laneId || pr.unmapped) continue;
       const key = prCoordKey(pr);
       // First machine wins; an online owner beats a stale offline copy.
       const existing = foreignByCoord.get(key);
-      if (existing && (existing.target.online || !target.online)) continue;
+      if (existing && (existing.machine.online || !machine.online)) continue;
       foreignByCoord.set(key, {
         pr,
-        lane: target.lanes.find((lane) => lane.id === pr.laneId) ?? null,
-        target,
+        lane: lanes.find((lane) => lane.id === pr.laneId) ?? null,
+        machine,
         chip,
-        offlineMessage: target.online ? null : offlineMessage(target),
+        offlineMessage: machine.online ? null : machineBlockedReason(machine),
       });
     }
   }
   return {
-    targets,
-    boundTarget,
-    boundChip: machineChipForTarget(boundTarget, targets),
+    machines,
+    lanesByMachineId: all.lanesByMachineId,
+    boundMachine,
+    boundChip: chipFor(boundMachine),
     foreignByCoord,
     allLanes,
   };
 }
 
 export function usePrMachineIndex(active: boolean): PrMachineIndex {
-  const targets = useProjectMachineTargets(active);
-  return useMemo(() => buildPrMachineIndex(targets), [targets]);
+  const all = useAllMachineLanes(active);
+  return useMemo(() => buildPrMachineIndex(all), [all]);
 }
 
 /**
@@ -111,7 +130,8 @@ export function foreignLinkForItem(
   if (hasLocalPr) return null;
   // A link id this machine can resolve is this machine's. One it can't (a
   // stale or replicated id) defers to the machine that actually owns the lane.
-  if (item.linkedLaneId && index.boundTarget?.lanes.some((lane) => lane.id === item.linkedLaneId)) return null;
+  const boundLanes = index.boundMachine ? index.lanesByMachineId.get(index.boundMachine.machineId) ?? NO_LANES : NO_LANES;
+  if (item.linkedLaneId && boundLanes.some((lane) => lane.id === item.linkedLaneId)) return null;
   if (index.foreignByCoord.size === 0) return null;
   return index.foreignByCoord.get(prCoordKey(item)) ?? null;
 }
@@ -128,8 +148,8 @@ export function usePrMachineIndexContext(): PrMachineIndex {
 
 /**
  * The machine every call about the PR in this subtree must reach. `null` (the
- * default) is the tab's own machine: calls stay byte-for-byte unpinned. The
- * detail pane and a foreign row's menu set it to the lane owner's binding, so
+ * default) is the tab's own machine: calls stay unpinned. The detail pane and a
+ * foreign row's menu set it to the lane owner's binding, so
  * land/sync/resolve/manage-lane run where the lane and its PR row live.
  */
 const PrRuntimePinContext = createContext<OpenProjectBinding | null>(null);
@@ -138,12 +158,4 @@ export const PrRuntimePinProvider = PrRuntimePinContext.Provider;
 
 export function usePrRuntimePin(): OpenProjectBinding | null {
   return useContext(PrRuntimePinContext);
-}
-
-/**
- * Trailing pin argument: nothing for the tab's machine (so the unpinned call
- * is unchanged, arity included), `[pin]` for another machine.
- */
-export function pinArg(pin: OpenProjectBinding | null | undefined): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
 }

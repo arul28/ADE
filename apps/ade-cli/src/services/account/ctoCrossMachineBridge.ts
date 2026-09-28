@@ -17,11 +17,21 @@
  * closes the older one, so borrowing the desktop's pairing would drop the
  * user's own desktop connection to that machine every time the CTO looked.
  *
- * Caller identity: the channel initializes as role `cto` under a client name
- * that is not a desktop name. The target clamps the role to its own ceiling,
- * applies its own action allowlist and CTO-only rules, and refuses its
- * user-only actions, because the caller is not the desktop. Nothing here can
- * reach more on the target than a CTO there could.
+ * Caller identity: the channel initializes as role `cto` under
+ * `CTO_REMOTE_CLIENT_NAME`, which is not a desktop name. The target clamps the
+ * role to its own ceiling, applies its own action allowlist and CTO-only rules,
+ * refuses its user-only and secret-bearing actions, and does not count the
+ * caller as a user client. Nothing here can reach more on the target than a CTO
+ * there could. The home machine runs the generic actions through this brain's
+ * own dispatcher under the same identity (`createCtoActionCaller`), so both
+ * paths apply one policy.
+ *
+ * Cost: nothing here reads the account directory until a cross-machine tool
+ * runs. After that the live-state roster refreshes in the background at most
+ * every few minutes, and never while signed out or turned off.
+ *
+ * The user's switch (Settings › CTO, "Let the CTO reach my other machines")
+ * turns all of it off.
  */
 import os from "node:os";
 import path from "node:path";
@@ -39,24 +49,23 @@ import {
   selectAccountMachine,
 } from "../../../../desktop/src/shared/accountDirectory";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
-import { syntheticCallerId } from "../../../../desktop/src/shared/syntheticCallerId";
+import {
+  CTO_REMOTE_CLIENT_NAME,
+  ctoCallerInitializeParams,
+} from "../../../../desktop/src/shared/runtimeClientNames";
 import type { AdeAccountLocalMachineIdentity, AdeAccountMachine } from "../../../../desktop/src/shared/types/account";
 import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
-import type {
-  CtoCrossMachineDeps,
-  CtoMachineListResult,
-  CtoMachineSummary,
-  CtoMachineActionInfo,
-  CtoMachineTarget,
-  CtoRemoteActionCall,
-} from "../../../../desktop/src/main/services/ai/tools/ctoCrossMachine";
 import {
-  isAllowedAdeAction,
-  isUserOnlyAdeAction,
-  listAllowedAdeActionNames,
-} from "../../../../desktop/src/main/services/adeActions/actionPolicy";
-import { getAdeActionInputContract } from "../../../../desktop/src/main/services/adeActions/actionInputContracts";
-import type { AdeActionDomain } from "../../../../desktop/src/main/services/adeActions/domains";
+  CTO_CROSS_MACHINE_DISABLED_MESSAGE,
+  type CtoCrossMachineDeps,
+  type CtoMachineListResult,
+  type CtoMachineSummary,
+  type CtoMachineActionInfo,
+  type CtoMachineTarget,
+  type CtoRemoteActionCall,
+} from "../../../../desktop/src/main/services/ai/tools/ctoCrossMachine";
+import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
+import type { CtoActionCaller } from "../../adeRpcServer";
 import {
   openPairedCandidate,
   type AccountRelayProof,
@@ -74,8 +83,7 @@ import {
   getSharedAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
 
-/** Not a desktop client name, so the target never grants user-only verbs. */
-export const CTO_REMOTE_CLIENT_NAME = "ade-cto-remote";
+export { CTO_REMOTE_CLIENT_NAME };
 const CTO_PAIRED_STORE_FILE = "cto-paired-machines.json";
 /** Opening a route, including one re-pair. */
 const CONNECT_BUDGET_MS = 25_000;
@@ -83,7 +91,10 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const MAX_CALL_TIMEOUT_MS = 180_000;
 const PROJECTS_LIST_TIMEOUT_MS = 10_000;
 const PROJECTS_CACHE_MS = 60_000;
+/** How long a directory read serves the tools (name resolution, routing). */
 const DIRECTORY_CACHE_MS = 15_000;
+/** How often the live-state roster may read the directory in the background. */
+const ROSTER_REFRESH_MS = 5 * 60_000;
 const DIRECTORY_TIMEOUT_MS = 10_000;
 /** A connection nobody used for this long is closed. */
 const IDLE_CLOSE_MS = 90_000;
@@ -100,6 +111,8 @@ function shapeActionList(
 ): { count: number; actions: CtoMachineActionInfo[] } {
   const actions = rows.flatMap((row): CtoMachineActionInfo[] => {
     if (!isRecord(row) || typeof row.domain !== "string" || typeof row.action !== "string") return [];
+    // A target on an older ADE may still list these; the CTO can't run them.
+    if (isSecretBearingAdeAction(row.domain, row.action)) return [];
     return [{
       domain: row.domain,
       action: row.action,
@@ -123,19 +136,29 @@ type PooledConnection = {
   client: RuntimeRpcClient;
   projects: { at: number; records: RemoteProjectRecord[] } | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Calls in flight on this connection; the idle timer only runs at zero. */
+  inFlight: number;
 };
 
 type AccountDirectory = Pick<AccountMachineDirectoryService, "listMachines" | "pairListedMachine">;
+
+/** The user's switch, as the CTO's settings store it. */
+export type CtoCrossMachineAccess = {
+  enabled: boolean;
+};
 
 export type CtoCrossMachineBridgeOptions = {
   projectRoot: string;
   appVersion: string;
   /**
-   * This machine's ADE action services, for `runAction`/`listActions` aimed at
-   * the home machine. A thunk: the runtime that owns them is assembled after
-   * the chat service that builds the CTO's tools.
+   * This brain's action dispatcher, as the CTO caller, for `runAction` and
+   * `listActions` aimed at the home machine. A thunk: the runtime it runs on
+   * is assembled after the chat service that builds the CTO's tools. Null
+   * until that runtime exists.
    */
-  getLocalActionServices?: () => Partial<Record<AdeActionDomain, unknown>> | null;
+  getLocalActionCaller?: () => Promise<CtoActionCaller> | null;
+  /** Read on every call; absent means on. */
+  getAccess?: () => CtoCrossMachineAccess;
   logger?: {
     info(event: string, meta?: Record<string, unknown>): void;
     warn(event: string, meta?: Record<string, unknown>): void;
@@ -192,6 +215,21 @@ function resultByteLength(value: unknown): number {
   }
 }
 
+/** `run_ade_action`'s arguments for one call, identical for every machine. */
+function runActionArguments(call: CtoRemoteActionCall): Record<string, unknown> {
+  return {
+    domain: call.domain,
+    action: call.action,
+    ...(call.args ? { args: call.args } : {}),
+    ...(call.arg !== undefined ? { arg: call.arg } : {}),
+  };
+}
+
+/** `run_ade_action` answers `{ domain, action, result, statusHints }`; the caller wants `result`. */
+function runActionResult(value: unknown): unknown {
+  return isRecord(value) && "result" in value ? value.result : value;
+}
+
 function clampTimeout(value: number | undefined): number {
   const requested = Number(value ?? DEFAULT_CALL_TIMEOUT_MS);
   if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_CALL_TIMEOUT_MS;
@@ -227,8 +265,16 @@ function dropConnection(hostDeviceId: string, pooled?: PooledConnection | null):
   });
 }
 
+/**
+ * Restart the idle countdown. A connection with a call in flight never counts
+ * as idle: calls may run up to three minutes, longer than `IDLE_CLOSE_MS`, and
+ * closing the socket mid-call would lose a result the host may already have
+ * produced.
+ */
 function touch(entry: PooledConnection): void {
   if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = null;
+  if (entry.inFlight > 0) return;
   entry.idleTimer = setTimeout(() => dropConnection(entry.hostDeviceId, entry), IDLE_CLOSE_MS);
   entry.idleTimer.unref?.();
 }
@@ -239,6 +285,19 @@ export function createCtoCrossMachineBridge(
   const logger = options.logger ?? null;
   const account = (): Pick<AccountAuthService, "getStatus" | "getAccessToken"> =>
     getSharedAccountAuthService({ projectRoots: () => [options.projectRoot] });
+  const access = (): CtoCrossMachineAccess => options.getAccess?.() ?? { enabled: true };
+  const assertEnabled = (): void => {
+    if (!access().enabled) throw new Error(CTO_CROSS_MACHINE_DISABLED_MESSAGE);
+  };
+  /** A local read of the stored session; no network. */
+  const isSignedIn = (): boolean => {
+    try {
+      const status = account().getStatus();
+      return status.signedIn || status.source === "env-token";
+    } catch {
+      return false;
+    }
+  };
   const directory = (): AccountDirectory =>
     new AccountMachineDirectoryService(account(), {
       appVersion: options.appVersion,
@@ -300,7 +359,10 @@ export function createCtoCrossMachineBridge(
     if (!fresh && directoryCache && Date.now() - directoryCache.at < DIRECTORY_CACHE_MS) {
       return directoryCache.machines;
     }
-    const listed = await directory().listMachines({ timeoutMs: DIRECTORY_TIMEOUT_MS });
+    // Signed out: say so without a directory request.
+    const listed = isSignedIn()
+      ? await directory().listMachines({ timeoutMs: DIRECTORY_TIMEOUT_MS })
+      : { state: "signed_out" as const };
     if (listed.state === "signed_out" || listed.state === "auth_expired") {
       directoryCache = null;
       throw new Error(
@@ -375,16 +437,11 @@ export function createCtoCrossMachineBridge(
         acceptTransport: async (transport) => {
           const client = new RuntimeRpcClient(transport, DEFAULT_CALL_TIMEOUT_MS);
           try {
-            const initialized = await client.call("ade/initialize", {
-              protocolVersion: "2025-06-18",
-              clientName: CTO_REMOTE_CLIENT_NAME,
-              clientInfo: { name: CTO_REMOTE_CLIENT_NAME, version: options.appVersion },
-              // Role `cto` with no chat session: a chat-bound claim would be
-              // clamped to `agent`, and the target clamps `cto` to its own
-              // ceiling anyway. No chat id travels, so the target cannot mistake
-              // this for one of its own agents.
-              identity: { role: "cto", callerId: syntheticCallerId(CTO_REMOTE_CLIENT_NAME) },
-            }, { timeoutMs: PROJECTS_LIST_TIMEOUT_MS });
+            const initialized = await client.call(
+              "ade/initialize",
+              ctoCallerInitializeParams(options.appVersion),
+              { timeoutMs: PROJECTS_LIST_TIMEOUT_MS },
+            );
             const info = isRecord(initialized) && isRecord(initialized.runtimeInfo)
               ? initialized.runtimeInfo
               : null;
@@ -418,7 +475,8 @@ export function createCtoCrossMachineBridge(
       } catch (error) {
         if (error instanceof PairedRuntimeCompatibilityError) throw error;
         // Saved routes go stale (new LAN address, host re-keyed, pairing
-        // removed on the host). Re-pairing through the account refreshes them.
+        // removed on the host). Re-pairing once through the account refreshes
+        // them; if that fails, its error is the answer.
         logger?.info("cto_cross_machine.repair_pairing", {
           machineKey: machine.machineKey,
           reason: errorMessage(error),
@@ -427,7 +485,7 @@ export function createCtoCrossMachineBridge(
         client = await open();
       }
     }
-    const entry: PooledConnection = { hostDeviceId, client, projects: null, idleTimer: null };
+    const entry: PooledConnection = { hostDeviceId, client, projects: null, idleTimer: null, inFlight: 0 };
     client.onDisconnect(() => dropConnection(hostDeviceId, entry));
     touch(entry);
     logger?.info("cto_cross_machine.connected", { machineKey: machine.machineKey });
@@ -520,6 +578,32 @@ export function createCtoCrossMachineBridge(
   };
 
   /**
+   * What `ade/actions/call` answered, from any machine: a refusal becomes an
+   * error carrying the machine's message verbatim, and an answer over the
+   * transport cap is refused rather than passed on.
+   */
+  const readActionResponse = (
+    source: string,
+    label: string,
+    value: unknown,
+    machineKey: string | null,
+  ): unknown => {
+    if (isRecord(value) && value.ok === false) {
+      const error = isRecord(value.error) ? value.error : {};
+      const message = typeof error.message === "string" ? error.message : "The action failed.";
+      throw new Error(`${source} refused ${label}: ${message}`);
+    }
+    const bytes = resultByteLength(value);
+    if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {
+      throw new Error(
+        `${source} returned ${label} at ${bytes} bytes, over the ${SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES}-byte limit. Narrow the request.`,
+      );
+    }
+    logger?.info("cto_cross_machine.action", { machineKey, label, bytes });
+    return value;
+  };
+
+  /**
    * One request on an established connection. A JSON-RPC error is the target
    * saying no, and its message is passed on verbatim. A connection that dies
    * mid-call is reported as such: the action may or may not have run there,
@@ -533,6 +617,8 @@ export function createCtoCrossMachineBridge(
     timeoutMs: number,
   ): Promise<unknown> => {
     let value: unknown;
+    entry.inFlight += 1;
+    touch(entry);
     try {
       value = await withTimeout(
         entry.client.call("ade/actions/call", params, { timeoutMs }),
@@ -549,21 +635,11 @@ export function createCtoCrossMachineBridge(
       }
       if (/did not answer .* within/.test(errorMessage(error))) throw error;
       throw new Error(`${machineName(machine)} refused ${label}: ${errorMessage(error)}`, { cause: error });
+    } finally {
+      entry.inFlight = Math.max(0, entry.inFlight - 1);
+      if (!entry.client.isClosed()) touch(entry);
     }
-    touch(entry);
-    if (isRecord(value) && value.ok === false) {
-      const error = isRecord(value.error) ? value.error : {};
-      const message = typeof error.message === "string" ? error.message : "The action failed.";
-      throw new Error(`${machineName(machine)} refused ${label}: ${message}`);
-    }
-    const bytes = resultByteLength(value);
-    if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {
-      throw new Error(
-        `${machineName(machine)} returned ${label} at ${bytes} bytes, over the ${SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES}-byte limit. Narrow the request.`,
-      );
-    }
-    logger?.info("cto_cross_machine.action", { machineKey: machine.machineKey, label, bytes });
-    return value;
+    return readActionResponse(machineName(machine), label, value, machine.machineKey);
   };
 
   const callOnMachine = async (
@@ -571,18 +647,12 @@ export function createCtoCrossMachineBridge(
     call: CtoRemoteActionCall,
   ): Promise<unknown> => {
     const { entry, project } = await connectToProject(machine);
-    const label = `${call.domain}.${call.action}`;
-    const value = await requestOnMachine(machine, entry, label, {
+    const value = await requestOnMachine(machine, entry, `${call.domain}.${call.action}`, {
       projectId: project.projectId,
       name: "run_ade_action",
-      arguments: {
-        domain: call.domain,
-        action: call.action,
-        ...(call.args ? { args: call.args } : {}),
-        ...(call.arg !== undefined ? { arg: call.arg } : {}),
-      },
+      arguments: runActionArguments(call),
     }, clampTimeout(call.timeoutMs));
-    return isRecord(value) && "result" in value ? value.result : value;
+    return runActionResult(value);
   };
 
   const listActionsOnMachine = async (
@@ -599,62 +669,55 @@ export function createCtoCrossMachineBridge(
     return shapeActionList(rows, domain);
   };
 
-  const localServices = () => options.getLocalActionServices?.() ?? null;
-
-  const callLocally = async (call: CtoRemoteActionCall): Promise<unknown> => {
-    const services = localServices();
-    if (!services) throw new Error("ADE actions are not available on this runtime yet.");
-    const domain = call.domain as AdeActionDomain;
-    const service = services[domain] as Record<string, unknown> | null | undefined;
-    if (!service) throw new Error(`Domain '${call.domain}' is unavailable on this machine.`);
-    const fn = service[call.action];
-    // The same gates the RPC server applies to a CTO caller that is not the
-    // desktop: allowlisted, and never a user-only action.
-    if (typeof fn !== "function" || !isAllowedAdeAction(domain, call.action)) {
-      throw new Error(`Action '${call.domain}.${call.action}' is not exposed through ADE actions.`);
-    }
-    if (isUserOnlyAdeAction(domain, call.action) || (call.domain === "analytics" && call.action === "capture")) {
-      throw new Error(`${call.domain}.${call.action} is limited to user clients.`);
-    }
-    const result = await (fn as (arg: unknown) => unknown).call(
-      service,
-      call.arg !== undefined ? call.arg : (call.args ?? {}),
-    );
-    const bytes = resultByteLength(result);
-    if (bytes > SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) {
-      throw new Error(
-        `${call.domain}.${call.action} returned ${bytes} bytes, over the ${SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES}-byte limit. Narrow the request.`,
-      );
-    }
-    return result;
+  const localCaller = async (): Promise<CtoActionCaller> => {
+    const caller = await options.getLocalActionCaller?.();
+    if (!caller) throw new Error("ADE actions are not available on this runtime yet.");
+    return caller;
   };
 
-  const listLocally = (domain: string | null): { count: number; actions: CtoMachineActionInfo[] } => {
-    const services = localServices();
-    if (!services) throw new Error("ADE actions are not available on this runtime yet.");
-    const domains = (domain ? [domain] : Object.keys(services)) as AdeActionDomain[];
-    const rows = domains.flatMap((entry) => {
-      const service = services[entry] as Record<string, unknown> | null | undefined;
-      if (!service) return [];
-      return listAllowedAdeActionNames(entry, service)
-        .filter((action) => !isUserOnlyAdeAction(entry, action))
-        .map((action) => {
-          const contract = getAdeActionInputContract(entry, action);
-          return {
-            domain: entry,
-            action,
-            ...(contract?.description ? { description: contract.description } : {}),
-            ...(contract?.input ? { input: contract.input } : {}),
-            ...(contract?.example ? { example: contract.example } : {}),
-          };
-        });
-    });
-    return shapeActionList(rows, domain);
+  const callLocally = async (call: CtoRemoteActionCall): Promise<unknown> => {
+    const caller = await localCaller();
+    const label = `${call.domain}.${call.action}`;
+    const timeoutMs = clampTimeout(call.timeoutMs);
+    const value = await withTimeout(
+      caller("run_ade_action", runActionArguments(call)),
+      timeoutMs,
+      `${label} did not finish within ${Math.round(timeoutMs / 1000)}s on this machine. It may still be running.`,
+    );
+    return runActionResult(readActionResponse("This machine", label, value, null));
+  };
+
+  const listLocally = async (domain: string | null): Promise<{ count: number; actions: CtoMachineActionInfo[] }> => {
+    const caller = await localCaller();
+    const value = readActionResponse(
+      "This machine",
+      "list_ade_actions",
+      await caller("list_ade_actions", { domain: domain ?? "all" }),
+      null,
+    );
+    return shapeActionList(isRecord(value) && Array.isArray(value.actions) ? value.actions : [], domain);
   };
 
   const resolveMachine = async (query: string): Promise<CtoMachineTarget> => {
     const trimmed = query.trim();
     if (!trimmed) throw new Error("machine must be a machine id or name.");
+    if (!access().enabled) {
+      // Naming the home machine works with the switch off, as omitting it does.
+      // Matched locally: the account directory is not read while it is off.
+      const home = homeMachine();
+      const local = thisMachine();
+      const needle = trimmed.toLowerCase();
+      const hostname = os.hostname().toLowerCase();
+      const names = [
+        home.machineId,
+        local?.deviceId ?? "",
+        home.name,
+        hostname,
+        hostname.replace(/\.local$/, ""),
+      ].map((name) => name.toLowerCase()).filter(Boolean);
+      if (names.includes(needle)) return home;
+      throw new Error(CTO_CROSS_MACHINE_DISABLED_MESSAGE);
+    }
     let machines = await listAccountMachines();
     let machine: AdeAccountMachine;
     try {
@@ -720,10 +783,24 @@ export function createCtoCrossMachineBridge(
     }
   };
 
+  const homeMachine = (): CtoMachineTarget => {
+    const local = thisMachine();
+    const listed = directoryCache?.machines.find(isThisMachine) ?? null;
+    return {
+      machineId: local?.machineKey ?? listed?.machineKey ?? "this-machine",
+      name: listed ? machineName(listed) : os.hostname(),
+      isThisMachine: true,
+    };
+  };
+
   return {
+    homeMachine,
     resolveMachine,
 
     async listMachines(listOptions = {}): Promise<CtoMachineListResult> {
+      if (!access().enabled) {
+        return { state: "disabled", message: CTO_CROSS_MACHINE_DISABLED_MESSAGE, machines: [] };
+      }
       let machines: AdeAccountMachine[];
       try {
         machines = await listAccountMachines(true);
@@ -761,23 +838,32 @@ export function createCtoCrossMachineBridge(
     async runAction(target, call) {
       // The home machine never goes over the bridge, even when named.
       if (target.isThisMachine) return await callLocally(call);
+      assertEnabled();
       return await callOnMachine(await machineForTarget(target), call);
     },
 
     async listActions(target, domain) {
       const normalized = domain?.trim() || null;
-      if (target.isThisMachine) return listLocally(normalized);
+      if (target.isThisMachine) return await listLocally(normalized);
+      assertEnabled();
       return await listActionsOnMachine(await machineForTarget(target), normalized);
     },
 
     peekRoster() {
-      const stale = !directoryCache || Date.now() - directoryCache.at >= DIRECTORY_CACHE_MS;
-      if (stale && !rosterRefresh) {
+      // Nothing here starts reading the directory: the roster exists once a
+      // cross-machine tool has read it, and each tool read refreshes it.
+      if (!directoryCache) return null;
+      if (!isSignedIn()) {
+        directoryCache = null;
+        return null;
+      }
+      // Kept while off, so the home machine keeps its account name.
+      if (!access().enabled) return null;
+      if (Date.now() - directoryCache.at >= ROSTER_REFRESH_MS && !rosterRefresh) {
         rosterRefresh = listAccountMachines(true)
           .catch(() => undefined)
           .finally(() => { rosterRefresh = null; });
       }
-      if (!directoryCache) return null;
       return directoryCache.machines.slice(0, ROSTER_MAX_MACHINES).map((machine) => {
         const local = isThisMachine(machine);
         return {

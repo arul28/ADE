@@ -49,8 +49,8 @@ import {
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
-import { PrRuntimePinProvider, pinArg } from "../state/prMachines";
-import type { MachineChipModel } from "../../history/projectMachines";
+import { PrRuntimePinProvider } from "../state/prMachines";
+import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -430,8 +430,8 @@ export function PrDetailPane({
   laneMachineChip = null,
   mergeBlockedReason = null,
 }: PrDetailPaneProps) {
-  // The machine every call below targets: `[]` keeps the tab-machine call
-  // exactly as it was; `[pin]` sends it to the lane's owner.
+  // The machine every call below targets: `[]` is the tab machine's unpinned
+  // call; `[pin]` sends it to the lane's owner.
   const runtimePin = runtime?.pin ?? null;
   const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
   // Chat hand-offs keep the lane's machine: a foreign chat is focused with its

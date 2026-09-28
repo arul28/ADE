@@ -12,7 +12,8 @@ import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
-import { LaneMachineChip as LaneMachineChipView, type LaneMachineChipModel } from "../LaneMachineChip";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   LANE_SIDEBAR_INDENT_PX,
   laneAgentToolType,
@@ -51,7 +52,7 @@ export type LaneSidebarRowProps = {
    * The machine chip, shown when the project has lanes on more than one
    * machine. Null keeps the single-machine row unchanged.
    */
-  machineChip?: LaneMachineChip | null;
+  machineChip?: MachineChipModel | null;
   /**
    * Set when the lane's machine cannot be reached ("<Machine> is offline").
    * The row is dimmed, says why on hover, and offers no menu or drag.
@@ -68,8 +69,6 @@ export type LaneSidebarRowProps = {
   onOpenPr: (pr: LaneTabPrTag) => void;
   onOpenAgent: (agent: LaneAgent) => void;
 };
-
-export type LaneMachineChip = LaneMachineChipModel;
 
 /** Thin vertical guides, one per indent level, like an editor's file tree. */
 function IndentGuides({ indentLevel }: { indentLevel: number }) {
@@ -359,7 +358,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               </span>
             ) : null}
             {prs && prs.length > 0 ? <LaneSidebarPrChip prs={prs} onOpenPr={onOpenPr} /> : null}
-            {machineChip ? <LaneMachineChipView machine={machineChip} /> : null}
+            {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>

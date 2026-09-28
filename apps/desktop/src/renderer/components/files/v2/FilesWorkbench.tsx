@@ -52,8 +52,13 @@ import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
 import { WorkspacePicker, type WorkspacePickerMachineGroup } from "./WorkspacePicker";
-import { shouldShowMachineChips, useAllMachineLanes } from "../../../state/laneMachineRouting";
-import type { LaneMachineChipModel } from "../../lanes/LaneMachineChip";
+import {
+  machineBlockedReason,
+  machineChipFor,
+  shouldShowMachineChips,
+  useAllMachineLanes,
+  type MachineChipModel,
+} from "../../../state/laneMachineRouting";
 import { CreatePromptModal } from "./overlays";
 import { FilesSearchPanel } from "./FilesSearchPanel";
 import { setPendingReveal } from "./pendingReveals";
@@ -183,7 +188,7 @@ export function FilesWorkbench({
   /**
    * Machine this workbench should start on, for hosts that already know it —
    * the Work tools pane, whose chat may live on another machine. Navigation
-   * requests still repin as before; this only supplies the starting machine.
+   * requests still repin; this only supplies the starting machine.
    */
   pin?: OpenProjectBinding | null;
 }) {
@@ -603,18 +608,12 @@ export function FilesWorkbench({
 
   /* ---- Lanes on every machine (routed Files tab) ---- */
 
-  const currentMachineChip = useMemo<LaneMachineChipModel | null>(() => {
+  const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const currentMachineChip = useMemo<MachineChipModel | null>(() => {
     const machine = machinePin
       ? allMachineLanes.machines.find((candidate) => candidate.binding?.key === machinePin.key) ?? null
       : allMachineLanes.machines[0] ?? null;
-    if (machine) {
-      return {
-        machineId: machine.machineId,
-        machineName: machine.machineName,
-        online: machine.online,
-        isThisMachine: machine.isThisMachine,
-      };
-    }
+    if (machine) return machineChipFor(machine);
     if (!machinePin) return null;
     return {
       machineId: machinePin.kind === "remote" ? machinePin.targetId : machinePin.key,
@@ -628,24 +627,14 @@ export function FilesWorkbench({
   const otherMachineLanes = useMemo(() => {
     const targets = new Map<string, { machineId: string; laneId: string }>();
     const groups: WorkspacePickerMachineGroup[] = [];
-    if (embedded || !shouldShowMachineChips(allMachineLanes) || !currentMachineChip) return { groups, targets };
+    if (embedded || !multiMachine || !currentMachineChip) return { groups, targets };
     for (const machine of allMachineLanes.machines) {
       if (machine.machineId === currentMachineChip.machineId) continue;
       const lanes = allMachineLanes.lanes.filter((row) => row.machineId === machine.machineId);
       if (lanes.length === 0) continue;
-      const disabledReason = !machine.online
-        ? `${machine.machineName} is offline`
-        : !machine.routable
-          ? `${machine.machineName} is unavailable`
-          : null;
       groups.push({
-        machine: {
-          machineId: machine.machineId,
-          machineName: machine.machineName,
-          online: machine.online,
-          isThisMachine: machine.isThisMachine,
-        },
-        disabledReason,
+        machine: machineChipFor(machine),
+        disabledReason: machineBlockedReason(machine),
         lanes: lanes.map((row) => {
           const value = `lane-on-machine:${targets.size}`;
           targets.set(value, { machineId: machine.machineId, laneId: row.lane.id });
@@ -654,7 +643,7 @@ export function FilesWorkbench({
       });
     }
     return { groups, targets };
-  }, [allMachineLanes, currentMachineChip, embedded]);
+  }, [allMachineLanes, currentMachineChip, embedded, multiMachine]);
 
   /**
    * Move Files to the picked lane's machine. The pin comes from the machine
@@ -666,7 +655,7 @@ export function FilesWorkbench({
     if (!target) return;
     const machine = allMachineLanes.machinesById.get(target.machineId);
     if (!machine || !machine.online) return;
-    const nextPin = machine.isActiveBinding ? null : machine.pin;
+    const nextPin = machine.pin;
     if (!machine.isActiveBinding && !nextPin) return;
     setError(null);
     setMachinePin((current) => (current?.key === nextPin?.key ? current : nextPin));
@@ -1679,7 +1668,7 @@ export function FilesWorkbench({
           workspaceId={workspaceId}
           onChange={selectWorkspace}
           // Chip rule shared with every tab: more than one machine → chips.
-          machine={shouldShowMachineChips(allMachineLanes) ? currentMachineChip : null}
+          machine={multiMachine ? currentMachineChip : null}
           otherMachines={otherMachineLanes.groups}
           onPickOtherMachineLane={pickOtherMachineLane}
         />

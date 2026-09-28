@@ -24,12 +24,15 @@
  * a fallback join.
  */
 
-import type { ProjectMachine } from "../../lib/projectMachines";
+import type { ProjectMachine } from "../../state/projectMachines";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types";
 
 export const CTO_HOME_SETTING_KEY = "cto.homeMachine";
+
+/** Shown while This computer's account device id is still being read. */
+export const STILL_IDENTIFYING_THIS_COMPUTER = "Still identifying this computer…";
 const LOCAL_STORAGE_KEY = "ade.cto.homeMachine.v1";
 
 export type CtoHomeMachineRecord = {
@@ -152,8 +155,8 @@ export function ctoHomeRecordFor(
   now: () => number = Date.now,
 ): CtoHomeMachineRecord {
   const name = machine.isThisMachine
-    ? (thisMachineDeviceName?.trim() || machine.name)
-    : machine.name;
+    ? (thisMachineDeviceName?.trim() || machine.machineName)
+    : machine.machineName;
   return {
     version: 1,
     deviceId: machine.deviceId,
@@ -187,7 +190,7 @@ export function resolveCtoHomeMachine(
   }
   const name = record.name.trim().toLowerCase();
   return machines.find(
-    (machine) => !machine.isThisMachine && machine.deviceId == null && machine.name.trim().toLowerCase() === name,
+    (machine) => !machine.isThisMachine && machine.deviceId == null && machine.machineName.trim().toLowerCase() === name,
   ) ?? null;
 }
 
@@ -198,62 +201,7 @@ export function resolveCtoHomeMachine(
 export function suggestCtoHomeMachine(machines: readonly ProjectMachine[]): ProjectMachine | null {
   const candidates = machines.filter((machine) => machine.hasRepo);
   return candidates.find((machine) => machine.isThisMachine && machine.routable)
-    ?? candidates.find((machine) => machine.isBound)
+    ?? candidates.find((machine) => machine.isActiveBinding)
     ?? candidates.find((machine) => machine.routable && machine.online)
     ?? null;
-}
-
-// ── Last resolution, for surfaces outside the CTO page ─────────────────────
-
-export type CtoHomeResolution =
-  | { status: "resolved"; pin: OpenProjectBinding | null; machineName: string; online: boolean }
-  | { status: "unreachable"; machineName: string };
-
-const resolutionByScope = new Map<string, CtoHomeResolution>();
-const resolutionListeners = new Set<(scopeKey: string) => void>();
-
-/**
- * Remember what the CTO page resolved, keyed by the project tab's state key.
- * The capture gesture host reads it rather than resolving on its own, so it
- * cannot disagree with the page about where the CTO is.
- */
-export function rememberCtoHomeResolution(scopeKey: string | null, resolution: CtoHomeResolution | null): void {
-  if (!scopeKey) return;
-  if (resolution) resolutionByScope.set(scopeKey, resolution);
-  else resolutionByScope.delete(scopeKey);
-  if (resolution) for (const listener of resolutionListeners) listener(scopeKey);
-}
-
-/**
- * The CTO page's resolution for a project tab, waiting for it when the page has
- * not resolved one yet (it is resolving because the caller just opened it).
- * Null when nothing arrives in time; the caller must not guess a machine then.
- */
-export function waitForCtoHomeResolution(
-  scopeKey: string | null,
-  timeoutMs: number,
-): Promise<CtoHomeResolution | null> {
-  const existing = cachedCtoHomeResolution(scopeKey);
-  if (existing || !scopeKey) return Promise.resolve(existing);
-  return new Promise((resolve) => {
-    const listener = (changed: string) => {
-      if (changed !== scopeKey) return;
-      cleanup();
-      resolve(cachedCtoHomeResolution(scopeKey));
-    };
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(null);
-    }, timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timer);
-      resolutionListeners.delete(listener);
-    };
-    resolutionListeners.add(listener);
-  });
-}
-
-export function cachedCtoHomeResolution(scopeKey: string | null): CtoHomeResolution | null {
-  if (!scopeKey) return null;
-  return resolutionByScope.get(scopeKey) ?? null;
 }

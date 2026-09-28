@@ -69,6 +69,15 @@ export type CtoIdentity = {
    */
   voiceName?: string | null;
   voiceBackchannels?: boolean | null;
+  /**
+   * "Let the CTO reach my other machines" (Settings › CTO). Absent means on.
+   * Off, every cross-machine tool answers that it is turned off, nothing is
+   * paired, and the live-state roster is left out.
+   *
+   * The user's switch alone: the runtime refuses an `updateIdentity` patch
+   * that names it from any caller but the desktop.
+   */
+  crossMachineEnabled?: boolean | null;
   updatedAt: string;
 };
 

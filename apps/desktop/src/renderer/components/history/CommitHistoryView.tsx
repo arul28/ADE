@@ -85,7 +85,7 @@ export function CommitHistoryView({
         setLoading(false);
       }
     }
-  }, [laneId, limit]);
+  }, [laneId, limit, pin]);
 
   useEffect(() => {
     loadRequestSeq.current += 1;

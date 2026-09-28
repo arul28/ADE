@@ -44,7 +44,6 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
-  type ProjectTabGroup,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";

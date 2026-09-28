@@ -353,7 +353,7 @@ export function ProvidersSection({
   const navigate = useNavigate();
   const usageHeaderPreferences = useUsageHeaderPreferences();
   // The machine whose providers this page shows. Every runtime call below
-  // carries `pin` (null = the tab's binding, exactly as before); the page is
+  // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
   const { pin } = useSettingsMachineScope();
   // Claude and Codex can hold several local logins; the row says how many so

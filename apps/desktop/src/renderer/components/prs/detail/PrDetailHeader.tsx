@@ -9,8 +9,8 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDes
 import { BranchIcon } from "../../ui/vcsIcons";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { LaneChip } from "../../terminals/LaneChip";
-import { MachineChip } from "../../history/EventMachineChip";
-import type { MachineChipModel } from "../../history/projectMachines";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { PrUserAvatar } from "../shared/PrUserAvatar";
 import { PrActionsDropdown, type PrActionsContext } from "../shared/PrActionsMenu";

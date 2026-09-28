@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { pinArg, usePrRuntimePin } from "../state/prMachines";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { PrReactionContent, PrReviewThreadReaction } from "../../../../shared/types";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";

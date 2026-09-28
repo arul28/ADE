@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
 import { LaneIcon } from "../ui/vcsIcons";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { cachedCtoHomeResolution } from "../cto/ctoHomeMachine";
+import { cachedCtoHomeResolution } from "../../state/ctoHome";
 import { EmptyState } from "../ui/EmptyState";
 import { Group, Panel } from "react-resizable-panels";
 import { ResizeGutter } from "../ui/ResizeGutter";
@@ -21,13 +21,16 @@ import {
 import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import type { TimelineEvent } from "./timelineTypes";
 import type { GitCommitSummary } from "../../../shared/types";
-import { useProjectMachineTargets } from "./projectMachines";
 import {
   createLaneMachineRouter,
   foreignLaneKey,
+  routableMachines,
   useAllMachineLanes,
+  useStableBinding,
 } from "../../state/laneMachineRouting";
-import type { HistoryMachineLoad, HistoryMachineSource } from "./useTimelineStore";
+import { pinKey } from "../../state/projectMachines";
+import type { MachineReadLoad } from "../../state/foreignMachineReads";
+import type { HistoryMachineSource } from "./useTimelineStore";
 
 const TimelineGraph = React.lazy(async () => {
   const mod = await import("./TimelineGraph");
@@ -96,25 +99,31 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const machineLoads = useTimelineStore((s) => s.machineLoads);
 
-  // One timeline across every machine that holds this project. The union is
-  // joined only while the activity timeline is on screen.
-  const machineTargets = useProjectMachineTargets(active && surface === "activity");
+  // One timeline across every machine that holds this project, and every
+  // machine's lanes for the commit view. The union is joined while History is
+  // on screen.
+  const allMachineLanes = useAllMachineLanes(active);
   const machineSources = useMemo<HistoryMachineSource[]>(
-    () => machineTargets.map((target) => ({
-      key: target.key,
-      machineId: target.machineId,
-      machineName: target.machineName,
-      pin: target.pin,
-      online: target.online,
-      isThisMachine: target.isThisMachine,
-      isActive: target.isActive,
+    () => routableMachines(allMachineLanes.machines).map((machine) => ({
+      machineId: machine.machineId,
+      machineName: machine.machineName,
+      pin: machine.pin,
+      online: machine.online,
+      isThisMachine: machine.isThisMachine,
+      isActiveBinding: machine.isActiveBinding,
     })),
-    [machineTargets],
+    [allMachineLanes.machines],
   );
-  // Lane lists churn the target objects; only membership, naming and
+  // Lane lists churn the machine objects; only membership, naming, pin and
   // reachability matter to the timeline.
   const machineSignature = machineSources
-    .map((machine) => `${machine.key}\u0000${machine.machineName}\u0000${machine.online ? 1 : 0}\u0000${machine.isActive ? 1 : 0}`)
+    .map((machine) => [
+      machine.machineId,
+      machine.machineName,
+      machine.online ? 1 : 0,
+      machine.isActiveBinding ? 1 : 0,
+      pinKey(machine.pin),
+    ].join("\u0000"))
     .join("\u0001");
   const machineSourcesRef = useRef(machineSources);
   machineSourcesRef.current = machineSources;
@@ -128,16 +137,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   // A lane on another machine is read through that machine's pin. Writes
   // (lane git actions, commit actions) stay with lanes on this tab's machine:
   // `laneHasWorktree` is false for the others, which is what gates them.
-  const allMachineLanes = useAllMachineLanes(active && surface === "commits");
   const laneRouter = useMemo(() => createLaneMachineRouter(allMachineLanes), [allMachineLanes]);
   const focusRoute = focusLaneMachineId ? laneRouter.route(focusLaneId, focusLaneMachineId) : null;
-  // Held by key: the lane union re-derives on every sync tick, and a fresh
-  // pin object each time would refetch the commit list with it.
-  const livePin = focusRoute?.kind === "pinned" ? focusRoute.pin : null;
-  const livePinRef = useRef(livePin);
-  livePinRef.current = livePin;
-  const livePinKey = livePin?.key ?? null;
-  const commitPin = useMemo(() => livePinRef.current, [livePinKey]);
+  const commitPin = useStableBinding(focusRoute?.kind === "pinned" ? focusRoute.pin : null);
   const focusLaneReadable = !focusLaneMachineId || focusRoute?.kind === "pinned";
   const focusRemoteMachineName = focusLaneMachineId
     ? laneRouter.machine(focusLaneMachineId)?.machineName ?? "another machine"
@@ -285,8 +287,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active || surface === "commits") return;
-    // CTO sessions come from the CTO's home machine. Unknown (the CTO page
-    // hasn't resolved it yet) keeps the tab machine, as before.
+    // CTO sessions come from the CTO's home machine. While it is unknown (the
+    // CTO page hasn't resolved it yet) they are read from the tab's machine.
     const home = cachedCtoHomeResolution(projectStateKey);
     setCtoRoute(
       home?.status === "unreachable"
@@ -299,8 +301,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   // A machine that joins, returns, or comes back online is read right away;
   // the bound machine's own list is never held for it.
   const foreignMachineSignature = machineSources
-    .filter((machine) => !machine.isActive && machine.online)
-    .map((machine) => machine.key)
+    .filter((machine) => !machine.isActiveBinding && machine.online)
+    .map((machine) => machine.machineId)
     .join("\u0001");
   const lastForeignSignatureRef = useRef(foreignMachineSignature);
   useEffect(() => {
@@ -561,6 +563,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   } else if (surface === "commits") {
     timelineBody = (
       <CommitHistoryView
+        // The same lane id on another machine is another lane: remount so
+        // nothing read from the previous machine is shown for it.
+        key={pinKey(commitPin)}
         laneId={focusLaneReadable ? focusLaneId : null}
         pin={commitPin}
         remoteMachineName={focusRemoteMachineName}
@@ -721,7 +726,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
  * One quiet line per machine that is still loading, offline, or unreachable.
  * The rest of the timeline is already on screen; this only says what's missing.
  */
-function MachineLoadNotes({ loads }: { loads: Record<string, HistoryMachineLoad> }) {
+function MachineLoadNotes({ loads }: { loads: Record<string, MachineReadLoad> }) {
   const entries = Object.entries(loads);
   if (entries.length === 0) return null;
   return (

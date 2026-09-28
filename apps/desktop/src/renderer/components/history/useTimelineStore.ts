@@ -2,12 +2,13 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { OpenProjectBinding, OperationRecord } from "../../../shared/types";
+import type { OperationRecord } from "../../../shared/types";
 import type { GitCommitSummary } from "../../../shared/types";
 import type {
   ColumnConfig,
   HistorySurface,
   LaneVisibility,
+  HistoryMachineSource,
   TimelineEvent,
   TimelineRecord,
   TimelineFilters,
@@ -24,53 +25,29 @@ import {
   sortTimelineRecords,
   type HistoryCtoRoute,
 } from "./historyActivitySources";
-import { offlineMessage, withMachineTimeout } from "./projectMachines";
-import { shouldShowMachineChips } from "../../state/laneMachineRouting";
-import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { withMachineTimeout } from "../../state/projectMachines";
+import { foreignLaneKey, machineBlockedReason, shouldShowMachineChips } from "../../state/laneMachineRouting";
+import { machineScopedId, type MachineReadLoad } from "../../state/foreignMachineReads";
 
 // ── Machines ─────────────────────────────────────────────────────
 
-/** One machine the timeline reads from. See `ProjectMachineTarget`. */
-export type HistoryMachineSource = {
-  key: string;
-  machineId: string;
-  machineName: string;
-  /** `null` = the tab's own binding (unpinned path). */
-  pin: OpenProjectBinding | null;
-  online: boolean;
-  isThisMachine: boolean;
-  isActive: boolean;
-};
-
-export type HistoryMachineLoad = {
-  machineName: string;
-  status: "loading" | "ready" | "offline" | "error";
-  message: string | null;
-};
+export type { HistoryMachineSource };
 
 /** Before the page publishes its machines, the bound machine is the only source. */
 const IMPLICIT_ACTIVE_KEY = "bound";
 
 function tagRecords(records: readonly OperationRecord[], machine: HistoryMachineSource | null): TimelineRecord[] {
   if (!machine) return records as TimelineRecord[];
-  return records.map((record) => ({
-    ...record,
-    machineKey: machine.key,
-    machineId: machine.machineId,
-    machineName: machine.machineName,
-    machineOnline: machine.online,
-    machineIsHere: machine.isThisMachine,
-    machineIsBound: machine.isActive,
-  }));
+  return records.map((record) => ({ ...record, machine }));
 }
 
-/**
- * Operation ids are unique per machine, not globally, and they double as
- * selection and URL identity. Another machine's records are namespaced so two
- * machines can never collide on one row.
- */
-function foreignRecordId(machineKey: string, id: string): string {
-  return `${machineKey}::${id}`;
+/** The note for a machine the timeline does not read right now. */
+function offlineLoad(machine: HistoryMachineSource): MachineReadLoad {
+  return {
+    machineName: machine.machineName,
+    status: "offline",
+    message: machineBlockedReason({ ...machine, routable: true }),
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -135,12 +112,10 @@ export type ScopeLevel = "important" | "standard" | "detailed" | "all";
  * `machineId:laneId` form the Lanes and Work tabs use). The bound machine's
  * lanes keep their bare id, so lane filters set from elsewhere still match.
  */
-export function timelineLaneKey(
-  event: Pick<TimelineEvent, "laneId" | "machineId" | "machineIsBound">,
-): string | null {
+export function timelineLaneKey(event: Pick<TimelineEvent, "laneId" | "machine">): string | null {
   if (!event.laneId) return null;
-  return event.machineIsBound === false && event.machineId
-    ? foreignLaneKey(event.machineId, event.laneId)
+  return event.machine && !event.machine.isActiveBinding
+    ? foreignLaneKey(event.machine.machineId, event.laneId)
     : event.laneId;
 }
 
@@ -207,12 +182,12 @@ function passesFilters(
 export type TimelineStore = {
   // ── Raw data ────────────────────────────────────────────────
   rawEvents: TimelineRecord[];
-  /** Per-machine segments that `rawEvents` is merged from, keyed by machine key. */
+  /** Per-machine segments that `rawEvents` is merged from, keyed by machine id. */
   recordsByMachine: Record<string, TimelineRecord[]>;
   /** Machines the timeline reads from; the bound machine first. */
   machines: HistoryMachineSource[];
   /** Per-machine read state for machines other than the bound one. */
-  machineLoads: Record<string, HistoryMachineLoad>;
+  machineLoads: Record<string, MachineReadLoad>;
   /** Where the CTO's sessions are read from (its home machine). */
   ctoRoute: HistoryCtoRoute;
   /** Enriched + filtered events ready for rendering */
@@ -325,7 +300,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
   const isLatestRead = (key: string, seq: number) => readSeqByMachine.get(key) === seq;
 
   function activeMachine(): HistoryMachineSource | null {
-    return get().machines.find((machine) => machine.isActive) ?? null;
+    return get().machines.find((machine) => machine.isActiveBinding) ?? null;
   }
 
   /** Replace one machine's segment and re-merge the whole timeline by time. */
@@ -338,7 +313,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     refilter();
   }
 
-  function setMachineLoad(key: string, load: HistoryMachineLoad | null) {
+  function setMachineLoad(key: string, load: MachineReadLoad | null) {
     set((state) => {
       const next = { ...state.machineLoads };
       if (load) next[key] = load;
@@ -356,18 +331,15 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     machine: HistoryMachineSource,
     args: { laneId?: string; kind?: string; limit: number },
   ) {
+    const key = machine.machineId;
     if (!machine.pin) return;
     if (!machine.online) {
-      setMachineLoad(machine.key, {
-        machineName: machine.machineName,
-        status: "offline",
-        message: offlineMessage(machine),
-      });
+      setMachineLoad(key, offlineLoad(machine));
       return;
     }
-    const seq = nextReadSeq(machine.key);
-    if (!get().recordsByMachine[machine.key]) {
-      setMachineLoad(machine.key, { machineName: machine.machineName, status: "loading", message: null });
+    const seq = nextReadSeq(key);
+    if (!get().recordsByMachine[key]) {
+      setMachineLoad(key, { machineName: machine.machineName, status: "loading", message: null });
     }
     try {
       const rows = await withMachineTimeout(
@@ -377,17 +349,17 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
         ),
         machine.machineName,
       );
-      if (!isLatestRead(machine.key, seq)) return;
-      if (!get().machines.some((candidate) => candidate.key === machine.key)) return;
+      if (!isLatestRead(key, seq)) return;
+      if (!get().machines.some((candidate) => candidate.machineId === key)) return;
       const tagged = tagRecords(
-        (Array.isArray(rows) ? rows : []).map((row) => ({ ...row, id: foreignRecordId(machine.key, row.id) })),
+        (Array.isArray(rows) ? rows : []).map((row) => ({ ...row, id: machineScopedId(key, row.id) })),
         machine,
       );
-      commitSegment(machine.key, tagged.slice(0, args.limit));
-      setMachineLoad(machine.key, null);
+      commitSegment(key, tagged.slice(0, args.limit));
+      setMachineLoad(key, null);
     } catch (err) {
-      if (!isLatestRead(machine.key, seq)) return;
-      setMachineLoad(machine.key, {
+      if (!isLatestRead(key, seq)) return;
+      setMachineLoad(key, {
         machineName: machine.machineName,
         status: "error",
         message: err instanceof Error ? err.message : `Couldn't read ${machine.machineName}`,
@@ -428,7 +400,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
           name: e.laneName,
           // Same chip rule as the rows: every lane names its machine once the
           // timeline spans more than one.
-          machineName: e.machineName && shouldShowMachineChips(get().machines) ? e.machineName : null,
+          machineName: e.machine && shouldShowMachineChips(get().machines.length) ? e.machine.machineName : null,
         });
       }
       catSet.add(e.category);
@@ -577,11 +549,11 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
       // Every other machine reads in parallel and lands on its own; none of
       // them gates the bound machine's list or its loading state.
       for (const machine of opts?.skipForeign ? [] : get().machines) {
-        if (machine.isActive) continue;
+        if (machine.isActiveBinding) continue;
         void fetchForeignMachine(machine, { laneId: opts?.laneId, kind: opts?.kind, limit });
       }
       const local = activeMachine();
-      const localKey = local?.key ?? IMPLICIT_ACTIVE_KEY;
+      const localKey = local?.machineId ?? IMPLICIT_ACTIVE_KEY;
       const seq = nextReadSeq(localKey);
       try {
         const skipSupplemental = Boolean(opts?.skipSupplemental) || Boolean(opts?.kind);
@@ -627,15 +599,15 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
       }
     },
     setRawEvents: (events) => {
-      const key = activeMachine()?.key ?? IMPLICIT_ACTIVE_KEY;
+      const key = activeMachine()?.machineId ?? IMPLICIT_ACTIVE_KEY;
       set({ recordsByMachine: { [key]: events as TimelineRecord[] }, rawEvents: events as TimelineRecord[] });
       refilter();
     },
     setCtoRoute: (ctoRoute) => set({ ctoRoute }),
     setMachines: (machines) => {
       const previous = get();
-      const byKey = new Map(machines.map((machine) => [machine.key, machine]));
-      const nextActiveKey = machines.find((machine) => machine.isActive)?.key ?? IMPLICIT_ACTIVE_KEY;
+      const byKey = new Map(machines.map((machine) => [machine.machineId, machine]));
+      const nextActiveKey = machines.find((machine) => machine.isActiveBinding)?.machineId ?? IMPLICIT_ACTIVE_KEY;
       const recordsByMachine: Record<string, TimelineRecord[]> = {};
       for (const [key, records] of Object.entries(previous.recordsByMachine)) {
         // The bound machine's first read may have landed before machines were
@@ -646,18 +618,14 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
         // Retag so a machine that went offline dims its rows in place.
         recordsByMachine[targetKey] = tagRecords(records, machine);
       }
-      const machineLoads: Record<string, HistoryMachineLoad> = {};
+      const machineLoads: Record<string, MachineReadLoad> = {};
       for (const machine of machines) {
-        if (machine.isActive) continue;
-        const load = previous.machineLoads[machine.key];
+        if (machine.isActiveBinding) continue;
+        const load = previous.machineLoads[machine.machineId];
         if (!machine.online) {
-          machineLoads[machine.key] = {
-            machineName: machine.machineName,
-            status: "offline",
-            message: offlineMessage(machine),
-          };
+          machineLoads[machine.machineId] = offlineLoad(machine);
         } else if (load && load.status !== "offline") {
-          machineLoads[machine.key] = load;
+          machineLoads[machine.machineId] = load;
         }
       }
       set({

@@ -2,7 +2,7 @@ import React from "react";
 import { Stack } from "@phosphor-icons/react";
 import type { FilesWorkspace } from "../../../../shared/types";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import type { LaneMachineChipModel } from "../../lanes/LaneMachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   MachineLaneSelect,
   laneOptionLabel,
@@ -11,7 +11,7 @@ import {
 
 /** Lanes on a machine other than the one Files is reading from right now. */
 export type WorkspacePickerMachineGroup = {
-  machine: LaneMachineChipModel;
+  machine: MachineChipModel;
   /** Why nothing here can be opened ("Mac Studio is offline"), or null. */
   disabledReason: string | null;
   lanes: Array<{
@@ -41,7 +41,7 @@ export function WorkspacePicker({
   workspaceId: string;
   onChange: (workspaceId: string) => void;
   /** The machine the listed `workspaces` are on; names their group heading. */
-  machine?: LaneMachineChipModel | null;
+  machine?: MachineChipModel | null;
   otherMachines?: WorkspacePickerMachineGroup[];
   onPickOtherMachineLane?: (value: string) => void;
 }) {

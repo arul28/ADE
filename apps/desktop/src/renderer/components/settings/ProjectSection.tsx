@@ -167,7 +167,7 @@ function IssueCard({ issue }: { issue: AdeHealthIssue }) {
 
 export function ProjectSection() {
   // This machine's checkout of the repo, read on the machine the Settings page
-  // is showing. Null pin = the tab's binding, as before.
+  // is showing. A null pin is the tab's binding.
   const { pin } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = useState<AdeProjectSnapshot | null>(null);
   const [busy, setBusy] = useState<"repair" | "integrity" | null>(null);

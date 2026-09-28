@@ -320,7 +320,7 @@ export function CreateLaneDialogHost({
     createLinearIssueAutoNameRef.current = null;
     setPickedMachineId("");
     setPinnedLanes(null);
-  }, []);
+  }, [setPickedMachineId]);
 
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
@@ -365,7 +365,9 @@ export function CreateLaneDialogHost({
     setCreateBranchPullRequestsLoading(false);
     if (primary) {
       setCreateBranchesLoading(true);
-      window.ade.projectConfig.get()
+      // The default base source is a per-checkout setting, so read it from
+      // the machine the lane is being created on.
+      window.ade.projectConfig.get(pin)
         .catch(() => null)
         .then(async (snapshot) => {
           const baseSource = effectiveNewLaneBaseSource(snapshot);
@@ -449,7 +451,7 @@ export function CreateLaneDialogHost({
     // Apply caller prefill after resetting to defaults.
     if (prefillInput?.name) setCreateLaneName(prefillInput.name.trim());
     if (prefillInput?.linearIssue) handleSetCreateLinearIssue(prefillInput.linearIssue);
-  }, [boundLanes, handleSetCreateLinearIssue, loadMachineData]);
+  }, [boundLanes, handleSetCreateLinearIssue, loadMachineData, setPickedMachineId]);
 
   // Prepare on open; reset on close. `open` is the single source of truth, so
   // any external trigger (deeplink, button, dialog bus, Work-tab pane) that sets
@@ -478,7 +480,7 @@ export function CreateLaneDialogHost({
     }
     setCreateError(null);
     setPickedMachineId(machineId);
-  }, [createBusy, laneCreated, machineTargets, machines, selectedMachineId]);
+  }, [createBusy, laneCreated, machineTargets, machines, selectedMachineId, setPickedMachineId]);
 
   // Reload the form's branches, templates and identity from the chosen
   // machine once its Primary lane is known. Keyed so a lane-list refresh of the
@@ -556,9 +558,11 @@ export function CreateLaneDialogHost({
 
     void (async () => {
       try {
+        // Saved to the machine the lane is being created on, same as the read.
+        const pin = targetPinRef.current;
         while (createBaseSourceSavePendingRef.current) {
           const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
-          const snapshot = await window.ade.projectConfig.get();
+          const snapshot = await window.ade.projectConfig.get(pin);
           const currentGit = snapshot.local.git ?? {};
           await window.ade.projectConfig.save({
             shared: snapshot.shared,
@@ -569,7 +573,7 @@ export function CreateLaneDialogHost({
                 newLaneBaseSource: source,
               },
             },
-          });
+          }, pin);
           if (createBaseSourceSavePendingRef.current === source) {
             createBaseSourceSavePendingRef.current = null;
           }
@@ -584,7 +588,7 @@ export function CreateLaneDialogHost({
         }
       }
     })();
-  }, []);
+  }, [targetPinRef]);
 
   const handleSetCreateBaseSource = useCallback((source: NewLaneBaseSource) => {
     createBaseSourceRef.current = source;
@@ -625,7 +629,7 @@ export function CreateLaneDialogHost({
     }
     createBaseSourceSavePendingRef.current = source;
     persistCreateBaseSourceConfig();
-  }, [lanes, persistCreateBaseSourceConfig]);
+  }, [lanes, persistCreateBaseSourceConfig, targetPinRef]);
 
   /** Run post-create setup for a lane that already exists. Used as the retry path
    *  when environment setup fails (stay-open mode). */

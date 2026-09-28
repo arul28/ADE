@@ -1,5 +1,6 @@
 import { memo, useCallback, useMemo, useState } from "react";
-import { pinArg, usePrRuntimePin } from "../state/prMachines";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { DeleteLaneArgs, LaneSummary } from "../../../../shared/types";
 import {

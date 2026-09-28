@@ -15,7 +15,7 @@ import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 import "./prListRow.css";
 import { PrActionsContextMenu, type PrActionsTarget } from "./PrActionsMenu";
 import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
-import { MachineChip } from "../../history/EventMachineChip";
+import { MachineChip } from "../../shared/MachineChip";
 import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext } from "../state/prMachines";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 
@@ -396,7 +396,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   const foreign = foreignLinkForItem(machineIndex, item, Boolean(linkedPr));
   // A reachable owner machine answers for its PR: its row backs the menu and
   // the CI/review signals, and every menu call carries its pin.
-  const foreignPin = foreign?.target.online ? foreign.target.pin : null;
+  const foreignPin = foreign?.machine.online ? foreign.machine.pin : null;
   const ownerPr: PrSummary | null = linkedPr ?? (foreignPin ? foreign!.pr : null);
   const review = terminal ? null : reviewIndicator(ownerPr);
   const labels = item.labels ?? [];
@@ -418,13 +418,13 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
     githubUrl: item.githubUrl,
     state: item.isDraft && item.state === "open" ? "draft" : item.state,
     chatSessionIds: ownerPr?.chatSessionIds,
-  }), [foreign, foreignPin, item, ownerPr]);
+  }), [foreign, foreignPin, item, linkedPr, ownerPr]);
   return (
     <PrRuntimePinProvider value={foreignPin ?? null}>
     <PrActionsContextMenu
       pr={actionTarget}
       // The owner's row is refreshed through the union, not the tab's PR list.
-      onChanged={() => (foreignPin ? requestCrossMachineLanesForMachine(foreign!.target.machineId) : onActionDone?.(actionTarget.id))}
+      onChanged={() => (foreignPin ? requestCrossMachineLanesForMachine(foreign!.machine.machineId) : onActionDone?.(actionTarget.id))}
       onError={onActionError}
     >
     <div className="ade-pr-row" style={{ position: "relative" }}>

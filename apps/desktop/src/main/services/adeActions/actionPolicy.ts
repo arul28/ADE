@@ -193,9 +193,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //   • search.query / indexStatus — reads over an index agents already build.
   //     `search.rebuildIndex` stays CTO-only above (it is a privileged rebuild).
   //   • project_config.get and project_secret.list — reads with no secret VALUES
-  //     in them. `project_secret.get`/`exportEnv` remain what they were:
-  //     `exportEnv` CTO-only, `get` reachable only when the user asked for that
-  //     secret by name. No CTO tool calls either one.
+  //     in them. `project_secret.get`/`exportEnv` return values, so the CTO's
+  //     generic action tool refuses them (`isSecretBearingAdeAction`), and no
+  //     other CTO tool calls either one.
   // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
   // Session-bound agents use the dedicated RPC tools, which derive an owner
   // and filesystem jail from their authenticated chat context.
@@ -257,6 +257,38 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   return ADE_ACTION_USER_ONLY[domain]?.includes(action) ?? false;
+}
+
+/**
+ * Actions whose RESULT carries a secret: a credential, a token, an env file,
+ * or raw artifact bytes. The CTO's generic action tool (`runMachineAction`)
+ * refuses these outright, on its home machine and on any other, because the
+ * result would land in the model's transcript. A person reads them in Settings.
+ *
+ * The table names the known ones; `SECRET_BEARING_ACTION_NAME` catches a
+ * method added later under an obvious name, and fails closed.
+ */
+export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  account: ["getToken", "createToken"],
+  account_vault: ["get"],
+  project_secret: ["get", "exportEnv"],
+  // Raw proof bytes, streamed to the user's own desktop.
+  computer_use_artifacts: ["readArtifactRange"],
+  // Mints the loopback stream token.
+  mac_desktop: ["startStream"],
+};
+
+/**
+ * `get…Token`, `export…Env`, and anything naming a secret, a password or a
+ * private key. `…SecretNames` lists names only, so it stays reachable.
+ */
+const SECRET_BEARING_ACTION_NAME =
+  /^(?:get|read|reveal|export|create|mint)\w*Tokens?$|^export\w*Env$|Secret(?!Names$)|Password|PrivateKey/;
+
+export function isSecretBearingAdeAction(domain: string, action: string): boolean {
+  const name = action.trim();
+  if (ADE_ACTION_SECRET_BEARING[domain as AdeActionDomain]?.includes(name)) return true;
+  return SECRET_BEARING_ACTION_NAME.test(name);
 }
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {

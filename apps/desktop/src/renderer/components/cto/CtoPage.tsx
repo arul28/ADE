@@ -14,13 +14,13 @@ import { AgentChatPane } from "../chat/AgentChatPane";
 import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
 import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { pinKey } from "../../lib/projectMachines";
+import { pinKey } from "../../state/projectMachines";
 import { CtoHomeChooser } from "./CtoHomeChooser";
 import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
 import { cn } from "../ui/cn";
 import { CtoTalkButton } from "./CtoTalkButton";
 import { CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkNoticeLine";
-import { CtoSettingsPage } from "./CtoSettingsPage";
+import { CtoSettingsPage, type CtoIdentityPatch } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
@@ -309,12 +309,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * rather than patched — a merge here would drift from whatever the service
    * normalized on the way in.
    */
-  const handleIdentityChange = useCallback(async (patch: {
-    name?: string;
-    systemPromptExtension?: string;
-    voiceName?: string;
-    voiceBackchannels?: boolean;
-  }) => {
+  const handleIdentityChange = useCallback(async (patch: CtoIdentityPatch) => {
     if (!window.ade?.cto || !homeReady) return;
     setError(null);
     try {
@@ -515,6 +510,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           onOpenProviderSettings={openProviderSettings}
           onStartFreshSession={handleStartFreshSession}
           onIdentityChange={(patch) => void handleIdentityChange(patch)}
+          crossMachineAvailable={homeCrossMachine === true}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
@@ -567,8 +563,8 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             hideWorkspaceChrome
             hideSurfaceHeader
             presentation={presentation}
-            // The chip that already says where this chat runs is where the
-            // CTO's home machine is changed. The header no longer repeats it.
+            // The chip that says where this chat runs is where the CTO's home
+            // machine is changed; the header does not repeat it.
             machineChipAction={machineChipAction}
           />
         ) : error ? (

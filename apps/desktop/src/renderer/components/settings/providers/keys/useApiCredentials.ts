@@ -25,7 +25,7 @@ function bridge() {
 
 /**
  * The pin for the key store. This computer's keys are read through desktop IPC
- * exactly as before (null); any other machine's through its own runtime. The
+ * (null); any other machine's through its own runtime. The
  * two are different stores, so This computer must not switch paths just because
  * the page happens to carry a local pin.
  */

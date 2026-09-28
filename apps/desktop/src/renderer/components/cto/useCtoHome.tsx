@@ -2,15 +2,17 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { OpenProjectBinding } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
-import { useProjectMachines, type ProjectMachine } from "../../lib/projectMachines";
+import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
+import { rememberCtoHomeResolution } from "../../state/ctoHome";
+import { arePathsEqual } from "../../lib/pathUtils";
 import {
   ctoHomeRecordFor,
   ctoHomeStorageKeys,
   persistCtoHome,
   readAccountCtoHome,
   readLocalCtoHome,
-  rememberCtoHomeResolution,
   resolveCtoHomeMachine,
+  STILL_IDENTIFYING_THIS_COMPUTER,
   suggestCtoHomeMachine,
   type CtoHomeMachineRecord,
 } from "./ctoHomeMachine";
@@ -67,7 +69,7 @@ function useRepoOrigin(binding: OpenProjectBinding | null): { loaded: boolean; o
       try {
         if (binding.kind === "local") {
           const recents = await window.ade?.project?.listRecent?.();
-          origin = recents?.find((project) => project.rootPath === binding.rootPath)?.gitOriginUrl ?? null;
+          origin = recents?.find((project) => arePathsEqual(project.rootPath, binding.rootPath))?.gitOriginUrl ?? null;
         } else {
           const snapshot = await window.ade?.remoteRuntime?.getConnectionSnapshot?.();
           const connection = snapshot?.connections.find((entry) => entry.target.id === binding.targetId);
@@ -151,7 +153,7 @@ export function useCtoHome(active: boolean): CtoHomeState {
       }
       if (account.available && local) {
         // The account has no choice but this machine does (made while signed
-        // out, or before this existed). Share it, so other machines agree.
+        // out). Share it, so other machines agree.
         void persistCtoHome({ accountScope: keys.accountScope, localKey: keys.localKey, record: local });
       }
       setStored({ key: storeKey, loaded: true, record: local, localOnly: !account.available });
@@ -165,6 +167,9 @@ export function useCtoHome(active: boolean): CtoHomeState {
   const suggested = useMemo(() => suggestCtoHomeMachine(machines), [machines]);
 
   const choose = useCallback(async (machine: ProjectMachine) => {
+    // This computer is recorded by its account device id; without it no other
+    // machine could ever find the CTO here, so the choice waits for it.
+    if (machine.isThisMachine && !machine.deviceId) throw new Error(STILL_IDENTIFYING_THIS_COMPUTER);
     const record = ctoHomeRecordFor(machine, thisMachineDeviceName);
     readGeneration.current += 1;
     const { synced } = await persistCtoHome({ accountScope: keys.accountScope, localKey: keys.localKey, record });
@@ -197,13 +202,13 @@ export function useCtoHome(active: boolean): CtoHomeState {
       if (!settled) {
         return { ...base, status: "loading", pin: null, home: null, homeName: null, offlineReason: null };
       }
-      if (implicitThisMachine && thisMachine?.isBound) {
+      if (implicitThisMachine && thisMachine?.isActiveBinding) {
         // No other machine: the tab's own binding is the only possible home.
-        return { ...base, status: "ready", pin: null, home: thisMachine, homeName: thisMachine.name, offlineReason: null };
+        return { ...base, status: "ready", pin: null, home: thisMachine, homeName: thisMachine.machineName, offlineReason: null };
       }
       return { ...base, status: "choose", pin: null, home: null, homeName: null, offlineReason: null };
     }
-    const homeName = home && !home.isThisMachine ? home.name : (home?.name ?? record.name);
+    const homeName = home && !home.isThisMachine ? home.machineName : (home?.machineName ?? record.name);
     if (!home) {
       if (!settled) return { ...base, status: "loading", pin: null, home: null, homeName, offlineReason: null };
       return {
@@ -216,7 +221,7 @@ export function useCtoHome(active: boolean): CtoHomeState {
       };
     }
     if (!home.online) {
-      return { ...base, status: "offline", pin: null, home, homeName, offlineReason: `${home.name} is offline.` };
+      return { ...base, status: "offline", pin: null, home, homeName, offlineReason: `${home.machineName} is offline.` };
     }
     if (!home.hasRepo || !home.routable) {
       return {
@@ -225,7 +230,7 @@ export function useCtoHome(active: boolean): CtoHomeState {
         pin: null,
         home,
         homeName,
-        offlineReason: `${home.name} doesn't have this repository open right now.`,
+        offlineReason: `${home.machineName} doesn't have this repository open right now.`,
       };
     }
     return { ...base, status: "ready", pin: home.pin, home, homeName, offlineReason: null };
@@ -271,8 +276,7 @@ export function CtoHomeProvider({ scope, children }: { scope: CtoHomeScope; chil
 
 /**
  * The CTO's machine for a component inside the CTO page. Outside the page
- * (tests, previews) it is the tab's binding, which is what those surfaces
- * always did.
+ * (tests, previews) it is the tab's binding.
  */
 export function useCtoHomeScope(): CtoHomeScope {
   return useContext(CtoHomeContext) ?? FALLBACK_SCOPE;

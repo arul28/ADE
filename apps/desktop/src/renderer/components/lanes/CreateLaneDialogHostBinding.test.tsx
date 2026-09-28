@@ -6,8 +6,8 @@ import type { OpenProjectBinding } from "../../../shared/types";
 
 /* ---------------------------------------------------------------------------
  * Picking a machine in the create-lane dialog only chooses where the lane
- * goes (every lane API call after that carries that machine's pin); it no
- * longer rebinds the whole app/window the way it used to. These tests cover
+ * goes (every lane API call after that carries that machine's pin); it never
+ * rebinds the app or window. These tests cover
  * what is left with no UI of its own: the configure-for-chat path, which
  * hands a validated recipe back instead of creating, and offers no machine
  * picker at all.

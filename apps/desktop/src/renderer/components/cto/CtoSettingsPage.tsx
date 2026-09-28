@@ -346,13 +346,22 @@ export type CtoSettingsPageProps = {
    * included, and they all go to `cto.updateIdentity`. Two props pointed at
    * the same handler only made it look as though there were two ways in.
    */
-  onIdentityChange: (patch: {
-    name?: string;
-    systemPromptExtension?: string;
-    voiceName?: string;
-    voiceBackchannels?: boolean;
-  }) => void;
+  onIdentityChange: (patch: CtoIdentityPatch) => void;
+  /**
+   * The home machine's runtime can reach the account's other machines
+   * (`capabilities.crossMachine`). The switch for it is shown only then.
+   */
+  crossMachineAvailable?: boolean;
   onClose: () => void;
+};
+
+/** The identity fields this page edits. */
+export type CtoIdentityPatch = {
+  name?: string;
+  systemPromptExtension?: string;
+  voiceName?: string;
+  voiceBackchannels?: boolean;
+  crossMachineEnabled?: boolean;
 };
 
 export function CtoSettingsPage({
@@ -370,6 +379,7 @@ export function CtoSettingsPage({
   onOpenProviderSettings,
   onStartFreshSession,
   onIdentityChange,
+  crossMachineAvailable = false,
   onClose,
 }: CtoSettingsPageProps) {
   const [section, setSection] = useState<CtoSectionKey>("model");
@@ -416,6 +426,8 @@ export function CtoSettingsPage({
 
   const voiceName = identity?.voiceName ?? CTO_VOICE_DEFAULT;
   const backchannels = identity?.voiceBackchannels !== false;
+  // Absent means on.
+  const crossMachineEnabled = identity?.crossMachineEnabled !== false;
   const accent = CTO_SECTION_COLORS[section];
 
   const saveIdentity = () => {
@@ -478,6 +490,21 @@ export function CtoSettingsPage({
             }}
           />
         </CtoCard>
+
+        {crossMachineAvailable ? (
+          <CtoCard
+            title="Let the CTO reach my other machines"
+            description="It can list, inspect and start work on your other signed-in machines. Their own permissions still apply."
+            accent={accent}
+            right={
+              <SettingsToggle
+                id="cto-cross-machine"
+                checked={crossMachineEnabled}
+                onChange={(next) => onIdentityChange({ crossMachineEnabled: next })}
+              />
+            }
+          />
+        ) : null}
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button

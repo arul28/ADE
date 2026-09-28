@@ -6115,7 +6115,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.updateIdentity", { viewerAllowed: true, queueable: true }, async (payload) => {
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    const raw = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    // The cross-machine switch is the desktop's alone (see `CtoIdentity`).
+    const { crossMachineEnabled: _enabled, ...patch } = raw;
     return ctoStateService.updateIdentity(patch);
   });
 }

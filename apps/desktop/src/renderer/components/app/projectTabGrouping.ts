@@ -212,11 +212,6 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
   );
 }
 
-/** True when a group spans more than one machine and therefore needs a picker. */
-export function isMultiMachine(group: ProjectTabGroup): boolean {
-  return group.machines.length > 1;
-}
-
 export type RecentProjectLocation = {
   summary: RecentProjectSummary;
   recentKey: string | null;

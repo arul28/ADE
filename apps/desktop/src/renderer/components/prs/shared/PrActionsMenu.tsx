@@ -1,5 +1,6 @@
 import React from "react";
-import { pinArg, usePrRuntimePin } from "../state/prMachines";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {

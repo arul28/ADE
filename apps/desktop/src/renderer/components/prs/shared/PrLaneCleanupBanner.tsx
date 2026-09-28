@@ -1,5 +1,6 @@
 import React from "react";
-import { pinArg, usePrRuntimePin } from "../state/prMachines";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 import { Archive, Trash, Warning } from "@phosphor-icons/react";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { Banner, NoticeBadge } from "../../ui/notice";
