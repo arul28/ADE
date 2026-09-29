@@ -33,15 +33,30 @@ import path from "node:path";
 
 import {
   harnessBodyLabel,
+  harnessSubagentInheritNote,
+  harnessSubagentSameAsMain,
+  harnessSubagentSupport,
   HARNESS_PRESET_AGENT_FOLLOWS,
   HARNESS_PRESET_AGENT_KEYS,
+  HARNESS_PRESET_BODIES,
   HARNESS_PRESET_SUBAGENT_INHERIT,
+  HARNESS_SUBAGENT_SUPPORT,
   DEFAULT_HARNESS_PRESET_ACCENT,
   type HarnessPreset,
   type HarnessPresetAgentKey,
   type HarnessPresetBody,
 } from "../../../shared/harnessPresets";
-import { buildClaudeBuiltinAgentOverrides } from "../../../shared/claudeBuiltinAgentPrompts";
+import {
+  buildClaudeBuiltinAgentOverrides,
+  type ClaudeBuiltinAgentOverride,
+} from "../../../shared/claudeBuiltinAgentPrompts";
+import {
+  hasSubagentLaunch,
+  openCodeSubagentAgentBlock,
+  subagentTypeName,
+  type HarnessSubagentLaunch,
+  type HarnessSubagentPin,
+} from "../../../shared/harnessSubagentLaunch";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
 import { cliPresetGateReason } from "../../../shared/harnessPresetCliGate";
 import type { TrackedCliPresetLaunch } from "../../../shared/cliLaunch";
@@ -124,8 +139,15 @@ export type HarnessPresetLaunchPlan = {
   reasoningEffort?: string;
   /** Resolved subagent model, absent when the preset says "same as main". */
   subagentModel?: string;
+  /** The subagent thinking level, where the harness accepts one. */
+  subagentEffort?: string;
+  /**
+   * The subagent pins as each harness's config writer takes them, with model
+   * ids unprefixed (the route path adds its upstream prefix).
+   */
+  subagent?: HarnessSubagentLaunch;
   /** SDK `agents` entries for the built-ins this preset pinned. Claude only. */
-  claudeAgents?: Record<string, { description: string; prompt: string; model: string; disallowedTools?: string[] }>;
+  claudeAgents?: Record<string, ClaudeBuiltinAgentOverride>;
   /** The preset-owned `CODEX_HOME` ADE created and wrote `config.toml` into. */
   codexConfigHome?: string;
   /** Provider block for OpenCode's config, when the preset is a key on OpenCode. */
@@ -225,6 +247,86 @@ export function resolveAgentPins(preset: HarnessPreset): Partial<Record<HarnessP
 }
 
 /**
+ * Per-built-in thinking levels, and the default subagent's model and level.
+ *
+ * A pinned level belongs to a named agent, so it needs a model to travel with:
+ * the SDK's `agents` entry replaces the whole definition, and an entry with a
+ * level but no model would be dropped by `buildClaudeBuiltinAgentOverrides`.
+ * `follows` therefore resolves the same way the model pins do.
+ *
+ * The default subagent's level has no env var — `CLAUDE_CODE_SUBAGENT_MODEL`
+ * covers its model, nothing covers its effort — so a preset that names one gets
+ * a `general-purpose` entry, which is the type every unspecified spawn lands
+ * on. That entry carries ADE's copy of Anthropic's prompt, exactly as a named
+ * pin does, and the wizard says so at the point of the choice.
+ */
+export function resolveClaudeSubagentEfforts(preset: HarnessPreset): {
+  agents: Partial<Record<HarnessPresetAgentKey, string>>;
+  defaultSubagentEffort?: string;
+} {
+  const agents: Partial<Record<HarnessPresetAgentKey, string>> = {};
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    const effort = preset.agentEfforts?.[key]?.trim();
+    if (effort) agents[key] = effort;
+  }
+  const defaultSubagentEffort = preset.subagentEffort?.trim() || undefined;
+  return {
+    agents,
+    ...(defaultSubagentEffort ? { defaultSubagentEffort } : {}),
+  };
+}
+
+/**
+ * The preset's subagent settings, as the harness config writers take them.
+ *
+ * Only the harnesses whose support table says `model` produce anything, and the
+ * models stay UNPREFIXED here: the route path prefixes them, because only it
+ * knows whether the launch is proxied. `undefined` means "write nothing", which
+ * is what keeps a preset that pins nothing byte-identical to before this
+ * existed.
+ */
+export function resolveSubagentLaunch(
+  preset: HarnessPreset,
+  harness: HarnessPresetBody,
+): HarnessSubagentLaunch | undefined {
+  const support = harnessSubagentSupport(harness);
+  if (!support.model) return undefined;
+  const followed = resolveSubagentModel(preset) ?? preset.model.trim();
+  const agents: Partial<Record<HarnessPresetAgentKey, HarnessSubagentPin>> = {};
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    if (!subagentTypeName(harness, key)) continue;
+    const raw = preset.agentOverrides?.[key]?.trim();
+    const model = raw === HARNESS_PRESET_AGENT_FOLLOWS ? followed : raw;
+    if (!model) continue;
+    const effort = support.effort ? preset.agentEfforts?.[key]?.trim() : "";
+    agents[key] = { model, ...(effort ? { effort } : {}) };
+  }
+  const defaultSubagent = resolveSubagentModel(preset);
+  const subagents: HarnessSubagentPin | undefined = defaultSubagent
+    ? {
+      model: defaultSubagent,
+      ...(support.effort && preset.subagentEffort?.trim() ? { effort: preset.subagentEffort.trim() } : {}),
+    }
+    : undefined;
+  const launch: HarnessSubagentLaunch = {
+    ...(subagents ? { subagents } : {}),
+    ...(Object.keys(agents).length ? { agents } : {}),
+  };
+  return hasSubagentLaunch(launch) ? launch : undefined;
+}
+
+/** Every model id a subagent launch names, for a provider block's model list. */
+function openCodeSubagentModels(subagent: HarnessSubagentLaunch | undefined): string[] {
+  if (!subagent) return [];
+  const ids = new Set<string>();
+  if (subagent.subagents?.model) ids.add(subagent.subagents.model);
+  for (const pin of Object.values(subagent.agents ?? {})) {
+    if (pin?.model) ids.add(pin.model);
+  }
+  return [...ids];
+}
+
+/**
  * Claude's subagent-model env pair.
  *
  * The `_FORCE` half matters: without it the CLI treats the model as a default
@@ -239,8 +341,20 @@ export function claudeSubagentEnv(subagentModel: string | undefined): Record<str
   };
 }
 
-/** Harnesses that can pin a subagent model. Everything else says so out loud. */
-const SUBAGENT_MODEL_SUPPORTED: ReadonlySet<HarnessPresetBody> = new Set(["claude"]);
+/**
+ * Harnesses that can pin a subagent model, and those that can pin a thinking
+ * level as well.
+ *
+ * The table in `shared/harnessPresets.ts` is the one that says why, and the
+ * wizard renders from it; these two sets are the launch path's copy of the
+ * same facts, kept as sets so a lookup cannot be written as a second switch.
+ */
+const SUBAGENT_MODEL_SUPPORTED: ReadonlySet<HarnessPresetBody> = new Set(
+  HARNESS_PRESET_BODIES.filter((harness) => HARNESS_SUBAGENT_SUPPORT[harness].model),
+);
+const SUBAGENT_EFFORT_SUPPORTED: ReadonlySet<HarnessPresetBody> = new Set(
+  HARNESS_PRESET_BODIES.filter((harness) => HARNESS_SUBAGENT_SUPPORT[harness].effort),
+);
 
 export function resolveHarnessPresetForLaunch(
   presetId: string | null | undefined,
@@ -286,6 +400,10 @@ export function resolveHarnessPresetForLaunch(
       presetId: id,
       provider: null,
       unsupported: "ADE could not read this account's harness presets on this machine.",
+      // Both of these say "ask again next turn": the cache is unreadable, or
+      // the account's list has not landed here yet. Neither is a reason to
+      // remember the failure for the life of the chat.
+      reasonCode: "preset-unreadable",
     };
   }
   if (deps.writeConfig !== false) {
@@ -301,6 +419,7 @@ export function resolveHarnessPresetForLaunch(
       presetId: id,
       provider: null,
       unsupported: "This harness preset no longer exists on this account.",
+      reasonCode: "preset-not-found",
     };
   }
   return resolveHarnessPresetPlan(preset, { ...deps, adeHome });
@@ -326,6 +445,7 @@ function presetFromRouteId(presetId: string): HarnessPreset | null {
     ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
+    agentEfforts: {},
     accentColor: DEFAULT_HARNESS_PRESET_ACCENT,
     logo: { kind: "ade" },
     createdAt: epoch,
@@ -388,9 +508,16 @@ export function resolveHarnessPresetPlan(
   }
 
   const subagentModel = resolveSubagentModel(preset);
+  const subagentLaunch = resolveSubagentLaunch(preset, harness);
   if (subagentModel && !SUBAGENT_MODEL_SUPPORTED.has(harness)) {
     notes.push(
-      `${harness} runs its subagents on the main model, so this preset's subagent model is not applied.`,
+      `${harnessSubagentSameAsMain(harness)}, so this preset's subagent model is not applied.`,
+    );
+  }
+  if (preset.subagentEffort?.trim() && !SUBAGENT_EFFORT_SUPPORTED.has(harness)) {
+    notes.push(
+      harnessSubagentInheritNote(harness, "effort")
+      || `${harness} runs its subagents on the main model, so this preset's subagent effort is not applied.`,
     );
   }
 
@@ -402,6 +529,10 @@ export function resolveHarnessPresetPlan(
     passthroughModelId: true,
     ...(preset.reasoningEffort?.trim() ? { reasoningEffort: preset.reasoningEffort.trim() } : {}),
     ...(subagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel } : {}),
+    ...(preset.subagentEffort?.trim() && SUBAGENT_EFFORT_SUPPORTED.has(harness)
+      ? { subagentEffort: preset.subagentEffort.trim() }
+      : {}),
+    ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
   };
 
   // `modelPrefix` is set on a route translated through ADE's proxy, which only
@@ -411,7 +542,20 @@ export function resolveHarnessPresetPlan(
     const pins = Object.fromEntries(
       Object.entries(resolveAgentPins(preset)).map(([agent, model]) => [agent, `${modelPrefix}${model}`]),
     ) as ReturnType<typeof resolveAgentPins>;
-    const agents = buildClaudeBuiltinAgentOverrides(pins);
+    const efforts = resolveClaudeSubagentEfforts(preset);
+    const agentEfforts: Partial<Record<HarnessPresetAgentKey, string>> = { ...efforts.agents };
+    // A named pin with no model of its own follows the subagent model, so its
+    // level has somewhere to land.
+    for (const agent of Object.keys(agentEfforts) as HarnessPresetAgentKey[]) {
+      if (!pins[agent] && subagentModel) pins[agent] = `${modelPrefix}${subagentModel}`;
+    }
+    if (efforts.defaultSubagentEffort && !agentEfforts.generalPurpose) {
+      agentEfforts.generalPurpose = efforts.defaultSubagentEffort;
+      if (!pins.generalPurpose) {
+        pins.generalPurpose = `${modelPrefix}${subagentModel ?? preset.model.trim()}`;
+      }
+    }
+    const agents = buildClaudeBuiltinAgentOverrides(pins, agentEfforts);
     return {
       env: claudeSubagentEnv(subagentModel ? `${modelPrefix}${subagentModel}` : undefined),
       ...(Object.keys(agents).length ? { claudeAgents: agents } : {}),
@@ -441,8 +585,21 @@ export function resolveHarnessPresetPlan(
       };
     }
     const extras = claudeExtras();
+    /* A Codex account preset runs in that account's own CODEX_HOME, which ADE
+       does not own: an `[agents]` block written there would follow the user
+       into every other Codex chat on the machine, which is exactly the side
+       effect a preset may not have. Claude Code takes the same settings through
+       the process environment, so only Codex is affected. */
+    const codexAccountSubagents = harness === "codex"
+      && (subagentLaunch || preset.subagentEffort?.trim());
+    if (codexAccountSubagents) {
+      notes.push(
+        "A Codex account preset runs in that account's own config, so its subagent model and effort are not applied there. Use a key or a subscription source to pin them.",
+      );
+    }
     return {
       ...base,
+      ...(codexAccountSubagents ? { subagentModel: undefined, subagentEffort: undefined } : {}),
       instanceId: instance.id,
       env: {
         // The base identity inherits the environment (`isBaseProviderInstance`);
@@ -495,6 +652,7 @@ export function resolveHarnessPresetPlan(
         model: preset.model,
         configHome: configHomeFor(adeHome, preset),
         prefix: connection.prefix,
+        ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
         deps: { adeHome, writeConfig, security },
       }));
       if (built.status === "unsupported") {
@@ -568,7 +726,7 @@ export function resolveHarnessPresetPlan(
           ensurePrivateDirectory(codexConfigHome, security);
           writePrivateFile(
             path.join(codexConfigHome, "config.toml"),
-            buildCodexProxyConfigToml(proxy.codexConfigToml),
+            buildCodexProxyConfigToml(proxy.codexConfigToml, subagentLaunch),
             security,
           );
         }
@@ -584,7 +742,12 @@ export function resolveHarnessPresetPlan(
               baseURL: proxy.opencodeProvider.baseURL,
               apiKey: proxy.opencodeProvider.apiKey,
             },
-            models: { [proxy.opencodeProvider.model]: {} as Record<string, never> },
+            // A model an agent config names must exist on the provider block,
+            // so the subagent pins are registered beside the main model.
+            models: Object.fromEntries(
+              [proxy.opencodeProvider.model, ...openCodeSubagentModels(subagentLaunch)]
+                .map((model) => [model, {} as Record<string, never>]),
+            ),
           },
         };
         openCodeConfigPath = writeConfig
@@ -592,6 +755,7 @@ export function resolveHarnessPresetPlan(
             presetConfigHome(adeHome, preset.id),
             openCodeProvider,
             security,
+            openCodeSubagentAgentBlock(harness, subagentLaunch, (model) => `${PROXY_OPENCODE_PROVIDER_ID}/${model}`),
           )
           : path.join(presetConfigHome(adeHome, preset.id), "opencode.json");
         env.OPENCODE_CONFIG = openCodeConfigPath;
@@ -646,7 +810,14 @@ export function resolveHarnessPresetPlan(
       model: preset.model,
       configHome: configHomeFor(adeHome, preset),
       ...(subagentModel ? { subagentModel } : {}),
-      pinnedModels: harness === "claude" ? Object.values(resolveAgentPins(preset)) : [],
+      ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
+      // Every model this preset names outside the main one has to exist on the
+      // proxy upstream, or a proxied launch configures a harness to ask for an
+      // id the proxy has never heard of. Claude spells its pins as SDK agent
+      // entries and the rest as config-file tables, so both halves are named.
+      pinnedModels: harness === "claude"
+        ? Object.values(resolveAgentPins(preset))
+        : Object.values(subagentLaunch?.agents ?? {}).map((pin) => pin.model),
       deps: {
         adeHome,
         writeConfig,
@@ -728,6 +899,7 @@ export function resolveHarnessPresetPlan(
     aclRunner: deps.aclRunner,
     currentWindowsUser: deps.currentWindowsUser,
     writeConfig: deps.writeConfig,
+    ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
   });
   if (keySource.status === "unsupported") {
     return {

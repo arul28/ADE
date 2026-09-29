@@ -28,8 +28,8 @@ provider list — and appear as the first tab of every model picker.
 | Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
-| Subagents | A model id, or `Same as main`. |
-| Advanced (Claude only) | Per-built-in pins for Explore, Plan, and general-purpose. Each defaults to `Follows subagents`. |
+| Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
+| Subagent naming | Per-role pins for the types the harness exposes by name (Explore, Plan, general-purpose), each with its own level where the harness takes one. A role that follows the subagents takes their model and level. |
 | Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded 256×256 PNG, or a generated one. |
 
 A preset never holds a credential. The `key` source stores the credential's id
@@ -43,6 +43,34 @@ Presets are an account-scoped preference. They persist in the renderer's
 signed into the same ADE account converges on the same list. The registry's
 newer-wins rule applies to the list as a whole: two machines never interleave
 half of each other's edits into one preset.
+
+The list also has to be on the brain, not only in the account. The brain is
+what *resolves* a launch, out of the same `~/.ade/account-settings.json` the
+sync writes, so a save and a launch cannot be allowed to race:
+
+- **A save waits for the brain.** `useHarnessPresets` pushes the list and
+  awaits the brain's own answer before it reports success. When the answer is
+  "not yet" — the account service is unreachable, ownership changed, no brain
+  is running — the dialog stays open, says the preset is saved on this
+  computer but not on the account yet *with the reason the brain gave*, and
+  offers Retry. The local copy is never rolled back: it is the user's work, and
+  it stays queued for the ordinary retry.
+- **A launch checks first.** Every surface that creates a chat or a CLI session
+  on a saved `presetId` (`AgentChatPane`'s draft launch, the Work tab's PTY
+  create, the batch and Linear launches) asks
+  `renderer/lib/harnessPresetAccountSync.ts` to confirm the brain holds it.
+  One cached read in the common case; when the preset is genuinely absent, the
+  machine's list is pushed and awaited. An unreachable brain never blocks the
+  launch — it degrades exactly as it always did.
+- **A miss is not remembered.** "This harness preset no longer exists on this
+  account" and "ADE could not read this account's harness presets" carry
+  `reasonCode: "preset-not-found"` / `"preset-unreadable"`, so the chat
+  resolves again on its next turn instead of pinning the failure for the
+  session's life. That is the same rule `proxy-not-ready` and
+  `sign-in-expired` already followed.
+
+A route id (`route.<…>`) needs none of this: it carries its whole launch spec
+in the id, so there is nothing to look up.
 
 ## Building one
 
@@ -59,10 +87,12 @@ The wizard is three steps.
    button. When the host exposes no proxy sign-in, that button is disabled and
    reads "Sign-in through ADE's proxy is not available yet on this host." ADE
    never fakes the sign-in. A group with no rows shows no heading. Below the
-   list: the model, the effort, the subagent model, and a folded **Advanced**
-   disclosure for Claude's built-in agents. Pinning a built-in to a specific
-   model shows the note that the agent now runs on ADE's copy of Anthropic's
-   prompt and stops tracking Claude Code.
+   list: the model, the effort, the subagent model and level, and a folded
+   **Subagent naming** disclosure. Pinning a role to a specific model shows the
+   note that the role now runs on ADE's copy of Anthropic's prompt and stops
+   tracking Claude Code. A harness that cannot take a subagent model or level
+   says so in one sentence next to where the control would be, instead of
+   showing a control it would drop.
 3. **Name it.** Name, accent colour, and a logo tile — Default (the purple
    gear-and-wrench mark), provider logo,
    Upload (which opens a round crop with drag and zoom and writes a 256×256
@@ -115,6 +145,43 @@ labelled panel: harness, source, models by role, and built-in pins, each with
 the logo that says whose it is, so a one-click launch shows everything it is
 about to apply. The search box filters presets by name, harness, and model. An empty list points at Settings › Providers ›
 Custom.
+
+The tab has two halves and they are not equally important:
+
+1. **Saved** leads, and it is what the tab is for. Selecting one applies the
+   whole preset — its model, its thinking level, and its harness — in one
+   click.
+2. **Use another model in a harness…** is the ad-hoc half: any model the
+   chosen harness can reach, launched without saving anything. It is folded
+   away, because it is a long list most visits never want, and it opens on its
+   own when this chat is already running an ad-hoc route.
+
+Inside it, the harness chips default to the harness the surface is *on* — a
+Codex chat opens Run-in on Codex — and the source chips narrow the list to one
+source ("All sources", "OpenCode Go", "OpenCode Zen", each key), so a dozen
+sources and a hundred models are one click apart instead of one scroll. The
+harness's own-account models are deliberately **absent**: Sonnet on your Claude
+account is already one row in the Claude tab, and repeating it here made
+"Custom" look like a second, worse copy of every provider tab.
+
+Selecting a preset sets the composer's thinking level to the preset's, and the
+launch carries that level: a preset saved at High launches at High even when
+the previous pick was on Low. An ordinary model pick still reconciles the level
+against the new model, because there the old level belonged to a model the user
+just left; the composer's own control keeps working either way, so changing the
+level after the pick wins.
+
+Two marks say what a chat runs on, in the same accent everywhere:
+
+- the **composer's model trigger** draws the preset's own mark with its accent,
+  and a harness chip beside it names the program that runs it with the
+  harness's colour and mark;
+- the **session card** leads with the preset's mark (or the harness's, for an
+  ad-hoc route) and keeps the harness readable as a smaller mark beside it.
+
+A mark is never drawn without its accent. The default purple is a preset's
+fallback colour, not "no colour", so using it for a preset that has one of its
+own is the mismatch this note exists to prevent.
 
 ## Routes: any source in any harness
 
@@ -209,18 +276,46 @@ exists through `ade chat models`, `ade providers accounts list`, or the
 
 ### What each harness accepts
 
-| Harness | Key | Subscription | Subagent model |
+| Harness | Key | Subscription | Subagent model | Subagent effort |
+|---|---|---|---|---|
+| Claude Code | `ANTHROPIC_BASE_URL` (no `/v1`), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY=""` (never inherited — a shell key would reach another vendor as `x-api-key`), `ANTHROPIC_MODEL` and every tier (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) pinned to the route's model so background calls do not ask another vendor for Haiku, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the model's real limits. | Yes | Yes | Yes |
+| Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | Yes (key/subscription; a Codex *account* preset keeps the account's own config) | same |
+| OpenCode | A provider block merged into the session's config, not an env var — OpenCode has no "use this key against this endpoint" variable. Needs an endpoint. | Yes | Yes (`agent.<type>.model`; nothing for a preset running on an OpenCode sign-in, which owns its config) | No |
+| Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `custom_models` written into its `.factory/settings.json`. | No | No | No |
+| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | No | No | No |
+| Kimi | `MOONSHOT_API_KEY`. | No | No | No |
+| Grok | `GROK_HOME` at a preset-owned home whose `config.toml` defines `[model."<id>"]` with the route's `base_url`, `api_backend` (`messages`, `chat_completions` or `responses`), `env_key` and the session header. | Yes (via proxy) | Yes (`[subagents.models]`) | No |
+| GitHub Copilot | `GITHUB_TOKEN`. | No | No | No |
+| Cursor | No. Cursor signs in from its own single-slot store, and a per-preset key would change every other Cursor session on the machine. | No | No | No |
+| Pi | No. Pi reads endpoints and model ids from its own `models.json`; add the provider in Pi instead. | No | No | No |
+
+### Subagents and subagent naming
+
+Two independent knobs, because no harness has both for free. The capability
+table lives in `shared/harnessPresets.ts` (`HARNESS_SUBAGENT_SUPPORT`) with the
+harness or documentation each entry was read from, and the wizard renders
+straight from it: a harness that cannot take a knob gets one sentence naming
+the harness and saying it runs subagents on the main model, never a dead
+control.
+
+| Harness | Subagent model | Subagent effort | Named roles |
 |---|---|---|---|
-| Claude Code | `ANTHROPIC_BASE_URL` (no `/v1`), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY=""` (never inherited — a shell key would reach another vendor as `x-api-key`), `ANTHROPIC_MODEL` and every tier (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) pinned to the route's model so background calls do not ask another vendor for Haiku, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the model's real limits. | Yes | Yes |
-| Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | No |
-| OpenCode | A provider block merged into the session's config, not an env var — OpenCode has no "use this key against this endpoint" variable. Needs an endpoint. | Yes | No |
-| Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `custom_models` written into its `.factory/settings.json`. | No | No |
-| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | No | No |
-| Kimi | `MOONSHOT_API_KEY`. | No | No |
-| Grok | `GROK_HOME` at a preset-owned home whose `config.toml` defines `[model."<id>"]` with the route's `base_url`, `api_backend` (`messages`, `chat_completions` or `responses`), `env_key` and the session header. | Yes (via proxy) | No |
-| GitHub Copilot | `GITHUB_TOKEN`. | No | No |
-| Cursor | No. Cursor signs in from its own single-slot store, and a per-preset key would change every other Cursor session on the machine. | No | No |
-| Pi | No. Pi reads endpoints and model ids from its own `models.json`; add the provider in Pi instead. | No | No |
+| Claude Code | `CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE` | SDK `agents[].effort` | Explore, Plan, general-purpose |
+| Codex CLI | `agents.default_subagent_model` in the `CODEX_HOME` ADE owns | `agents.default_subagent_reasoning_effort` | user-defined roles via `[agents.<role>] config_file` |
+| Grok | `[subagents.models]` per type in the `GROK_HOME` ADE owns | — (a subagent inherits the main thread's level) | explore, plan, general-purpose |
+| OpenCode | `agent.<type>.model` in the `opencode.json` ADE owns | — | explore, general |
+| Droid, Qwen Code, Pi, Kimi, GitHub Copilot, Cursor | — | — | — |
+
+The thinking level is the awkward half in Claude Code: there is no
+`CLAUDE_CODE_SUBAGENT_*` variable for it, so a preset that names one gets an
+SDK `agents` entry for `general-purpose` — the type every unspecified spawn
+lands on — carrying ADE's copy of Anthropic's prompt. That is the same fork a
+named pin already makes, and the wizard says so at the point of the choice. A
+role pinned to a level with no model of its own takes the subagent model, so
+the level has somewhere to land.
+
+Models are passed through exactly as saved, and every pin that travels through
+ADE's proxy carries the proxy's upstream prefix, the same as the main model.
 
 An unsupported pairing is a value, not an error: the chat runs on the harness's
 own sign-in and says which capability was dropped. It never fails the launch.
@@ -237,7 +332,9 @@ reach the endpoint exactly as typed.
 A subagent model becomes `CLAUDE_CODE_SUBAGENT_MODEL` plus
 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`. Without the force flag the CLI treats the
 value as a default a per-agent setting may override, and "subagents on Haiku"
-would silently keep running on the main model.
+would silently keep running on the main model. A subagent *effort* has no
+environment variable at all and goes through the SDK `agents` entries
+described under "Subagents and subagent naming" above.
 
 Pinning Explore, Plan or general-purpose sends an SDK `agents` entry. The SDK
 has no "same agent, different model" overlay — an entry replaces the whole
@@ -267,7 +364,15 @@ provider token and is never written anywhere by ADE.
 ## Source file map
 
 - `apps/desktop/src/shared/harnessPresets.ts` — the type, validation,
-  normalisation, export/import, and the label helpers. No React, no IPC.
+  normalisation, export/import, the label helpers, and the per-harness
+  subagent capability table (`HARNESS_SUBAGENT_SUPPORT`). No React, no IPC.
+- `apps/desktop/src/shared/harnessSubagentLaunch.ts` — what a preset's
+  subagent settings become in each harness's config file (Codex's TOML,
+  Grok's table, OpenCode's agent block). Pure; the writers append what it
+  returns.
+- `apps/desktop/src/renderer/lib/harnessPresetAccountSync.ts` — the two
+  moments a preset must already be on the brain: a confirmed save, and a
+  launch that checks the machine's copy before the runtime resolves it.
 - `apps/desktop/src/renderer/state/appStore.ts` — the `harnessPresets` slice and
   its setter, persisted into `ade.userPreferences.v1`.
 - `apps/desktop/src/renderer/lib/accountSettingsSync.ts` — registers

@@ -71,6 +71,11 @@ import {
   type ProxySubscriptionConnectionUnavailable,
 } from "./harnessPresetProxyConnection";
 import { readRouteProbe } from "./harnessRouteProbes";
+import {
+  codexSubagentConfigTomlLines,
+  grokSubagentConfigTomlLines,
+  type HarnessSubagentLaunch,
+} from "../../../shared/harnessSubagentLaunch";
 
 /** Header OpenCode Go routes and caches by. */
 export const OPENCODE_SESSION_HEADER = "x-opencode-session";
@@ -81,11 +86,22 @@ export const ROUTE_KEY_ENV = "ADE_PRESET_API_KEY";
 
 /**
  * Why a route could not be built, when the caller can do something about it.
- * `proxy-not-ready` is the one the async prepare step acts on (it starts the
- * proxy); matching on the English message instead would silently stop working
- * the first time the sentence was reworded.
+ * Matching on the English message instead would silently stop working the first
+ * time the sentence was reworded.
+ *
+ * - `proxy-not-ready` — the async prepare step starts the proxy and resolves again.
+ * - `sign-in-expired` — an OpenCode OAuth token aged out; resolving again reads
+ *   the refreshed one.
+ * - `preset-not-found` / `preset-unreadable` — this machine does not hold the
+ *   saved preset yet. Account settings converge asynchronously, so a preset
+ *   saved seconds ago can genuinely miss the first resolve; the next turn must
+ *   resolve again instead of pinning "no such preset" for the session.
  */
-export type RouteReasonCode = "proxy-not-ready" | "sign-in-expired";
+export type RouteReasonCode =
+  | "proxy-not-ready"
+  | "sign-in-expired"
+  | "preset-not-found"
+  | "preset-unreadable";
 
 export type RouteUnsupported = { status: "unsupported"; unsupported: string; reasonCode?: RouteReasonCode };
 
@@ -348,13 +364,21 @@ function buildHarnessEndpointEnv(args: {
   sessionHeader: string | null;
   limits: RouteModelLimits;
   subagentModel?: string;
+  /**
+   * The preset's subagent model and effort, resolved for this launch.
+   *
+   * Model ids arrive already carrying the route's `modelPrefix`, exactly as
+   * `subagentModel` does: the config written below is the harness's, and a
+   * proxied model is only reachable under its upstream spelling.
+   */
+  subagent?: HarnessSubagentLaunch;
   /** A first-party Anthropic endpoint, whose own model tiers exist. */
   firstPartyAnthropic?: boolean;
   configHome: string;
   writeConfig: boolean;
   security: PrivateFileSecurityOptions;
 }): HarnessEndpointEnv {
-  const { harness, protocol, baseUrl, token, model, limits } = args;
+  const { harness, protocol, baseUrl, token, model, limits, subagent } = args;
   switch (harness) {
     case "claude": {
       if (protocol !== "anthropic") break;
@@ -398,6 +422,7 @@ function buildHarnessEndpointEnv(args: {
           label: args.label,
           sessionHeader: Boolean(args.sessionHeader),
           limits,
+          ...(subagent ? { subagent } : {}),
         }), args.security);
       }
       return { status: "ready", env, model, codexConfigHome: args.configHome };
@@ -414,6 +439,7 @@ function buildHarnessEndpointEnv(args: {
           label: args.label,
           sessionHeader: Boolean(args.sessionHeader),
           limits,
+          ...(subagent ? { subagent } : {}),
         }), args.security);
       }
       return { status: "ready", env, model };
@@ -469,6 +495,7 @@ export function codexRouteConfigToml(args: {
   label: string;
   sessionHeader: boolean;
   limits: RouteModelLimits;
+  subagent?: HarnessSubagentLaunch;
 }): string {
   const lines = [
     "# Written by ADE for a routed launch. Edits here are overwritten on launch.",
@@ -488,6 +515,7 @@ export function codexRouteConfigToml(args: {
   if (args.sessionHeader) {
     lines.push(`env_http_headers = { ${tomlString(OPENCODE_SESSION_HEADER)} = ${tomlString(ROUTE_SESSION_ENV)} }`);
   }
+  lines.push(...codexSubagentConfigTomlLines(args.subagent));
   lines.push("");
   return lines.join("\n");
 }
@@ -505,6 +533,7 @@ export function grokRouteConfigToml(args: {
   label: string;
   sessionHeader: boolean;
   limits: RouteModelLimits;
+  subagent?: HarnessSubagentLaunch;
 }): string {
   const lines = [
     "# Written by ADE for a routed launch. Edits here are overwritten on launch.",
@@ -524,8 +553,40 @@ export function grokRouteConfigToml(args: {
   }
   if (args.limits.contextWindow) lines.push(`context_window = ${Math.floor(args.limits.contextWindow)}`);
   if (args.limits.maxOutputTokens) lines.push(`max_completion_tokens = ${Math.floor(args.limits.maxOutputTokens)}`);
+  // A subagent model is a model id Grok has to know, and this home defines only
+  // the ids ADE writes. Every one a preset names gets its own block on the same
+  // endpoint and protocol — the source serves them all the same way.
+  for (const name of subagentModelIds(args.subagent)) {
+    if (name === args.model) continue;
+    lines.push(
+      "",
+      `[model.${tomlString(name)}]`,
+      `model = ${tomlString(name)}`,
+      `base_url = ${tomlString(args.protocol === "anthropic" ? anthropicBaseWithV1(args.baseUrl) : args.baseUrl)}`,
+      `api_backend = ${tomlString(GROK_BACKENDS[args.protocol])}`,
+      `name = ${tomlString(`${name} (${args.label})`)}`,
+      `env_key = ${tomlString(ROUTE_KEY_ENV)}`,
+    );
+    if (args.sessionHeader) {
+      lines.push(`env_http_headers = { ${tomlString(OPENCODE_SESSION_HEADER)} = ${tomlString(ROUTE_SESSION_ENV)} }`);
+    }
+    if (args.limits.contextWindow) lines.push(`context_window = ${Math.floor(args.limits.contextWindow)}`);
+    if (args.limits.maxOutputTokens) lines.push(`max_completion_tokens = ${Math.floor(args.limits.maxOutputTokens)}`);
+  }
+  lines.push(...grokSubagentConfigTomlLines("grok", args.subagent));
   lines.push("");
   return lines.join("\n");
+}
+
+/** Every model id a subagent launch names, main-default and per-role pins alike. */
+function subagentModelIds(subagent: HarnessSubagentLaunch | undefined): string[] {
+  if (!subagent) return [];
+  const ids = new Set<string>();
+  if (subagent.subagents?.model) ids.add(subagent.subagents.model);
+  for (const pin of Object.values(subagent.agents ?? {})) {
+    if (pin?.model) ids.add(pin.model);
+  }
+  return [...ids];
 }
 
 /**
@@ -539,6 +600,8 @@ export function buildRouteLaunch(args: {
   model: string;
   configHome: string;
   subagentModel?: string;
+  /** The preset's subagent model/effort, with the model ids unprefixed. */
+  subagent?: HarnessSubagentLaunch;
   /** Claude built-in agent pins, so a proxied route registers them too. */
   pinnedModels?: readonly string[];
   deps: RouteLaunchDeps;
@@ -607,6 +670,7 @@ export function buildRouteLaunch(args: {
     firstPartyAnthropic: canonicalSourceProvider(resolved.sourceProvider) === "anthropic"
       && effectiveRoute.kind === "direct",
     ...(args.subagentModel ? { subagentModel: `${target.modelPrefix ?? ""}${args.subagentModel}` } : {}),
+    ...(args.subagent ? { subagent: prefixSubagentModels(args.subagent, target.modelPrefix ?? "") } : {}),
     configHome: args.configHome,
     writeConfig: deps.writeConfig !== false,
     security,
@@ -632,6 +696,8 @@ export function buildSubscriptionRouteLaunch(args: {
   configHome: string;
   /** The proxy login's routing prefix. */
   prefix: string;
+  /** The preset's subagent model/effort, with the model ids unprefixed. */
+  subagent?: HarnessSubagentLaunch;
   deps: RouteLaunchDeps;
 }): RouteLaunchResult {
   const route = resolveHarnessRoute({
@@ -653,10 +719,35 @@ export function buildSubscriptionRouteLaunch(args: {
     label: `${harnessBodyLabel(args.provider)} subscription`,
     sessionHeader: null,
     limits: {},
+    ...(args.subagent ? { subagent: prefixSubagentModels(args.subagent, `${args.prefix}/`) } : {}),
     configHome: args.configHome,
     writeConfig: args.deps.writeConfig !== false,
     security: args.deps.security ?? {},
   });
   if (built.status === "unsupported") return built;
   return { ...built, route };
+}
+
+/**
+ * Every model id in a subagent launch, carrying the route's prefix.
+ *
+ * A proxied launch reaches a model only under its upstream spelling, so a
+ * subagent pinned to one would otherwise be configured with an id the proxy has
+ * never heard of. The prefix is empty on a direct route, which makes this a
+ * copy.
+ */
+function prefixSubagentModels(
+  subagent: HarnessSubagentLaunch,
+  prefix: string,
+): HarnessSubagentLaunch {
+  if (!prefix) return subagent;
+  const agents: NonNullable<HarnessSubagentLaunch["agents"]> = {};
+  for (const [key, pin] of Object.entries(subagent.agents ?? {})) {
+    if (!pin) continue;
+    agents[key as keyof typeof agents] = { ...pin, model: `${prefix}${pin.model}` };
+  }
+  return {
+    ...(subagent.subagents ? { subagents: { ...subagent.subagents, model: `${prefix}${subagent.subagents.model}` } } : {}),
+    ...(Object.keys(agents).length ? { agents } : {}),
+  };
 }

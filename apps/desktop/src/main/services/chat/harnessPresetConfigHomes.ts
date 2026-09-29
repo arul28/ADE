@@ -12,6 +12,10 @@ import { isSafeIdentifier } from "../../../shared/safeIdentifier";
 import { credentialStoreProviderForHarness } from "../../../shared/harnessCredentialProviders";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
+import {
+  codexSubagentConfigTomlLines,
+  type HarnessSubagentLaunch,
+} from "../../../shared/harnessSubagentLaunch";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import {
   adeUpstreamId,
@@ -351,16 +355,29 @@ export function writeOpenCodePresetConfig(
   configHome: string,
   provider: HarnessPresetOpenCodeProvider,
   security: PrivateFileSecurityOptions = {},
+  /**
+   * Per-subagent agent entries, already keyed by OpenCode's own agent names and
+   * carrying fully-qualified `provider/model` ids. Absent for a preset that
+   * pins nothing, which keeps the written file byte-identical to before.
+   */
+  agentBlock?: Record<string, { model: string }> | null,
 ): string {
   ensurePrivateDirectory(configHome, security);
   const configPath = path.join(configHome, "opencode.json");
-  writePrivateFile(configPath, `${JSON.stringify({ provider: { [provider.id]: provider.block } }, null, 2)}\n`, security);
+  const config = {
+    provider: { [provider.id]: provider.block },
+    ...(agentBlock && Object.keys(agentBlock).length ? { agent: agentBlock } : {}),
+  };
+  writePrivateFile(configPath, `${JSON.stringify(config, null, 2)}\n`, security);
   return configPath;
 }
 
-export function buildCodexPresetConfigToml(baseUrl: string | undefined): string {
+export function buildCodexPresetConfigToml(
+  baseUrl: string | undefined,
+  subagent?: HarnessSubagentLaunch,
+): string {
   const resolved = (baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
-  return [
+  const lines = [
     "# Written by ADE for a harness preset. Edits here are overwritten on launch.",
     "# ADE never writes to ~/.codex/config.toml; CODEX_HOME points Codex at this",
     "# directory instead, so the user's own Codex sign-in is untouched.",
@@ -371,20 +388,27 @@ export function buildCodexPresetConfigToml(baseUrl: string | undefined): string 
     `base_url = "${resolved}"`,
     'wire_api = "responses"',
     'env_key = "ADE_PRESET_OPENAI_API_KEY"',
-    "",
-  ].join("\n");
+  ];
+  lines.push(...codexSubagentConfigTomlLines(subagent));
+  lines.push("");
+  return lines.join("\n");
 }
 
-export function buildCodexProxyConfigToml(providerFragment: string): string {
-  return [
+export function buildCodexProxyConfigToml(
+  providerFragment: string,
+  subagent?: HarnessSubagentLaunch,
+): string {
+  const lines = [
     "# Written by ADE for a harness preset borrowing a subscription through",
     "# ADE's proxy. Edits here are overwritten on launch. ADE never writes to",
     "# ~/.codex/config.toml; CODEX_HOME points Codex at this directory instead.",
     'model_provider = "ade-proxy"',
     "",
     providerFragment.trim(),
-    "",
-  ].join("\n");
+  ];
+  lines.push(...codexSubagentConfigTomlLines(subagent));
+  lines.push("");
+  return lines.join("\n");
 }
 
 export function writeDroidPresetSettings(

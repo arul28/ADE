@@ -71,6 +71,7 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "claude-opus-4-5",
     subagentModel: "inherit",
     agentOverrides: {},
+    agentEfforts: {},
     accentColor: "#7c5ce0",
     logo: { kind: "ade" },
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -728,7 +729,10 @@ describe("Claude subagents and built-in pins", () => {
     expect(plan.claudeAgents).toBeUndefined();
   });
 
-  it("notes that a non-Claude harness cannot honour a subagent model", () => {
+  it("does not claim a subagent model a Codex account preset cannot deliver", () => {
+    // A Codex account runs in that account's OWN CODEX_HOME, which ADE does not
+    // own; an `[agents]` block written there would follow the user into every
+    // other Codex chat. The plan says nothing it cannot honour, and says why.
     const plan = resolveHarnessPresetPlan(
       preset({
         harness: "codex",
@@ -739,7 +743,114 @@ describe("Claude subagents and built-in pins", () => {
     );
     if (plan.status !== "ready") throw new Error("expected ready");
     expect(plan.subagentModel).toBeUndefined();
-    expect(plan.notes?.join(" ")).toContain("subagents");
+    expect(plan.notes?.join(" ")).toContain("own config");
+  });
+
+  // A key source so the plan resolves at all: the fixture's default credential
+  // is filed under the harness's own store provider.
+  it.each(["kimi", "qwen", "copilot"])("says %s runs subagents on the main model", (harness) => {
+    const storeProvider = HARNESS_CREDENTIAL_STORE_PROVIDER[harness as HarnessPresetBody];
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: harness as HarnessPreset["harness"],
+        subagentModel: "whatever",
+        source: { kind: "key", provider: storeProvider, credentialId: "work", label: "Work key" },
+      }),
+      deps({
+        getCredentialSummary: () => credential({
+          provider: storeProvider,
+          baseUrl: "https://gw.example.com/v1",
+          models: ["gw-model"],
+        }),
+      }),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.subagentModel).toBeUndefined();
+    expect(plan.notes?.join(" ")).toContain("runs subagents on the main model");
+  });
+
+  it("writes a Codex subagent model and effort into the CODEX_HOME ADE owns", () => {
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "codex",
+        subagentModel: "gpt-5.6-luna",
+        subagentEffort: "low",
+        source: { kind: "key", provider: "openai", credentialId: "cred_1", label: "Work key" },
+      }),
+      deps(),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.subagentModel).toBe("gpt-5.6-luna");
+    const written = fs.readFileSync(path.join(plan.codexConfigHome!, "config.toml"), "utf8");
+    expect(written).toContain('default_subagent_model = "gpt-5.6-luna"');
+    expect(written).toContain('default_subagent_reasoning_effort = "low"');
+  });
+
+  it("puts a pinned built-in's thinking level on its SDK agent entry", () => {
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        subagentModel: "haiku",
+        agentEfforts: { explore: "low" },
+      }),
+      deps(),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.claudeAgents?.Explore?.effort).toBe("low");
+    // A level with no model of its own follows the subagent model rather than
+    // being dropped: the SDK entry is the only channel the level has.
+    expect(plan.claudeAgents?.Explore?.model).toBe("haiku");
+  });
+
+  it("gives the default subagent its own effort through a general-purpose entry", () => {
+    const plan = resolveHarnessPresetPlan(preset({ subagentEffort: "high" }), deps());
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.claudeAgents?.["general-purpose"]?.effort).toBe("high");
+    // The entry replaces the whole definition, so it carries a model too.
+    expect(plan.claudeAgents?.["general-purpose"]?.model).toBe("claude-opus-4-5");
+  });
+
+  it("names every subagent model a harness config has to be able to spawn", () => {
+    // Grok takes a model per subagent type and defines only the models ADE
+    // writes into its home, so a subagent model the config does not name is one
+    // Grok cannot spawn at all. `plan.subagent` is the launch's half of that
+    // contract: the models, unprefixed, per role.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "grok",
+        model: "grok-4.6",
+        subagentModel: "grok-4.7",
+        agentOverrides: { explore: "grok-4.5", plan: "follows" },
+      }),
+      deps(),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.subagent).toEqual({
+      subagents: { model: "grok-4.7" },
+      agents: { explore: { model: "grok-4.5" }, plan: { model: "grok-4.7" } },
+    });
+    // Grok has no per-subagent effort control, so nothing is carried for one.
+    expect(plan.subagentEffort).toBeUndefined();
+    expect(plan.notes?.join(" ")).toBeFalsy();
+  });
+
+  it("drops a pin the harness has no such role for", () => {
+    // OpenCode's subagents are explore and general; a `plan` pin would be a
+    // setting nothing reads.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "opencode",
+        model: "deepseek-v4.1-flash",
+        source: { kind: "key", provider: "opencode", credentialId: "work", label: "Work key" },
+        subagentModel: "kimi-k3",
+        agentOverrides: { plan: "glm-5.3", generalPurpose: "qwen3.8-max" },
+      }),
+      deps({ getCredentialSummary: () => credential({ provider: "opencode", baseUrl: "https://gw.example.com", models: ["deepseek-v4.1-flash"] }) }),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.subagent).toEqual({
+      subagents: { model: "kimi-k3" },
+      agents: { generalPurpose: { model: "qwen3.8-max" } },
+    });
   });
 });
 

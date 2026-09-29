@@ -149,9 +149,16 @@ import { VoiceDictationButton } from "./VoiceDictationButton";
 import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
 import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
+import { bodyLogoFamily } from "../settings/harnesses/presetFacts";
+import {
+  colorToRgba,
+  NEUTRAL_CHAT_ACCENT,
+  providerChatAccent,
+} from "./chatSurfaceTheme";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { harnessBodyLabel, type HarnessPresetBody } from "../../../shared/harnessPresets";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
@@ -762,6 +769,34 @@ function ComposerMachineChip({
         <span className="max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
+  );
+}
+
+/**
+ * Which harness the prompt is about to run in, when a Custom provider or an
+ * ad-hoc route is the choice.
+ *
+ * The model trigger already names the Custom provider ("Cheap DeepSeek"), but a
+ * preset's name is the user's own words — it does not have to say which program
+ * runs it, and the same preset can be duplicated across two harnesses. The
+ * transcript already paints each harness in its own colour; this puts the same
+ * mark and the same colour in the box the prompt is typed into, so "which
+ * harness am I about to talk to" is answerable without opening the picker.
+ */
+function ComposerHarnessChip({ harness }: { harness: HarnessPresetBody }) {
+  const label = harnessBodyLabel(harness);
+  const accent = providerChatAccent(harness) ?? NEUTRAL_CHAT_ACCENT;
+  return (
+    <span
+      data-chat-composer-harness-chip={harness}
+      aria-label={`Runs in ${label}`}
+      title={`Runs in ${label}`}
+      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-1 font-sans text-[9px] font-medium"
+      style={{ borderColor: colorToRgba(accent, 0.3), color: accent, whiteSpace: "nowrap" }}
+    >
+      <ProviderLogo family={bodyLogoFamily(harness)} size={11} />
+      <span className="max-w-24 truncate">{label}</span>
+    </span>
   );
 }
 
@@ -4255,7 +4290,9 @@ export function AgentChatComposer({
   // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
   const activeHarnessPreset = useMemo(() => {
     const target = resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey);
-    return target ? { name: target.name, logo: target.logo } : null;
+    return target
+      ? { name: target.name, logo: target.logo, accentColor: target.accentColor, harness: target.harness }
+      : null;
   }, [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey]);
 
   /* Where this chat executes.
@@ -6357,6 +6394,10 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
+            {/* The harness a Custom pick runs in, next to the model it applies
+                to. Only a Custom pick gets one: every other model names its own
+                provider already, in the trigger beside this. */}
+            {activeHarnessPreset ? <ComposerHarnessChip harness={activeHarnessPreset.harness} /> : null}
             {/* Right of the thinking-level selector when controls are present:
                 model, then how hard it thinks, then where it runs. It stays
                 outside that conditional because host surfaces hide model

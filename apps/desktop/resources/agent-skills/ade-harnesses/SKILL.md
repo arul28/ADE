@@ -109,10 +109,14 @@ ade chat create --lane <lane> --preset hp_haiku_cheap \
   --prompt "Find every caller of resolveLaunchBrain and report the list."
 ```
 
-For a Claude preset you do not have to spawn a separate chat at all: a preset
-can pin Explore, Plan and general-purpose to their own models (Settings ›
-Providers › Custom › Advanced). Those pins apply to every subagent the chat
-spawns natively, with no extra flag.
+For a harness that takes one, you do not have to spawn a separate chat at all:
+a preset can name its subagents' model and thinking level (Settings ›
+Providers › Custom › Subagents), which apply to every subagent the chat spawns
+natively, with no extra flag. Claude Code, Codex CLI, Grok and OpenCode take a
+subagent model; Claude Code and Codex CLI take a level too. Claude Code, Grok
+and OpenCode also let you pin individual named roles (Explore, Plan,
+general-purpose) under **Subagent naming**. A harness the preset's wizard says
+runs subagents on the main model takes neither.
 
 ## What does not take a preset
 

@@ -166,6 +166,7 @@ import {
 } from "../shared/ModelPicker/runtimeCatalogCache";
 import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCursorCloudModelEligibility";
 import { reconcileDraftModelControls } from "./draftModelControls";
+import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
@@ -11154,6 +11155,13 @@ export function AgentChatPane({
       return;
     }
     draftLaunchInFlightKeysRef.current.add(requestKey);
+    // A saved Custom provider has to be on the brain before the runtime that
+    // owns the lane resolves it: the brain reads the same account-settings copy
+    // the sync pushes, and a save that has not landed reads as "this harness
+    // preset no longer exists on this account", which falls the chat back to
+    // the harness's own sign-in. Best-effort — an unreachable brain leaves the
+    // launch exactly as it was.
+    await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId);
     void copyPromptForLaunch(snapshot.text);
 
     // The renderer-owned chain: used for launches into an existing lane, and
@@ -11214,6 +11222,7 @@ export function AgentChatPane({
     draftLaunchJobsScopeKey,
     draftLaunchTargetIsAutoCreate,
     draftNewLaneConfig,
+    harnessPresets,
     isWorkCliLaunchDraft,
     laneId,
     launchDraftIntoNewLane,
@@ -15183,6 +15192,17 @@ export function AgentChatPane({
                 cursorCloudSessionActive,
                 options,
               );
+              /* A Custom pick carries its own thinking level.
+                 A preset saved at High launches at High: it was chosen with
+                 the model in front of the person who saved it, and reconciling
+                 it against the registry row here is what silently turned
+                 "High" into the model's default the moment the pick landed.
+                 An ordinary model pick keeps the reconcile — there the old
+                 level belongs to a model the user just left. */
+              const presetTarget = options?.presetId
+                ? resolveHarnessLaunchTarget(options.presetId, harnessPresets, modelCatalogScopeKey)
+                : null;
+              const presetEffort = presetTarget ? presetTarget.reasoningEffort ?? null : undefined;
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
                 // The draft owns its thinking level and fast flag, so a model
@@ -15196,10 +15216,11 @@ export function AgentChatPane({
                   reasoningEffort,
                   fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
                 });
-                setReasoningEffort(reconciledControls.reasoningEffort);
+                setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
                 setFastModeState(reconciledControls.fastMode);
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else if (options) {
+                if (presetEffort !== undefined) setReasoningEffort(presetEffort);
                 setFastModeState(options.fastMode);
                 setCursorCloudServiceTier(nextCursorCloudTier);
               } else {

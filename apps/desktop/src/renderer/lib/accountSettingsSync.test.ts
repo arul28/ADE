@@ -200,13 +200,11 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "chatFontSizePx",
       value: 14,
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
@@ -249,26 +247,78 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
 
-  it("A1: writes a local change with the expected account owner", async () => {
-    const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
-    const api = createApi();
-    const stop = startAccountSettingsSync(
-      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+  it("A1: fences a write with the REAL account id, and with no id when there is none", async () => {
+    // A boolean-only sign-in has no id to fence with. Sending the engine's own
+    // namespace placeholder instead is a claim that is always wrong: the
+    // brain compares it against the owner it really holds and refuses, and the
+    // key stays dirty for as long as the placeholder is what gets sent.
+    const anonymous = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const anonymousApi = createApi();
+    const stopAnonymous = startAccountSettingsSync(
+      baseOptions({ store: anonymous.store, getApi: () => anonymousApi, isSignedIn: () => true }),
     );
     await settle();
-    state.setTheme("light");
+    anonymous.state.setTheme("light");
+    expect(anonymousApi.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    stopAnonymous();
+
+    // With a real id, the fence is sent — that is what makes the write's
+    // "ownership changed" answer meaningful.
+    const owned = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store: owned.store,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => "user_1",
+      }),
+    );
+    await settle();
+    owned.state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
+      expectedAccountUserId: "user_1",
     });
     stop();
+  });
+
+  it("A1b: flushKey pushes the current value and answers what the brain said", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const sync = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true, getAccountUserId: () => "user_1" }),
+    );
+    await settle();
+    api.set.mockClear();
+
+    // Nothing changed locally, and the write still goes: a caller awaiting
+    // `flushKey` is saying "make the machine's copy mine before something else
+    // reads it", and a value that is not dirty would never be pushed otherwise.
+    const confirmed = await sync.flushKey("theme");
+    expect(confirmed.ok).toBe(true);
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "dark",
+      expectedAccountUserId: "user_1",
+    });
+
+    api.set.mockImplementation(async () => ({
+      ok: false as const,
+      unavailable: true as const,
+      message: "no brain",
+    }));
+    const refused = await sync.flushKey("theme");
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.message).toContain("no brain");
+    sync();
   });
 
   it("A2: keeps the dirty key and local stamp when the account write is rejected", async () => {
@@ -325,7 +375,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "repo:github.com/ade-dev/ade",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
 
@@ -401,7 +450,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
 
     // The server's copy predates the local edit: a pull must leave it alone.

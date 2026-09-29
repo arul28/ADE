@@ -27,6 +27,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
 
 type PerIssueState = BatchLaunchIssueConfig & {
@@ -391,7 +392,7 @@ export function BatchLaunchModal({
     [issues, perIssue],
   );
 
-  const handleLaunch = useCallback(() => {
+  const handleLaunch = useCallback(async () => {
     const entries: BatchLaunchSubmit[] = [];
     for (const issue of issues) {
       const state = perIssue[issue.id];
@@ -406,6 +407,9 @@ export function BatchLaunchModal({
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
       // A Custom pick is resolved here, against the account's preset list,
       // so the launch knows its harness and the model that harness receives.
+      // The brain resolves it again at spawn time, out of its own copy, so make
+      // sure that copy has it before the batch is handed over.
+      await ensureHarnessPresetOnBrain(config.presetId);
       const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
       if (config.presetId && !target) {
         showToast({

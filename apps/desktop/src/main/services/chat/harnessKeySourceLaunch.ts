@@ -14,6 +14,10 @@ import path from "node:path";
 import type { HarnessPresetBody } from "../../../shared/harnessPresets";
 import { stripTrailingV1 } from "../../../shared/harnessRoutes";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
+import {
+  openCodeSubagentAgentBlock,
+  type HarnessSubagentLaunch,
+} from "../../../shared/harnessSubagentLaunch";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import {
   ensurePrivateDirectory,
@@ -84,6 +88,8 @@ export function buildKeySourceLaunch(args: {
   aclRunner?: HarnessPrivateFileSecurity["aclRunner"];
   currentWindowsUser?: string;
   writeConfig?: boolean;
+  /** The preset's subagent model/effort, with the model ids unprefixed. */
+  subagent?: HarnessSubagentLaunch;
 }): KeySourceResult {
   const {
     harness,
@@ -97,6 +103,7 @@ export function buildKeySourceLaunch(args: {
     aclRunner,
     currentWindowsUser,
     writeConfig = true,
+    subagent,
   } = args;
   const security: HarnessPrivateFileSecurity = {
     platform,
@@ -117,7 +124,16 @@ export function buildKeySourceLaunch(args: {
     const configHome = configHomeKind === "credential"
       ? credentialConfigHome(adeHome, configHomeProvider ?? credential.provider, configHomeId)
       : presetConfigHome(adeHome, configHomeId);
-    return buildKeySourceEnv({ harness, credential, key, baseUrl, configHome, security, writeConfig });
+    return buildKeySourceEnv({
+      harness,
+      credential,
+      key,
+      baseUrl,
+      configHome,
+      security,
+      writeConfig,
+      ...(subagent ? { subagent } : {}),
+    });
   };
   if (!writeConfig) return build();
   const guarded = guardedPrivateHomeWrite(build);
@@ -133,8 +149,10 @@ function buildKeySourceEnv(args: {
   configHome: string;
   security: HarnessPrivateFileSecurity;
   writeConfig: boolean;
+  /** The preset's subagent model/effort, resolved for this harness. */
+  subagent?: HarnessSubagentLaunch;
 }): KeySourceResult {
-  const { harness, credential, key, baseUrl, configHome, security, writeConfig } = args;
+  const { harness, credential, key, baseUrl, configHome, security, writeConfig, subagent } = args;
   switch (harness) {
     case "claude": {
       if (writeConfig) ensurePrivateDirectory(configHome, security);
@@ -153,7 +171,11 @@ function buildKeySourceEnv(args: {
     case "codex": {
       if (writeConfig) {
         ensurePrivateDirectory(configHome, security);
-        writePrivateFile(path.join(configHome, "config.toml"), buildCodexPresetConfigToml(baseUrl), security);
+        writePrivateFile(
+          path.join(configHome, "config.toml"),
+          buildCodexPresetConfigToml(baseUrl, subagent),
+          security,
+        );
       }
       return {
         status: "ready",
@@ -186,7 +208,14 @@ function buildKeySourceEnv(args: {
         },
       };
       const openCodeConfigPath = writeConfig
-        ? writeOpenCodePresetConfig(configHome, openCodeProvider, security)
+        ? writeOpenCodePresetConfig(
+          configHome,
+          openCodeProvider,
+          security,
+          // OpenCode addresses a model as `<provider>/<model>`, and this
+          // provider's id is the credential's own.
+          openCodeSubagentAgentBlock(harness, subagent, (model) => `${id}/${model}`),
+        )
         : path.join(configHome, "opencode.json");
       return {
         status: "ready",

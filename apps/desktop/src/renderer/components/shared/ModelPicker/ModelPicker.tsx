@@ -39,10 +39,18 @@ import {
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 
-/** The saved preset a surface is currently running on, for the trigger. */
+/** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
   name: string;
   logo: HarnessPresetLogo;
+  /**
+   * The preset's accent, drawn as the mark's ring.
+   *
+   * Present for a route too, where it is the harness's own colour. Omitted only
+   * by callers that have no accent to give — and then the ring is absent, not
+   * the default purple, because a wrong brand is worse than no ring.
+   */
+  accentColor?: string | null;
 };
 
 export type ModelPickerProps = {
@@ -716,6 +724,7 @@ const ModelPickerTrigger = memo(
             <HarnessLogo
               logo={activePreset.logo}
               size={compact ? 11 : 13}
+              accentColor={activePreset.accentColor ?? null}
               className="shrink-0"
             />
           ) : model ? (

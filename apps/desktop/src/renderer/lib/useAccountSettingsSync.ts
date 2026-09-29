@@ -11,6 +11,7 @@ import { useEffect } from "react";
 
 import { rootAppStoreApi } from "../state/appStore";
 import { fetchAccountStatus, subscribeAccountStatus } from "./account";
+import { registerAccountSettingsSync } from "./accountSettingsFlush";
 import {
   startAccountSettingsSync,
 } from "./accountSettingsSync";
@@ -59,6 +60,12 @@ export function useAccountSettingsSync(): void {
     // Seeds `signedIn` through the status bus above, which is also what a later
     // sign-in arrives on. One subscriber, one path.
     void fetchAccountStatus().catch(() => undefined);
-    return stop;
+    // Published so a save or a launch can await the brain's own answer instead
+    // of racing the 30-second tick; see `accountSettingsFlush`.
+    registerAccountSettingsSync(stop);
+    return () => {
+      registerAccountSettingsSync(null);
+      stop();
+    };
   }, []);
 }
