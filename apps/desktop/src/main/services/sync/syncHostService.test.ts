@@ -1913,7 +1913,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       projectId: "project-1",
       projectRoot,
       port: 0,
-      pinStore: createStubPinStore(),
+      pinStore: createStubPinStore("428193"),
       fileService: createStubFileService(workspaceRoot) as any,
       laneService: {
         list: vi.fn().mockResolvedValue([]),
@@ -2058,13 +2058,49 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       brainDb.close();
     });
 
+    const port = await host.waitUntilListening();
+    const pairWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      pairWs.once("open", () => resolve());
+      pairWs.once("error", reject);
+    });
+    const pairQueue = createMessageQueue(pairWs);
+    pairWs.send(encodeSyncEnvelope({
+      type: "pairing_request",
+      requestId: "pair-mobile-terminal",
+      payload: {
+        code: "428193",
+        peer: {
+          deviceId: "peer-terminal",
+          deviceName: "Peer Terminal",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: brainDb.sync.getSiteId(),
+          dbVersion: brainDb.sync.getDbVersion(),
+        },
+      },
+    }));
+    const pairingResponse = await pairQueue.next("pairing_result");
+    const pairingPayload = pairingResponse.payload as { ok: boolean; secret?: string };
+    expect(pairingPayload.ok).toBe(true);
+    expect(pairingPayload.secret).toBeTruthy();
+    pairWs.close();
+    await new Promise((resolve) => pairWs.once("close", resolve));
+
     const client = await connectClient({
-      port: await host.waitUntilListening(),
+      port,
       token: host.getBootstrapToken(),
       deviceId: "peer-terminal",
       deviceName: "Peer Terminal",
       siteId: brainDb.sync.getSiteId(),
       dbVersion: brainDb.sync.getDbVersion(),
+      platform: "iOS",
+      deviceType: "phone",
+      auth: {
+        kind: "paired",
+        deviceId: "peer-terminal",
+        secret: pairingPayload.secret ?? "",
+      },
     });
     activeDisposers.push(client.close);
 
