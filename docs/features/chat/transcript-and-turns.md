@@ -1372,8 +1372,11 @@ Notable rendering rules:
   bucketed into turns by `artifact.createdAt`; expanding `N proof` renders the
   horizontal `ChatProofFilmstrip` immediately below that divider. The filmstrip
   is chronological, starts collapsed, and never moves to a pinned thread
-  footer. Local project-relative URIs render through the artifact protocol;
-  remote items fall back to their kind label and open the runtime-backed drawer.
+  footer. Local project-relative images render through the artifact protocol,
+  and a recording — local or on a paired machine — draws its first frame behind
+  a play badge through the media server (never an `<img>` of the `.mp4`); a tile
+  with no picture falls back to its kind label and opens the runtime-backed
+  drawer.
 - Code blocks in assistant messages render through `HighlightedCode`.
 - User messages animate in with a `motion/react` spring transition and
   render in full, however long; there is no length-based clamp.

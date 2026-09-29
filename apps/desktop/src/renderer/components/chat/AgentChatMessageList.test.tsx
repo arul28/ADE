@@ -806,6 +806,45 @@ describe("AgentChatMessageList transcript rendering", () => {
       .toBe("ade-artifact://project/.ade/artifacts/proof.png");
   });
 
+  it("renders an uncited recording through the media server, never an img of its mp4", async () => {
+    // A recording is not an <img>: the old image src put the .mp4 in an <img>
+    // and drew a broken tile in the thread while the drawer played the same file.
+    const mediaBase = "http://127.0.0.1:43210/tok";
+    (globalThis.window.ade as unknown as { computerUse: unknown }).computerUse = {
+      mediaBaseUrl: vi.fn().mockResolvedValue(mediaBase),
+      readArtifactPreview: vi.fn().mockResolvedValue(null),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+    };
+    const view = renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      }],
+      {
+        allowLocalProofArtifactProtocol: true,
+        proofArtifacts: [{
+          ...transcriptProofArtifact,
+          id: "proof-recording",
+          kind: "video_recording",
+          mimeType: "video/mp4",
+          uri: ".ade/artifacts/apple-recordings/lane-1/rec.mp4",
+          createdAt: "2026-03-17T10:00:00.000Z",
+        }],
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 proof/ }));
+    const video = await waitFor(() => {
+      const node = view.container.querySelector<HTMLVideoElement>("[data-chat-proof-video] video");
+      expect(node).toBeTruthy();
+      return node!;
+    });
+    expect(video.getAttribute("src"))
+      .toBe(`${mediaBase}/project/.ade/artifacts/apple-recordings/lane-1/rec.mp4`);
+    expect(view.container.querySelector("[data-chat-proof-filmstrip] img")).toBeNull();
+  });
+
   it("keeps turn file-change summaries visible without a session id", () => {
     renderMessageList([
       {
