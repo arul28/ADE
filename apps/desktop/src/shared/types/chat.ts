@@ -601,6 +601,8 @@ export type AgentChatLocalFileRef = {
   hydrate?: boolean;
   /** Optional MIME type from the sender; only consulted to infer `type`. */
   mimeType?: string;
+  /** The file is a large plain-text paste whose contents are the user's task. */
+  intent?: "user_prompt";
 };
 
 export type AgentChatImageUrlRef = {
@@ -610,6 +612,13 @@ export type AgentChatImageUrlRef = {
 };
 
 export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
+
+export const DEFAULT_ATTACHMENT_ONLY_PROMPT = "Please review the attached files.";
+
+/** True when the attachment carries prompt text that must be restored before dispatch. */
+export function hasPastedTextPromptAttachment(attachments: readonly AgentChatFileRef[]): boolean {
+  return attachments.some((attachment) => attachment.type === "file" && attachment.intent === "user_prompt");
+}
 
 /**
  * Stage an attachment that already exists on the same machine as the main
@@ -742,13 +751,14 @@ export function normalizeInboundFileRef(attachment: AgentChatFileRef): AgentChat
   const type: AgentChatLocalFileRef["type"] = record.type === "file" || record.type === "image"
     ? record.type
     : inferAttachmentType(pathValue, mimeType);
-  const { hydrate: _hydrate, mimeType: _mimeType, ...rest } = record;
+  const { hydrate: _hydrate, mimeType: _mimeType, intent: _intent, ...rest } = record;
   return {
     ...rest,
     path: pathValue,
     type,
     ...(mimeType ? { mimeType } : {}),
     ...(record.hydrate === false ? { hydrate: false } : {}),
+    ...(record.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
   };
 }
 

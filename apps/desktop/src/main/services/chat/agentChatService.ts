@@ -587,6 +587,8 @@ import {
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
+  DEFAULT_ATTACHMENT_ONLY_PROMPT,
+  hasPastedTextPromptAttachment,
   normalizeInboundFileRef,
   attachmentAgentPath,
   attachmentPathHint,
@@ -43016,6 +43018,54 @@ export function createAgentChatService(args: {
     });
   };
 
+  const materializePastedTextPrompt = async <T extends {
+    sessionId: string;
+    text: string;
+    displayText?: string;
+    attachments?: AgentChatFileRef[];
+  }>(args: T): Promise<T> => {
+    const attachments = args.attachments ?? [];
+    if (!hasPastedTextPromptAttachment(attachments)) return args;
+
+    const managed = ensureManagedSession(args.sessionId);
+    const pastedText: string[] = [];
+    for (const attachment of attachments) {
+      if (attachment.type !== "file" || attachment.intent !== "user_prompt") continue;
+      if (attachmentIsReferenceOnly(attachment)) {
+        throw new Error("A folded pasted prompt cannot be sent as a reference-only attachment.");
+      }
+      const located = resolveLocalAttachmentPath(managed, attachment.path);
+      if (!located) {
+        throw new Error("The pasted prompt could not be read from its staged attachment. Paste it again and retry.");
+      }
+      const content = await readResolvedAttachmentBytes({
+        ...attachment,
+        _resolvedPath: located.resolvedPath,
+        _rootPath: located.rootPath,
+      });
+      if (hasNullByte(content)) {
+        throw new Error("The staged pasted prompt is not plain text. Paste it again and retry.");
+      }
+      pastedText.push(content.toString("utf8"));
+    }
+
+    const supplementalText = args.text.trim();
+    const text = [...pastedText, ...(supplementalText ? [supplementalText] : [])]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
+    return {
+      ...args,
+      text,
+      // The attachment is transport-only now; the exact pasted contents are
+      // the user message, so neither the file chip nor a display-only fallback
+      // should replace that text in the transcript.
+      displayText: undefined,
+      attachments: attachments.filter((attachment) => !(
+        attachment.type === "file" && attachment.intent === "user_prompt"
+      )),
+    };
+  };
+
   const prepareSendMessage = ({
     sessionId,
     text,
@@ -43058,7 +43108,7 @@ export function createAgentChatService(args: {
     const trimmed = trimmedText.length
       ? trimmedText
       : attachments.length
-        ? "Please review the attached files."
+        ? DEFAULT_ATTACHMENT_ONLY_PROMPT
         : publicContextAttachments.length
           ? "Use the attached issue context."
           : "";
@@ -49001,9 +49051,10 @@ export function createAgentChatService(args: {
     // blocks. Skipped when the caller already prepared the message (the
     // expansion happened on the pass that produced it).
     const mentionsExpandedHere = !options?.preparedMessage;
-    const args = mentionsExpandedHere
+    const expandedArgs = mentionsExpandedHere
       ? await applyChatMentionExpansion(rawArgs)
       : rawArgs;
+    const args = await materializePastedTextPrompt(expandedArgs);
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
@@ -49242,7 +49293,7 @@ export function createAgentChatService(args: {
     // (public steer(), steerUserMessage, messageSession, and the daemon action
     // route) funnels through here, so expanding anywhere else would leave one
     // of them shipping raw chips. Idempotent via the expansion marker.
-    const expandedArgs = await applyChatMentionExpansion(steerArgs);
+    const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
       sessionId,
       text,
