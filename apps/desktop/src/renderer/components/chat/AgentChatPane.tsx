@@ -1039,10 +1039,12 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
   ) {
     finalText = "Use the attached issue context.";
   }
-  const finalDisplayText = composed.displayText
-    ?? (snapshot.attachments.length
-      ? (hasPastedTextPromptAttachment(snapshot.attachments) ? "" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
-      : "Attached issue context");
+  let finalDisplayText = composed.displayText ?? "Attached issue context";
+  if (composed.displayText == null && snapshot.attachments.length) {
+    finalDisplayText = hasPastedTextPromptAttachment(snapshot.attachments)
+      ? ""
+      : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+  }
   return {
     ...snapshot,
     finalText,
@@ -2941,7 +2943,11 @@ function normalizeComposerFileAttachments(value: unknown): AgentChatFileRef[] {
     const type = rawType === "image" || rawType === "file"
       ? rawType
       : inferAttachmentType(path);
-    out.set(path, { path, type });
+    out.set(path, {
+      path,
+      type,
+      ...(entry.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
+    });
   }
   return [...out.values()];
 }
@@ -10118,14 +10124,20 @@ export function AgentChatPane({
       // to show until history loads: hand it the prompt as its first bubble,
       // plus where the composer and text sat so both can animate into place.
       const prepared = launch.firstMessage;
+      const isPastedTextPrompt = hasPastedTextPromptAttachment(prepared.selectedAttachments);
+      const visibleAttachments = isPastedTextPrompt
+        ? prepared.selectedAttachments.filter((attachment) => !(
+          attachment.type === "file" && attachment.intent === "user_prompt"
+        ))
+        : prepared.selectedAttachments;
       const firstMessage: AgentChatEventEnvelope = {
         sessionId: launch.sessionId,
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
           text: prepared.finalText,
-          displayText: prepared.finalDisplayText || "Selected visual app context",
-          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
+          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "Pasted text prompt" : "Selected visual app context"),
+          ...(visibleAttachments.length ? { attachments: visibleAttachments } : {}),
           ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
         },
       };
@@ -12576,12 +12588,16 @@ export function AgentChatPane({
         attachment.type === "file" && attachment.intent === "user_prompt"
       ));
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
-    const optimisticDisplayText = composedWithVisualContext.displayText
-      ?? (attachmentsSnapshot.length
-        ? (hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
-        : contextAttachmentsSnapshot.length
-          ? "Attached issue context"
-          : text);
+    let optimisticDisplayText = composedWithVisualContext.displayText;
+    if (optimisticDisplayText == null) {
+      if (attachmentsSnapshot.length) {
+        optimisticDisplayText = hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+      } else if (contextAttachmentsSnapshot.length) {
+        optimisticDisplayText = "Attached issue context";
+      } else {
+        optimisticDisplayText = text;
+      }
+    }
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
