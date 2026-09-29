@@ -172,7 +172,7 @@ struct PrOverviewPeopleCard: View {
             Image(systemName: issue.state == "closed" ? "checkmark.circle" : "smallcircle.filled.circle")
               .font(.system(size: 11))
               .foregroundStyle(issue.state == "closed" ? ADEColor.accent : ADEColor.success)
-            Text("#\(issue.number)")
+            Text(verbatim: "#\(issue.number)")
               .font(.system(size: 11, weight: .semibold, design: .monospaced))
               .foregroundStyle(ADEColor.textSecondary)
             Text(issue.title)
@@ -254,7 +254,7 @@ struct PrOverviewStackCard: View {
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .lineLimit(1)
-              Text("#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
+              Text(verbatim: "#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
                 .font(.system(size: 10.5, design: .monospaced))
                 .foregroundStyle(ADEColor.textSecondary)
                 .lineLimit(1)
@@ -308,7 +308,7 @@ struct PrOverviewGitHubStackCard: View {
 
         VStack(alignment: .leading, spacing: 6) {
           GitHubStackPositionBadge(stack: stack)
-          Text("PR #\(prNumber) is position \(stack.position) of \(stack.size), based on \(stack.baseBranch).")
+          Text(verbatim: "PR #\(prNumber) is position \(stack.position) of \(stack.size), based on \(stack.baseBranch).")
             .font(.subheadline.weight(.medium))
             .foregroundStyle(ADEColor.textPrimary)
           Text("GitHub manages stack-wide review, rebase, and merge. Open the pull request to preview or merge the stack.")

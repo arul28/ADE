@@ -1421,6 +1421,20 @@ func syncEndpointFailureIsMeaningful(_ error: Error) -> Bool {
 /// Wi-Fi or wired interface these cannot succeed, and each one raced eagerly
 /// costs a 5s socket-open timeout. Tailnet CGNAT is excluded — Tailscale works
 /// over cellular — and so is loopback, which is the simulator's own route.
+/// True for a loopback route on a real iPhone: it points at the phone itself
+/// and can never reach a computer, yet hosts advertise it. The simulator keeps
+/// it — there it is the Mac's own route.
+func syncIsUnreachableLoopbackOnDevice(_ address: String) -> Bool {
+  #if targetEnvironment(simulator)
+  return false
+  #else
+  let host = syncNormalizedRouteHost(address.trimmingCharacters(in: .whitespacesAndNewlines))
+  if host == "localhost" || host.hasSuffix(".localhost") || host == "::1" { return true }
+  if let v4 = IPv4Address(host), let first = v4.rawValue.first { return first == 127 }
+  return false
+  #endif
+}
+
 func syncIsLocalLinkOnlyCandidate(_ address: String) -> Bool {
   let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !syncIsFullWebSocketRoute(trimmed) else { return false }
@@ -8818,6 +8832,9 @@ final class SyncService: ObservableObject {
     refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard previous != nil else { return }
+    if syncNetworkPathInterfacesChanged(previous: previous, next: snapshot), snapshot.isSatisfied {
+      machineFleet?.networkChanged()
+    }
     guard canReconnectToSavedHost,
           allowAutoReconnect,
           !autoReconnectPausedByUser,
@@ -16014,6 +16031,10 @@ final class SyncService: ObservableObject {
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
+    ScrollDiagnostics.timeMain("saveProfile") { saveProfileNow(profile) }
+  }
+
+  private func saveProfileNow(_ profile: HostConnectionProfile?) {
     let previousHostKey = activeHostStorageKey()
     let previousProfile = activeHostProfile ?? UserDefaults.standard.data(forKey: profileKey).flatMap {
       try? decoder.decode(HostConnectionProfile.self, from: $0)
@@ -16863,7 +16884,7 @@ final class SyncService: ObservableObject {
     // The pairing secret is sent over ws:// (plaintext) immediately after
     // `openSocket`, so only allow addresses we can trust on an unencrypted
     // transport — loopback, RFC1918 LAN ranges, link-local, and Tailscale CGNAT.
-    addresses.filter { syncCanAttemptPlaintextWebSocket($0) }
+    addresses.filter { syncCanAttemptPlaintextWebSocket($0) && !syncIsUnreachableLoopbackOnDevice($0) }
   }
 
   func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
@@ -18190,6 +18211,10 @@ final class SyncService: ObservableObject {
   }
 
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
+    ScrollDiagnostics.timeMain("applyDiscoveredHosts") { applyDiscoveredHostsNow(hosts) }
+  }
+
+  private func applyDiscoveredHostsNow(_ hosts: [DiscoveredSyncHost]) {
     // Group by computer, not by per-project/per-DB runtime identity. The same
     // machine may advertise multiple project ports or transports; the phone
     // should show and save one machine row with all usable routes.

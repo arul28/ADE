@@ -139,7 +139,33 @@ final class MachineFleet: ObservableObject {
       }
       publish()
     } else {
+      resumeGivenUpConnections()
       reconcile()
+    }
+  }
+
+  /// The phone's network changed: machines that ran out of retries may be
+  /// reachable now.
+  func networkChanged() {
+    resumeGivenUpConnections()
+    reconcile()
+  }
+
+  /// The account shows these machines online: dial the ones that ran out of
+  /// retries again.
+  func machinesCameOnline(machineKeys: Set<String>) {
+    var resumed = false
+    for key in machineKeys {
+      guard let connection = connections[key], connection.gaveUp else { continue }
+      connection.resumeAfterGivingUp()
+      resumed = true
+    }
+    if resumed { reconcile() }
+  }
+
+  private func resumeGivenUpConnections() {
+    for connection in connections.values {
+      connection.resumeAfterGivingUp()
     }
   }
 

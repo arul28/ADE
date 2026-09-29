@@ -539,7 +539,7 @@ struct PrDetailHeaderCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       HStack(spacing: 6) {
-        Text("#\(pr.githubPrNumber)")
+        Text(verbatim: "#\(pr.githubPrNumber)")
           .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
           .foregroundStyle(ADEColor.accent)
         if let authorLogin, !authorLogin.isEmpty {

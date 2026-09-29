@@ -186,11 +186,17 @@ function isTailscaleAddress(ipAddress: string): boolean {
   return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
+// Host-only virtual adapters (WSL / Hyper-V switches, Docker bridges, VM
+// networks). Their addresses exist only inside this computer, so a phone that
+// dials them just burns a connect attempt.
+const VIRTUAL_ADAPTER_PATTERN = /^vEthernet|docker|^br-|virbr|vmnet|vboxnet/i;
+
 function readLocalNetworkMetadata(): LocalNetworkMetadata {
   const interfaces = os.networkInterfaces();
   const lan: string[] = [];
   const tailscale: string[] = [];
   for (const [interfaceName, entries] of Object.entries(interfaces)) {
+    if (VIRTUAL_ADAPTER_PATTERN.test(interfaceName)) continue;
     const isLikelyTailscaleInterface = /tailscale|utun|tun/i.test(interfaceName);
     for (const entry of entries ?? []) {
       if (!entry || entry.internal || entry.family !== "IPv4") continue;

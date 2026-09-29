@@ -309,7 +309,7 @@ struct PrMobileWorkflowCardView: View {
       HStack(spacing: 6) {
         PrsEyebrowLabel(text: "REBASE", tint: tintForMode)
         if let prNumber = card.prNumber {
-          Text("#\(prNumber)")
+          Text(verbatim: "#\(prNumber)")
             .font(.system(size: 11, weight: .bold, design: .monospaced))
             .foregroundStyle(tintForMode)
         }

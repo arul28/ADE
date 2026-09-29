@@ -1889,7 +1889,7 @@ struct PrAutoMapSheet: View {
       VStack(alignment: .leading, spacing: 16) {
         VStack(alignment: .leading, spacing: 8) {
           HStack(spacing: 8) {
-            Text("#\(item.githubPrNumber)")
+            Text(verbatim: "#\(item.githubPrNumber)")
               .font(.system(size: 18, weight: .bold, design: .monospaced))
               .foregroundStyle(PrGlassPalette.purpleBright)
             Spacer(minLength: 0)
@@ -2073,7 +2073,7 @@ struct PrLaneLinkSheet: View {
             .foregroundStyle(PrsGlass.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
 
-          Text("#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName)")
+          Text(verbatim: "#\(item.githubPrNumber) · \(item.repoOwner)/\(item.repoName)")
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(PrsGlass.textSecondary)
 

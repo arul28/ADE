@@ -142,7 +142,7 @@ struct PrRowCard: View {
 
   private var metadataRow: some View {
     HStack(spacing: 5) {
-      Text("#\(data.prNumber)")
+      Text(verbatim: "#\(data.prNumber)")
         .foregroundStyle(PrRowDesktopPalette.stateColors(data.state).text)
       if let stack = data.githubStack {
         GitHubStackPositionBadge(stack: stack, compact: true)

@@ -283,9 +283,18 @@ extension LanesTabView {
   @ViewBuilder
   var laneList: some View {
     if !showsFocusedMachineLanes {
-      VStack(spacing: 10) {
-        laneListHeader
-        remoteMachineLaneSections
+      if visibleRemoteMachineLanes.isEmpty {
+        ADEEmptyStateView(
+          symbol: "square.stack.3d.up.slash",
+          title: laneListEmptyStateTitle(scope: scope),
+          message: laneListEmptyStateMessage(scope: scope, searchText: searchText, hasFilters: scope != .active || runtimeFilter != .all)
+        )
+        .padding(.top, 40)
+      } else {
+        VStack(spacing: 10) {
+          laneListHeader
+          remoteMachineLaneSections
+        }
       }
     } else if laneSnapshots.isEmpty && remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
@@ -299,7 +308,9 @@ extension LanesTabView {
         )
         .padding(.top, 40)
       }
-    } else if filteredSnapshots.isEmpty {
+    } else if filteredSnapshots.isEmpty && visibleRemoteMachineLanes.isEmpty {
+      // Empty only when no machine has a row: an empty focused list must not
+      // hide the other machines' lanes.
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
         title: laneListEmptyStateTitle(scope: scope),
@@ -307,7 +318,7 @@ extension LanesTabView {
       )
       .padding(.top, 40)
     } else {
-      if normalVisibleSnapshots.isEmpty {
+      if normalVisibleSnapshots.isEmpty && visibleRemoteMachineLanes.isEmpty {
         EmptyView()
       } else {
         VStack(spacing: 10) {
@@ -579,6 +590,8 @@ extension LanesTabView {
       if errorMessage != nil {
         errorMessage = nil
       }
+    } catch is CancellationError {
+      // A newer reload or a view restart took over; it reports its own result.
     } catch {
       ADEHaptics.error()
       let message = error.localizedDescription

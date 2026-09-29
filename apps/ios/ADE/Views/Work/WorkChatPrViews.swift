@@ -246,7 +246,7 @@ struct WorkChatPrDetailsSheet: View {
                 Circle()
                   .fill(tint)
                   .frame(width: 7, height: 7)
-                Text("#\(linked.githubPrNumber)")
+                Text(verbatim: "#\(linked.githubPrNumber)")
                   .font(.caption.monospacedDigit().weight(.semibold))
                 Text(lanePrStateLabel(linked.state))
                   .font(.caption2)
