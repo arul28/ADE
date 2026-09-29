@@ -377,7 +377,7 @@ final class SettingsMachineController: ObservableObject {
         self.errors[machine.id] = error.localizedDescription
         return false
       }
-      syncService?.forgetMachineOnThisPhone(
+      self.syncService?.forgetMachineOnThisPhone(
         machineKey: machine.machineKey,
         hiddenIdentity: machine.hiddenIdentity,
         isAvailableNow: machine.online
