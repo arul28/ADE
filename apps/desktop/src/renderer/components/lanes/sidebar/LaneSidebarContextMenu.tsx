@@ -50,7 +50,11 @@ export function LaneSidebarContextMenu({
     laneId: menu.laneId,
     lane,
     lanesById,
-    visibleLaneIds: selectedLaneIds.includes(menu.laneId) ? selectedLaneIds : [],
+    // A multi-selection acts on all of it no matter which row opened the menu:
+    // after a Shift-click the user may right-click the anchor (which is the
+    // single-selected row) or any other row, and the batch entry must still be
+    // there. One lane alone is just "Manage Lane".
+    visibleLaneIds: selectedLaneIds.length > 1 ? selectedLaneIds : [],
     isRemoteProject,
     runtimePin,
     onClose,
