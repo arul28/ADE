@@ -77,6 +77,7 @@ import type { LinearConnectionStatus } from "../../desktop/src/shared/types/line
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { resolveProviderInstanceForLaunch } from "./services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -5753,6 +5754,7 @@ async function runTool(args: {
       : null;
 
     const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
+    await prepareHarnessLaunch({ provider, presetId, credentialId });
     const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
     const launchPreset = trackedPreset?.preset;
     if (trackedPreset?.gateReason) {

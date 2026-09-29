@@ -119,12 +119,19 @@ export type ModelPickerProps = {
   onServiceTierChange?: (next: CursorCloudServiceTier | null) => void;
   allowCliOnlyModels?: boolean;
   /**
-   * Whether the Custom rail entry is offered. False for a surface launching
-   * a tracked CLI: four harnesses take no key from the launch, so a preset
-   * picked there would be dropped, and offering a choice that is then ignored
-   * is worse than not offering it. See `shared/harnessPresetCliGate.ts`.
+   * Whether the Custom rail entry is offered at all. It shows in chat and CLI
+   * mode alike; see `harnessLaunchMode` for how CLI mode differs.
    */
   listsHarnessPresets?: boolean;
+  /**
+   * Chat or tracked CLI. In CLI mode the Custom tab lists the CLIs that take no
+   * endpoint from a launch (`shared/harnessPresetCliGate.ts`) as unavailable,
+   * with the reason, instead of letting a pick be silently dropped. Defaults
+   * from `allowCliOnlyModels`.
+   */
+  harnessLaunchMode?: "chat" | "cli";
+  /** The saved preset or ad-hoc route id the surface runs on (highlights it in Custom). */
+  activePresetId?: string | null;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   /**
    * Hide permission-related rail/picker rows when the caller already pins the
@@ -166,6 +173,8 @@ export const ModelPicker = memo(function ModelPicker({
   onServiceTierChange,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
+  harnessLaunchMode = allowCliOnlyModels ? "cli" : "chat",
+  activePresetId = null,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   hidePermissionRail = false,
   onOpenHarnessSettings,
@@ -508,6 +517,8 @@ export const ModelPicker = memo(function ModelPicker({
                 hidePermissionRail={hidePermissionRail}
                 allowCliOnlyModels={allowCliOnlyModels}
                 listsHarnessPresets={listsHarnessPresets}
+                harnessLaunchMode={harnessLaunchMode}
+                activePresetId={activePresetId}
                 cursorAvailabilityMode={cursorAvailabilityMode}
                 allowRegistryExpansion={!constrainToAvailableModelIds}
                 fastMode={fastModeOn}

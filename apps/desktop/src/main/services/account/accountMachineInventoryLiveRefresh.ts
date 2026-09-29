@@ -6,6 +6,7 @@
  * row never creates a pairing or spends a reconnect attempt.
  */
 
+import { isPresetSourceAvailableLocally } from "../chat/harnessRouteCatalog";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
@@ -78,6 +79,9 @@ export async function readLocalMachineInventoryDetail(args: {
       continue;
     }
     if (preset.source.kind === "account" && args.providerInstanceStore.get(preset.source.instanceId)) {
+      boundPresetIds.add(preset.id);
+    }
+    if ((preset.source.kind === "key" || preset.source.kind === "opencode") && isPresetSourceAvailableLocally(preset.source)) {
       boundPresetIds.add(preset.id);
     }
   }

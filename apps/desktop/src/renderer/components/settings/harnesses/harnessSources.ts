@@ -1,17 +1,14 @@
 /**
- * What brains this computer can actually offer a harness.
+ * The accounts and stored keys this computer can offer a Custom provider.
  *
- * Three lists, read from three places ADE already has, and deliberately not
- * from a new IPC channel: provider accounts come from the machine-local
- * instance registry, stored keys from the API-key store, and the "borrow a
- * subscription through ADE's proxy" rows are synthesised because the proxy
- * holds them, not this machine.
+ * Read from places ADE already has: provider accounts from the machine-local
+ * instance registry, stored keys from the API-key store. OpenCode sign-ins and
+ * the model lists per source come from `ai.listHarnessRoutes` instead (see
+ * `useHarnessReach`).
  *
- * Everything here is read-only and tolerant: an older preload without
- * `providerInstances`, an API-key store that has not grown its multi-credential
- * shape yet, and a host with no proxy at all must all produce a usable list
- * rather than an exception. The wizard shows what is there and says plainly
- * what is not — it never invents an account or claims a sign-in it cannot do.
+ * Read-only and tolerant: an older preload without `providerInstances`, or an
+ * API-key store that has not grown its multi-credential shape yet, still
+ * produces a usable list rather than an exception.
  */
 
 import type { AiSettingsStatus } from "../../../../shared/types";
@@ -24,7 +21,6 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { providerLabel } from "../../../../shared/modelCatalog";
 import {
   HARNESS_PRESET_ACCOUNT_PROVIDERS,
-  harnessBodyLabel,
   type HarnessPresetAccountProvider,
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
@@ -54,47 +50,6 @@ export type HarnessKeySource = {
   /** Models the custom endpoint declares. Empty means "type the id yourself". */
   models?: string[];
 };
-
-/** One "borrow this subscription in another harness" row. */
-export type HarnessSubscriptionSource = {
-  kind: "subscription";
-  provider: HarnessPresetAccountProvider;
-  label: string;
-};
-
-export type HarnessModelSource = HarnessAccountSource | HarnessKeySource | HarnessSubscriptionSource;
-
-export type HarnessSourceInventory = {
-  accounts: HarnessAccountSource[];
-  keys: HarnessKeySource[];
-  subscriptions: HarnessSubscriptionSource[];
-  /** Whether this host can hold a proxy sign-in at all. */
-  proxySignInAvailable: boolean;
-};
-
-export const EMPTY_HARNESS_SOURCE_INVENTORY: HarnessSourceInventory = {
-  accounts: [],
-  keys: [],
-  subscriptions: [],
-  proxySignInAvailable: false,
-};
-
-/**
- * The sentence shown on a disabled proxy sign-in button.
- *
- * Stated once, here, because a second copy in the wizard is how "not available
- * yet" turns into a button that silently does nothing on one surface.
- */
-export const HARNESS_PROXY_SIGN_IN_UNAVAILABLE =
-  "Sign-in through ADE's proxy is not available yet on this host.";
-
-type ProxyBridge = { signIn?: (args: { provider: string }) => Promise<unknown> };
-
-/** True only when the host actually exposes a proxy sign-in call. */
-export function proxySignInAvailable(): boolean {
-  const proxy = (window as unknown as { ade?: { proxy?: ProxyBridge } }).ade?.proxy;
-  return typeof proxy?.signIn === "function";
-}
 
 function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
   return {
@@ -224,72 +179,4 @@ export function readStoredKeySources(
       }),
     ),
   ];
-}
-
-/** The short provider name an account row leads with: "Claude · Work". */
-function harnessAccountProviderLabel(provider: HarnessPresetAccountProvider): string {
-  return provider === "claude" ? "Claude" : "Codex";
-}
-
-/**
- * The bold line of a source row.
- *
- * Accounts read `Provider · Label` so two "Default" rows from two providers
- * are never twins; keys read as their vendor, with the user's own label after
- * it when one was given; subscriptions already carry a full sentence.
- */
-export function harnessSourceRowTitle(row: HarnessModelSource): string {
-  if (row.kind === "account") return `${harnessAccountProviderLabel(row.provider)} · ${row.label}`;
-  if (row.kind === "key") {
-    const vendor = providerLabel(row.provider);
-    return row.label && row.label !== vendor && row.label !== row.provider ? `${vendor} · ${row.label}` : vendor;
-  }
-  return row.label;
-}
-
-/** The muted line under a source row: what it is, and what identifies it. */
-export function harnessSourceRowDetail(row: HarnessModelSource): string {
-  if (row.kind === "account") {
-    const facts = [row.email, row.plan].filter((entry): entry is string => Boolean(entry));
-    if (facts.length) return facts.join(" · ");
-    return row.signedIn ? "Signed in on this computer" : "Not signed in yet";
-  }
-  if (row.kind === "key") {
-    const parts = ["API key"];
-    if (row.maskedTail) parts.push(`••••${row.maskedTail}`);
-    if (row.baseUrl) parts.push(row.baseUrl);
-    return parts.join(" · ");
-  }
-  return "Used inside another harness through ADE's proxy";
-}
-
-/** The two subscriptions a foreign harness can borrow through the proxy. */
-export function subscriptionSources(): HarnessSubscriptionSource[] {
-  return HARNESS_PRESET_ACCOUNT_PROVIDERS.map((provider) => ({
-    kind: "subscription" as const,
-    provider,
-    label: `${harnessBodyLabel(provider)} subscription`,
-  }));
-}
-
-/** Turn a picked row back into the value a preset stores. */
-export function sourceFromInventoryRow(row: HarnessModelSource): HarnessPresetSource {
-  if (row.kind === "account") {
-    return { kind: "account", provider: row.provider, instanceId: row.instanceId };
-  }
-  if (row.kind === "key") {
-    return { kind: "key", provider: row.provider, credentialId: row.credentialId, label: row.label };
-  }
-  return { kind: "subscription", provider: row.provider };
-}
-
-/** Whether a stored source still points at something this machine has. */
-export function sourceMatchesRow(source: HarnessPresetSource, row: HarnessModelSource): boolean {
-  if (source.kind !== row.kind) return false;
-  if (source.kind === "account" && row.kind === "account") return source.instanceId === row.instanceId;
-  if (source.kind === "key" && row.kind === "key") {
-    return source.provider === row.provider && source.credentialId === row.credentialId;
-  }
-  if (source.kind === "subscription" && row.kind === "subscription") return source.provider === row.provider;
-  return false;
 }

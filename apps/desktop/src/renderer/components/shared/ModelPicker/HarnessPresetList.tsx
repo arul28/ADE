@@ -12,7 +12,6 @@ import {
 import { harnessModelLabel } from "../../settings/harnesses/harnessModels";
 import { loadHarnessAccounts } from "../../settings/harnesses/harnessSources";
 import { bodyLogoFamily, PresetAgent, PresetModels } from "../../settings/harnesses/presetFacts";
-import { CustomToolMark } from "../CustomToolMark";
 import { HarnessLogo } from "../HarnessLogo";
 import { ProviderLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
@@ -39,7 +38,7 @@ import { cn } from "../../ui/cn";
 
 /** The provider whose mark a source wears. Key sources name their own. */
 function sourceLogoFamily(source: HarnessPresetSource): string {
-  return source.kind === "key" ? source.provider : source.provider;
+  return source.kind === "opencode" ? source.providerId : source.provider;
 }
 
 /** A labelled line in the expanded details: label, mark, value. */
@@ -69,10 +68,13 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
   onSelect,
   accountLabel,
   catalogScopeKey,
+  disabledReason = null,
 }: {
   preset: HarnessPreset;
   isActive: boolean;
   onSelect: (preset: HarnessPreset) => void;
+  /** Shown but not pickable here (a gated CLI in CLI mode), with the reason. */
+  disabledReason?: string | null;
   /**
    * The runtime catalog bucket the model display names resolve against. A
    * picker pinned to a machine reads that machine's bucket; resolving a
@@ -114,9 +116,14 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
           type="button"
           role="option"
           aria-selected={isActive}
-          onClick={handleSelect}
+          aria-disabled={disabledReason ? true : undefined}
+          title={disabledReason ?? undefined}
+          onClick={disabledReason ? undefined : handleSelect}
           data-harness-preset-select={preset.id}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          className={cn(
+            "flex min-w-0 flex-1 items-start gap-2 text-left",
+            disabledReason && "cursor-not-allowed opacity-45",
+          )}
         >
           <HarnessLogo logo={preset.logo} size={14} accentColor={preset.accentColor} />
           <span className="min-w-0 flex-1">
@@ -213,14 +220,19 @@ function useHarnessAccountLabel(): (instanceId: string) => string | null {
 export function HarnessPresetList({
   presets,
   activeModelId,
+  activePresetId = null,
   onSelect,
   catalogScopeKey,
+  disabledReasonFor,
 }: {
   presets: readonly HarnessPreset[];
   activeModelId: string;
+  /** The preset the surface runs on. When known it decides the active row, not the model. */
+  activePresetId?: string | null;
   onSelect: (preset: HarnessPreset) => void;
   /** See `HarnessPresetRow` — the bucket the model names resolve against. */
   catalogScopeKey?: string;
+  disabledReasonFor?: (preset: HarnessPreset) => string | null;
 }) {
   const accountLabel = useHarnessAccountLabel();
   return (
@@ -229,51 +241,13 @@ export function HarnessPresetList({
         <HarnessPresetRow
           key={preset.id}
           preset={preset}
-          isActive={preset.model === activeModelId}
+          isActive={activePresetId ? preset.id === activePresetId : preset.model === activeModelId}
           onSelect={onSelect}
           accountLabel={accountLabel}
           catalogScopeKey={catalogScopeKey}
+          disabledReason={disabledReasonFor?.(preset) ?? null}
         />
       ))}
-    </div>
-  );
-}
-
-export function HarnessPresetEmptyState({
-  searchActive,
-  onOpenHarnessSettings,
-}: {
-  searchActive: boolean;
-  onOpenHarnessSettings?: () => void;
-}) {
-  return (
-    <div
-      data-harness-preset-empty=""
-      className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center"
-    >
-      <CustomToolMark size={22} />
-      <span className="text-[12px] font-semibold text-fg/80">
-        {searchActive ? "Nothing custom matches your search." : "Nothing custom yet"}
-      </span>
-      {/* The way out comes first and the explanation sits under it: a user who
-          has just found an empty list wants the button, and the sentence is
-          what tells them what pressing it will get them. */}
-      {onOpenHarnessSettings ? (
-        <button
-          type="button"
-          data-harness-preset-empty-cta="true"
-          onClick={onOpenHarnessSettings}
-          className="mt-0.5 rounded border border-white/[0.12] px-2.5 py-1 text-[11px] font-semibold text-fg/85 hover:bg-white/[0.06]"
-        >
-          Add a custom setup
-        </button>
-      ) : null}
-      <span className="max-w-[280px] text-[11px] leading-relaxed text-muted-fg/60">
-        A custom provider combines a harness and a model into one setup. Each saved setup is one row here.
-      </span>
-      {onOpenHarnessSettings ? null : (
-        <span className="mt-1 text-[10.5px] text-muted-fg/50">Settings › Providers › Custom</span>
-      )}
     </div>
   );
 }

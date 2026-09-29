@@ -808,6 +808,8 @@ export const IPC = {
   aiSetOpencodeProviderKey: "ade.ai.setOpencodeProviderKey",
   aiClearOpencodeProviderKey: "ade.ai.clearOpencodeProviderKey",
   aiRefreshModelsDev: "ade.ai.refreshModelsDev",
+  aiListHarnessRoutes: "ade.ai.listHarnessRoutes",
+  aiTestHarnessRoute: "ade.ai.testHarnessRoute",
   aiOpencodeOAuthStatus: "ade.ai.opencodeOAuthStatus",
   aiPiLoginProviders: "ade.ai.piLoginProviders",
   aiPiLoginStart: "ade.ai.piLoginStart",

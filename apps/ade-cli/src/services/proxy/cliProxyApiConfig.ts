@@ -8,6 +8,7 @@ import {
   securePrivatePath,
   type PrivateFileSecurityOptions,
 } from "../../lib/trustedWindowsTools";
+import { withCredentialFileLock } from "../credentials/credentialFileIo";
 import type { CliProxyApiRelease, CliProxyApiReleaseAsset } from "./cliProxyApiRelease";
 
 const PROXY_HOST = "127.0.0.1" as const;
@@ -33,7 +34,24 @@ export type CliProxyApiConfig = {
   "quota-exceeded": {
     "switch-project": false;
   };
+  /**
+   * Upstream sections ADE writes for routes that need translation (see
+   * `cliProxyApiUpstreams.ts`). Carried through read/write untouched so a
+   * restart — which rewrites this file to rotate the management key — does
+   * not erase every configured upstream.
+   */
+  "openai-compatibility"?: unknown[];
+  "claude-api-key"?: unknown[];
+  "codex-api-key"?: unknown[];
 };
+
+/** The upstream sections ADE manages, in one list so read and write agree. */
+export const CLI_PROXY_API_UPSTREAM_SECTIONS = ["openai-compatibility", "claude-api-key", "codex-api-key"] as const;
+
+/** Serialize config read-modify-write operations across ADE runtimes. */
+export function withCliProxyApiConfigLock<T>(configPath: string, fn: () => T): T {
+  return withCredentialFileLock(`${configPath}.lock`, fn);
+}
 
 export type CliProxyApiState = {
   port: number;
@@ -215,6 +233,10 @@ export function readCliProxyApiConfig(configPath: string): CliProxyApiConfig {
     throw new Error("Invalid CLIProxyAPI config: request-retry must be 0");
   }
   requireBoolean(config["quota-exceeded"]["switch-project"], "quota-exceeded.switch-project", false);
+  for (const section of CLI_PROXY_API_UPSTREAM_SECTIONS) {
+    const entries = parsed[section];
+    if (Array.isArray(entries) && entries.length > 0) config[section] = entries;
+  }
   return config;
 }
 

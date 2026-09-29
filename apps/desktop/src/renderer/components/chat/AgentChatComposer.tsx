@@ -149,7 +149,7 @@ import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
-import { presetLabel } from "../../../shared/harnessPresets";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
@@ -4230,12 +4230,12 @@ export function AgentChatComposer({
   // Root store: the preset list is an account-scoped preference the project
   // store only ever holds a stale seed copy of (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
+  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
   const activeHarnessPreset = useMemo(() => {
-    const id = activeHarnessPresetId?.trim();
-    if (!id) return null;
-    const preset = harnessPresets.find((entry) => entry.id === id);
-    return preset ? { name: presetLabel(preset), logo: preset.logo } : null;
-  }, [activeHarnessPresetId, harnessPresets]);
+    const target = resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey);
+    return target ? { name: target.name, logo: target.logo } : null;
+  }, [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey]);
 
   /* Where this chat executes.
 
@@ -6260,8 +6260,9 @@ export function AgentChatComposer({
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
-                  listsHarnessPresets={listsHarnessPresets}
-                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
+                  // A parallel slot carries a model, not a preset, so a Custom
+                  // pick here would be silently dropped at launch.
+                  listsHarnessPresets={false}
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
@@ -6299,6 +6300,7 @@ export function AgentChatComposer({
                   value={modelId}
                   onChange={onModelChange}
                   {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
+                  activePresetId={activeHarnessPresetId}
                   openRequestKey={modelPickerOpenRequestKey}
                   onOpenRequestHandled={onModelPickerOpenRequestHandled}
                   {...(availableModelIds ? { availableModelIds } : {})}

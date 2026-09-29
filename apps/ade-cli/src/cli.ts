@@ -294,6 +294,13 @@ import {
   previewHarnessLaunchPlan,
   type HarnessPresetLaunchDeps,
 } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
+import {
+  encodeRoutePresetId,
+  routeForListedModel,
+  ROUTABLE_HARNESSES,
+  type HarnessRouteCatalog,
+} from "../../desktop/src/shared/harnessRoutes";
+import { harnessBodyLabel, isHarnessPresetBody, type HarnessPresetSource } from "../../desktop/src/shared/harnessPresets";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -540,6 +547,9 @@ export type FormatterId =
   | "external-sessions"
   | "provider-accounts"
   | "proxy-status"
+  | "harness-env"
+  | "harness-routes"
+  | "harness-test"
   | "storage-snapshot"
   | "storage-compress"
   | "storage-maintenance"
@@ -2939,8 +2949,31 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
     $ ade chat create --lane <lane> --provider claude --credential openrouter
   --preset and --credential are mutually exclusive. In CLI mode a preset on
-  grok, cursor, copilot or kimi launches the native CLI instead: those binaries
-  take no key from the launch.
+  cursor, copilot or kimi launches the native CLI instead: those binaries take
+  no key or endpoint from the launch.
+
+  Use any model you pay for in any harness, without saving a preset:
+    $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
+    $ ade harness routes --harness claude --text        Everything each harness can reach
+`,
+  harness: `${ADE_BANNER}
+  ADE custom providers: any model you pay for, inside any harness
+
+  See what each harness can reach (OpenCode sign-ins and stored keys), and how:
+    $ ade harness routes --harness claude --text
+
+  Launch ad-hoc, no saved preset (chat or CLI):
+    $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
+    $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
+    --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
+
+  Check one pairing with a one-token request (records the verdict for routing):
+    $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
+
+  Run a custom provider in your own terminal (the env is printed, never saved):
+    $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
+    PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
+    The output contains the provider token. Do not paste it anywhere.
 `,
   proxy: `${ADE_BANNER}
   ADE subscription proxy
@@ -5371,14 +5404,152 @@ function readChatLaunchConfig(args: string[]): JsonObject {
  */
 function readLaunchIdentitySelectors(
   args: string[],
+  consumed: { provider?: string | null; model?: string | null } = {},
 ): { instanceId: string | null; presetId: string | null; credentialId: string | null } {
   const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
-  const presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  const via = readValue(args, ["--via"])?.trim() || null;
   const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
+  let presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  if (via) {
+    if (presetId || credentialId) {
+      throw new CliUsageError("--via names a brain on its own. Drop --preset / --credential.");
+    }
+    presetId = routePresetIdFromFlags(args, via, consumed);
+  }
   if (presetId && credentialId) {
     throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
   }
   return { instanceId, presetId, credentialId };
+}
+
+/**
+ * `--via <source>` source specs:
+ *   opencode-go | opencode | opencode:<provider>   a provider signed in to OpenCode
+ *   key:<provider>[:<credentialId>]                a stored API key
+ */
+export function parseViaSourceSpec(spec: string): HarnessPresetSource {
+  const value = spec.trim();
+  if (value === "opencode-go" || value === "opencode") return { kind: "opencode", providerId: value };
+  const [kind, ...rest] = value.split(":");
+  if (kind === "opencode" && rest[0]?.trim()) return { kind: "opencode", providerId: rest.join(":").trim() };
+  if (kind === "key" && rest[0]?.trim()) {
+    const provider = rest[0].trim();
+    const credentialId = rest[1]?.trim() || "default";
+    return { kind: "key", provider, credentialId, label: provider };
+  }
+  throw new CliUsageError(
+    `--via ${value}: use opencode-go, opencode, opencode:<provider>, or key:<provider>[:<credentialId>].`,
+  );
+}
+
+/** Like `readValue`, but leaves the flag in place for the caller that owns it. */
+function peekValue(args: readonly string[], names: readonly string[]): string | null {
+  return readValue([...args], names);
+}
+
+/** The `--via` spelling for a source; the inverse of `parseViaSourceSpec`. */
+export function formatViaSourceSpec(source: HarnessPresetSource): string {
+  if (source.kind === "opencode") {
+    return source.providerId === "opencode" || source.providerId === "opencode-go"
+      ? source.providerId
+      : `opencode:${source.providerId}`;
+  }
+  if (source.kind === "key") {
+    return source.credentialId === "default" ? `key:${source.provider}` : `key:${source.provider}:${source.credentialId}`;
+  }
+  return source.kind;
+}
+
+function routePresetIdFromFlags(
+  args: string[],
+  via: string,
+  consumed: { provider?: string | null; model?: string | null } = {},
+): string {
+  // Peek, never consume: the launch command still reads --provider and
+  // --model itself (the model rides the chat as its display id).
+  const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
+  const model = (consumed.model ?? peekValue(args, ["--model", "--model-id"]))?.trim();
+  if (!harness || !isHarnessPresetBody(harness)) {
+    throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
+  }
+  if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
+  const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
+  return encodeRoutePresetId({
+    harness,
+    source: parseViaSourceSpec(via),
+    model,
+    ...(effort ? { reasoningEffort: effort } : {}),
+  });
+}
+
+function buildHarnessPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.harness ?? topLevelHelpText() };
+  }
+  const sub = firstStandalonePositional(args) ?? "routes";
+  const rest = args;
+  if (sub === "env") {
+    const via = readValue(rest, ["--via"])?.trim() || null;
+    const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
+      || (via ? routePresetIdFromFlags(rest, via) : null)
+      || firstStandalonePositional(rest);
+    if (!presetId) throw new CliUsageError("ade harness env needs a custom provider id (or --via with --provider and --model).");
+    // PowerShell by default on Windows, where `export` lines mean nothing.
+    const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
+    if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
+      throw new CliUsageError("--shell must be zsh, bash, or pwsh.");
+    }
+    return {
+      kind: "execute",
+      label: "harness env",
+      formatter: "harness-env",
+      machineOnly: true,
+      machineAutoStart: true,
+      // The result carries the provider token, so the action is CTO-only; the
+      // user's own terminal asserts the operator role, as `ade logout` does.
+      connectRole: "cto",
+      steps: [actionStep("result", "ai", "harnessLaunchEnv", { presetId, ...(shell ? { shell } : {}) })],
+    };
+  }
+  if (sub === "routes" || sub === "list" || sub === "models") {
+    const harness = readValue(rest, ["--harness", "--provider"])?.trim() || null;
+    if (harness && !isHarnessPresetBody(harness)) throw new CliUsageError(`Unknown harness: ${harness}`);
+    return {
+      kind: "execute",
+      label: harness ? `harness routes ${harness}` : "harness routes",
+      formatter: "harness-routes",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [actionStep("result", "ai", "listHarnessRoutes", harness ? { harness } : {})],
+    };
+  }
+  if (sub === "test") {
+    const harness = readValue(rest, ["--harness", "--provider"])?.trim();
+    const via = readValue(rest, ["--via"])?.trim();
+    const model = readValue(rest, ["--model", "--model-id"])?.trim();
+    if (!harness || !via || !model) {
+      throw new CliUsageError("ade harness test needs --harness <h> --via <source> --model <id>.");
+    }
+    const source = parseViaSourceSpec(via);
+    if (source.kind !== "key" && source.kind !== "opencode") {
+      throw new CliUsageError("ade harness test checks OpenCode sign-ins and stored keys.");
+    }
+    return {
+      kind: "execute",
+      label: "harness test",
+      formatter: "harness-test",
+      machineOnly: true,
+      machineAutoStart: true,
+      connectRole: "cto",
+      steps: [actionStep("result", "ai", "testHarnessRoute", { harness, source, model })],
+    };
+  }
+  if (sub === "route-id" || sub === "id") {
+    const via = readValue(rest, ["--via"])?.trim();
+    if (!via) throw new CliUsageError("ade harness route-id needs --via <source> --provider <harness> --model <id>.");
+    return { kind: "static", value: { presetId: routePresetIdFromFlags(rest, via) } };
+  }
+  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | env | test | route-id`);
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
@@ -5530,7 +5701,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
   const provider = requireLaunchProfile(providerRaw, launchOpts) ?? "codex";
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
+    model: modelArg,
+  });
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
     if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
@@ -7670,7 +7844,7 @@ function buildCliSessionStartPlan(
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider: rawProvider });
   const permissionMode =
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
   const droidPermissionMode = readDroidPermissionMode(args);
@@ -8235,7 +8409,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
   const provider = requireLaunchProfile(readValue(args, ["--provider"]), { allowShell: false }) ?? "codex";
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
+    provider,
+    model: modelArg,
+  });
   const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
   const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
   const explicitPrompt = readValue(args, ["--prompt", "--text", "--message"]);
@@ -8859,7 +9036,7 @@ function buildChatPlan(args: string[]): CliPlan {
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
     const provider = requireLaunchProfile(readValue(args, ["--provider"]), launchOpts);
-    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const actionArgs = collectLaunchArgs(args, {
       laneId: readLaneId(args),
@@ -16228,6 +16405,9 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--instance-id",
   "--preset",
   "--preset-id",
+  "--via",
+  "--harness",
+  "--shell",
   "--credential",
   "--credential-id",
   "--instructions",
@@ -16821,6 +17001,7 @@ function buildCliPlan(
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
   if (primary === "proxy") return buildProxyPlan(args);
+  if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
     return buildProvidersPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting")
@@ -26675,6 +26856,47 @@ function formatTerminalRead(value: unknown): string {
   return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
 }
 
+function formatHarnessEnv(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  // Script only: this output is meant for `eval`, so nothing else may print.
+  return typeof record.script === "string" ? record.script.replace(/\n$/, "") : "";
+}
+
+function formatHarnessRoutes(value: unknown): string {
+  const catalog = (isRecord(value) ? value : { sources: [] }) as unknown as HarnessRouteCatalog;
+  const sources = Array.isArray(catalog.sources) ? catalog.sources : [];
+  if (sources.length === 0) {
+    return "No OpenCode sign-ins or stored API keys can be routed yet. Sign in to OpenCode Go/Zen or add a key under Providers.";
+  }
+  const lines: string[] = [];
+  const only = catalog.harness;
+  for (const harness of ROUTABLE_HARNESSES.filter((entry) => !only || entry === only)) {
+    lines.push(`${harnessBodyLabel(harness)} (--provider ${harness})`);
+    for (const source of sources) {
+      const reachable = source.models
+        .map((model) => ({ model, route: routeForListedModel(harness, source, model) }))
+        .filter(({ route }) => route.kind !== "impossible");
+      if (reachable.length === 0) continue;
+      const via = formatViaSourceSpec(source.source);
+      lines.push(`  ${source.label} (--via ${via}) · ${reachable.length} models`);
+      for (const { model, route } of reachable) {
+        const tag = route.kind === "proxy" ? "  via ADE proxy" : route.kind === "native" ? "  native" : "";
+        lines.push(`    ${model.id}${tag}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatHarnessTest(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (record.ok === true) {
+    const route = record.route === "proxy" ? " (via ADE proxy)" : "";
+    return `OK · ${cell(record.protocol)} · ${cell(record.latencyMs)} ms${route}`;
+  }
+  return `Failed: ${typeof record.error === "string" ? record.error : "unknown error"}`;
+}
+
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
   if (typeof record.value === "string") {
@@ -27479,6 +27701,12 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "harness-env":
+      return formatHarnessEnv(value);
+    case "harness-routes":
+      return formatHarnessRoutes(value);
+    case "harness-test":
+      return formatHarnessTest(value);
     case "history-list":
       return formatHistoryList(value);
     case "history-commits":

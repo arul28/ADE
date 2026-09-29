@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { OPENCODE_HOUSE_PROVIDER_IDS, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
 
 /**
  * Non-secret facts about the credentials in an OpenCode 2.0 store.
@@ -93,4 +94,69 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
     }
     return out;
   });
+}
+
+/**
+ * The secret a launch needs to call an OpenCode-connected provider directly.
+ *
+ * The one place ADE reads a token out of OpenCode's store, and it stays in the
+ * main process: the value goes into a child process's environment (or ADE's
+ * private proxy config) and nowhere else — never IPC, sync, logs, or a preset.
+ * `expiresAt` is only set for OAuth logins; a saved key never expires.
+ */
+export type OpenCodeLaunchSecret = {
+  token: string;
+  expiresAt: number | null;
+  orgId: string | null;
+};
+
+/**
+ * The OpenCode integration whose credential signs a provider in. OpenCode Go
+ * has no sign-in of its own: it rides the opencode.ai account (`opencode`).
+ */
+export function openCodeIntegrationForProvider(providerId: string): string {
+  const id = providerId.trim();
+  return openCodeSignInViaProvider(id) ?? id;
+}
+
+export function readOpenCodeLaunchSecret(
+  providerId: string,
+  dbPath: string = resolveAdeOpenCodeDbPath(),
+): OpenCodeLaunchSecret | null {
+  const integrationId = openCodeIntegrationForProvider(providerId);
+  return readOpenCodeDb<OpenCodeLaunchSecret | null>(dbPath, null, (db) => {
+    const row = db.prepare(`
+      SELECT json_extract(value, '$.type') AS type,
+             json_extract(value, '$.access') AS access,
+             json_extract(value, '$.key') AS key,
+             json_extract(value, '$.expires') AS expires,
+             json_extract(value, '$.metadata.orgID') AS orgId
+        FROM credential
+       WHERE integration_id = ?
+       ORDER BY (active = 1) DESC, time_updated DESC
+       LIMIT 1
+    `).get(integrationId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const token = row.type === "oauth" ? textOrNull(row.access) : textOrNull(row.key);
+    if (!token) return null;
+    const expires = typeof row.expires === "number" ? row.expires : Number(row.expires ?? NaN);
+    return {
+      token,
+      expiresAt: row.type === "oauth" && Number.isFinite(expires) && expires > 0 ? expires : null,
+      orgId: textOrNull(row.orgId),
+    };
+  });
+}
+
+/** OpenCode provider ids with a usable sign-in on this machine (no secrets). */
+export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenCodeDbPath()): string[] {
+  const integrations = new Set(readOpenCodeCredentials(dbPath).map((row) => row.integrationId));
+  // The house services ride the opencode.ai sign-in. OpenCode Go first: it is
+  // the flat subscription people route; Zen bills a separate balance that is
+  // often empty.
+  const ids: string[] = integrations.has("opencode")
+    ? ["opencode-go", ...OPENCODE_HOUSE_PROVIDER_IDS.filter((id) => id !== "opencode-go")]
+    : [];
+  for (const id of integrations) if (id !== "opencode") ids.push(id);
+  return ids;
 }

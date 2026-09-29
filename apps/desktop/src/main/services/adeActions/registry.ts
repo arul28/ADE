@@ -38,6 +38,11 @@ import {
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
+import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { testHarnessRoute } from "../chat/harnessRouteTest";
+import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
+import { isHarnessPresetBody } from "../../../shared/harnessPresets";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
@@ -2163,6 +2168,30 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cursorAuthCancel: () => {
       cancelCursorSdkLogin();
+    },
+    // Custom providers: every model a harness can reach outside its own
+    // sign-in, a one-token live check, and the terminal launcher's env.
+    listHarnessRoutes: (args?: { harness?: unknown }) => {
+      const catalog = listHarnessRouteCatalog();
+      // Echo a valid filter so a text formatter (`ade harness routes
+      // --harness claude`) can show just that harness; the catalog itself is
+      // harness-independent.
+      return isHarnessPresetBody(args?.harness) ? { ...catalog, harness: args.harness } : catalog;
+    },
+    testHarnessRoute: (args?: { harness?: unknown; source?: unknown; model?: unknown }) =>
+      testHarnessRoute({ harness: args?.harness, source: args?.source, model: args?.model }),
+    harnessLaunchEnv: async (args?: { presetId?: string; shell?: string }) => {
+      const presetId = requireNonEmptyString(args?.presetId, "presetId");
+      // A translated route needs ADE's proxy running before it can resolve,
+      // exactly as a chat or CLI launch does.
+      await prepareHarnessLaunch({ provider: "", presetId });
+      return buildHarnessLaunchEnv(
+        {
+          presetId,
+          ...(args?.shell === "pwsh" || args?.shell === "bash" || args?.shell === "zsh" ? { shell: args.shell } : {}),
+        },
+        (id) => resolveHarnessPresetForLaunch(id),
+      );
     },
     refreshModelsDev: async () => {
       try {

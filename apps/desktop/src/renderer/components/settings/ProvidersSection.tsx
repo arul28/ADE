@@ -29,7 +29,7 @@ import {
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
 import { CaretRight, Robot } from "@phosphor-icons/react";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -42,14 +42,8 @@ import {
 } from "./OpenCodeProviderDetailModal";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsToggle } from "./primitives";
-import { HarnessesPage } from "./harnesses/HarnessesPage";
-import { useHarnessPresets } from "./harnesses/useHarnessPresets";
-import { CustomToolMark } from "../shared/CustomToolMark";
-import { HelpHint } from "./primitives/HelpHint";
+import { CustomProvidersSection } from "./harnesses/CustomProvidersSection";
 import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
-
-/** The one sentence behind the "?" on the Custom section. */
-const CUSTOM_ENTRY_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
@@ -75,7 +69,10 @@ import type {
 export { openCodeInstallCommands } from "./providers/cliTools";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
-const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio"]);
+// Providers that have a tile of their own on this page. OpenCode's inventory
+// also reports them, and listing them again under OpenCode read as a second,
+// half-empty copy ("devin · Connected · 0 models").
+const OPENCODE_CATALOG_EXCLUDED_IDS = new Set(["cursor", "ollama", "lmstudio", "devin"]);
 
 const LOCAL_PROVIDER_SPECS: Array<{
   provider: LocalProviderFamily;
@@ -219,65 +216,6 @@ function ProviderManagerRow({
   );
 }
 
-/**
- * Custom — its own section, under the provider list.
- *
- * It sat as a last row inside the providers table, where it read as an eleventh
- * provider: a thing you sign in to. It is not. It is the combinations *you*
- * saved of the ten above, which is a different kind of thing and belongs below
- * them with its own heading and its own mark — a purple gear and wrench, so the one
- * entry that is yours is not wearing a vendor's logo or the app's own.
- *
- * The count is the whole status: a saved setup has no connection to probe.
- */
-function CustomPresetsCard({ count, onOpen }: { count: number; onOpen: () => void }) {
-  return (
-    <SettingsManagerPage
-      anchor="ai-harnesses-entry"
-      title="Custom"
-      leading={<CustomToolMark size={18} />}
-      titleAdornment={<HelpHint text={CUSTOM_ENTRY_HELP} />}
-      toolbar={
-        <button type="button" style={outlineButton()} onClick={onOpen}>
-          {count === 0 ? "Add new" : "Manage"}
-        </button>
-      }
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        data-custom-presets-entry="true"
-        aria-label="Open custom setups"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          width: "100%",
-          padding: "10px 12px",
-          borderRadius: 8,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          background: "var(--color-card)",
-          textAlign: "left",
-          cursor: "pointer",
-          font: "inherit",
-          color: COLORS.textPrimary,
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <CustomToolMark size={20} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
-            {count === 0 ? "Nothing custom yet" : `${count} saved`}
-          </span>
-        </span>
-        <span aria-hidden style={{ display: "flex", color: COLORS.textDim }}>
-          <CaretRight size={13} />
-        </span>
-      </button>
-    </SettingsManagerPage>
-  );
-}
-
 function buildLocalProviderDrafts(
   snapshot: ProjectConfigSnapshot | null | undefined,
   status: AiSettingsStatus | null | undefined,
@@ -306,16 +244,14 @@ export function ProvidersSection({
   providerParam = null,
   onProviderChange,
   harnessesParam = false,
-  onHarnessesChange,
 }: {
   forceRefreshOnMount?: boolean;
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
-  /** `#ai-harnesses` — whether the harnesses page is the open sub-view. */
+  /** `#ai-harnesses` — scroll the Custom section into view on mount. */
   harnessesParam?: boolean;
-  onHarnessesChange?: (open: boolean) => void;
 } = {}) {
   const navigate = useNavigate();
   const usageHeaderPreferences = useUsageHeaderPreferences();
@@ -364,11 +300,6 @@ export function ProvidersSection({
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(providerParam);
-  // The harnesses page is the second sub-view of this tab. Same ownership rule
-  // as the provider page: seeded from the URL, owned here so the section still
-  // works standalone and in tests.
-  const [harnessesOpen, setHarnessesOpen] = useState<boolean>(harnessesParam);
-  const { presets: harnessPresets } = useHarnessPresets();
   const statusKnownRef = useRef(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
   // Seed the slugs field from config exactly once — saves send the full list
@@ -380,14 +311,15 @@ export function ProvidersSection({
     setSelectedProviderId(providerParam);
   }, [providerParam]);
 
+  // Custom is a section of this page now, not a sub-view: the `#ai-harnesses`
+  // deeplink (and `?harnesses=1`) scroll to it instead of replacing the page.
   useEffect(() => {
-    setHarnessesOpen(harnessesParam);
+    if (!harnessesParam) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("ai-harnesses")?.scrollIntoView?.({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [harnessesParam]);
-
-  const openHarnesses = useCallback((next: boolean) => {
-    setHarnessesOpen(next);
-    onHarnessesChange?.(next);
-  }, [onHarnessesChange]);
 
   const selectProvider = useCallback((next: string | null) => {
     setSelectedProviderId(next);
@@ -680,8 +612,10 @@ export function ProvidersSection({
     [openCodeCatalog],
   );
 
+  // A provider OpenCode reports as connected stays visible even when it has no
+  // models yet, so the user can inspect its status. A stored key also stays visible.
   const connectedOpenCodeProviders = useMemo(
-    () => openCodeCatalog.filter((p) => p.connected || p.hasKey),
+    () => openCodeCatalog.filter((p) => p.hasKey || p.connected),
     [openCodeCatalog],
   );
 
@@ -1179,9 +1113,7 @@ export function ProvidersSection({
         />
       )}
 
-      {harnessesOpen ? (
-        <HarnessesPage onBack={() => openHarnesses(false)} />
-      ) : selectedDescriptor ? (
+      {selectedDescriptor ? (
         <div id={`ai-provider-${selectedDescriptor.id}`}>
           <ProviderDetailPage
             descriptor={selectedDescriptor}
@@ -1222,9 +1154,7 @@ export function ProvidersSection({
         </SettingsManagerPage>
       )}
 
-      {harnessesOpen || selectedDescriptor ? null : (
-        <CustomPresetsCard count={harnessPresets.length} onOpen={() => openHarnesses(true)} />
-      )}
+      {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}
 
       {signInProvider && signInCommand ? (
         <ProviderSignInModal

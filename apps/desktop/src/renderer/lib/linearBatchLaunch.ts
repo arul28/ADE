@@ -29,6 +29,7 @@ import {
 } from "../../shared/modelRegistry";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/ModelPicker/modelCatalog";
 import type { NativeControlState } from "./draftLaunchJobs";
+import type { HarnessPresetBody } from "../../shared/harnessPresets";
 import {
   buildChatLaunchNativePayload,
   cliPermissionModeFromNativeControls,
@@ -61,6 +62,15 @@ export type BatchLaunchIssueConfig = {
   existingLaneId?: string | null;
   /** When true the launcher only creates the lane (no agent kickoff). */
   laneOnly?: boolean;
+  /** A Custom pick from the picker: a saved preset id or an ad-hoc route id. */
+  presetId?: string | null;
+  /**
+   * What `presetId` launches, resolved by the caller against the account's
+   * preset list at submit time. It names the harness, so its provider wins
+   * over the family `modelId` belongs to, and its model is what the harness
+   * receives.
+   */
+  presetLaunch?: { presetId: string; harness: HarnessPresetBody; model: string } | null;
 };
 
 export type BatchLaunchItemStatus =
@@ -361,6 +371,7 @@ export type BatchLaunchDeps = {
     cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
     kickoffText: string;
     contextAttachments: AgentChatContextAttachment[];
+    presetId?: string;
   }) => Promise<{ id: string }>;
   /**
    * Launch a tracked CLI agent (terminal pty) for the lane with the issue
@@ -378,6 +389,7 @@ export type BatchLaunchDeps = {
     permissionMode?: AgentChatPermissionMode | null;
     kickoffPrompt: string;
     linearIssues: LaneLinearIssue[];
+    presetId?: string;
   }) => Promise<{ sessionId: string }>;
   /** Roll back a lane created in this run when the agent launch fails. */
   deleteLane?: (args: {
@@ -460,10 +472,14 @@ export async function runBatchLaunch(
         if (!deps.launchCli) {
           throw new Error("CLI session launch requested but no launchCli dependency was provided.");
         }
-        const { provider, model } = resolveCliLaunchProviderAndModel(config.modelId, {
-          reasoningEffort: config.reasoningEffort,
-          fastMode: config.fastMode,
-        });
+        const presetLaunch = config.presetLaunch ?? null;
+        const presetId = presetLaunch?.presetId ?? null;
+        const { provider, model } = presetLaunch
+          ? { provider: presetLaunch.harness as AgentChatCliLaunchProvider, model: presetLaunch.model }
+          : resolveCliLaunchProviderAndModel(config.modelId, {
+            reasoningEffort: config.reasoningEffort,
+            fastMode: config.fastMode,
+          });
         const session = await deps.launchCli({
           laneId,
           provider,
@@ -473,13 +489,17 @@ export async function runBatchLaunch(
           permissionMode: config.permissionMode ?? cliPermissionModeFromNativeControls(config.modelId, nativeControls),
           kickoffPrompt: config.kickoffPrompt.trim() || defaultKickoffIntro(),
           linearIssues: [issue],
+          ...(presetId ? { presetId } : {}),
         });
         result.createdSessionIds.push(session.sessionId);
         options.onItem(issue.id, { sessionId: session.sessionId, status: "done" });
         return;
       }
 
-      const { provider, model } = resolveLaunchProviderAndModel(config.modelId);
+      const chatPresetId = config.presetLaunch?.presetId ?? null;
+      const { provider, model } = config.presetLaunch
+        ? { provider: config.presetLaunch.harness as AgentChatProvider, model: config.presetLaunch.model }
+        : resolveLaunchProviderAndModel(config.modelId);
       const nativePayload = config.nativeControls
         ? buildChatLaunchNativePayload(config.modelId, nativeControls)
         : undefined;
@@ -502,6 +522,7 @@ export async function runBatchLaunch(
             : {}),
         kickoffText,
         contextAttachments: [makeLinearIssueContextAttachment(issue, "lane_link")],
+        ...(chatPresetId ? { presetId: chatPresetId } : {}),
       });
       result.createdSessionIds.push(session.id);
       // `agentChat.launch` intentionally returns as soon as the durable session

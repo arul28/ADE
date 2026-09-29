@@ -13,6 +13,10 @@ import { credentialStoreProviderForHarness } from "../../../shared/harnessCreden
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
+import {
+  adeUpstreamId,
+  removeCliProxyApiUpstreams,
+} from "../../../../../ade-cli/src/services/proxy/cliProxyApiUpstreams";
 
 export type HarnessCleanupLogger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -55,7 +59,7 @@ function configHomeSegment(id: string): string {
 
 function ownedConfigHome(
   adeHome: string,
-  namespace: "preset" | "credential",
+  namespace: "preset" | "credential" | "route",
   ...segments: readonly string[]
 ): string {
   if (!segments.length || segments.some((segment) => !isSafeIdentifier(segment))) {
@@ -72,6 +76,49 @@ function ownedConfigHome(
 /** `<adeHome>/provider-homes/preset/<presetId>` — one directory per preset. */
 export function presetConfigHome(adeHome: string, presetId: string): string {
   return ownedConfigHome(adeHome, "preset", presetId);
+}
+
+/**
+ * Ad-hoc routes (a picker choice that is not a saved preset) get their own
+ * namespace, keyed by a hash of the route. They must not live under preset/:
+ * the orphan pruner deletes every preset home the saved list does not name,
+ * and an ad-hoc route is by definition not in that list.
+ */
+export function routeConfigHome(adeHome: string, routeHomeId: string): string {
+  return ownedConfigHome(adeHome, "route", routeHomeId);
+}
+
+/** Ad-hoc route homes nobody launched in this long are removed. */
+export const ROUTE_CONFIG_HOME_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Remove ad-hoc route homes that have not been written in `maxAgeMs`. A route
+ * home can hold a key (Droid's settings), and nothing else ever deletes one:
+ * it belongs to no saved preset, so the preset pruner does not see it.
+ * Recreating one costs one launch.
+ */
+export function pruneStaleRouteConfigHomes(
+  adeHome: string,
+  options: PrivateTreeCleanupOptions & { maxAgeMs?: number; now?: number } = {},
+): void {
+  const root = path.resolve(adeHome, "provider-homes", "route");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const cutoff = (options.now ?? Date.now()) - (options.maxAgeMs ?? ROUTE_CONFIG_HOME_MAX_AGE_MS);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isSafeIdentifier(entry.name)) continue;
+    const target = path.join(root, entry.name);
+    try {
+      if (fs.statSync(target).mtimeMs >= cutoff) continue;
+    } catch {
+      continue;
+    }
+    removePrivateTree(target, options);
+  }
 }
 
 /**
@@ -245,12 +292,48 @@ export function removeCredentialLaunchHome(
   // revoked key can remain readable even though new launches use credential/.
   removePrivateTree(legacyCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
   removePrivateTree(legacyFlatCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
+  forgetRouteSecretsForSource(`${normalizedProvider}:${normalizedCredentialId}`, adeHome, cleanup);
 
   const presets = (readPresets ?? readHarnessPresetsFromMachine)(adeHome);
   if (!presets) return;
   for (const preset of presetsUsingCredential(presets, normalizedProvider, normalizedCredentialId)) {
     if (!isSafeIdentifier(preset.id.trim())) continue;
     removePrivateTree(presetConfigHome(adeHome, preset.id.trim()), cleanup);
+  }
+}
+
+/**
+ * Forget what routes hold for one source (`routeSourceKey`): its proxy
+ * upstreams, and the ad-hoc route homes that could hold its secret. Only a
+ * Droid route writes a key into its home (`.factory/settings.json`); Codex and
+ * Grok homes take theirs from the launch environment and keep their session
+ * history, so they stay. Route homes are named by a hash, not by source, so
+ * every Droid route home goes (it is rebuilt on its next launch). Called when a
+ * key is removed and when a provider is signed out of OpenCode, so a secret
+ * does not outlive the credential it came from.
+ */
+export function forgetRouteSecretsForSource(
+  sourceKey: string,
+  adeHome = resolveMachineAdeLayout().adeDir,
+  options: PrivateTreeCleanupOptions = {},
+): void {
+  const routeRoot = path.resolve(adeHome, "provider-homes", "route");
+  let routeHomes: fs.Dirent[] = [];
+  try {
+    routeHomes = fs.readdirSync(routeRoot, { withFileTypes: true });
+  } catch {
+    routeHomes = [];
+  }
+  for (const entry of routeHomes) {
+    if (!entry.isDirectory() || !isSafeIdentifier(entry.name)) continue;
+    const home = path.join(routeRoot, entry.name);
+    if (fs.existsSync(path.join(home, ".factory", "settings.json"))) removePrivateTree(home, options);
+  }
+  const configPath = path.join(adeHome, "proxy", "config.yaml");
+  try {
+    removeCliProxyApiUpstreams(configPath, adeUpstreamId(sourceKey));
+  } catch (error) {
+    logCleanupFailure(configPath, error, 1, options.logger);
   }
 }
 

@@ -309,6 +309,7 @@ import {
   resolveLaunchBrain,
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
+import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import {
   createCredentialModelDescriptorBase,
   encodeOpenCodeCustomCredentialId,
@@ -9973,6 +9974,7 @@ export function createAgentChatService(args: {
    * fallback, and the notice tells the user which capability was dropped.
    */
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
+  const launchPlanNoticeBySession = new Map<string, string>();
 
   const resolveSessionLaunchPlan = (managed: ManagedChatSession): HarnessPresetLaunchPlan | null => {
     const presetId = managed.session.presetId?.trim() ?? "";
@@ -9980,7 +9982,10 @@ export function createAgentChatService(args: {
     if (!presetId && !credentialId) return null;
     const cacheKey = `${managed.session.provider} ${presetId} ${credentialId}`;
     const cached = sessionLaunchPlanCache.get(managed.session.id);
-    if (cached && cached.key === cacheKey) return cached.plan;
+    // A plan whose token expired (an OpenCode OAuth login) is resolved again,
+    // which reads the refreshed token and rewrites the proxy upstream with it.
+    const expired = cached?.plan?.expiresAt !== undefined && cached.plan.expiresAt <= Date.now() + 60_000;
+    if (cached && cached.key === cacheKey && !expired) return cached.plan;
     let plan: HarnessPresetLaunchPlan | null = null;
     try {
       const result = resolveLaunchBrain({
@@ -9995,8 +10000,26 @@ export function createAgentChatService(args: {
           presetId: presetId || undefined,
           reason: result.unsupported,
         });
+        // Said in the chat, not only the log: the turn now runs on the
+        // harness's own sign-in, and a model another vendor serves will not
+        // exist there, so the user needs the real reason next to the failure.
+        // Once per reason: this resolver runs on every helper lookup too.
+        if (launchPlanNoticeBySession.get(managed.session.id) !== result.unsupported) {
+          launchPlanNoticeBySession.set(managed.session.id, result.unsupported);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: `This chat's custom provider could not be used, so it runs on ${managed.session.provider === "claude" ? "Claude Code" : managed.session.provider}'s own sign-in: ${result.unsupported}`,
+          });
+        }
+        // A reason the user can fix without touching the chat (the proxy
+        // starting, an OpenCode sign-in refreshed) is not remembered: the next
+        // turn resolves again and picks the route back up.
+        if (result.reasonCode) return null;
       } else {
         plan = result;
+        launchPlanNoticeBySession.delete(managed.session.id);
       }
     } catch (error) {
       logger.warn("agent_chat.harness_preset_resolve_failed", {
@@ -10006,6 +10029,26 @@ export function createAgentChatService(args: {
     }
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;
+  };
+
+  /**
+   * Start ADE's proxy before a turn when this chat's route needs it. Runs before
+   * the synchronous env build, and drops a plan cached while the proxy was down
+   * so the next resolve points the harness at the now-running proxy instead of
+   * silently falling back to the harness's own sign-in.
+   */
+  const prepareSessionLaunch = async (managed: ManagedChatSession): Promise<void> => {
+    const presetId = managed.session.presetId?.trim() ?? "";
+    const credentialId = managed.session.credentialId?.trim() ?? "";
+    if (!presetId && !credentialId) return;
+    const cachedPlan = sessionLaunchPlanCache.get(managed.session.id)?.plan;
+    if (cachedPlan && (cachedPlan.expiresAt === undefined || cachedPlan.expiresAt > Date.now() + 60_000)) return;
+    const started = await prepareHarnessLaunch({
+      provider: managed.session.provider,
+      presetId,
+      credentialId,
+    });
+    if (started) sessionLaunchPlanCache.delete(managed.session.id);
   };
 
   /**
@@ -39565,8 +39608,14 @@ export function createAgentChatService(args: {
 
     let effectiveProvider: AgentChatProvider = provider;
     let normalizedModel = normalizedInputModel;
+    // A custom provider names its harness. A model id that ADE's registry
+    // files under another provider (GPT served by OpenCode Go, run in Claude
+    // Code) must not re-route the chat to that provider's harness.
+    const presetPinsHarness = Boolean(requestedPresetId?.trim())
+      && Boolean(resolvedDescriptor)
+      && resolveProviderGroupForModel(resolvedDescriptor!) !== provider;
 
-    if (resolvedDescriptor) {
+    if (resolvedDescriptor && !presetPinsHarness) {
       const resolved = resolveProviderGroupForModel(resolvedDescriptor);
       if (resolvedDescriptor.isCliWrapped && resolved === "opencode") {
         throw new Error(
@@ -39576,6 +39625,31 @@ export function createAgentChatService(args: {
       effectiveProvider = resolved;
       normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.providerModelId : resolvedDescriptor.id;
       requireProviderAcceptsCallerMcpServers(effectiveProvider);
+    }
+
+    if (requestedPresetId?.trim()) {
+      // Before anything can warm the runtime: a route translated through ADE's
+      // proxy cannot resolve until the proxy runs, and a runtime started first
+      // would keep the harness's own sign-in for the whole chat.
+      await prepareHarnessLaunch({ provider: effectiveProvider, presetId: requestedPresetId });
+    }
+    if (requestedPresetId?.trim() && effectiveProvider !== "claude") {
+      // Some routes rename the model on the wire (Droid's `custom:` ids, an
+      // OpenCode-native model's `opencode/<provider>/<model>`). Every
+      // non-Claude runtime re-sends `session.model` on each request, so the
+      // chat adopts the launch's spelling up front. Claude reads the plan's
+      // model directly and keeps the preset's id for display.
+      try {
+        const launch = resolveLaunchBrain(
+          { provider: effectiveProvider, presetId: requestedPresetId },
+          { writeConfig: false },
+        );
+        if (launch?.status === "ready" && launch.model.trim() && launch.model.trim() !== normalizedModel) {
+          normalizedModel = launch.model.trim();
+        }
+      } catch {
+        // The launch reports its own reason when the chat starts.
+      }
     }
 
     if (normalizedIdempotencyKey && sessionService.get(sessionId)) {
@@ -49057,6 +49131,7 @@ export function createAgentChatService(args: {
     const args = await materializePastedTextPrompt(expandedArgs);
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
+    await prepareSessionLaunch(managed);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
     const routableText = args.text.trim().length > 0

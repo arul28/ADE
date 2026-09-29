@@ -357,6 +357,7 @@ import type { createPrSummaryService } from "../../../../desktop/src/main/servic
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../../../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import { buildCliIdentityResumeMetadata } from "../../../../desktop/src/shared/cliLaunch";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -4594,7 +4595,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       toolType: (parsed.toolType ?? "shell") as TerminalToolType,
     });
   });
-  register("work.startCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+  register("work.startCliSession", { viewerAllowed: false, controllerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseStartCliSessionArgs(payload);
     const cols = clampCliDimension(parsed.cols, DEFAULT_CLI_COLS, 20, MAX_CLI_COLS);
     const rows = clampCliDimension(parsed.rows, DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS);
@@ -4613,6 +4614,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
+    if (provider !== "shell") {
+      await prepareHarnessLaunch({
+        provider,
+        presetId: parsed.presetId ?? null,
+        credentialId: parsed.credentialId ?? null,
+      });
+    }
     const trackedPreset = resolveTrackedCliPreset(provider, {
       presetId: parsed.presetId,
       credentialId: parsed.credentialId,

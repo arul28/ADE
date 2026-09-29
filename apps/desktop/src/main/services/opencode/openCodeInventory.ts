@@ -303,6 +303,35 @@ export function loadPersistedOpenCodeInventory(projectRoot: string): OpenCodePro
   return readPersistedInventoryFile().entries[projectRoot]?.providers ?? [];
 }
 
+/**
+ * The cached descriptor for one OpenCode provider's model, from any project's
+ * last inventory. Sync and disk-only on purpose: a launch resolves on the hot
+ * path and must not start an OpenCode server just to learn a context window.
+ */
+export function findPersistedOpenCodeModelDescriptor(providerId: string, modelId: string): ModelDescriptor | null {
+  const wantProvider = providerId.trim();
+  const wantModel = modelId.trim();
+  for (const entry of Object.values(readPersistedInventoryFile().entries)) {
+    const match = entry.registryDescriptors.find((descriptor) =>
+      descriptor.openCodeProviderId === wantProvider && descriptor.openCodeModelId === wantModel);
+    if (match) return match;
+  }
+  return null;
+}
+
+/** Every cached model an OpenCode provider serves, deduplicated across projects. */
+export function listPersistedOpenCodeProviderModels(providerId: string): ModelDescriptor[] {
+  const wantProvider = providerId.trim();
+  const seen = new Map<string, ModelDescriptor>();
+  for (const entry of Object.values(readPersistedInventoryFile().entries)) {
+    for (const descriptor of entry.registryDescriptors) {
+      if (descriptor.openCodeProviderId !== wantProvider || !descriptor.openCodeModelId) continue;
+      if (!seen.has(descriptor.openCodeModelId)) seen.set(descriptor.openCodeModelId, descriptor);
+    }
+  }
+  return [...seen.values()];
+}
+
 /** Test hook: point persistence at a temp file and drop the in-memory memo. */
 export function __setOpenCodeInventoryPersistencePathForTests(filePath: string | null): void {
   persistPathOverride = filePath;

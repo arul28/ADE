@@ -147,6 +147,11 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
+import type {
+  HarnessRouteCatalog,
+  HarnessRouteSource,
+  HarnessRouteTestResult,
+} from "../shared/harnessRoutes";
 import { isRemoteRuntimeEventCategory } from "../shared/types/remoteRuntime";
 import type {
   ApiCredentialGetArgs,
@@ -5188,6 +5193,17 @@ const adeBridge = {
             ipcRenderer.invoke(IPC.aiClearOpencodeProviderKey, args),
           ),
       ),
+    listHarnessRoutes: (pin?: OpenProjectBinding | null): Promise<HarnessRouteCatalog> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "listHarnessRoutes", {}, () =>
+        ipcRenderer.invoke(IPC.aiListHarnessRoutes),
+      ),
+    testHarnessRoute: (
+      args: { harness: string; source: HarnessRouteSource["source"]; model: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<HarnessRouteTestResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "testHarnessRoute", { args }, () =>
+        ipcRenderer.invoke(IPC.aiTestHarnessRoute, args),
+      ),
     refreshModelsDev: async (pin?: OpenProjectBinding | null): Promise<{ lastFetchedAt: number | null }> =>
       clearAround(
         () => aiStatusCache.clear(),
@@ -9929,24 +9945,26 @@ const adeBridge = {
         : ipcRenderer.invoke(IPC.apiCredentialsRemove, args),
   },
   proxy: {
-    status: (): Promise<SubscriptionProxyStatus> =>
-      callProjectRuntimeActionOr("proxy", "status", {}, () =>
+    // Pin-aware like `ai.*`: Settings shows one machine at a time, and a proxy
+    // call must reach the machine the page is showing, not the tab's binding.
+    status: (pin?: OpenProjectBinding | null): Promise<SubscriptionProxyStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "proxy", "status", {}, () =>
         ipcRenderer.invoke(IPC.proxyStatus),
       ),
-    ensureRunning: (): Promise<SubscriptionProxyStatus> =>
-      callProjectRuntimeActionOr("proxy", "ensureRunning", {}, () =>
+    ensureRunning: (pin?: OpenProjectBinding | null): Promise<SubscriptionProxyStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "proxy", "ensureRunning", {}, () =>
         ipcRenderer.invoke(IPC.proxyEnsureRunning),
       ),
-    signIn: (args: SubscriptionProxySignInArgs): Promise<SubscriptionProxySignInResult> =>
-      callProjectRuntimeActionOr("proxy", "signIn", { args }, () =>
+    signIn: (args: SubscriptionProxySignInArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxySignInResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "proxy", "signIn", { args }, () =>
         ipcRenderer.invoke(IPC.proxySignIn, args),
       ),
-    signOut: (args: SubscriptionProxySignOutArgs): Promise<SubscriptionProxyMutationResult> =>
-      callProjectRuntimeActionOr("proxy", "signOut", { args }, () =>
+    signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxyMutationResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "proxy", "signOut", { args }, () =>
         ipcRenderer.invoke(IPC.proxySignOut, args),
       ),
-    setDisabled: (args: SubscriptionProxySetDisabledArgs): Promise<SubscriptionProxyMutationResult> =>
-      callProjectRuntimeActionOr("proxy", "setDisabled", { args }, () =>
+    setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxyMutationResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
       ),
   },

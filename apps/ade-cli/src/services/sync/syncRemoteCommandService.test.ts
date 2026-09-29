@@ -158,6 +158,16 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("restricts credential-backed CLI launches to paired controllers", () => {
+    const { service } = createService();
+
+    expect(service.getDescriptor("work.startCliSession")?.policy).toEqual({
+      viewerAllowed: false,
+      controllerAllowed: true,
+      queueable: true,
+    });
+  });
+
   it("reads only valid CTO home records from the repository account scope", async () => {
     const accountSettingsStore = {
       get: vi.fn().mockReturnValue({ version: 2, deviceId: "device-1", name: "Old shape" }),

@@ -229,36 +229,6 @@ function AgentsTabContent() {
     );
   }, [location.pathname, navigate, searchParams]);
 
-  // Harnesses is the tab's second sub-view. It carries its own search param so
-  // the back button leaves it, and the manifest anchor still deeplinks to it.
-  const handleHarnessesChange = useCallback((next: boolean) => {
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete("provider");
-    if (next) nextParams.set("harnesses", "1");
-    else nextParams.delete("harnesses");
-    navigate(
-      {
-        pathname: location.pathname,
-        search: `?${nextParams.toString()}`,
-        hash: next ? `#${HARNESSES_ANCHOR}` : "",
-      },
-      { replace: true },
-    );
-  }, [location.pathname, navigate, searchParams]);
-
-  if (harnessesOpen) {
-    return (
-      <WebSettingsSection entryIds={["agents.harnesses"]}>
-        <ProvidersSection
-          providerParam={null}
-          onProviderChange={handleProviderChange}
-          harnessesParam
-          onHarnessesChange={handleHarnessesChange}
-        />
-      </WebSettingsSection>
-    );
-  }
-
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
@@ -274,8 +244,8 @@ function AgentsTabContent() {
           forceRefreshOnMount
           providerParam={null}
           onProviderChange={handleProviderChange}
-          harnessesParam={false}
-          onHarnessesChange={handleHarnessesChange}
+          // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
+          harnessesParam={harnessesOpen}
         />
       </WebSettingsSection>
       <WebSettingsSection entryIds={["agents.openai-key"]}>

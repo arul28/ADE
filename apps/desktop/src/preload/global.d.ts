@@ -1376,6 +1376,17 @@ declare global {
           providerId: string;
         }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
         refreshModelsDev: (pin?: OpenProjectBinding | null) => Promise<{ lastFetchedAt: number | null }>;
+        /** Every model a harness can reach outside its own sign-in (Custom providers). */
+        listHarnessRoutes: (pin?: OpenProjectBinding | null) => Promise<import("../shared/harnessRoutes").HarnessRouteCatalog>;
+        /** One-token live check of a harness + source + model; records the verdict for routing. */
+        testHarnessRoute: (
+          args: {
+            harness: string;
+            source: import("../shared/harnessRoutes").HarnessRouteSource["source"];
+            model: string;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/harnessRoutes").HarnessRouteTestResult>;
         onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         piLoginProviders: (pin?: OpenProjectBinding | null) => Promise<PiLoginProvider[]>;
         piLoginStart: (args: {
@@ -3336,11 +3347,11 @@ declare global {
         remove: (args: ApiCredentialRemoveArgs, pin?: OpenProjectBinding | null) => Promise<void>;
       };
       proxy?: {
-        status: () => Promise<SubscriptionProxyStatus>;
-        ensureRunning: () => Promise<SubscriptionProxyStatus>;
-        signIn: (args: SubscriptionProxySignInArgs) => Promise<SubscriptionProxySignInResult>;
-        signOut: (args: SubscriptionProxySignOutArgs) => Promise<SubscriptionProxyMutationResult>;
-        setDisabled: (args: SubscriptionProxySetDisabledArgs) => Promise<SubscriptionProxyMutationResult>;
+        status: (pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyStatus>;
+        ensureRunning: (pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyStatus>;
+        signIn: (args: SubscriptionProxySignInArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxySignInResult>;
+        signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
+        setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
       };
       providerInstances: {
         list: (

@@ -25,7 +25,7 @@ provider list — and appear as the first tab of every model picker.
 | Field | Meaning |
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
-| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
+| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`. |
@@ -116,6 +116,60 @@ the logo that says whose it is, so a one-click launch shows everything it is
 about to apply. The search box filters presets by name, harness, and model. An empty list points at Settings › Providers ›
 Custom.
 
+## Routes: any source in any harness
+
+Every harness speaks one or a few wire protocols (`anthropic`,
+`openai-chat`, `openai-responses`) and every source answers on one or a few
+endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
+
+- **native** — a harness's own account (a Claude account in Claude Code), or
+  an OpenCode sign-in inside OpenCode. No endpoint is involved.
+- **direct** — the harness and the model share a protocol, so the harness is
+  pointed straight at the source's endpoint (OpenCode Go's
+  `inference/go/anthropic` into Claude Code, DeepSeek's `/anthropic`).
+- **proxy** — no shared protocol; ADE's local CLIProxyAPI translates. ADE
+  writes one `ade-<source>` upstream per source (per credential for a key)
+  into the proxy's config, which hot-reloads, and the harness asks for the
+  model through that entry's prefix (`ade-opencode-go/glm-5.3`), so two
+  sources serving the same model id never mix. Removing a key drops its
+  upstream, so its secret does not outlive it there.
+- **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
+  their own sign-in; OpenCode Zen's free models only answer inside OpenCode).
+
+Protocol support is **per model**. OpenCode Go serves DeepSeek, Kimi K3, Qwen
+and MiniMax on its Anthropic endpoint, GLM, Hy, MiMo and LongCat on OpenAI chat
+only, and GPT/Grok on Responses only (measured 2026-09-29, seeded in
+`OPENCODE_GO_MODEL_PROTOCOLS`). A Test (below) overrides the seed: its verdict
+is saved in `<adeHome>/cache/harness-route-probes.json` and every launch reads
+it.
+
+OpenCode Go rejects any request without a stable `x-opencode-session`
+header. Claude Code gets it through `ANTHROPIC_CUSTOM_HEADERS`, Codex and Grok
+through `env_http_headers` bound to `ADE_ROUTE_SESSION_ID`. Harnesses that
+cannot set a header (Droid, Qwen) are sent through the proxy, whose
+per-harness upstream adds one.
+
+A plan built on an OpenCode OAuth token carries the token's expiry; a chat
+that outlives it resolves again and picks up the refreshed token.
+
+A route needs the proxy running before the synchronous resolver can point a
+harness at it, so every async launch entry (chat create and send, PTY create,
+CLI-from-chat, the brain's CLI and remote-launch actions) first calls
+`prepareHarnessLaunch`, which starts the proxy only when that is the one
+missing piece.
+
+### Ad-hoc routes
+
+A model picked in the composer's "Run in" view without a saved preset travels
+as a preset id of the form `route.<base64url(json)>` — the harness, the source
+reference and the model, never a secret. base64url passes the safe-identifier
+check every launch surface already applies to `presetId`, so an ad-hoc choice
+gets chat, CLI, resume, remote launch and sync with no new wire field. Its
+private config home lives under `provider-homes/route/<hash>/`, outside the
+preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
+removed, and removing any key removes them all (they are rebuilt on the next
+launch), because a Droid route home holds its key.
+
 ## Launching on a preset
 
 Selecting a preset returns its model id plus `presetId` on the picker's
@@ -138,7 +192,9 @@ ade new chat --mode cli --lane <lane> --provider claude --preset <preset-id>
 ade chat create --lane <lane> --provider claude --credential <credential-id>
 ```
 
-`--preset` and `--credential` are mutually exclusive. Agents discover what
+`--preset` and `--credential` are mutually exclusive. `--via <source>` with
+`--provider` and `--model` builds an ad-hoc route id (`ade harness routes
+--text` lists what each harness can reach; `ade harness test` checks one). Agents discover what
 exists through `ade chat models`, `ade providers accounts list`, or the
 `harnessPresets[]` and `providerAccounts[]` arrays on `ai.getStatus`; the
 `ade-harnesses` skill teaches the whole flow.
@@ -148,20 +204,20 @@ exists through `ade chat models`, `ade providers accounts list`, or the
 | Source | What the launch gets |
 |---|---|
 | `account` | The instance's config home as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. A Claude account cannot sign Codex in — that is what the subscription source is for. |
-| `key` | A config home ADE owns at `<adeHome>/provider-homes/preset/<presetId>/`, plus the per-harness variables below. |
+| `key` / `opencode` | The route's endpoint and token, per harness below. Harnesses that read a config file (Codex, Grok, Droid) get one in a home ADE owns at `<adeHome>/provider-homes/preset/<presetId>/`; Claude Code needs none and keeps the user's own config home, so their plugins, skills and MCP servers still load. The OpenCode token is read from OpenCode's store at launch, in the main process only. |
 | `subscription` | The proxy's connection, shaped per harness by `proxyEnv.ts`. The model becomes the proxy's `<prefix>/<model>` routing id. |
 
 ### What each harness accepts
 
 | Harness | Key | Subscription | Subagent model |
 |---|---|---|---|
-| Claude Code | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` (no `/v1` suffix). `ANTHROPIC_API_KEY=""` for an OpenRouter endpoint, which rejects a request carrying both an `x-api-key` and a bearer token. | Yes | Yes |
-| Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block with `env_key = "ADE_PRESET_OPENAI_API_KEY"`. `~/.codex/config.toml` is never touched. | Yes | No |
+| Claude Code | `ANTHROPIC_BASE_URL` (no `/v1`), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY=""` (never inherited — a shell key would reach another vendor as `x-api-key`), `ANTHROPIC_MODEL` and every tier (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) pinned to the route's model so background calls do not ask another vendor for Haiku, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the model's real limits. | Yes | Yes |
+| Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | No |
 | OpenCode | A provider block merged into the session's config, not an env var — OpenCode has no "use this key against this endpoint" variable. Needs an endpoint. | Yes | No |
 | Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `custom_models` written into its `.factory/settings.json`. | No | No |
-| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`. | No | No |
+| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | No | No |
 | Kimi | `MOONSHOT_API_KEY`. | No | No |
-| Grok | `XAI_API_KEY`. | No | No |
+| Grok | `GROK_HOME` at a preset-owned home whose `config.toml` defines `[model."<id>"]` with the route's `base_url`, `api_backend` (`messages`, `chat_completions` or `responses`), `env_key` and the session header. | Yes (via proxy) | No |
 | GitHub Copilot | `GITHUB_TOKEN`. | No | No |
 | Cursor | No. Cursor signs in from its own single-slot store, and a per-preset key would change every other Cursor session on the machine. | No | No |
 | Pi | No. Pi reads endpoints and model ids from its own `models.json`; add the provider in Pi instead. | No | No |
@@ -194,11 +250,19 @@ the moment it is used. The wizard says so at the point of the choice.
 
 ### The CLI gate
 
-In CLI mode a preset on **Grok**, **Cursor**, **Copilot** or **Kimi** launches
-the native CLI instead: those binaries take no key from the launch, and failing
-a launch to protect a capability that never existed there would remove a working
-session. The preset is dropped with the reason recorded. CLI-mode surfaces do
-not list presets at all, so the choice cannot be made and then ignored.
+In CLI mode a preset on **Cursor**, **Copilot** or **Kimi** launches the native
+CLI instead: those binaries take no key or endpoint from the launch, and
+failing a launch to protect a capability that never existed there would remove
+a working session. The preset is dropped with the reason recorded. CLI-mode
+surfaces list presets and routes for every other harness and show these three
+as unavailable with the reason, so the choice cannot be made and then ignored.
+
+### Running one outside ADE
+
+`ade harness env <preset-id|route-id> --text` prints the launch's exports
+(zsh/bash, or `--shell pwsh`) for `eval`, and the Copy launcher button builds
+the matching `claude --model …` / `codex -m …` command. The output contains the
+provider token and is never written anywhere by ADE.
 
 ## Source file map
 
@@ -252,7 +316,29 @@ not list presets at all, so the choice cannot be made and then ignored.
   — React state over the runtime catalog for one provider family, which is what
   the wizard's model select consumes instead of the picker's loading ladder.
 - `apps/desktop/src/main/services/chat/harnessPresetLaunch.ts` — the resolver:
-  one preset (or one stored key) in, one launch environment out.
+  one preset (or one stored key, or one ad-hoc route id) in, one launch
+  environment out.
+- `apps/desktop/src/shared/harnessRoutes.ts` — pure routing: harness
+  protocols, known source endpoints, the measured OpenCode Go protocol seed,
+  `resolveHarnessRoute`, and the `route.` preset-id codec.
+- `apps/desktop/src/main/services/chat/harnessRouteLaunch.ts` — carries a route
+  out: resolves the source's secret, applies the proxy decision, and writes the
+  per-harness endpoint env/config.
+- `apps/desktop/src/main/services/chat/harnessRouteCatalog.ts` — the
+  `ai.listHarnessRoutes` catalog and the `ai.harnessLaunchEnv` terminal
+  launcher (CTO-only and secret-bearing: its result holds the token).
+- `apps/desktop/src/main/services/chat/harnessRouteTest.ts` — the
+  `ai.testHarnessRoute` live check (CTO-only), which resolves the source
+  exactly as a launch does.
+- `apps/desktop/src/main/services/chat/harnessKeySourceLaunch.ts` — the plain
+  key table for keys that need no route: a bare provider-card key, and a
+  preset key on OpenCode, Kimi or Copilot.
+- `apps/desktop/src/main/services/chat/harnessRouteProbes.ts` — the persisted
+  per-model protocol verdicts.
+- `apps/desktop/src/main/services/chat/harnessLaunchPrepare.ts` — starts the
+  proxy before a launch whose route needs it.
+- `apps/ade-cli/src/services/proxy/cliProxyApiUpstreams.ts` — ADE's upstream
+  entries in the proxy config.
 - `apps/desktop/src/main/services/chat/harnessPresetConfigHomes.ts` — the
   per-preset and per-credential config homes the resolver hands a launch:
   creation, owner-only permissions (POSIX mode plus a Windows ACL), and the

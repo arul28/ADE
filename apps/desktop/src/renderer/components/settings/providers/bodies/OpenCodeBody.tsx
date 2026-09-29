@@ -83,7 +83,7 @@ function OpenCodeProviderCard({
 
 function TileStatusLine({ connected, modelCount }: { connected: boolean; modelCount?: number }) {
   const models = typeof modelCount === "number"
-    ? `${modelCount} model${modelCount === 1 ? "" : "s"}`
+    ? modelCount === 0 ? "No models" : `${modelCount} model${modelCount === 1 ? "" : "s"}`
     : null;
   if (!connected && !models) return null;
   return (
@@ -132,10 +132,7 @@ function OpenCodeHouseCard({
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.4 }}>
             {OPENCODE_HOUSE_BLURB[id]}
           </div>
-          <TileStatusLine
-            connected={connected}
-            modelCount={typeof provider.modelCount === "number" && provider.modelCount > 0 ? provider.modelCount : undefined}
-          />
+          <TileStatusLine connected={connected} modelCount={provider.modelCount} />
         </div>
       )}
     />
@@ -167,9 +164,13 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
             ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
             : needsModelLoad
               ? { color: COLORS.warning, label: "Load a model" }
-              : entry.blocker
-                ? { color: COLORS.warning, label: "Blocked" }
-                : { color: COLORS.warning, label: "Not detected" };
+              // A local server that simply is not running is not "blocked":
+              // start it and refresh. Blocked is kept for a real refusal.
+              : entry.health === "unreachable"
+                ? { color: COLORS.textMuted, label: "Not running" }
+                : entry.blocker
+                  ? { color: COLORS.warning, label: "Blocked" }
+                  : { color: COLORS.warning, label: "Not detected" };
           const loadedModels = entry.modelIds.slice(0, 4);
           const extraModelCount = Math.max(0, entry.modelIds.length - loadedModels.length);
           const message = entry.blocker
