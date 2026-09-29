@@ -1316,6 +1316,8 @@ Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operati
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
+Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo (see `docs/plans/unified-machines.md`), so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
+
 ## Mobile reachability
 
 iOS uses SSH only as an optional one-time pairing bootstrap. Routine mobile

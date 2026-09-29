@@ -1043,6 +1043,78 @@ describe("TopBar", () => {
     ).toBeDefined();
   });
 
+  it("keeps a remote project tab by falling back to a local checkout of the same repo", async () => {
+    // The reported bug: the user opens "ADE" from the recents card, which
+    // binds the reachable Mac Studio checkout (amber machine glyph). Removing
+    // that connection used to close the tab even though the same repo also
+    // exists at the local MacBook checkout, which the card offered as a second
+    // machine. The tab must fall back to it, not close the project.
+    const origin = "git@github.com:arul28/ADE.git";
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+      gitOriginUrl: origin,
+    };
+    const snapshot = makeRemoteConnectionSnapshot("studio");
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(snapshot);
+    (globalThis.window.ade.remoteRuntime.listTargets as any)
+      .mockResolvedValue([snapshot.connections[0]!.target]);
+    // The local checkout is a recent project, NOT an open tab — this is the
+    // difference from the open-local-root fallback covered above.
+    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
+      {
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+        exists: true,
+        lastOpenedAt: "2026-04-22T00:00:00.000Z",
+        laneCount: 3,
+        kind: "local",
+        gitOriginUrl: origin,
+      },
+    ]);
+    const switchProjectToPath = vi.fn(async () => undefined);
+    useAppStore.setState({
+      project: {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      },
+      projectBinding: binding,
+      projectHydrated: true,
+      showWelcome: false,
+      openRemoteProjectTabs: [binding],
+      openProjectTabRoots: [],
+      laneSelectionByProject: {
+        [binding.key]: { laneId: "lane-1", sessionId: "session-1" },
+      },
+      switchProjectToPath,
+    } as any);
+    vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+
+    renderTopBarWithRouter();
+    // The remote tab is live and bound to the Mac Studio.
+    await screen.findByLabelText("Machine: Mac Studio");
+    act(() => openConnectionsPanel("machines"));
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => {
+      expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
+    });
+    expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
+    expect(
+      useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
+    ).not.toContain(binding.key);
+    expect(useAppStore.getState().openProjectTabRoots).toContain(
+      "/Users/arul/ADE",
+    );
+  });
+
   it("opens mobile sync from a remote-bound project and reads the routed runtime status", async () => {
     vi.useFakeTimers();
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)

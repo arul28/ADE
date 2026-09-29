@@ -27,6 +27,10 @@ export type ProjectTabMachine = {
   isLocal: boolean;
   rootPath: string;
   displayName: string;
+  /** False only for a local checkout whose directory is known to be missing.
+   *  Remote machines report true without probing; their reachability is the
+   *  connection state, not the filesystem. */
+  exists: boolean;
   laneCount?: number;
   iconDataUrl?: string | null;
   /** Full binding when the location can be opened without first becoming a tab. */
@@ -50,6 +54,7 @@ function localMachine(tab: RecentProjectSummary): ProjectTabMachine {
     isLocal: true,
     rootPath: tab.rootPath,
     displayName: tab.displayName,
+    exists: tab.exists !== false,
     laneCount: tab.laneCount,
     binding: {
       kind: "local",
@@ -69,6 +74,7 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
     isLocal: false,
     rootPath: binding.rootPath,
     displayName: binding.displayName,
+    exists: true,
     iconDataUrl: binding.iconDataUrl,
     binding,
   };
@@ -210,6 +216,66 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
     group.machines.find((m) => m.bindingKey === group.activeBindingKey)
     ?? group.machines[0]
   );
+}
+
+/** Where a project tab moves when its machine is disconnected or removed. */
+export type ProjectTabFallback =
+  | { kind: "local"; rootPath: string }
+  | { kind: "remote"; binding: RemoteProjectTabBinding };
+
+/**
+ * A logical tab is a repo, so one machine going away is not a reason to close
+ * it: the tab falls back to another checkout of the same repo — the local
+ * checkout first (it needs no connection and is the tab's natural default),
+ * then a connected machine, then any other. `null` means the repo lives nowhere
+ * else and the tab must close.
+ */
+export function resolveProjectTabFallback(args: {
+  bindingKey: string;
+  groups: readonly ProjectTabGroup[];
+  openLocalRoots: readonly string[];
+  openRemoteBindingKeys: readonly string[];
+  connectedTargetIds: ReadonlySet<string>;
+  excludeTargetId: string;
+}): ProjectTabFallback | null {
+  const {
+    bindingKey,
+    groups,
+    openLocalRoots,
+    openRemoteBindingKeys,
+    connectedTargetIds,
+    excludeTargetId,
+  } = args;
+  const group = groups.find((candidate) =>
+    candidate.machines.some((machine) => machine.bindingKey === bindingKey),
+  );
+  if (!group) return null;
+  const others = group.machines.filter(
+    (machine) => machine.bindingKey !== bindingKey,
+  );
+  if (others.length === 0) return null;
+
+  const openRemoteKeys = new Set(openRemoteBindingKeys);
+  const isOpen = (machine: ProjectTabMachine) =>
+    machine.isLocal
+      ? openLocalRoots.includes(machine.rootPath)
+      : openRemoteKeys.has(machine.bindingKey);
+
+  const locals = others.filter(
+    (machine) => machine.isLocal && machine.exists && machine.rootPath,
+  );
+  const local = locals.find(isOpen) ?? locals[0];
+  if (local) return { kind: "local", rootPath: local.rootPath };
+
+  const remotes = others.filter(
+    (machine): machine is ProjectTabMachine & { binding: RemoteProjectTabBinding } =>
+      machine.binding?.kind === "remote" &&
+      machine.binding.targetId !== excludeTargetId,
+  );
+  const remote =
+    remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
+    remotes[0];
+  return remote ? { kind: "remote", binding: remote.binding } : null;
 }
 
 export type RecentProjectLocation = {
