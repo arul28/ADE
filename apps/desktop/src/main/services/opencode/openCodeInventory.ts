@@ -68,6 +68,16 @@ type CacheEntry = {
   error: string | null;
 };
 
+function selectableDescriptors(
+  entry: Pick<CacheEntry, "modelIds" | "registryDescriptors">,
+): ModelDescriptor[] {
+  const byId = new Map(entry.registryDescriptors.map((descriptor) => [descriptor.id, descriptor]));
+  return entry.modelIds.flatMap((id) => {
+    const descriptor = byId.get(id);
+    return descriptor ? [descriptor] : [];
+  });
+}
+
 let inventoryCache: CacheEntry | null = null;
 const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
 /**
@@ -770,13 +780,18 @@ export async function probeOpenCodeProviderInventory(args: {
         modelIds: cache.modelIds,
         providers: cache.providers,
         error: cache.error,
-        descriptors: cache.registryDescriptors,
+        descriptors: selectableDescriptors(cache),
       };
     }
     const persisted = readPersistedInventoryFile().entries[args.projectRoot];
     if (persisted && isUsable(persisted)) {
       const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
-      return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: hydrated.registryDescriptors };
+      return {
+        modelIds: hydrated.modelIds,
+        providers: hydrated.providers,
+        error: null,
+        descriptors: selectableDescriptors(hydrated),
+      };
     }
   }
 
@@ -854,7 +869,12 @@ export async function probeOpenCodeProviderInventory(args: {
         hydrated.error = message;
         hydrated.cachedAt = Date.now();
         hydrated.configFingerprint = fp;
-        return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: message, descriptors: hydrated.registryDescriptors };
+        return {
+          modelIds: hydrated.modelIds,
+          providers: hydrated.providers,
+          error: message,
+          descriptors: selectableDescriptors(hydrated),
+        };
       }
       replaceDynamicOpenCodeModelDescriptors([]);
       inventoryCache = {
@@ -887,19 +907,29 @@ export async function probeOpenCodeProviderInventory(args: {
 export function peekOpenCodeInventoryCache(args: {
   projectRoot: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
-}): { modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
+}): {
+  modelIds: string[];
+  providers: OpenCodeProviderInfo[];
+  error: string | null;
+  descriptors: ModelDescriptor[];
+} | null {
   const fp = fingerprintOpenCodeConfig(args.projectConfig);
   if (
     inventoryCache
     && inventoryCache.projectRoot === args.projectRoot
     && (inventoryCache.passiveConfigFingerprint === fp || inventoryCache.configFingerprint === fp)
   ) {
-    return { modelIds: inventoryCache.modelIds, providers: inventoryCache.providers, error: inventoryCache.error };
+    return {
+      modelIds: inventoryCache.modelIds,
+      providers: inventoryCache.providers,
+      error: inventoryCache.error,
+      descriptors: selectableDescriptors(inventoryCache),
+    };
   }
   const persisted = readPersistedInventoryFile().entries[args.projectRoot];
   if (!persisted || persisted.passiveConfigFingerprint !== fp) return null;
   const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
-  return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null };
+  return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: selectableDescriptors(hydrated) };
 }
 
 /**
