@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
+import { writeFileAtomic } from "../state/durableFile";
 import { isModelRegistrySnapshot, type ModelRegistrySnapshot } from "../../../shared/routerRegistry";
 
 const REFRESH_INTERVAL_MS = 12 * 3_600_000;
@@ -90,9 +91,10 @@ export function createModelRegistryStore(args: {
     cache = next;
     try {
       fs.mkdirSync(args.dir, { recursive: true });
-      const tmp = `${cachePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(next));
-      fs.renameSync(tmp, cachePath);
+      // The canonical atomic writer: it replaces the target through a rename
+      // (with the Windows EPERM/EACCES/EBUSY copy fallback) and names its temp
+      // file so a crashed write is swept by `cleanupAbandonedTempFiles`.
+      writeFileAtomic(cachePath, JSON.stringify(next));
     } catch (error) {
       args.logger?.warn("router.registry_cache_write_failed", { error: getErrorMessage(error) });
     }
