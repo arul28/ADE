@@ -24,6 +24,8 @@
  * object in memory.
  */
 
+import { openCodeHouseProviderName } from "./opencodeProviders";
+
 /** The harnesses a preset can name — the `AgentChatProvider` ids ADE can run. */
 export const HARNESS_PRESET_BODIES = [
   "claude",
@@ -65,9 +67,7 @@ export function harnessBodyLabel(body: string): string {
 /** A provider signed in inside OpenCode, by ADE's name for it. */
 export function openCodeSourceLabel(providerId: string): string {
   const id = providerId.trim();
-  if (id === "opencode-go") return "OpenCode Go";
-  if (id === "opencode") return "OpenCode Zen";
-  return id;
+  return openCodeHouseProviderName(id) ?? id;
 }
 
 /**

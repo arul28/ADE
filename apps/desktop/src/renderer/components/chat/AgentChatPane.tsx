@@ -3939,11 +3939,17 @@ export function AgentChatPane({
      rendered — the trigger reads the SESSION's presetId, not this. Cleared by
      any selection that names neither, so switching back to an ordinary model
      row cannot leave a stale preset attached to the next launch. */
-  const draftLaunchBrainRef = useRef<{ presetId?: string; credentialId?: string }>({});
+  /* The restored Custom pick, read once so the launch ref and the trigger's
+     state start from the same value (a remounted draft that shows a Custom
+     pick must also launch with it). */
+  const [restoredDraftPresetId] = useState<string | null>(() => readLastPresetSelection());
+  const draftLaunchBrainRef = useRef<{ presetId?: string; credentialId?: string }>(
+    restoredDraftPresetId ? { presetId: restoredDraftPresetId } : {},
+  );
   /* The same preset, held as state so the composer's model trigger can name it
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
-  const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(() => readLastPresetSelection());
+  const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
   // Root store: the preset list is account-scoped (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((s) => s.harnessPresets);
   /* The harness a draft's Custom pick runs in. A saved preset or an ad-hoc
@@ -9889,7 +9895,7 @@ export function AgentChatPane({
     );
     const provider: ChatRuntimeProviderKey = launchTarget?.harness ?? resolveChatRuntimeProvider(desc);
     const model = launchTarget
-      ? (provider === "opencode" ? launchTarget.launchModelId : launchTarget.model)
+      ? launchTarget.launchModelId
       : provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
     const sessionProfile = resolveChatSessionProfile();
     const nativeControlPayload = {
@@ -10797,7 +10803,7 @@ export function AgentChatPane({
           provider,
           permissionMode: cliPermissionModeFromNativeControls(provider, prepared.nativeControls),
           ...(cliSessionId ? { sessionId: cliSessionId } : {}),
-          model: provider === "opencode" ? launchTarget.launchModelId : launchTarget.model,
+          model: launchTarget.launchModelId,
           reasoningEffort,
           initialPrompt: cliPrompt,
           presetId: launchTarget.presetId,

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { OPENCODE_HOUSE_PROVIDER_IDS, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
 
 /**
  * Non-secret facts about the credentials in an OpenCode 2.0 store.
@@ -115,7 +116,7 @@ export type OpenCodeLaunchSecret = {
  */
 export function openCodeIntegrationForProvider(providerId: string): string {
   const id = providerId.trim();
-  return id === "opencode-go" ? "opencode" : id;
+  return openCodeSignInViaProvider(id) ?? id;
 }
 
 export function readOpenCodeLaunchSecret(
@@ -150,9 +151,12 @@ export function readOpenCodeLaunchSecret(
 /** OpenCode provider ids with a usable sign-in on this machine (no secrets). */
 export function readOpenCodeSignedInProviderIds(dbPath: string = resolveAdeOpenCodeDbPath()): string[] {
   const integrations = new Set(readOpenCodeCredentials(dbPath).map((row) => row.integrationId));
-  // OpenCode Go first: it is the flat subscription people route; Zen bills a
-  // separate balance that is often empty.
-  const ids = integrations.has("opencode") ? ["opencode-go", "opencode"] : [];
+  // The house services ride the opencode.ai sign-in. OpenCode Go first: it is
+  // the flat subscription people route; Zen bills a separate balance that is
+  // often empty.
+  const ids: string[] = integrations.has("opencode")
+    ? ["opencode-go", ...OPENCODE_HOUSE_PROVIDER_IDS.filter((id) => id !== "opencode-go")]
+    : [];
   for (const id of integrations) if (id !== "opencode") ids.push(id);
   return ids;
 }

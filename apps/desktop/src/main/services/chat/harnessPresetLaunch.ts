@@ -28,6 +28,7 @@
  */
 
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -64,6 +65,7 @@ import {
   buildCodexProxyConfigToml,
   credentialConfigHome,
   routeConfigHome,
+  pruneStaleRouteConfigHomes,
   type HarnessPresetOpenCodeProvider,
   presetConfigHome,
   pruneOrphanedPresetConfigHomes,
@@ -71,12 +73,19 @@ import {
   writeOpenCodePresetConfig,
 } from "./harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
-import { buildHarnessEndpointEnv, buildRouteLaunch } from "./harnessRouteLaunch";
+import { buildKeySourceLaunch, guardedPrivateHomeWrite } from "./harnessKeySourceLaunch";
+import {
+  buildRouteLaunch,
+  buildSubscriptionRouteLaunch,
+  type RouteLaunchResult,
+  type RouteReasonCode,
+} from "./harnessRouteLaunch";
 import {
   decodeRoutePresetId,
   harnessAcceptsRoutes,
-  HARNESS_ROUTE_PROTOCOLS,
   isRoutePresetId,
+  launchModelIdFor,
+  stripTrailingV1,
   type HarnessRoute,
 } from "../../../shared/harnessRoutes";
 
@@ -130,6 +139,14 @@ export type HarnessPresetLaunchPlan = {
   notes?: string[];
   /** How a key/OpenCode source reached the harness: direct, or via ADE's proxy. */
   route?: HarnessRoute;
+  /**
+   * When the plan's token stops working (an OpenCode OAuth login). A caller
+   * that caches the plan resolves again after this: on a proxied route that
+   * rewrites the proxy upstream with the refreshed token, which a running
+   * harness picks up on its next request. A direct route's running process
+   * keeps the token it started with until it restarts.
+   */
+  expiresAt?: number;
 };
 
 export type HarnessPresetLaunchUnsupported = {
@@ -138,6 +155,8 @@ export type HarnessPresetLaunchUnsupported = {
   provider: HarnessPresetBody | null;
   /** One sentence, shown to the user. The chat falls back to native sign-in. */
   unsupported: string;
+  /** Set when a caller can fix the cause itself (`harnessLaunchPrepare` starts the proxy). */
+  reasonCode?: RouteReasonCode;
 };
 
 export type HarnessPresetLaunchResult = HarnessPresetLaunchPlan | HarnessPresetLaunchUnsupported;
@@ -173,227 +192,8 @@ export type HarnessPresetLaunchDeps = {
   logger?: { warn: (message: string, meta?: Record<string, unknown>) => void } | null;
 };
 
-// ---------------------------------------------------------------------------
-// Key-source env, per harness
-// ---------------------------------------------------------------------------
-
-/** `https://openrouter.ai/api/v1` → `https://openrouter.ai/api`. */
-export function stripTrailingV1(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  return trimmed.endsWith("/v1") ? trimmed.slice(0, -3).replace(/\/+$/, "") : trimmed;
-}
-
-function isOpenRouterEndpoint(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false;
-  try {
-    return new URL(baseUrl).host.toLowerCase().endsWith("openrouter.ai");
-  } catch {
-    return baseUrl.toLowerCase().includes("openrouter.ai");
-  }
-}
-
-type KeySourceResult =
-  | {
-      status: "ready";
-      env: Record<string, string>;
-      codexConfigHome?: string;
-      openCodeProvider?: HarnessPresetOpenCodeProvider;
-      openCodeConfigPath?: string;
-      notes?: string[];
-    }
-  | { status: "unsupported"; unsupported: string };
-
-type PrivateHomeWriteResult<T> =
-  | { status: "ready"; value: T }
-  | { status: "unsupported"; unsupported: string };
-
-function guardedPrivateHomeWrite<T>(write: () => T): PrivateHomeWriteResult<T> {
-  try {
-    return { status: "ready", value: write() };
-  } catch (error) {
-    return {
-      status: "unsupported",
-      unsupported: error instanceof Error
-        ? error.message
-        : "This launch could not prepare its private provider home on this machine.",
-    };
-  }
-}
-
-/**
- * The whole per-harness key table, in one place.
- *
- * `configHomeId` is what the preset-owned directory is named after — a preset
- * id for a preset launch, the credential id for a bare provider-card key. Both
- * want the same isolation; neither may write into the user's own home.
- */
-export function buildKeySourceLaunch(args: {
-  harness: HarnessPresetBody;
-  credential: ApiCredentialSummary;
-  key: string;
-  adeHome: string;
-  configHomeId: string;
-  configHomeKind?: "preset" | "credential";
-  configHomeProvider?: string;
-  platform?: NodeJS.Platform;
-  aclRunner?: HarnessPrivateFileSecurity["aclRunner"];
-  currentWindowsUser?: string;
-  writeConfig?: boolean;
-}): KeySourceResult {
-  const {
-    harness,
-    credential,
-    key,
-    adeHome,
-    configHomeId,
-    configHomeKind = "preset",
-    configHomeProvider,
-    platform,
-    aclRunner,
-    currentWindowsUser,
-    writeConfig = true,
-  } = args;
-  const security: HarnessPrivateFileSecurity = {
-    platform,
-    aclRunner,
-    currentUser: currentWindowsUser,
-  };
-  const baseUrl = credential.baseUrl?.trim() || undefined;
-
-  // WHY the whole body is guarded: creating the private home and writing the
-  // harness's config file are filesystem operations, and a read-only ADE home,
-  // a locked Windows file, or a refused icacls used to escape as a throw. Chat
-  // and resume caught it and fell back to the harness's native sign-in, while
-  // the CLI and remote-sync launch paths hard-failed on the same disk — one
-  // fault, two behaviours. Returning `unsupported` makes every caller degrade
-  // the same way, which is rule 2 at the top of this file. Subscription-backed
-  // config writes use this exact guard below.
-  const build = (): KeySourceResult => {
-    const configHome = configHomeKind === "credential"
-      ? credentialConfigHome(adeHome, configHomeProvider ?? credential.provider, configHomeId)
-      : presetConfigHome(adeHome, configHomeId);
-    return buildKeySourceEnv({ harness, credential, key, baseUrl, configHome, security, writeConfig });
-  };
-  if (!writeConfig) return build();
-  const guarded = guardedPrivateHomeWrite(build);
-  return guarded.status === "ready" ? guarded.value : guarded;
-}
-
-/** The per-harness table itself. Throws are the caller's to convert. */
-function buildKeySourceEnv(args: {
-  harness: HarnessPresetBody;
-  credential: ApiCredentialSummary;
-  key: string;
-  baseUrl: string | undefined;
-  configHome: string;
-  security: HarnessPrivateFileSecurity;
-  writeConfig: boolean;
-}): KeySourceResult {
-  const { harness, credential, key, baseUrl, configHome, security, writeConfig } = args;
-  switch (harness) {
-    case "claude": {
-      if (writeConfig) ensurePrivateDirectory(configHome, security);
-      const env: Record<string, string> = {
-        CLAUDE_CONFIG_DIR: configHome,
-        ANTHROPIC_AUTH_TOKEN: key,
-      };
-      if (baseUrl) env.ANTHROPIC_BASE_URL = stripTrailingV1(baseUrl);
-      // OpenRouter rejects a request that carries both an `x-api-key` and a
-      // bearer token, and Claude Code sends `x-api-key` whenever
-      // ANTHROPIC_API_KEY is non-empty — including one inherited from the
-      // user's shell. Emptying it is the documented way to suppress the header.
-      if (isOpenRouterEndpoint(baseUrl)) env.ANTHROPIC_API_KEY = "";
-      return { status: "ready", env };
-    }
-    case "codex": {
-      if (writeConfig) {
-        ensurePrivateDirectory(configHome, security);
-        writePrivateFile(path.join(configHome, "config.toml"), buildCodexPresetConfigToml(baseUrl), security);
-      }
-      return {
-        status: "ready",
-        env: { CODEX_HOME: configHome, ADE_PRESET_OPENAI_API_KEY: key },
-        codexConfigHome: configHome,
-      };
-    }
-    case "opencode": {
-      if (!baseUrl) {
-        return {
-          status: "unsupported",
-          unsupported: "This OpenCode key has no endpoint, and OpenCode needs one to route a custom provider.",
-        };
-      }
-      const models = (credential.models ?? []).filter((model) => model.trim().length);
-      const id = credential.provider;
-      if (!isSafeIdentifier(id)) {
-        return {
-          status: "unsupported",
-          unsupported: "This OpenCode provider id is unsafe; use only letters, digits, dot, underscore, and dash.",
-        };
-      }
-      const openCodeProvider: HarnessPresetOpenCodeProvider = {
-        id,
-        block: {
-          npm: "@ai-sdk/openai-compatible",
-          name: credential.label?.trim() || id,
-          options: { baseURL: baseUrl, apiKey: key },
-          models: Object.fromEntries(models.map((model) => [model, {} as Record<string, never>])),
-        },
-      };
-      const openCodeConfigPath = writeConfig
-        ? writeOpenCodePresetConfig(configHome, openCodeProvider, security)
-        : path.join(configHome, "opencode.json");
-      return {
-        status: "ready",
-        env: { OPENCODE_CONFIG: openCodeConfigPath },
-        openCodeProvider,
-        openCodeConfigPath,
-        ...(models.length ? {} : {
-          notes: ["This OpenCode key declares no models, so only models OpenCode already knows are reachable."],
-        }),
-      };
-    }
-    case "droid": {
-      if (writeConfig) {
-        ensurePrivateDirectory(configHome, security);
-        writeDroidPresetSettings(configHome, credential, key, security);
-      }
-      return {
-        status: "ready",
-        env: { FACTORY_HOME_OVERRIDE: configHome, FACTORY_API_KEY: key },
-      };
-    }
-    case "qwen": {
-      const env: Record<string, string> = { OPENAI_API_KEY: key };
-      if (baseUrl) env.OPENAI_BASE_URL = baseUrl;
-      return { status: "ready", env };
-    }
-    case "kimi":
-      return { status: "ready", env: { MOONSHOT_API_KEY: key } };
-    case "grok":
-      return { status: "ready", env: { XAI_API_KEY: key } };
-    case "copilot":
-      return { status: "ready", env: { GITHUB_TOKEN: key } };
-    case "cursor":
-      // Cursor's SDK signs in from its own single-slot credential, not from an
-      // env var the launcher can set per chat. A per-preset key would have to
-      // overwrite that slot, which changes every other Cursor chat on the
-      // machine — a side effect no preset is allowed to have.
-      return {
-        status: "unsupported",
-        unsupported:
-          "Cursor signs in with one key at a time from its own store, so a preset cannot give it a different key.",
-      };
-    case "pi":
-      // Pi reads endpoints and model ids out of its own models.json. There is
-      // no env var, and rewriting that file would change every Pi chat.
-      return {
-        status: "unsupported",
-        unsupported:
-          "Pi reads its endpoints and model ids from its own models.json, so a preset key has nowhere to go. Add the provider in Pi instead.",
-      };
-  }
-}
+// The per-harness key table lives in `harnessKeySourceLaunch.ts`.
+export { buildKeySourceLaunch, stripTrailingV1 };
 
 // ---------------------------------------------------------------------------
 // The resolver
@@ -470,6 +270,9 @@ export function resolveHarnessPresetForLaunch(
         unsupported: "This model choice could not be read. Pick the model again.",
       };
     }
+    if (deps.writeConfig !== false) {
+      pruneStaleRouteConfigHomes(adeHome, { platform: deps.platform, logger: deps.logger });
+    }
     return resolveHarnessPresetPlan(routePreset, { ...deps, adeHome });
   }
   const presets = deps.readPresets?.() ?? readHarnessPresetsFromMachine(adeHome);
@@ -535,6 +338,32 @@ function isRouteHomeId(id: string): boolean {
   return /^r[0-9a-f]{16}$/.test(id);
 }
 
+/** The private config home a preset (or an ad-hoc route) launches in. */
+function configHomeFor(adeHome: string, preset: HarnessPreset): string {
+  return isRouteHomeId(preset.id) ? routeConfigHome(adeHome, preset.id) : presetConfigHome(adeHome, preset.id);
+}
+
+/**
+ * Mark a route's private home as in use. Stale route homes are pruned by the
+ * directory's mtime, which rewriting a file inside it does not change.
+ */
+function touchConfigHome(configHome: string, writeConfig: boolean): void {
+  if (!writeConfig) return;
+  try {
+    const now = new Date();
+    fs.utimesSync(configHome, now, now);
+  } catch {
+    // No home on disk (a Claude route writes none): nothing to keep alive.
+  }
+}
+
+/** Run a route build, turning a filesystem throw into `unsupported` when it writes. */
+function runRouteBuild(writeConfig: boolean, build: () => RouteLaunchResult): RouteLaunchResult {
+  if (!writeConfig) return build();
+  const guarded = guardedPrivateHomeWrite(build);
+  return guarded.status === "ready" ? guarded.value : guarded;
+}
+
 export function resolveHarnessPresetPlan(
   preset: HarnessPreset,
   deps: HarnessPresetLaunchDeps = {},
@@ -575,12 +404,16 @@ export function resolveHarnessPresetPlan(
     ...(subagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel } : {}),
   };
 
-  const claudeExtras = (): Pick<HarnessPresetLaunchPlan, "claudeAgents"> & { env: Record<string, string> } => {
+  // `modelPrefix` is set on a route translated through ADE's proxy, which only
+  // routes model ids that carry it — the subagent model and every pin too.
+  const claudeExtras = (modelPrefix = ""): Pick<HarnessPresetLaunchPlan, "claudeAgents"> & { env: Record<string, string> } => {
     if (harness !== "claude") return { env: {} };
-    const pins = resolveAgentPins(preset);
+    const pins = Object.fromEntries(
+      Object.entries(resolveAgentPins(preset)).map(([agent, model]) => [agent, `${modelPrefix}${model}`]),
+    ) as ReturnType<typeof resolveAgentPins>;
     const agents = buildClaudeBuiltinAgentOverrides(pins);
     return {
-      env: claudeSubagentEnv(subagentModel),
+      env: claudeSubagentEnv(subagentModel ? `${modelPrefix}${subagentModel}` : undefined),
       ...(Object.keys(agents).length ? { claudeAgents: agents } : {}),
     };
   };
@@ -645,7 +478,7 @@ export function resolveHarnessPresetPlan(
       // shape, which the route writer already knows; the proxy holds the login.
       const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
       const connection = readConnection(preset.source.provider);
-      if (!connection || ("reason" in connection && connection.reason === "proxy-stopped")) {
+      if (!connection || "reason" in connection) {
         return {
           status: "unsupported",
           presetId: preset.id,
@@ -653,39 +486,33 @@ export function resolveHarnessPresetPlan(
           unsupported: !connection
             ? "Sign-in through ADE's proxy is not available yet."
             : "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
+          ...(connection ? { reasonCode: "proxy-not-ready" as const } : {}),
         };
       }
-      const parts = connection as ProxySubscriptionConnectionParts;
       const subscriptionProvider = preset.source.provider;
-      const protocol = HARNESS_ROUTE_PROTOCOLS[harness][0]!;
-      const root = `http://127.0.0.1:${parts.port}`;
-      const configHome = isRouteHomeId(preset.id) ? routeConfigHome(adeHome, preset.id) : presetConfigHome(adeHome, preset.id);
-      const built = (() => {
-        const run = () => buildHarnessEndpointEnv({
-          harness,
-          protocol,
-          baseUrl: protocol === "anthropic" ? root : `${root}/v1`,
-          token: parts.apiKey,
-          model: `${parts.prefix}/${preset.model}`,
-          label: `${harnessBodyLabel(subscriptionProvider)} subscription`,
-          sessionHeader: null,
-          limits: {},
-          configHome,
-          writeConfig,
-          security,
-        });
-        if (!writeConfig) return run();
-        const guarded = guardedPrivateHomeWrite(run);
-        return guarded.status === "ready" ? guarded.value : guarded;
-      })();
+      const built = runRouteBuild(writeConfig, () => buildSubscriptionRouteLaunch({
+        harness,
+        provider: subscriptionProvider,
+        model: preset.model,
+        configHome: configHomeFor(adeHome, preset),
+        prefix: connection.prefix,
+        deps: { adeHome, writeConfig, security },
+      }));
       if (built.status === "unsupported") {
-        return { status: "unsupported", presetId: preset.id, provider: harness, unsupported: built.unsupported };
+        return {
+          status: "unsupported",
+          presetId: preset.id,
+          provider: harness,
+          unsupported: built.unsupported,
+          ...(built.reasonCode ? { reasonCode: built.reasonCode } : {}),
+        };
       }
+      touchConfigHome(configHomeFor(adeHome, preset), writeConfig);
       return {
         ...base,
         model: built.model,
         env: built.env,
-        route: { kind: "proxy", harnessProtocol: protocol, upstreamProtocol: subscriptionProvider === "claude" ? "anthropic" : "openai-responses", upstreamBaseUrl: "" },
+        route: built.route,
         ...(notes.length ? { notes } : {}),
       };
     }
@@ -705,6 +532,7 @@ export function resolveHarnessPresetPlan(
         presetId: preset.id,
         provider: harness,
         unsupported: "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
+        reasonCode: "proxy-not-ready",
       };
     }
     const parts = connection as ProxySubscriptionConnectionParts;
@@ -723,7 +551,9 @@ export function resolveHarnessPresetPlan(
         unsupported: "Sign-in through ADE's proxy is not available yet.",
       };
     }
-    const extras = claudeExtras();
+    // The proxy routes a subscription by its login's prefix, so a pinned
+    // subagent model and the built-in pins must carry it as the main model does.
+    const extras = claudeExtras(`${parts.prefix}/`);
     const env: Record<string, string> = { ...proxy.env, ...extras.env };
     const configureSubscriptionConfig = () => {
       let codexConfigHome: string | undefined;
@@ -797,62 +627,60 @@ export function resolveHarnessPresetPlan(
 
   if (preset.source.kind === "opencode" && harness === "opencode") {
     // OpenCode already holds this sign-in: the model is simply one of its own.
-    const providerId = preset.source.providerId.trim();
-    const model = preset.model.startsWith("opencode/") ? preset.model : `opencode/${providerId}/${preset.model}`;
     return {
       ...base,
-      model,
+      model: launchModelIdFor(harness, preset.source, preset.model),
       env: {},
       route: { kind: "native" },
       ...(notes.length ? { notes } : {}),
     };
   }
 
-  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && harness !== "opencode")) {
-    const configHome = isRouteHomeId(preset.id)
-      ? routeConfigHome(adeHome, preset.id)
-      : presetConfigHome(adeHome, preset.id);
-    const routed = (() => {
-      const run = () => buildRouteLaunch({
-        harness,
-        source: preset.source as Extract<HarnessPreset["source"], { kind: "key" } | { kind: "opencode" }>,
-        model: preset.model,
-        configHome,
-        ...(subagentModel ? { subagentModel } : {}),
-        deps: {
-          adeHome,
-          writeConfig,
-          security,
-          ...(deps.getCredentialSummary ? { getCredentialSummary: deps.getCredentialSummary } : {}),
-          ...(deps.getCredentialKey ? { getCredentialKey: deps.getCredentialKey } : {}),
-        },
-      });
-      if (!writeConfig) return run();
-      const guarded = guardedPrivateHomeWrite(run);
-      return guarded.status === "ready" ? guarded.value : guarded;
-    })();
+  // Kimi and Copilot take no endpoint, only their vendor's key in an env var,
+  // so their key presets keep the plain key path below rather than a route.
+  const routable = harnessAcceptsRoutes(harness) && harness !== "opencode";
+  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable)) {
+    const routeSource = preset.source;
+    const routed = runRouteBuild(writeConfig, () => buildRouteLaunch({
+      harness,
+      source: routeSource,
+      model: preset.model,
+      configHome: configHomeFor(adeHome, preset),
+      ...(subagentModel ? { subagentModel } : {}),
+      pinnedModels: harness === "claude" ? Object.values(resolveAgentPins(preset)) : [],
+      deps: {
+        adeHome,
+        writeConfig,
+        security,
+        ...(deps.getCredentialSummary ? { getCredentialSummary: deps.getCredentialSummary } : {}),
+        ...(deps.getCredentialKey ? { getCredentialKey: deps.getCredentialKey } : {}),
+      },
+    }));
     if (routed.status === "unsupported") {
       return {
         status: "unsupported",
         presetId: preset.id,
         provider: harness,
         unsupported: routed.unsupported,
+        ...(routed.reasonCode ? { reasonCode: routed.reasonCode } : {}),
       };
     }
-    const extras = claudeExtras();
+    const extras = claudeExtras(routed.modelPrefix);
+    touchConfigHome(configHomeFor(adeHome, preset), writeConfig);
     return {
       ...base,
       model: routed.model,
       env: { ...routed.env, ...extras.env },
       route: routed.route,
+      ...(routed.expiresAt ? { expiresAt: routed.expiresAt } : {}),
       ...(extras.claudeAgents ? { claudeAgents: extras.claudeAgents } : {}),
       ...(routed.codexConfigHome ? { codexConfigHome: routed.codexConfigHome } : {}),
       ...(notes.length || routed.notes?.length ? { notes: [...notes, ...(routed.notes ?? [])] } : {}),
     };
   }
 
-  // source.kind === "key" on OpenCode: OpenCode takes the key as a provider
-  // block in its own config rather than an endpoint in the environment.
+  // A key on OpenCode (a provider block in OpenCode's own config), or on Kimi
+  // or Copilot (the vendor key in the env var that CLI reads).
   if (preset.source.kind !== "key") {
     return {
       status: "unsupported",

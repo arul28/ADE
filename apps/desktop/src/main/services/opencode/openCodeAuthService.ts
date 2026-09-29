@@ -29,6 +29,7 @@ import {
 } from "./openCodeAuthMethods";
 import { buildOpenCodeConfig, sharedOpenCodeProfileFor } from "./openCodeConfig";
 import { readOpenCodeCredentials } from "./openCodeCredentials";
+import { forgetRouteSecretsForSource } from "../chat/harnessPresetConfigHomes";
 import {
   clearOpenCodeInventoryCache,
   lastOpenCodeDiscoveredLocalModels,
@@ -353,6 +354,11 @@ export async function clearProviderKey(
     return { ok: false, error: `ADE could not delete its stored key: ${error}` };
   }
   clearOpenCodeInventoryCache();
+  // Routes into other harnesses copied this sign-in's token into ADE's proxy
+  // config; they go with it. The opencode.ai sign-in also carries OpenCode Go.
+  for (const sourceKey of providerId === "opencode" ? ["opencode", "opencode-go"] : [providerId]) {
+    forgetRouteSecretsForSource(sourceKey);
+  }
   const credentialIds = readOpenCodeCredentials()
     .filter((credential) => credential.integrationId === providerId)
     .map((credential) => credential.id);

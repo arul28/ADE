@@ -19,16 +19,15 @@ import { resolveLaunchBrain } from "./harnessPresetLaunch";
 
 type ProxyStarter = () => Promise<unknown>;
 
+// Registered once per process by whichever process owns the proxy service:
+// desktop main (`main.ts`) and every project runtime in the brain
+// (`bootstrap.ts`). They all point at the same machine-level proxy.
 let proxyStarter: ProxyStarter | null = null;
 
 export function setHarnessProxyStarter(starter: ProxyStarter | null): void {
   proxyStarter = starter;
 }
 
-/** Reasons the resolver gives when the only missing piece is a running proxy. */
-function isProxyNotReady(reason: string): boolean {
-  return /ADE's proxy (is not running|has not written its config|has no connection key)|Sign-in through ADE's proxy is stopped/.test(reason);
-}
 
 /**
  * Start ADE's proxy when this launch needs it. Returns true when it started it
@@ -45,14 +44,14 @@ export async function prepareHarnessLaunch(args: {
   const credentialId = args.credentialId?.trim() || null;
   if (!presetId && !credentialId) return false;
   if (!proxyStarter) return false;
-  let reason: string | null = null;
+  let needsProxy = false;
   try {
     const dry = resolveLaunchBrain({ provider: args.provider, presetId, credentialId }, { writeConfig: false });
-    reason = dry?.status === "unsupported" ? dry.unsupported : null;
+    needsProxy = dry?.status === "unsupported" && dry.reasonCode === "proxy-not-ready";
   } catch {
     return false;
   }
-  if (!reason || !isProxyNotReady(reason)) return false;
+  if (!needsProxy) return false;
   try {
     await proxyStarter();
     return true;

@@ -1,12 +1,13 @@
 import fs from "node:fs";
-import path from "node:path";
 
 import {
+  CLI_PROXY_API_UPSTREAM_SECTIONS,
   readCliProxyApiConfig,
   writeCliProxyApiConfig,
   type CliProxyApiConfig,
 } from "./cliProxyApiConfig";
 import type { PrivateFileSecurityOptions } from "../../lib/trustedWindowsTools";
+import type { RouteProtocol } from "../../../../desktop/src/shared/harnessRoutes";
 
 /**
  * Upstreams ADE adds to its local CLIProxyAPI for routes that need translation.
@@ -14,29 +15,35 @@ import type { PrivateFileSecurityOptions } from "../../lib/trustedWindowsTools";
  * A harness that cannot speak a model's protocol directly (Claude Code on an
  * OpenAI-chat-only model, Codex on an Anthropic-only one) is pointed at the
  * proxy instead. The proxy needs to know the real endpoint and key, and that
- * lives here: one entry per source, named `ade-…`, written into the proxy's
- * own config file. CLIProxyAPI watches that file and reloads it live, so an
- * upsert takes effect without a restart.
+ * lives here: one entry per source (per credential for a key), named `ade-…`,
+ * written into the proxy's own config file. CLIProxyAPI watches that file and
+ * reloads it live, so an upsert takes effect without a restart.
  *
- * Only entries marked with `ade-id` (or, for OpenAI-compatible entries, a
- * `name` starting with {@link ADE_UPSTREAM_PREFIX}) are ADE's; anything else in
- * those sections is left exactly as found.
+ * Each entry routes by its own prefix — the harness asks for
+ * `ade-opencode-go/glm-5.3` — so two sources that serve the same model id can
+ * run side by side without the proxy mixing their requests.
  *
- * WHY no routing prefix: ADE runs the proxy with `force-model-prefix`, under
- * which an unprefixed request only reaches credentials that have no prefix. A
- * routed chat asks for the model by its real id (`glm-5.3`) — Codex alone
- * re-sends `session.model` from twenty places — so ADE's entries are left
- * unprefixed and a model id is owned by exactly one ADE entry at a time.
+ * Only entries marked `ade-id` are ADE's; anything else in those sections is
+ * left exactly as found.
  */
 
 export const ADE_UPSTREAM_PREFIX = "ade-";
 
-export type ProxyUpstreamProtocol = "anthropic" | "openai-chat" | "openai-responses";
+/**
+ * The upstream id for one source (`routeSourceKey`: `opencode-go`, or
+ * `deepseek:default` for a key). One function, so the launch that writes an
+ * entry and the key removal that drops it always agree on its name.
+ */
+export function adeUpstreamId(sourceKey: string): string {
+  return `${ADE_UPSTREAM_PREFIX}${sourceKey.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+}
+
+type UpstreamSection = (typeof CLI_PROXY_API_UPSTREAM_SECTIONS)[number];
 
 export type ProxyUpstream = {
-  /** Stable id naming the source (`ade-opencode-go`). Not a routing prefix. */
+  /** Stable id naming the source; also the routing prefix. */
   id: string;
-  protocol: ProxyUpstreamProtocol;
+  protocol: RouteProtocol;
   /** Anthropic: API root without `/v1`. OpenAI: base including `/v1`. */
   baseUrl: string;
   apiKey: string;
@@ -49,7 +56,7 @@ export type ProxyUpstream = {
   models: Array<{ name: string; contextWindow?: number }>;
 };
 
-const SECTION_FOR_PROTOCOL: Record<ProxyUpstreamProtocol, "openai-compatibility" | "claude-api-key" | "codex-api-key"> = {
+const SECTION_FOR_PROTOCOL: Record<RouteProtocol, UpstreamSection> = {
   "openai-chat": "openai-compatibility",
   anthropic: "claude-api-key",
   "openai-responses": "codex-api-key",
@@ -61,7 +68,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function entryId(entry: unknown): string | null {
   if (!isRecord(entry)) return null;
-  const id = typeof entry["ade-id"] === "string" ? entry["ade-id"] : typeof entry.name === "string" ? entry.name : null;
+  const id = typeof entry["ade-id"] === "string" ? entry["ade-id"] : null;
   return id && id.startsWith(ADE_UPSTREAM_PREFIX) ? id : null;
 }
 
@@ -90,6 +97,7 @@ function renderEntry(upstream: ProxyUpstream, keepNames: readonly string[]): Rec
     return {
       name: upstream.id,
       "ade-id": upstream.id,
+      prefix: upstream.id,
       "base-url": upstream.baseUrl,
       ...headers,
       "api-key-entries": [{ "api-key": upstream.apiKey }],
@@ -98,6 +106,7 @@ function renderEntry(upstream: ProxyUpstream, keepNames: readonly string[]): Rec
   }
   return {
     "ade-id": upstream.id,
+    prefix: upstream.id,
     "api-key": upstream.apiKey,
     "base-url": upstream.baseUrl,
     ...headers,
@@ -125,50 +134,52 @@ export function upsertCliProxyApiUpstream(
   const section = SECTION_FOR_PROTOCOL[upstream.protocol];
   const entries = Array.isArray(config[section]) ? [...(config[section] as unknown[])] : [];
   const index = entries.findIndex((entry) => entryId(entry) === upstream.id);
-  const keep = index >= 0 ? existingModelNames(entries[index]) : [];
-  const next = renderEntry(upstream, keep);
-  if (index >= 0) {
-    if (JSON.stringify(entries[index]) === JSON.stringify(next)) return true;
-    entries[index] = next;
-  } else {
-    entries.push(next);
-  }
+  const next = renderEntry(upstream, index >= 0 ? existingModelNames(entries[index]) : []);
+  if (index >= 0 && JSON.stringify(entries[index]) === JSON.stringify(next)) return true;
+  if (index >= 0) entries[index] = next;
+  else entries.push(next);
   config[section] = entries;
-  // One source lives in exactly one section — a source whose protocol changed
-  // (a probe corrected it) must not leave a stale twin elsewhere — and one
-  // unprefixed model id belongs to exactly one ADE entry, or the proxy would
-  // round-robin a model's requests across two different vendors.
-  const claimed = new Set(upstream.models.map((model) => model.name));
-  for (const other of Object.values(SECTION_FOR_PROTOCOL)) {
-    if (!Array.isArray(config[other])) continue;
-    config[other] = (config[other] as unknown[])
-      .filter((entry) => other === section || entryId(entry) !== upstream.id)
-      .map((entry) => {
-        const id = entryId(entry);
-        if (!id || id === upstream.id || !isRecord(entry) || !Array.isArray(entry.models)) return entry;
-        const models = entry.models.filter((model) => !(isRecord(model) && claimed.has(String(model.name))));
-        return models.length === entry.models.length ? entry : { ...entry, models };
-      });
+  // One source lives in exactly one section: a source whose protocol changed
+  // (a probe corrected it) must not leave a stale twin with the old key.
+  for (const other of CLI_PROXY_API_UPSTREAM_SECTIONS) {
+    if (other === section || !Array.isArray(config[other])) continue;
+    config[other] = (config[other] as unknown[]).filter((entry) => entryId(entry) !== upstream.id);
   }
   writeCliProxyApiConfig(configPath, config, security);
   return true;
 }
 
-/** Drop ADE upstreams whose id is not in `keepIds` (a removed key or sign-out). */
-export function pruneCliProxyApiUpstreams(
+/**
+ * Harnesses that cannot send OpenCode's session header get their own entry,
+ * `<id>+<harness>`, with a static one. `+` is a character `adeUpstreamId`
+ * never produces, so a variant can never be mistaken for another source's id
+ * (a credential named `default-droid` is `ade-openai-default-droid`).
+ */
+export const HEADERLESS_UPSTREAM_HARNESSES = ["droid", "qwen", "opencode"] as const;
+
+export function adeUpstreamVariantId(id: string, harness: string): string {
+  return `${id}+${harness}`;
+}
+
+/**
+ * Drop the ADE upstreams of one source — `id` and its per-harness variants —
+ * so a removed key's secret does not outlive it in the proxy's config.
+ */
+export function removeCliProxyApiUpstreams(
   configPath: string,
-  keepIds: ReadonlySet<string>,
+  id: string,
   security: PrivateFileSecurityOptions = {},
 ): void {
+  const ids = new Set([id, ...HEADERLESS_UPSTREAM_HARNESSES.map((harness) => adeUpstreamVariantId(id, harness))]);
   if (!fs.existsSync(configPath)) return;
   const config = readCliProxyApiConfig(configPath);
   let changed = false;
-  for (const section of Object.values(SECTION_FOR_PROTOCOL)) {
+  for (const section of CLI_PROXY_API_UPSTREAM_SECTIONS) {
     const entries = config[section];
     if (!Array.isArray(entries)) continue;
     const kept = entries.filter((entry) => {
-      const id = entryId(entry);
-      return id === null || keepIds.has(id);
+      const entryIdValue = entryId(entry);
+      return !(entryIdValue && ids.has(entryIdValue));
     });
     if (kept.length !== entries.length) {
       config[section] = kept;
@@ -176,8 +187,4 @@ export function pruneCliProxyApiUpstreams(
     }
   }
   if (changed) writeCliProxyApiConfig(configPath, config, security);
-}
-
-export function cliProxyApiConfigPath(adeHome: string): string {
-  return path.join(adeHome, "proxy", "config.yaml");
 }

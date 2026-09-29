@@ -24,9 +24,16 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
-import type { HarnessPresetBody, HarnessPresetSource } from "../../../shared/harnessPresets";
+import {
+  harnessBodyLabel,
+  openCodeSourceLabel,
+  type HarnessPresetAccountProvider,
+  type HarnessPresetBody,
+  type HarnessPresetSource,
+} from "../../../shared/harnessPresets";
 import {
   anthropicBaseWithV1,
   canonicalSourceProvider,
@@ -54,7 +61,8 @@ import {
   type PrivateFileSecurityOptions,
 } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import {
-  ADE_UPSTREAM_PREFIX,
+  adeUpstreamId,
+  adeUpstreamVariantId,
   upsertCliProxyApiUpstream,
 } from "../../../../../ade-cli/src/services/proxy/cliProxyApiUpstreams";
 import {
@@ -71,17 +79,42 @@ export const ROUTE_SESSION_ENV = "ADE_ROUTE_SESSION_ID";
 /** Env var a routed launch's bearer token lives in (Codex, Grok). */
 export const ROUTE_KEY_ENV = "ADE_PRESET_API_KEY";
 
+/**
+ * Why a route could not be built, when the caller can do something about it.
+ * `proxy-not-ready` is the one the async prepare step acts on (it starts the
+ * proxy); matching on the English message instead would silently stop working
+ * the first time the sentence was reworded.
+ */
+export type RouteReasonCode = "proxy-not-ready" | "sign-in-expired";
+
+export type RouteUnsupported = { status: "unsupported"; unsupported: string; reasonCode?: RouteReasonCode };
+
 export type RouteLaunchResult =
   | {
       status: "ready";
       env: Record<string, string>;
-      /** The model id the harness must request. Differs from the preset's only for a Grok route. */
+      /**
+       * The model id the harness must request. A proxied route names the model
+       * by its upstream (`ade-opencode-go/glm-5.3`); a Droid route by `custom:`.
+       */
       model: string;
       route: HarnessRoute;
       codexConfigHome?: string;
+      /** When the source's token stops working (an OpenCode OAuth login). */
+      expiresAt?: number;
+      /**
+       * Set on a proxied route. Any other model id the launch names (Claude's
+       * built-in agent pins) must carry it too, or the proxy cannot route it.
+       */
+      modelPrefix?: string;
       notes?: string[];
     }
-  | { status: "unsupported"; unsupported: string };
+  | RouteUnsupported;
+
+/** What the per-harness writer produces, before the route is attached. */
+type HarnessEndpointEnv =
+  | { status: "ready"; env: Record<string, string>; model: string; codexConfigHome?: string }
+  | RouteUnsupported;
 
 export type RouteLaunchDeps = {
   adeHome: string;
@@ -96,20 +129,35 @@ export type RouteLaunchDeps = {
   sessionId?: string;
 };
 
-type ResolvedSource = {
+export type ResolvedRouteSource = {
   sourceProvider: string;
+  /**
+   * The source's identity for per-source state (probe verdicts, the proxy
+   * upstream): the provider plus the credential for a key, since one provider
+   * can hold several keys pointing at different endpoints.
+   */
+  sourceKey: string;
   label: string;
   endpoints: RouteEndpoints;
   token: string;
+  /** Epoch ms after which the token is refused; null for a key that never expires. */
+  expiresAt: number | null;
   /** OpenCode's house gateway, which needs the session header. */
   needsSessionHeader: boolean;
 };
 
+/** Per-source identity for a key or OpenCode source, without reading a secret. */
+export function routeSourceKey(source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>): string {
+  return source.kind === "key"
+    ? `${source.provider.trim().toLowerCase()}:${source.credentialId.trim()}`
+    : source.providerId.trim();
+}
+
 /** The secret and endpoints behind a key or OpenCode source, on this machine. */
-function resolveSource(
+export function resolveRouteSource(
   source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>,
   deps: RouteLaunchDeps,
-): ResolvedSource | { unsupported: string } {
+): ResolvedRouteSource | { unsupported: string; reasonCode?: RouteReasonCode } {
   if (source.kind === "key") {
     const provider = source.provider.trim();
     const credentialId = source.credentialId.trim();
@@ -122,9 +170,11 @@ function resolveSource(
     if (!token) return { unsupported: "The API key this preset uses could not be read from this machine's key store." };
     return {
       sourceProvider: provider,
+      sourceKey: routeSourceKey(source),
       label: credential.label?.trim() || provider,
       endpoints: endpointsForSource({ provider, baseUrl: credential.baseUrl, protocol: credential.protocol }),
       token,
+      expiresAt: null,
       needsSessionHeader: isOpenCodeHouseSource(provider),
     };
   }
@@ -132,31 +182,27 @@ function resolveSource(
   if (!isSafeIdentifier(providerId)) {
     return { unsupported: "This preset names an unsafe OpenCode provider id." };
   }
+  const name = openCodeSourceLabel(providerId);
   const secret = (deps.readOpenCodeSecret ?? readOpenCodeLaunchSecret)(providerId);
   if (!secret) {
-    return {
-      unsupported: `${openCodeName(providerId)} is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode.`,
-    };
+    return { unsupported: `${name} is not signed in to OpenCode on this machine. Sign in under Providers › OpenCode.` };
   }
   const now = deps.now?.() ?? Date.now();
   if (secret.expiresAt !== null && secret.expiresAt <= now) {
     return {
-      unsupported: `The ${openCodeName(providerId)} sign-in expired. Open an OpenCode chat once so OpenCode refreshes it, or sign in again under Providers › OpenCode.`,
+      unsupported: `The ${name} sign-in expired. Open an OpenCode chat once so OpenCode refreshes it, or sign in again under Providers › OpenCode.`,
+      reasonCode: "sign-in-expired",
     };
   }
   return {
     sourceProvider: providerId,
-    label: openCodeName(providerId),
+    sourceKey: routeSourceKey(source),
+    label: name,
     endpoints: KNOWN_SOURCE_ENDPOINTS[canonicalSourceProvider(providerId)] ?? {},
     token: secret.token,
+    expiresAt: secret.expiresAt,
     needsSessionHeader: isOpenCodeHouseSource(providerId),
   };
-}
-
-function openCodeName(providerId: string): string {
-  if (providerId === "opencode-go") return "OpenCode Go";
-  if (providerId === "opencode") return "OpenCode Zen";
-  return providerId;
 }
 
 export type RouteModelLimits = { contextWindow?: number; maxOutputTokens?: number };
@@ -197,20 +243,52 @@ const HEADER_CAPABLE: ReadonlySet<HarnessPresetBody> = new Set(["claude", "codex
  * prepare step starts it before a launch; a caller that skipped it gets a
  * reason instead of a request to a dead port.
  */
+type ProxyTarget = {
+  protocol: RouteProtocol;
+  baseUrl: string;
+  token: string;
+  model: string;
+  /** Set on a proxied route: every model the harness names goes through this prefix. */
+  modelPrefix?: string;
+};
+
+const PROXY_NOT_READY: RouteUnsupported = {
+  status: "unsupported",
+  unsupported: "ADE's proxy is not running. It starts on demand; try the launch again.",
+  reasonCode: "proxy-not-ready",
+};
+
+/** The harness side of the proxy: its local endpoint in the harness's protocol. */
+function proxyEndpointFor(
+  harnessProtocol: RouteProtocol,
+  deps: RouteLaunchDeps,
+): (ProxyEndpointParts & { baseUrl: string }) | RouteUnsupported {
+  const readEndpoint = deps.readProxyEndpoint ?? defaultReadProxyEndpoint(deps.adeHome);
+  const endpoint = readEndpoint();
+  if (!endpoint || "reason" in endpoint) return PROXY_NOT_READY;
+  const root = `http://127.0.0.1:${endpoint.port}`;
+  return { ...endpoint, baseUrl: harnessProtocol === "anthropic" ? root : `${root}/v1` };
+}
+
 function proxyTarget(args: {
   harness: HarnessPresetBody;
   route: Extract<HarnessRoute, { kind: "proxy" }>;
-  source: ResolvedSource;
+  source: ResolvedRouteSource;
   model: string;
+  /** Further models the launch asks for (a pinned subagent model, built-in agent pins). */
+  extraModels: readonly string[];
   limits: RouteModelLimits;
   deps: RouteLaunchDeps;
-}): { protocol: RouteProtocol; baseUrl: string; token: string } | { unsupported: string } {
-  const readEndpoint = args.deps.readProxyEndpoint ?? defaultReadProxyEndpoint(args.deps.adeHome);
-  const endpoint = readEndpoint();
-  if (!endpoint) return { unsupported: "ADE's proxy has no connection key yet. Start the proxy and try again." };
-  if ("reason" in endpoint) return { unsupported: "ADE's proxy is not running. It starts on demand; try the launch again." };
+}): ProxyTarget | RouteUnsupported {
+  const endpoint = proxyEndpointFor(args.route.harnessProtocol, args.deps);
+  if ("status" in endpoint) return endpoint;
   const headerCapable = HEADER_CAPABLE.has(args.harness);
-  const upstreamId = `${ADE_UPSTREAM_PREFIX}${safeSegment(args.source.sourceProvider)}${headerCapable ? "" : `-${args.harness}`}`;
+  // One entry per source — the credential is part of the id, so two keys of
+  // one provider never share (or overwrite) an entry — routed by prefix, so
+  // two sources serving the same model id never share one either.
+  const upstreamId = headerCapable
+    ? adeUpstreamId(args.source.sourceKey)
+    : adeUpstreamVariantId(adeUpstreamId(args.source.sourceKey), args.harness);
   const headers: Record<string, string> = {};
   if (args.source.needsSessionHeader) {
     // A header-capable harness sends its own per-conversation id and the proxy
@@ -228,25 +306,26 @@ function proxyTarget(args: {
         baseUrl: args.route.upstreamBaseUrl,
         apiKey: args.source.token,
         headers,
-        models: [{ name: args.model, ...(args.limits.contextWindow ? { contextWindow: args.limits.contextWindow } : {}) }],
+        models: [
+          { name: args.model, ...(args.limits.contextWindow ? { contextWindow: args.limits.contextWindow } : {}) },
+          ...args.extraModels.filter((name) => name && name !== args.model).map((name) => ({ name })),
+        ],
       }, args.deps.security);
-      if (!written) return { unsupported: "ADE's proxy has not written its config yet. Try the launch again." };
+      if (!written) return PROXY_NOT_READY;
     } catch (error) {
       return {
+        status: "unsupported",
         unsupported: `ADE could not configure its proxy for this model: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }
-  const root = `http://127.0.0.1:${endpoint.port}`;
   return {
     protocol: args.route.harnessProtocol,
-    baseUrl: args.route.harnessProtocol === "anthropic" ? root : `${root}/v1`,
+    baseUrl: endpoint.baseUrl,
     token: endpoint.apiKey,
+    model: `${upstreamId}/${args.model}`,
+    modelPrefix: `${upstreamId}/`,
   };
-}
-
-function safeSegment(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
 }
 
 /**
@@ -259,7 +338,7 @@ function safeSegment(value: string): string {
  * — and takes the endpoint from environment variables, which outrank the
  * user's sign-in.
  */
-export function buildHarnessEndpointEnv(args: {
+function buildHarnessEndpointEnv(args: {
   harness: HarnessPresetBody;
   protocol: RouteProtocol;
   baseUrl: string;
@@ -274,12 +353,11 @@ export function buildHarnessEndpointEnv(args: {
   configHome: string;
   writeConfig: boolean;
   security: PrivateFileSecurityOptions;
-}): RouteLaunchResult | { status: "unsupported"; unsupported: string } {
+}): HarnessEndpointEnv {
   const { harness, protocol, baseUrl, token, model, limits } = args;
   switch (harness) {
     case "claude": {
       if (protocol !== "anthropic") break;
-      const tierModel = model;
       const env: Record<string, string> = {
         ANTHROPIC_BASE_URL: stripTrailingV1(baseUrl),
         ANTHROPIC_AUTH_TOKEN: token,
@@ -293,16 +371,21 @@ export function buildHarnessEndpointEnv(args: {
         // Another vendor has no Haiku/Sonnet/Opus, so every tier Claude Code
         // reaches for (titles, background work, the default subagent) is the
         // route's model unless the preset pins a subagent model itself.
-        env.ANTHROPIC_DEFAULT_OPUS_MODEL = tierModel;
-        env.ANTHROPIC_DEFAULT_SONNET_MODEL = tierModel;
-        env.ANTHROPIC_DEFAULT_HAIKU_MODEL = args.subagentModel ?? tierModel;
-        env.ANTHROPIC_SMALL_FAST_MODEL = args.subagentModel ?? tierModel;
-        if (!args.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = tierModel;
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+        env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+        env.ANTHROPIC_DEFAULT_HAIKU_MODEL = args.subagentModel ?? model;
+        env.ANTHROPIC_SMALL_FAST_MODEL = args.subagentModel ?? model;
+        if (!args.subagentModel) env.CLAUDE_CODE_SUBAGENT_MODEL = model;
       }
+      // Presets saved before routing kept Claude in a private config home, and
+      // Claude files a chat's transcript under `$CLAUDE_CONFIG_DIR/projects`.
+      // A home that already holds transcripts stays in use, so those chats
+      // still resume; new presets run in the user's own home.
+      if (fs.existsSync(path.join(args.configHome, "projects"))) env.CLAUDE_CONFIG_DIR = args.configHome;
       if (limits.contextWindow) env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(limits.contextWindow);
       if (limits.maxOutputTokens) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.min(limits.maxOutputTokens, 128_000));
       if (args.sessionHeader) env.ANTHROPIC_CUSTOM_HEADERS = `${OPENCODE_SESSION_HEADER}: ${args.sessionHeader}`;
-      return { status: "ready", env, model, route: { kind: "direct", protocol, baseUrl } };
+      return { status: "ready", env, model };
     }
     case "codex": {
       if (protocol !== "openai-responses") break;
@@ -317,7 +400,7 @@ export function buildHarnessEndpointEnv(args: {
           limits,
         }), args.security);
       }
-      return { status: "ready", env, model, route: { kind: "direct", protocol, baseUrl }, codexConfigHome: args.configHome };
+      return { status: "ready", env, model, codexConfigHome: args.configHome };
     }
     case "grok": {
       const env: Record<string, string> = { GROK_HOME: args.configHome, [ROUTE_KEY_ENV]: token };
@@ -333,7 +416,7 @@ export function buildHarnessEndpointEnv(args: {
           limits,
         }), args.security);
       }
-      return { status: "ready", env, model, route: { kind: "direct", protocol, baseUrl } };
+      return { status: "ready", env, model };
     }
     case "qwen": {
       if (protocol !== "openai-chat") break;
@@ -341,7 +424,6 @@ export function buildHarnessEndpointEnv(args: {
         status: "ready",
         env: { OPENAI_API_KEY: token, OPENAI_BASE_URL: baseUrl, OPENAI_MODEL: model },
         model,
-        route: { kind: "direct", protocol, baseUrl },
       };
     }
     case "droid": {
@@ -367,7 +449,6 @@ export function buildHarnessEndpointEnv(args: {
         status: "ready",
         env: { FACTORY_HOME_OVERRIDE: args.configHome, FACTORY_API_KEY: token },
         model: `custom:${model}`,
-        route: { kind: "direct", protocol, baseUrl },
       };
     }
     default:
@@ -458,20 +539,27 @@ export function buildRouteLaunch(args: {
   model: string;
   configHome: string;
   subagentModel?: string;
+  /** Claude built-in agent pins, so a proxied route registers them too. */
+  pinnedModels?: readonly string[];
   deps: RouteLaunchDeps;
 }): RouteLaunchResult {
   const { harness, deps } = args;
   const model = args.model.trim();
-  const resolved = resolveSource(args.source, deps);
-  if ("unsupported" in resolved) return { status: "unsupported", unsupported: resolved.unsupported };
+  const resolved = resolveRouteSource(args.source, deps);
+  if ("unsupported" in resolved) {
+    return {
+      status: "unsupported",
+      unsupported: resolved.unsupported,
+      ...(resolved.reasonCode ? { reasonCode: resolved.reasonCode } : {}),
+    };
+  }
 
   const route = resolveHarnessRoute({
     harness,
     source: args.source,
     modelId: model,
     endpoints: resolved.endpoints,
-    catalogPackage: null,
-    probe: readRouteProbe(deps.adeHome, resolved.sourceProvider, model),
+    probe: readRouteProbe(deps.adeHome, resolved.sourceKey, model),
   });
   if (route.kind === "impossible") return { status: "unsupported", unsupported: route.reason };
   if (route.kind === "native") return { status: "unsupported", unsupported: "This source signs its own harness in." };
@@ -479,7 +567,7 @@ export function buildRouteLaunch(args: {
   const limits = lookupRouteModelLimits(resolved.sourceProvider, model);
   const sessionId = deps.sessionId ?? randomUUID();
   const needsProxyForHeader = resolved.needsSessionHeader && !HEADER_CAPABLE.has(harness);
-  let target: { protocol: RouteProtocol; baseUrl: string; token: string };
+  let target: ProxyTarget;
   let effectiveRoute: HarnessRoute = route;
   if (route.kind === "proxy" || needsProxyForHeader) {
     const proxyRoute: Extract<HarnessRoute, { kind: "proxy" }> = route.kind === "proxy"
@@ -490,12 +578,20 @@ export function buildRouteLaunch(args: {
         upstreamProtocol: route.protocol,
         upstreamBaseUrl: route.baseUrl,
       };
-    const viaProxy = proxyTarget({ harness, route: proxyRoute, source: resolved, model, limits, deps: { ...deps, sessionId } });
-    if ("unsupported" in viaProxy) return { status: "unsupported", unsupported: viaProxy.unsupported };
+    const viaProxy = proxyTarget({
+      harness,
+      route: proxyRoute,
+      source: resolved,
+      model,
+      extraModels: [...(args.subagentModel ? [args.subagentModel] : []), ...(args.pinnedModels ?? [])],
+      limits,
+      deps: { ...deps, sessionId },
+    });
+    if ("status" in viaProxy) return viaProxy;
     target = viaProxy;
     effectiveRoute = proxyRoute;
   } else {
-    target = { protocol: route.protocol, baseUrl: route.baseUrl, token: resolved.token };
+    target = { protocol: route.protocol, baseUrl: route.baseUrl, token: resolved.token, model };
   }
 
   const security = deps.security ?? {};
@@ -504,17 +600,63 @@ export function buildRouteLaunch(args: {
     protocol: target.protocol,
     baseUrl: target.baseUrl,
     token: target.token,
-    model,
+    model: target.model,
     label: resolved.label,
     sessionHeader: resolved.needsSessionHeader ? `ade-${sessionId}` : null,
     limits,
     firstPartyAnthropic: canonicalSourceProvider(resolved.sourceProvider) === "anthropic"
       && effectiveRoute.kind === "direct",
-    ...(args.subagentModel ? { subagentModel: args.subagentModel } : {}),
+    ...(args.subagentModel ? { subagentModel: `${target.modelPrefix ?? ""}${args.subagentModel}` } : {}),
     configHome: args.configHome,
     writeConfig: deps.writeConfig !== false,
     security,
   });
   if (built.status === "unsupported") return built;
-  return { ...built, route: effectiveRoute };
+  return {
+    ...built,
+    route: effectiveRoute,
+    ...(resolved.expiresAt !== null ? { expiresAt: resolved.expiresAt } : {}),
+    ...(target.modelPrefix ? { modelPrefix: target.modelPrefix } : {}),
+  };
+}
+
+/**
+ * A Claude or Codex subscription (held by ADE's proxy) in a harness that takes
+ * an endpoint of its own shape — Grok, Droid, Qwen. Claude, Codex and OpenCode
+ * keep their dedicated subscription path in `harnessPresetLaunch.ts`.
+ */
+export function buildSubscriptionRouteLaunch(args: {
+  harness: HarnessPresetBody;
+  provider: HarnessPresetAccountProvider;
+  model: string;
+  configHome: string;
+  /** The proxy login's routing prefix. */
+  prefix: string;
+  deps: RouteLaunchDeps;
+}): RouteLaunchResult {
+  const route = resolveHarnessRoute({
+    harness: args.harness,
+    source: { kind: "subscription", provider: args.provider },
+    modelId: args.model,
+  });
+  if (route.kind !== "proxy") {
+    return { status: "unsupported", unsupported: route.kind === "impossible" ? route.reason : "This subscription cannot run here." };
+  }
+  const endpoint = proxyEndpointFor(route.harnessProtocol, args.deps);
+  if ("status" in endpoint) return endpoint;
+  const built = buildHarnessEndpointEnv({
+    harness: args.harness,
+    protocol: route.harnessProtocol,
+    baseUrl: endpoint.baseUrl,
+    token: endpoint.apiKey,
+    model: `${args.prefix}/${args.model.trim()}`,
+    label: `${harnessBodyLabel(args.provider)} subscription`,
+    sessionHeader: null,
+    limits: {},
+    configHome: args.configHome,
+    writeConfig: args.deps.writeConfig !== false,
+    security: args.deps.security ?? {},
+  });
+  if (built.status === "unsupported") return built;
+  return { ...built, route };
 }

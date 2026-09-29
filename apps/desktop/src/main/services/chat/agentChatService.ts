@@ -9972,6 +9972,7 @@ export function createAgentChatService(args: {
    * fallback, and the notice tells the user which capability was dropped.
    */
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
+  const launchPlanNoticeBySession = new Map<string, string>();
 
   const resolveSessionLaunchPlan = (managed: ManagedChatSession): HarnessPresetLaunchPlan | null => {
     const presetId = managed.session.presetId?.trim() ?? "";
@@ -9979,7 +9980,10 @@ export function createAgentChatService(args: {
     if (!presetId && !credentialId) return null;
     const cacheKey = `${managed.session.provider} ${presetId} ${credentialId}`;
     const cached = sessionLaunchPlanCache.get(managed.session.id);
-    if (cached && cached.key === cacheKey) return cached.plan;
+    // A plan whose token expired (an OpenCode OAuth login) is resolved again,
+    // which reads the refreshed token and rewrites the proxy upstream with it.
+    const expired = cached?.plan?.expiresAt !== undefined && cached.plan.expiresAt <= Date.now() + 60_000;
+    if (cached && cached.key === cacheKey && !expired) return cached.plan;
     let plan: HarnessPresetLaunchPlan | null = null;
     try {
       const result = resolveLaunchBrain({
@@ -9997,14 +10001,23 @@ export function createAgentChatService(args: {
         // Said in the chat, not only the log: the turn now runs on the
         // harness's own sign-in, and a model another vendor serves will not
         // exist there, so the user needs the real reason next to the failure.
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "warning",
-          severity: "warning",
-          message: `This chat's custom provider could not be used, so it runs on ${managed.session.provider === "claude" ? "Claude Code" : managed.session.provider}'s own sign-in: ${result.unsupported}`,
-        });
+        // Once per reason: this resolver runs on every helper lookup too.
+        if (launchPlanNoticeBySession.get(managed.session.id) !== result.unsupported) {
+          launchPlanNoticeBySession.set(managed.session.id, result.unsupported);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: `This chat's custom provider could not be used, so it runs on ${managed.session.provider === "claude" ? "Claude Code" : managed.session.provider}'s own sign-in: ${result.unsupported}`,
+          });
+        }
+        // A reason the user can fix without touching the chat (the proxy
+        // starting, an OpenCode sign-in refreshed) is not remembered: the next
+        // turn resolves again and picks the route back up.
+        if (result.reasonCode) return null;
       } else {
         plan = result;
+        launchPlanNoticeBySession.delete(managed.session.id);
       }
     } catch (error) {
       logger.warn("agent_chat.harness_preset_resolve_failed", {
@@ -10026,7 +10039,8 @@ export function createAgentChatService(args: {
     const presetId = managed.session.presetId?.trim() ?? "";
     const credentialId = managed.session.credentialId?.trim() ?? "";
     if (!presetId && !credentialId) return;
-    if (sessionLaunchPlanCache.get(managed.session.id)?.plan) return;
+    const cachedPlan = sessionLaunchPlanCache.get(managed.session.id)?.plan;
+    if (cachedPlan && (cachedPlan.expiresAt === undefined || cachedPlan.expiresAt > Date.now() + 60_000)) return;
     const started = await prepareHarnessLaunch({
       provider: managed.session.provider,
       presetId,

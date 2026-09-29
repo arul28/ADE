@@ -21,6 +21,7 @@ import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCatalog";
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 import { PERMISSION_TRIGGER_CLASS } from "./PermissionModePicker";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
@@ -115,7 +116,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {claudeOpen ? (
-          <div className="absolute bottom-full left-0 z-[120] mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md">
+          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CLAUDE_PERMISSION_OPTIONS.map((option) => {
                 const active = option.value === claudeSelectionMode(nativeControls);
@@ -163,7 +164,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {codexOpen ? (
-          <div className="absolute bottom-full left-0 z-[120] mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md">
+          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CODEX_PERMISSION_PRESETS.map((option) => {
                 const active = preset === option.value;

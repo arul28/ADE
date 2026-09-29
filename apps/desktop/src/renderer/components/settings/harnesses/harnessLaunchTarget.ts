@@ -16,6 +16,7 @@ import {
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../../shared/harnessRoutes";
+import { encodeOpenCodeRegistryId } from "../../../../shared/modelRegistry";
 import { harnessModelLabel } from "./harnessModels";
 import { harnessShortLabel, launchModelIdFor } from "./harnessReach";
 
@@ -78,11 +79,11 @@ export function resolveHarnessLaunchTarget(
  */
 function routeModelLabel(source: HarnessPresetSource, model: string, catalogScopeKey?: string): string {
   if (source.kind === "opencode") {
-    const viaCatalog = harnessModelLabel(`opencode/${source.providerId}/${encodeURIComponent(model)}`, catalogScopeKey);
+    const viaCatalog = harnessModelLabel(launchModelIdFor("opencode", source, model), catalogScopeKey);
     if (!viaCatalog.startsWith("opencode/")) return viaCatalog;
   }
   if (source.kind === "key") {
-    const viaCatalog = harnessModelLabel(`opencode/${source.provider}/${encodeURIComponent(model)}`, catalogScopeKey);
+    const viaCatalog = harnessModelLabel(encodeOpenCodeRegistryId(source.provider, model), catalogScopeKey);
     if (!viaCatalog.startsWith("opencode/")) return viaCatalog;
   }
   return harnessModelLabel(model, catalogScopeKey);

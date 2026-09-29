@@ -19,6 +19,8 @@
  * lists reachable models from it.
  */
 
+import { encodeOpenCodeRegistryId } from "./modelRegistry";
+import { isOpenCodeHouseProvider } from "./opencodeProviders";
 import {
   HARNESS_PRESET_BODIES,
   type HarnessPresetBody,
@@ -131,8 +133,7 @@ export function canonicalSourceProvider(provider: string): string {
 
 /** OpenCode's own services, whose traffic needs a stable session header. */
 export function isOpenCodeHouseSource(provider: string): boolean {
-  const id = canonicalSourceProvider(provider);
-  return id === "opencode" || id === "opencode-go";
+  return isOpenCodeHouseProvider(canonicalSourceProvider(provider));
 }
 
 /**
@@ -150,7 +151,7 @@ export function endpointsForSource(args: {
   const baseUrl = args.baseUrl?.trim().replace(/\/+$/, "");
   if (baseUrl) {
     if (args.protocol === "anthropic") return { anthropic: stripTrailingV1(baseUrl) };
-    if (args.protocol === "openai-responses") return { "openai-responses": ensureTrailingV1Loose(baseUrl) };
+    if (args.protocol === "openai-responses") return { "openai-responses": baseUrl };
     if (args.protocol === "openai-compatible" || args.protocol === "openai-chat") return { "openai-chat": baseUrl };
     // No declared protocol: the endpoint is offered on every protocol, which
     // is how custom endpoints behaved before routing existed (Claude Code
@@ -177,9 +178,6 @@ export function anthropicBaseWithV1(root: string): string {
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 }
 
-function ensureTrailingV1Loose(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
-}
 
 // ---------------------------------------------------------------------------
 // Per-model protocol knowledge
@@ -222,16 +220,6 @@ export const OPENCODE_GO_MODEL_PROTOCOLS: Readonly<Record<string, readonly Route
   "grok-4.7": ["openai-responses"],
 };
 
-/** The protocol an OpenCode catalog `package` implies. */
-export function protocolForCatalogPackage(pkg: string | null | undefined): RouteProtocol | null {
-  const name = (pkg ?? "").trim().toLowerCase();
-  if (!name) return null;
-  if (name.endsWith("/anthropic")) return "anthropic";
-  if (name.endsWith("/openai")) return "openai-responses";
-  if (name.endsWith("openai-compatible")) return "openai-chat";
-  return null;
-}
-
 /**
  * Models a source only serves to one harness.
  *
@@ -250,22 +238,23 @@ export function modelProtocols(args: {
   sourceProvider: string;
   modelId: string;
   endpoints: RouteEndpoints;
-  catalogPackage?: string | null;
   probe?: RouteProbeVerdict | null;
 }): RouteProtocol[] {
   const served = ROUTE_PROTOCOLS.filter((protocol) => Boolean(args.endpoints[protocol]));
   const probe = args.probe ?? null;
   if (probe && Object.keys(probe).length > 0) {
-    const confirmed = served.filter((protocol) => probe[protocol] === true);
-    const unknown = served.filter((protocol) => probe[protocol] === undefined);
-    // A probe that confirmed nothing but left some protocols untested still
-    // lets the seed/catalog answer for those.
-    if (confirmed.length > 0) return confirmed;
-    if (unknown.length === 0) return [];
-    return modelProtocols({ ...args, probe: null, endpoints: pick(args.endpoints, unknown) });
+    // A probe answers only for the protocols it tried: a confirmed one is in,
+    // a refused one is out, and an untried one keeps whatever the seed says.
+    // (A Claude test of Go DeepSeek confirms Anthropic and must not take the
+    // Responses route away from Codex.)
+    const untested = served.filter((protocol) => probe[protocol] === undefined);
+    const fromSeed = untested.length
+      ? modelProtocols({ ...args, probe: null, endpoints: pick(args.endpoints, untested) })
+      : [];
+    return served.filter((protocol) => probe[protocol] === true || fromSeed.includes(protocol));
   }
   const provider = canonicalSourceProvider(args.sourceProvider);
-  if (provider === "opencode-go" || provider === "opencode") {
+  if (isOpenCodeHouseProvider(provider)) {
     // Zen serves the same model families through the same gateway, so Go's
     // measured table is the best answer for a Zen model of the same id.
     const seeded = OPENCODE_GO_MODEL_PROTOCOLS[args.modelId.trim()];
@@ -274,8 +263,6 @@ export function modelProtocols(args: {
     if (provider === "opencode" && /^claude-/i.test(args.modelId)) return served.filter((p) => p === "anthropic");
     if (provider === "opencode" && /^(gpt-|grok-|muse-)/i.test(args.modelId)) return served.filter((p) => p === "openai-responses");
   }
-  const fromPackage = protocolForCatalogPackage(args.catalogPackage);
-  if (fromPackage && served.includes(fromPackage)) return [fromPackage];
   return served;
 }
 
@@ -311,7 +298,6 @@ export function resolveHarnessRoute(args: {
   modelId: string;
   /** Required for `key`/`opencode` sources: where the source answers. */
   endpoints?: RouteEndpoints;
-  catalogPackage?: string | null;
   probe?: RouteProbeVerdict | null;
 }): HarnessRoute {
   const { harness, source } = args;
@@ -348,7 +334,6 @@ export function resolveHarnessRoute(args: {
     sourceProvider,
     modelId: args.modelId,
     endpoints,
-    catalogPackage: args.catalogPackage,
     probe: args.probe,
   });
   if (protocols.length === 0) {
@@ -378,9 +363,6 @@ export function resolveHarnessRoute(args: {
 /** Upstream protocols the proxy speaks, best first (chat translates most faithfully). */
 const PROXY_UPSTREAM_PREFERENCE: readonly RouteProtocol[] = ["openai-chat", "anthropic", "openai-responses"];
 
-export function routeIsUsable(route: HarnessRoute): boolean {
-  return route.kind !== "impossible";
-}
 
 // ---------------------------------------------------------------------------
 // Ad-hoc routes: a picker choice that is not a saved preset
@@ -519,7 +501,6 @@ export type HarnessRouteModel = {
   reasoningTiers?: string[];
   /** A live check's verdict, when one has run. */
   probe?: RouteProbeVerdict;
-  catalogPackage?: string;
 };
 
 /** One source (an OpenCode sign-in or a stored key) and the models it serves. */
@@ -538,6 +519,8 @@ export type HarnessRouteSource = {
 
 export type HarnessRouteCatalog = {
   sources: HarnessRouteSource[];
+  /** Set only when the caller asked about one harness (the CLI's text view). */
+  harness?: HarnessPresetBody;
   /** Whether ADE's proxy binary can run on this host (it downloads on first use). */
   proxyAvailable: boolean;
 };
@@ -559,7 +542,6 @@ export function routeForListedModel(
     source: source.source,
     modelId: model.id,
     endpoints: source.endpoints,
-    catalogPackage: model.catalogPackage ?? null,
     probe: model.probe ?? null,
   });
 }
@@ -573,3 +555,17 @@ export type HarnessRouteTestResult = {
   route: HarnessRoute["kind"] | null;
   error?: string;
 };
+
+/**
+ * The model id a launch passes for a harness + source + model. One rule, used
+ * by main and the renderer: OpenCode running one of its own sign-ins names the
+ * model by OpenCode's registry id (`opencode/<provider>/<model>`); every other
+ * pairing passes the source's own id unchanged.
+ */
+export function launchModelIdFor(harness: HarnessPresetBody, source: HarnessPresetSource, model: string): string {
+  const id = model.trim();
+  if (harness === "opencode" && source.kind === "opencode" && !id.startsWith("opencode/")) {
+    return encodeOpenCodeRegistryId(source.providerId, id);
+  }
+  return id;
+}

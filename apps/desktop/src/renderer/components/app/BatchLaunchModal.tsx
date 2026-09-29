@@ -417,7 +417,7 @@ export function BatchLaunchModal({
             ? {
               presetId: target.presetId,
               harness: target.harness,
-              model: target.harness === "opencode" ? target.launchModelId : target.model,
+              model: target.launchModelId,
             }
             : null,
         },

@@ -51,15 +51,6 @@ export type HarnessKeySource = {
   models?: string[];
 };
 
-/** One "borrow this subscription in another harness" row. */
-export type HarnessSubscriptionSource = {
-  kind: "subscription";
-  provider: HarnessPresetAccountProvider;
-  label: string;
-};
-
-export type HarnessModelSource = HarnessAccountSource | HarnessKeySource | HarnessSubscriptionSource;
-
 function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
   return {
     kind: "account",
@@ -188,15 +179,4 @@ export function readStoredKeySources(
       }),
     ),
   ];
-}
-
-/** Whether a stored source still points at something this machine has. */
-export function sourceMatchesRow(source: HarnessPresetSource, row: HarnessModelSource): boolean {
-  if (source.kind !== row.kind) return false;
-  if (source.kind === "account" && row.kind === "account") return source.instanceId === row.instanceId;
-  if (source.kind === "key" && row.kind === "key") {
-    return source.provider === row.provider && source.credentialId === row.credentialId;
-  }
-  if (source.kind === "subscription" && row.kind === "subscription") return source.provider === row.provider;
-  return false;
 }

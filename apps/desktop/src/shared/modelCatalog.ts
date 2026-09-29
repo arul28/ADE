@@ -114,6 +114,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   meta: "Meta",
   qwen: "Qwen",
   moonshot: "Moonshot",
+  moonshotai: "Moonshot",
+  zhipuai: "Zhipu",
+  togetherai: "Together",
   devin: "Devin",
 };
 

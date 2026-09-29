@@ -38,34 +38,11 @@ import {
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import {
-  buildHarnessLaunchEnv,
-  listHarnessRouteCatalog,
-  testHarnessRoute,
-} from "../chat/harnessRouteCatalog";
+import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
-import type { HarnessRouteSource } from "../../../shared/harnessRoutes";
-
-function requireHarnessRouteSource(value: unknown): HarnessRouteSource["source"] {
-  if (!value || typeof value !== "object") throw new Error("source is required.");
-  const raw = value as Record<string, unknown>;
-  if (raw.kind === "opencode" && typeof raw.providerId === "string" && raw.providerId.trim()) {
-    return { kind: "opencode", providerId: raw.providerId.trim() };
-  }
-  if (
-    raw.kind === "key"
-    && typeof raw.provider === "string" && raw.provider.trim()
-    && typeof raw.credentialId === "string" && raw.credentialId.trim()
-  ) {
-    return {
-      kind: "key",
-      provider: raw.provider.trim(),
-      credentialId: raw.credentialId.trim(),
-      label: typeof raw.label === "string" ? raw.label : raw.provider.trim(),
-    };
-  }
-  throw new Error("source must be an OpenCode sign-in or a stored key.");
-}
+import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
+import { isHarnessPresetBody } from "../../../shared/harnessPresets";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
@@ -2194,21 +2171,28 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     // Custom providers: every model a harness can reach outside its own
     // sign-in, a one-token live check, and the terminal launcher's env.
-    listHarnessRoutes: () => listHarnessRouteCatalog(),
-    testHarnessRoute: (args?: { harness?: string; source?: unknown; model?: string }) =>
-      testHarnessRoute({
-        harness: requireNonEmptyString(args?.harness, "harness"),
-        source: requireHarnessRouteSource(args?.source),
-        model: requireNonEmptyString(args?.model, "model"),
-      }),
-    harnessLaunchEnv: (args?: { presetId?: string; shell?: string }) =>
-      buildHarnessLaunchEnv(
+    listHarnessRoutes: (args?: { harness?: unknown }) => {
+      const catalog = listHarnessRouteCatalog();
+      // Echo a valid filter so a text formatter (`ade harness routes
+      // --harness claude`) can show just that harness; the catalog itself is
+      // harness-independent.
+      return isHarnessPresetBody(args?.harness) ? { ...catalog, harness: args.harness } : catalog;
+    },
+    testHarnessRoute: (args?: { harness?: unknown; source?: unknown; model?: unknown }) =>
+      testHarnessRoute({ harness: args?.harness, source: args?.source, model: args?.model }),
+    harnessLaunchEnv: async (args?: { presetId?: string; shell?: string }) => {
+      const presetId = requireNonEmptyString(args?.presetId, "presetId");
+      // A translated route needs ADE's proxy running before it can resolve,
+      // exactly as a chat or CLI launch does.
+      await prepareHarnessLaunch({ provider: "", presetId });
+      return buildHarnessLaunchEnv(
         {
-          presetId: requireNonEmptyString(args?.presetId, "presetId"),
+          presetId,
           ...(args?.shell === "pwsh" || args?.shell === "bash" || args?.shell === "zsh" ? { shell: args.shell } : {}),
         },
-        (presetId) => resolveHarnessPresetForLaunch(presetId),
-      ),
+        (id) => resolveHarnessPresetForLaunch(id),
+      );
+    },
     refreshModelsDev: async () => {
       try {
         await refreshModelsDevNow();

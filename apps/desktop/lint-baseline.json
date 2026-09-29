@@ -121,9 +121,6 @@
     "apps/desktop/src/renderer/components/shared/ModelPicker/ModelListRow.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/shared/SessionLaunchModelControls.tsx": {
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

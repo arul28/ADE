@@ -30,6 +30,7 @@ import {
   encodeRoutePresetId,
   harnessAcceptsRoutes,
   harnessRouteBlockedReason,
+  launchModelIdFor,
   resolveHarnessRoute,
   routeForListedModel,
   ROUTABLE_HARNESSES,
@@ -151,20 +152,8 @@ export function nativeModelsForProvider(
   return out;
 }
 
-/**
- * The id a launch passes for a model.
- *
- * OpenCode running one of its own sign-ins wants OpenCode's model id
- * (`opencode/<provider>/<model>`): that is simply OpenCode's native model.
- * Everything else takes the source's own id.
- */
-export function launchModelIdFor(harness: HarnessPresetBody, source: HarnessPresetSource, model: string): string {
-  const id = model.trim();
-  if (harness === "opencode" && source.kind === "opencode" && !id.startsWith("opencode/")) {
-    return `opencode/${source.providerId}/${id}`;
-  }
-  return id;
-}
+/** The id a launch passes for a model; owned by `shared/harnessRoutes.ts`. */
+export { launchModelIdFor };
 
 function accountProviderLabel(provider: HarnessPresetAccountProvider): string {
   return provider === "claude" ? "Claude" : "Codex";

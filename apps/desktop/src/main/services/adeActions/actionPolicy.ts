@@ -90,7 +90,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // answers "is a key configured and where from", never the key.
   // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
   // operator-only like the updater it pairs with.
-  ai: { only: ["acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
+  // (it is how `ade harness env` runs a custom provider in the user's own
+  // terminal), and `testHarnessRoute` spends the user's key on a live request.
+  // Both are operator work, like `project_secret.exportEnv`.
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -272,6 +276,8 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   account: ["getToken", "createToken"],
   account_vault: ["get"],
   project_secret: ["get", "exportEnv"],
+  // A custom provider's launch env, tokens included.
+  ai: ["harnessLaunchEnv"],
   // Raw proof bytes, streamed to the user's own desktop.
   computer_use_artifacts: ["readArtifactRange"],
   // Mints the loopback stream token.

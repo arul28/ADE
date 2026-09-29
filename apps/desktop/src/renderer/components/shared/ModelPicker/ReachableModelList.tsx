@@ -201,7 +201,8 @@ export const ReachableModelList = memo(function ReachableModelList({
   );
 });
 
-function TestResult({ state }: { state: HarnessRouteTestState | undefined }) {
+/** One test result, shared by the picker rows and the Custom providers list. */
+export function RouteTestBadge({ state }: { state: HarnessRouteTestState | undefined }) {
   if (!state) return null;
   if (state.status === "testing") {
     return (
@@ -214,7 +215,7 @@ function TestResult({ state }: { state: HarnessRouteTestState | undefined }) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300/85">
         <CheckCircle size={10} weight="fill" />
-        {state.latencyMs != null ? `${Math.round(state.latencyMs)} ms` : "Works"}
+        Works{state.latencyMs != null ? ` · ${Math.round(state.latencyMs)} ms` : ""}
       </span>
     );
   }
@@ -287,7 +288,7 @@ const ReachableModelRow = memo(function ReachableModelRow({
       </button>
       {onTest ? (
         <span className="flex shrink-0 items-center gap-1.5">
-          <TestResult state={testState} />
+          <RouteTestBadge state={testState} />
           <button
             type="button"
             data-reachable-test={model.key}

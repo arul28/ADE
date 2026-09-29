@@ -12,11 +12,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import type { HarnessPresetBody } from "../../../../shared/harnessPresets";
-import type {
-  HarnessRouteCatalog,
-  HarnessRouteSource,
-  HarnessRouteTestResult,
+import type { HarnessPresetAccountProvider, HarnessPresetBody } from "../../../../shared/harnessPresets";
+import {
+  harnessRouteSourceKey,
+  type HarnessRouteCatalog,
+  type HarnessRouteSource,
+  type HarnessRouteTestResult,
 } from "../../../../shared/harnessRoutes";
 import { useRuntimeCatalogForFamily } from "../../shared/ModelPicker/useRuntimeCatalogForFamily";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../../shared/ModelPicker/runtimeCatalogCache";
@@ -36,13 +37,13 @@ export type HarnessReach = HarnessReachInputs & {
   /** One-token live check. Re-reads the catalog after, so the route tag follows the verdict. */
   testRoute: (harness: HarnessPresetBody, source: HarnessRouteSource["source"], model: string) => Promise<HarnessRouteTestResult | null>;
   testState: Readonly<Record<string, HarnessRouteTestState>>;
-  proxySignIn: (provider: "claude" | "codex") => Promise<void>;
-  proxySigningIn: "claude" | "codex" | null;
+  proxySignIn: (provider: HarnessPresetAccountProvider) => Promise<void>;
+  proxySigningIn: HarnessPresetAccountProvider | null;
 };
 
 type ProxyBridge = {
   status?: (pin?: OpenProjectBinding | null) => Promise<{ installed?: boolean; logins?: Array<{ provider: string; disabled?: boolean }> }>;
-  signIn?: (args: { provider: "claude" | "codex" }, pin?: OpenProjectBinding | null) => Promise<{ status: string; error?: string }>;
+  signIn?: (args: { provider: HarnessPresetAccountProvider }, pin?: OpenProjectBinding | null) => Promise<{ status: string; error?: string }>;
 };
 
 function proxyBridge(): ProxyBridge | undefined {
@@ -51,8 +52,7 @@ function proxyBridge(): ProxyBridge | undefined {
 
 /** The key the test state is filed under. */
 export function routeTestKey(harness: string, source: HarnessRouteSource["source"], model: string): string {
-  const sourceKey = source.kind === "opencode" ? `opencode:${source.providerId}` : `key:${source.provider}:${source.credentialId}`;
-  return `${harness}\u0000${sourceKey}\u0000${model}`;
+  return `${harness}\u0000${harnessRouteSourceKey(source)}\u0000${model}`;
 }
 
 export function useHarnessReach({
@@ -69,7 +69,7 @@ export function useHarnessReach({
   const [proxyLogins, setProxyLogins] = useState<ReadonlySet<string> | null>(null);
   const [loading, setLoading] = useState(enabled);
   const [testState, setTestState] = useState<Record<string, HarnessRouteTestState>>({});
-  const [proxySigningIn, setProxySigningIn] = useState<"claude" | "codex" | null>(null);
+  const [proxySigningIn, setProxySigningIn] = useState<HarnessPresetAccountProvider | null>(null);
   // The binding object is a routing payload; its key is the reactive input.
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -161,7 +161,7 @@ export function useHarnessReach({
     }
   }, [loadCatalog]);
 
-  const proxySignIn = useCallback(async (provider: "claude" | "codex") => {
+  const proxySignIn = useCallback(async (provider: HarnessPresetAccountProvider) => {
     const signIn = proxyBridge()?.signIn;
     if (typeof signIn !== "function") return;
     setProxySigningIn(provider);

@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
-  canonicalSourceProvider,
   isRouteProtocol,
   type RouteProbeVerdict,
   type RouteProtocol,
@@ -10,7 +9,7 @@ import {
 
 /**
  * What a live check learned about one (source, model): which protocols it
- * actually answered on. Written by the Test button (`ai.testHarnessRoute`),
+ * actually answered on. Written by the Test button (`harnessRouteTest.ts`),
  * read synchronously by every launch, so a model the catalog mislabels still
  * takes the route that works.
  *
@@ -28,8 +27,14 @@ export function routeProbeFilePath(adeHome: string): string {
   return path.join(adeHome, "cache", "harness-route-probes.json");
 }
 
-function keyFor(sourceProvider: string, modelId: string): string {
-  return `${canonicalSourceProvider(sourceProvider)}/${modelId.trim()}`;
+/**
+ * `sourceKey` is `routeSourceKey(source)`: the provider for an OpenCode
+ * sign-in, provider plus credential for a key — two keys of one provider can
+ * point at different endpoints, and a verdict for one says nothing about the
+ * other.
+ */
+function keyFor(sourceKey: string, modelId: string): string {
+  return `${sourceKey.trim().toLowerCase()}/${modelId.trim()}`;
 }
 
 function readFile(adeHome: string): ProbeFile {
@@ -55,8 +60,8 @@ function readFile(adeHome: string): ProbeFile {
   return file;
 }
 
-export function readRouteProbe(adeHome: string, sourceProvider: string, modelId: string): RouteProbeVerdict | null {
-  const entry = readFile(adeHome).entries[keyFor(sourceProvider, modelId)];
+export function readRouteProbe(adeHome: string, sourceKey: string, modelId: string): RouteProbeVerdict | null {
+  const entry = readFile(adeHome).entries[keyFor(sourceKey, modelId)];
   if (!entry?.verdict) return null;
   const verdict: RouteProbeVerdict = {};
   for (const [protocol, ok] of Object.entries(entry.verdict)) {
@@ -67,7 +72,7 @@ export function readRouteProbe(adeHome: string, sourceProvider: string, modelId:
 
 export function recordRouteProbe(
   adeHome: string,
-  sourceProvider: string,
+  sourceKey: string,
   modelId: string,
   protocol: RouteProtocol,
   ok: boolean,
@@ -75,7 +80,7 @@ export function recordRouteProbe(
 ): void {
   const filePath = routeProbeFilePath(adeHome);
   const file = readFile(adeHome);
-  const key = keyFor(sourceProvider, modelId);
+  const key = keyFor(sourceKey, modelId);
   const previous = file.entries[key]?.verdict ?? {};
   const next: ProbeFile = {
     version: 1,

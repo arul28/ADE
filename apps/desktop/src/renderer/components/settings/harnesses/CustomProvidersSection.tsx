@@ -16,6 +16,7 @@ import {
 import { COLORS, SANS_FONT, formatTimestamp, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { CustomToolMark } from "../../shared/CustomToolMark";
 import { HarnessLogo } from "../../shared/HarnessLogo";
+import { RouteTestBadge } from "../../shared/ModelPicker/ReachableModelList";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
@@ -199,6 +200,7 @@ export function CustomProvidersSection({
       presetId: preset.id,
       harness: preset.harness,
       model: preset.model,
+      source: preset.source,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
     });
     if (!line) return;
@@ -345,7 +347,7 @@ function CustomProviderRow({
   const testState: HarnessRouteTestState | undefined = testable
     ? reach.testState[routeTestKey(preset.harness, source, preset.model)]
     : undefined;
-  const hasLauncher = buildTerminalLauncher({ presetId: preset.id, harness: preset.harness, model: preset.model }) != null;
+  const hasLauncher = buildTerminalLauncher({ presetId: preset.id, harness: preset.harness, model: preset.model, source: preset.source }) != null;
 
   const item = (label: string, onClick: () => void, danger = false) => (
     <button
@@ -413,7 +415,7 @@ function CustomProviderRow({
       <PresetModels preset={preset} />
 
       <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
-        {testState ? <RowTestResult state={testState} /> : null}
+        <RouteTestBadge state={testState} />
         {testable ? (
           <button
             type="button"
@@ -464,25 +466,6 @@ function CustomProviderRow({
         </AnchoredMenu>
       </span>
     </div>
-  );
-}
-
-function RowTestResult({ state }: { state: HarnessRouteTestState }) {
-  if (state.status === "testing") return <span style={{ fontSize: 10.5, color: COLORS.textMuted }}>Testing…</span>;
-  if (state.status === "ok") {
-    return (
-      <span style={{ fontSize: 10.5, color: COLORS.success }}>
-        Works{state.latencyMs != null ? ` · ${Math.round(state.latencyMs)} ms` : ""}
-      </span>
-    );
-  }
-  return (
-    <span
-      title={state.error}
-      style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10.5, color: COLORS.danger }}
-    >
-      {state.error}
-    </span>
   );
 }
 

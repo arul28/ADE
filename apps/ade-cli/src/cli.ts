@@ -296,7 +296,6 @@ import {
 } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
 import {
   encodeRoutePresetId,
-  harnessRouteSourceKey,
   routeForListedModel,
   ROUTABLE_HARNESSES,
   type HarnessRouteCatalog,
@@ -5448,6 +5447,19 @@ function peekValue(args: readonly string[], names: readonly string[]): string | 
   return readValue([...args], names);
 }
 
+/** The `--via` spelling for a source; the inverse of `parseViaSourceSpec`. */
+export function formatViaSourceSpec(source: HarnessPresetSource): string {
+  if (source.kind === "opencode") {
+    return source.providerId === "opencode" || source.providerId === "opencode-go"
+      ? source.providerId
+      : `opencode:${source.providerId}`;
+  }
+  if (source.kind === "key") {
+    return source.credentialId === "default" ? `key:${source.provider}` : `key:${source.provider}:${source.credentialId}`;
+  }
+  return source.kind;
+}
+
 function routePresetIdFromFlags(
   args: string[],
   via: string,
@@ -5458,7 +5470,7 @@ function routePresetIdFromFlags(
   const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
   const model = (consumed.model ?? peekValue(args, ["--model", "--model-id"]))?.trim();
   if (!harness || !isHarnessPresetBody(harness)) {
-    throw new CliUsageError("--via needs --provider <harness> (claude, codex, opencode, droid, qwen, grok).");
+    throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
   if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
   const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
@@ -5477,11 +5489,13 @@ function buildHarnessPlan(args: string[]): CliPlan {
   const sub = firstStandalonePositional(args) ?? "routes";
   const rest = args.slice(args.indexOf(sub) + 1);
   if (sub === "env") {
+    const via = readValue(rest, ["--via"])?.trim() || null;
     const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
-      || firstStandalonePositional(rest)
-      || (readValue(rest, ["--via"]) ? routePresetIdFromFlags(rest, readValue(rest, ["--via"])!) : null);
+      || (via ? routePresetIdFromFlags(rest, via) : null)
+      || firstStandalonePositional(rest);
     if (!presetId) throw new CliUsageError("ade harness env needs a custom provider id (or --via with --provider and --model).");
-    const shell = readValue(rest, ["--shell"])?.trim();
+    // PowerShell by default on Windows, where `export` lines mean nothing.
+    const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
     if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
       throw new CliUsageError("--shell must be zsh, bash, or pwsh.");
     }
@@ -5491,6 +5505,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
       formatter: "harness-env",
       machineOnly: true,
       machineAutoStart: true,
+      // The result carries the provider token, so the action is CTO-only; the
+      // user's own terminal asserts the operator role, as `ade logout` does.
+      connectRole: "cto",
       steps: [actionStep("result", "ai", "harnessLaunchEnv", { presetId, ...(shell ? { shell } : {}) })],
     };
   }
@@ -5503,7 +5520,7 @@ function buildHarnessPlan(args: string[]): CliPlan {
       formatter: "harness-routes",
       machineOnly: true,
       machineAutoStart: true,
-      steps: [actionStep("result", "ai", "listHarnessRoutes", {})],
+      steps: [actionStep("result", "ai", "listHarnessRoutes", harness ? { harness } : {})],
     };
   }
   if (sub === "test") {
@@ -5523,6 +5540,7 @@ function buildHarnessPlan(args: string[]): CliPlan {
       formatter: "harness-test",
       machineOnly: true,
       machineAutoStart: true,
+      connectRole: "cto",
       steps: [actionStep("result", "ai", "testHarnessRoute", { harness, source, model })],
     };
   }
@@ -26851,14 +26869,15 @@ function formatHarnessRoutes(value: unknown): string {
     return "No OpenCode sign-ins or stored API keys can be routed yet. Sign in to OpenCode Go/Zen or add a key under Providers.";
   }
   const lines: string[] = [];
-  for (const harness of ROUTABLE_HARNESSES) {
+  const only = catalog.harness;
+  for (const harness of ROUTABLE_HARNESSES.filter((entry) => !only || entry === only)) {
     lines.push(`${harnessBodyLabel(harness)} (--provider ${harness})`);
     for (const source of sources) {
       const reachable = source.models
         .map((model) => ({ model, route: routeForListedModel(harness, source, model) }))
         .filter(({ route }) => route.kind !== "impossible");
       if (reachable.length === 0) continue;
-      const via = source.source.kind === "opencode" ? source.source.providerId : `key:${source.source.provider}:${source.source.credentialId}`;
+      const via = formatViaSourceSpec(source.source);
       lines.push(`  ${source.label} (--via ${via}) · ${reachable.length} models`);
       for (const { model, route } of reachable) {
         const tag = route.kind === "proxy" ? "  via ADE proxy" : route.kind === "native" ? "  native" : "";
@@ -26866,7 +26885,6 @@ function formatHarnessRoutes(value: unknown): string {
       }
     }
   }
-  void harnessRouteSourceKey;
   return lines.join("\n");
 }
 

@@ -802,12 +802,9 @@ import {
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import { listHarnessRouteCatalog, testHarnessRoute } from "../chat/harnessRouteCatalog";
-import type {
-  HarnessRouteCatalog,
-  HarnessRouteSource,
-  HarnessRouteTestResult,
-} from "../../../shared/harnessRoutes";
+import { listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { testHarnessRoute } from "../chat/harnessRouteTest";
+import type { HarnessRouteCatalog, HarnessRouteTestResult } from "../../../shared/harnessRoutes";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createOperationService } from "../history/operationService";
@@ -5540,8 +5537,8 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.aiTestHarnessRoute,
-    async (_event, args: { harness: string; source: HarnessRouteSource["source"]; model: string }): Promise<HarnessRouteTestResult> =>
-      testHarnessRoute(args),
+    async (_event, args: { harness?: unknown; source?: unknown; model?: unknown } | undefined): Promise<HarnessRouteTestResult> =>
+      testHarnessRoute({ harness: args?.harness, source: args?.source, model: args?.model }),
   );
 
   ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {

@@ -227,6 +227,7 @@ export function CustomProviderDialog({
       presetId: editingPresetId,
       harness: initialDraft.harness,
       model: initialDraft.model,
+      source: initialDraft.source,
       ...(initialDraft.reasoningEffort ? { reasoningEffort: initialDraft.reasoningEffort } : {}),
     })
     : null;
@@ -304,7 +305,14 @@ export function CustomProviderDialog({
             <SectionLabel>Harness</SectionLabel>
             <HarnessChipRow options={chipOptions} selected={draft.harness} onSelect={chooseHarness} size="md" label="Harness" />
             {!availability.available ? (
-              <span style={{ fontSize: 11, color: COLORS.warning }}>{availability.reason} You can still save it.</span>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "custom-provider-harness-unavailable",
+                  tone: "warning",
+                  title: `${availability.reason} You can still save it.`,
+                }}
+              />
             ) : null}
           </section>
 
@@ -383,10 +391,14 @@ export function CustomProviderDialog({
               </span>
             ) : null}
             {orphaned ? (
-              <span style={{ fontSize: 11, color: COLORS.warning }}>
-                Saved model {draft.model} from {presetSourceLabel(draft.source)} is not reachable in{" "}
-                {harnessBodyLabel(draft.harness)} on this computer. Pick one above.
-              </span>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "custom-provider-model-unreachable",
+                  tone: "warning",
+                  title: `Saved model ${draft.model} from ${presetSourceLabel(draft.source)} is not reachable in ${harnessBodyLabel(draft.harness)} on this computer. Pick one above.`,
+                }}
+              />
             ) : null}
           </section>
 

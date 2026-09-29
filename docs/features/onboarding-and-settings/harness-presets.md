@@ -128,8 +128,11 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
   pointed straight at the source's endpoint (OpenCode Go's
   `inference/go/anthropic` into Claude Code, DeepSeek's `/anthropic`).
 - **proxy** — no shared protocol; ADE's local CLIProxyAPI translates. ADE
-  writes an `ade-<source>` upstream into the proxy's config (it hot-reloads),
-  unprefixed, so the harness asks for the model by its real id.
+  writes one `ade-<source>` upstream per source (per credential for a key)
+  into the proxy's config, which hot-reloads, and the harness asks for the
+  model through that entry's prefix (`ade-opencode-go/glm-5.3`), so two
+  sources serving the same model id never mix. Removing a key drops its
+  upstream, so its secret does not outlive it there.
 - **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
   their own sign-in; OpenCode Zen's free models only answer inside OpenCode).
 
@@ -146,6 +149,9 @@ through `env_http_headers` bound to `ADE_ROUTE_SESSION_ID`. Harnesses that
 cannot set a header (Droid, Qwen) are sent through the proxy, whose
 per-harness upstream adds one.
 
+A plan built on an OpenCode OAuth token carries the token's expiry; a chat
+that outlives it resolves again and picks up the refreshed token.
+
 A route needs the proxy running before the synchronous resolver can point a
 harness at it, so every async launch entry (chat create and send, PTY create,
 CLI-from-chat, the brain's CLI and remote-launch actions) first calls
@@ -160,7 +166,9 @@ reference and the model, never a secret. base64url passes the safe-identifier
 check every launch surface already applies to `presetId`, so an ad-hoc choice
 gets chat, CLI, resume, remote launch and sync with no new wire field. Its
 private config home lives under `provider-homes/route/<hash>/`, outside the
-preset namespace the orphan pruner sweeps.
+preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
+removed, and removing any key removes them all (they are rebuilt on the next
+launch), because a Droid route home holds its key.
 
 ## Launching on a preset
 
@@ -317,8 +325,14 @@ provider token and is never written anywhere by ADE.
   out: resolves the source's secret, applies the proxy decision, and writes the
   per-harness endpoint env/config.
 - `apps/desktop/src/main/services/chat/harnessRouteCatalog.ts` — the
-  `ai.listHarnessRoutes` catalog, the `ai.testHarnessRoute` live check, and the
-  `ai.harnessLaunchEnv` terminal launcher.
+  `ai.listHarnessRoutes` catalog and the `ai.harnessLaunchEnv` terminal
+  launcher (CTO-only and secret-bearing: its result holds the token).
+- `apps/desktop/src/main/services/chat/harnessRouteTest.ts` — the
+  `ai.testHarnessRoute` live check (CTO-only), which resolves the source
+  exactly as a launch does.
+- `apps/desktop/src/main/services/chat/harnessKeySourceLaunch.ts` — the plain
+  key table for keys that need no route: a bare provider-card key, and a
+  preset key on OpenCode, Kimi or Copilot.
 - `apps/desktop/src/main/services/chat/harnessRouteProbes.ts` — the persisted
   per-model protocol verdicts.
 - `apps/desktop/src/main/services/chat/harnessLaunchPrepare.ts` — starts the
