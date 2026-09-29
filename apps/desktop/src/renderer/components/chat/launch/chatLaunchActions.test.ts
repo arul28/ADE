@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatLaunchSnapshot, OpenProjectBinding } from "../../../../shared/types";
 import { UnsupportedRemoteCommandError } from "../../../webclient/adapter/infra/commandCaller";
@@ -13,7 +14,12 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../../state/chatLaunchStore";
 import { cancelChatLaunch, isChatLaunchUnsupportedError, queueChatLaunchMessage, startChatLaunch } from "./chatLaunchActions";
-import { subscribeChatLaunchClosed, type ChatLaunchClosedNotice } from "./chatLaunchDraftRestore";
+import {
+  resetChatLaunchDraftRestoreForTests,
+  subscribeChatLaunchClosed,
+  useChatLaunchDraftRestore,
+  type ChatLaunchClosedNotice,
+} from "./chatLaunchDraftRestore";
 import { selectKnownLaunchSessionIds } from "./chatLaunchSynthetic";
 
 describe("isChatLaunchUnsupportedError", () => {
@@ -174,10 +180,11 @@ describe("cancelChatLaunch", () => {
 
   afterEach(() => {
     resetChatLaunchStoreForTests();
+    resetChatLaunchDraftRestoreForTests();
     delete (window as unknown as { ade?: unknown }).ade;
   });
 
-  it("hands the prompt back before the host cancel finishes", async () => {
+  it("hands the prompt back before the host cancel finishes, and closes the tab only after it accepts", async () => {
     let releaseCancel: (snapshot: ChatLaunchSnapshot) => void = () => {};
     const cancel = vi.fn(() => new Promise<ChatLaunchSnapshot>((resolve) => {
       releaseCancel = resolve;
@@ -197,19 +204,56 @@ describe("cancelChatLaunch", () => {
     applyChatLaunchSnapshot(BINDING, snapshot);
     const notices: ChatLaunchClosedNotice[] = [];
     const unsubscribe = subscribeChatLaunchClosed((notice) => notices.push(notice));
+    const restore = renderHook(() => useChatLaunchDraftRestore("cli"));
     try {
-      const pending = cancelChatLaunch("launch-cancel");
-      expect(notices).toEqual([{
-        launchId: "launch-cancel",
-        sessionId: null,
-        kind: "cli",
-        restoresPrompt: true,
-      }]);
+      let pending!: Promise<void>;
+      act(() => {
+        pending = cancelChatLaunch("launch-cancel");
+      });
+      expect(restore.result.current?.launchId).toBe("launch-cancel");
+      expect(restore.result.current?.prompt.text).toBe("Please schedule a wakeup");
+      expect(notices).toEqual([]);
       expect(cancel).toHaveBeenCalledWith({ launchId: "launch-cancel" }, BINDING);
       releaseCancel({ ...snapshot, phase: "cancelled", sequence: snapshot.sequence + 1 });
       await pending;
+      expect(notices).toEqual([
+        { launchId: "launch-cancel", sessionId: null, kind: "cli", restoresPrompt: false },
+        { launchId: "launch-cancel", sessionId: null, kind: "cli", restoresPrompt: true },
+      ]);
     } finally {
       unsubscribe();
+      restore.unmount();
+    }
+  });
+
+  it("keeps the launch tab and drops the restored prompt when the host says the agent already started", async () => {
+    const cancel = vi.fn(async () => {
+      throw new Error("This chat already started — delete its lane from the lane menu instead.");
+    });
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { cancel } };
+    const snapshot = buildOptimisticChatLaunchSnapshot({
+      launch: {
+        kind: "chat",
+        mode: "foreground",
+        launchId: "launch-cancel",
+        laneId: "lane-cancel",
+        laneName: "Fix Login",
+        prompt: "Fix the login redirect",
+      },
+      includeFetch: true,
+    });
+    applyChatLaunchSnapshot(BINDING, snapshot);
+    const notices: ChatLaunchClosedNotice[] = [];
+    const unsubscribe = subscribeChatLaunchClosed((notice) => notices.push(notice));
+    const restore = renderHook(() => useChatLaunchDraftRestore("chat"));
+    try {
+      await expect(cancelChatLaunch("launch-cancel")).rejects.toThrow(/already started/);
+      expect(notices).toEqual([]);
+      expect(restore.result.current).toBeNull();
+      expect(getChatLaunchEntry("launch-cancel")?.snapshot.phase).not.toBe("cancelled");
+    } finally {
+      unsubscribe();
+      restore.unmount();
     }
   });
 });

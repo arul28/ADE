@@ -157,6 +157,23 @@ describe("resolveLaneCreateRemoteBase", () => {
     expect(gitService.listBranches).toHaveBeenCalledTimes(1);
   });
 
+  it("still fetches when the pre-fetch branch list fails", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    gitService.listBranches
+      .mockRejectedValueOnce(new Error("index locked"))
+      .mockResolvedValueOnce([{ name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" }]);
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      refResolves: async () => true,
+    })).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: true, fetchOutcome: "ok" });
+    expect(gitService.fetch).toHaveBeenCalledTimes(1);
+    expect(gitService.listBranches).toHaveBeenCalledTimes(2);
+  });
+
   it("reports a failed fetch structurally instead of through the warning text", async () => {
     const { deps } = setup(true);
     (deps.gitService as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch.mockRejectedValueOnce(new Error("offline"));

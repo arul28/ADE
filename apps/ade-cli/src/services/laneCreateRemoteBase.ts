@@ -218,7 +218,10 @@ export async function resolveLaneCreateRemoteBaseDetailed(
     // snapshot. Listing again while the fetch is still running blocks on
     // git's lock for the rest of the fetch, and the launch sits on
     // "Fetching base branch" the whole time.
-    const branchesBefore = await gitService.listBranches({ laneId: primary.id });
+    // A listing failure must not skip the fetch. The list after a successful
+    // fetch still runs; a timeout keeps this empty snapshot and does not
+    // invent a base the listing never showed.
+    const branchesBefore = await gitService.listBranches({ laneId: primary.id }).catch(() => []);
     const remoteBaseBefore = selectRemoteLaneBaseRef({ branches: branchesBefore, primaryBaseRef });
     const resolvedBefore = Boolean(
       remoteBaseBefore && cwd
