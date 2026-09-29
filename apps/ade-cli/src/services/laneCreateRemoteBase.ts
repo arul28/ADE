@@ -43,6 +43,8 @@ export interface LaneCreateRemoteBaseDeps {
    * waiting for the rest of the fetch. `lastFetchedAtMs` null = never fetched.
    */
   onWaitingForStaleFetch?: (info: { remoteRef: string; lastFetchedAtMs: number | null }) => void;
+  /** Aborts the in-flight fetch. A cancelled launch must not keep `git fetch` running. */
+  signal?: AbortSignal;
   /**
    * True when `ref` resolves to a commit in `cwd` (the primary lane's
    * worktree). Defaults to `git rev-parse --verify --quiet <ref>^{commit}`.
@@ -164,8 +166,10 @@ export async function resolveLaneCreateRemoteBase(deps: LaneCreateRemoteBaseDeps
  *
  * Fetch timing: a fresh base (fetched within a day, tip under three days old)
  * waits only `fetchTimeoutMs` (4 s) for the fetch, then branches from what it
- * has. A stale base waits for the fetch's whole budget, because branching
- * from a months-old `origin/main` silently is far worse than a slow start.
+ * has. That choice is resolved before the fetch starts, so a fetch that is
+ * still running cannot hold the repo lock over the rest of lane setup. A
+ * stale base waits for the fetch's whole budget, because branching from a
+ * months-old `origin/main` silently is far worse than a slow start.
  */
 export async function resolveLaneCreateRemoteBaseDetailed(
   deps: LaneCreateRemoteBaseDeps,
@@ -209,12 +213,26 @@ export async function resolveLaneCreateRemoteBaseDetailed(
       ? readFreshness({ ref: remoteCandidate, cwd, localBranch }).catch(() => UNKNOWN_FRESHNESS)
       : Promise.resolve(UNKNOWN_FRESHNESS);
     const freshnessBefore = (): Promise<LaneBaseFreshness> => freshnessBeforeRead;
+    // Resolve the ref we already have before `git fetch` takes the repo.
+    // A fresh base that gives up after a few seconds then branches from this
+    // snapshot. Listing again while the fetch is still running blocks on
+    // git's lock for the rest of the fetch, and the launch sits on
+    // "Fetching base branch" the whole time.
+    const branchesBefore = await gitService.listBranches({ laneId: primary.id });
+    const remoteBaseBefore = selectRemoteLaneBaseRef({ branches: branchesBefore, primaryBaseRef });
+    const resolvedBefore = Boolean(
+      remoteBaseBefore && cwd
+      && await (deps.refResolves ?? gitRefResolves)(remoteBaseBefore, cwd).catch(() => false),
+    );
+    if (deps.signal?.aborted) return none(false, { fetchOutcome: "failed", fetchError: "cancelled" });
     const fetchResult: Promise<{ outcome: LaneBaseFetchOutcome; error: string | null }> = gitService
-      .fetch({ laneId: primary.id })
+      .fetch({ laneId: primary.id, ...(deps.signal ? { signal: deps.signal } : {}) })
       .then(() => ({ outcome: "ok" as const, error: null }))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        return { outcome: (/timed out|timeout/i.test(message) ? "timeout" : "failed") as LaneBaseFetchOutcome, error: message };
+        const cancelled = deps.signal?.aborted || /cancell?ed/i.test(message);
+        const outcome: LaneBaseFetchOutcome = cancelled ? "failed" : (/timed out|timeout/i.test(message) ? "timeout" : "failed");
+        return { outcome, error: cancelled ? "cancelled" : message };
       });
     const waitFor = async (ms: number) => {
       let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -243,6 +261,7 @@ export async function resolveLaneCreateRemoteBaseDetailed(
         result = await waitFor(0);
       }
     }
+    if (deps.signal?.aborted) return none(false, { fetchOutcome: "failed", fetchError: "cancelled" });
     fetchOutcome = result.outcome;
     fetchError = result.error;
     fetchSucceeded = result.outcome === "ok";
@@ -252,9 +271,25 @@ export async function resolveLaneCreateRemoteBaseDetailed(
     }
     const fetchFields = { fetchOutcome, fetchError } satisfies Partial<LaneCreateRemoteBaseResolution>;
 
-    const branches = await gitService.listBranches({ laneId: primary.id });
+    // A timed-out fetch is still running. Another git call now waits on its
+    // lock, which is the hang the fast path exists to avoid.
+    const branches = result.outcome === "timeout"
+      ? branchesBefore
+      : await gitService.listBranches({ laneId: primary.id });
     const remoteBase = selectRemoteLaneBaseRef({ branches, primaryBaseRef });
     const chosen = async (ref: string): Promise<LaneCreateRemoteBaseResolution> => {
+      if (result.outcome === "timeout") {
+        // Age was read before the fetch. Reading it again now would wait on
+        // the fetch that is still running.
+        const before = await freshnessBefore();
+        return {
+          baseRef: ref,
+          fetchSucceeded,
+          ...fetchFields,
+          freshness: before,
+          stale: isLaneBaseStale({ ...before, nowMs: now() }),
+        };
+      }
       if (fetchSucceeded || !cwd) return { baseRef: ref, fetchSucceeded, ...fetchFields, stale: false };
       // Branching from whatever was fetched last: say how old it is.
       const before = await freshnessBefore();
@@ -268,7 +303,11 @@ export async function resolveLaneCreateRemoteBaseDetailed(
     };
     if (remoteBase && cwd) {
       // A configured upstream can outlive its remote ref; check it resolves.
-      const resolves = await (deps.refResolves ?? gitRefResolves)(remoteBase, cwd).catch(() => false);
+      // On a timeout the fetch still holds the repo, so reuse the check made
+      // before it started instead of waiting on the lock.
+      const resolves = result.outcome === "timeout"
+        ? remoteBase === remoteBaseBefore && resolvedBefore
+        : await (deps.refResolves ?? gitRefResolves)(remoteBase, cwd).catch(() => false);
       if (resolves) return await chosen(remoteBase);
       deps.onWarning?.(`⚠ Base ${remoteBase} no longer exists on the remote; using the local base.`);
       return none(fetchSucceeded, fetchFields);

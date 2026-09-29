@@ -380,10 +380,11 @@ function StageLine({
   trailing?: React.ReactNode;
   compact: boolean;
 }) {
+  const stackDetail = compact && Boolean(detail);
   return (
-    <div className={cn("flex min-w-0 items-center gap-2.5", compact ? "h-[28px]" : "h-[32px]")}>
+    <div className={cn("flex min-w-0 gap-2.5", stackDetail ? "items-start py-1" : "items-center", compact ? "min-h-[28px]" : "h-[32px]")}>
       <StageTile icon={icon} status={status} compact={compact} />
-      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+      <div className={cn("flex min-w-0 flex-1 gap-2", stackDetail ? "flex-col items-stretch gap-0" : "items-baseline")}>
         <span className={cn("shrink-0 transition-colors duration-200", LABEL_TONE[status])}>{label}</span>
         {detail ? <span className="min-w-0 truncate text-fg/35" title={detail}>{detail}</span> : null}
         {percent != null ? (
@@ -608,13 +609,16 @@ export function LaneSetupCard({
   const confirmDelete = (name: "cancel" | "delete") => {
     const subject = snapshot.kind === "cli" ? "CLI session" : "chat";
     const launchId = snapshot.launchId;
+    const laneExists = snapshot.laneCreated;
     const abort = new AbortController();
     confirmAbortRef.current = abort;
     setConfirmAbort(abort);
     void confirmDialog({
       title: name === "cancel" ? "Cancel this launch?" : "Delete this launch?",
-      message: `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`,
-      confirmLabel: `Delete lane and ${subject}`,
+      message: laneExists
+        ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
+        : `Setup stops before a lane is created. Your prompt stays in the composer.`,
+      confirmLabel: laneExists ? `Delete lane and ${subject}` : "Stop setup",
       destructive: true,
       signal: abort.signal,
     }).then((ok) => {

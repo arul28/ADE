@@ -142,16 +142,26 @@ export async function cancelChatLaunch(launchId: string, options: { restorePromp
   if (!entry) return;
   const snapshot = entry.snapshot;
   const restorePrompt = options.restorePrompt ?? true;
-  if (!entry.hostSeen && entry.startError != null) {
-    // The host never accepted it. Cancel anyway in case a timed-out start did
-    // land, but never let that block removing the card.
-    void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
-    removeChatLaunch(launchId);
-  } else {
-    applyResult(launchId, await window.ade.chatLaunch.cancel({ launchId }, entry.binding));
-  }
+  // The prompt goes back now. The host cancel waits out an in-flight fetch,
+  // and the composer must not stay empty for that.
   announceChatLaunchClosed(closedNoticeFor(snapshot), restorePrompt ? restoreRequestFor(launchId, snapshot) : null);
-  forgetChatLaunchLocalRecord(launchId);
+  try {
+    if (!entry.hostSeen && entry.startError != null) {
+      // The host never accepted it. Cancel anyway in case a timed-out start did
+      // land, but never let that block removing the card.
+      void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
+      removeChatLaunch(launchId);
+    } else {
+      applyResult(launchId, await window.ade.chatLaunch.cancel({ launchId }, entry.binding));
+    }
+  } finally {
+    // Drop the local record only after the host has been told. Forgetting it
+    // first would strand a CLI launch whose cancel never landed: the driver
+    // would no longer have the command to start.
+    if (!getChatLaunchEntry(launchId) || getChatLaunchEntry(launchId)?.snapshot.phase === "cancelled") {
+      forgetChatLaunchLocalRecord(launchId);
+    }
+  }
 }
 
 /* ── Queued messages ──────────────────────────────────────────────────────

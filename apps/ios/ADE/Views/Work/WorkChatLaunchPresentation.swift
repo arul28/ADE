@@ -71,7 +71,7 @@ func chatLaunchActiveStage(_ stages: [ChatLaunchStage]) -> ChatLaunchStage? {
 
 /// The launch in one short line, for the Work row and the Hub row:
 /// "Checking out files · 62%", "Applying lane template · Install dependencies",
-/// "Check out files failed", "Agent started".
+/// "Fetching latest main (last fetched 2 days ago)", "Agent started".
 func chatLaunchStatusLine(_ launch: ChatLaunchSnapshot) -> String {
   let kind = launch.kind
   let templateName = launch.templateName
@@ -86,6 +86,10 @@ func chatLaunchStatusLine(_ launch: ChatLaunchSnapshot) -> String {
   }
   guard let active = chatLaunchActiveStage(launch.stages) else { return "Setting up lane" }
   let label = chatLaunchStageActiveLabel(active.id, kind: kind, templateName: templateName)
+  // A stale base names what it is waiting on. The generic label does not.
+  if active.id == .fetch, let detail = active.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+    return detail
+  }
   if active.id == .checkout, let percent = active.percent {
     return "\(label) · \(chatLaunchFormatNumber(percent))%"
   }

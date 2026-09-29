@@ -2090,6 +2090,7 @@ export async function createAdeRuntime(args: {
             laneService,
             gitService,
             projectConfigService,
+            ...(progress?.signal ? { signal: progress.signal } : {}),
             ...(progress?.onWaitingForStaleFetch ? { onWaitingForStaleFetch: progress.onWaitingForStaleFetch } : {}),
           });
           const { baseRef, fetchSucceeded, fetchOutcome, fetchError, freshness, stale } = resolution;

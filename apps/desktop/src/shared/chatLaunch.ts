@@ -185,7 +185,7 @@ function chatLaunchActiveStage(launch: Pick<ChatLaunchSnapshot, "stages">): Chat
 /**
  * The launch in one short line, for the sidebar row and the slide-out:
  * "Checking out files · 62%", "Applying lane template · Install dependencies",
- * "Setup failed: …", "Lane ready".
+ * "Fetching latest main (last fetched 2 days ago)", "Lane ready".
  */
 export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
   const context = { kind: launch.kind, templateName: launch.templateName };
@@ -199,6 +199,8 @@ export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
   const active = chatLaunchActiveStage(launch);
   if (!active) return "Setting up lane";
   const label = chatLaunchStageActiveLabel(active.id, context);
+  // A stale base names what it is waiting on. The generic label does not.
+  if (active.id === "fetch" && active.detail?.trim()) return active.detail.trim();
   if (active.id === "checkout" && active.percent != null) return `${label} · ${active.percent}%`;
   if (active.id === "environment") {
     const step = active.steps?.find((entry) => entry.status === "running");
