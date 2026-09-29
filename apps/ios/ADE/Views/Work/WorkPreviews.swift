@@ -1332,6 +1332,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The connected-machines card and MACHINES rows. See
   /// `SettingsMachinesPreviewHost`.
   case settingsMachines = "settings-machines"
+  /// One machine's page. See `SettingsMachinesPreviewHost`.
+  case settingsMachinePage = "settings-machine-page"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1396,6 +1398,8 @@ struct ADEPreviewScreenHost: View {
       LanesAcrossMachinesPreviewHost()
     case .settingsMachines:
       SettingsMachinesPreviewHost()
+    case .settingsMachinePage:
+      SettingsMachinesPreviewHost(showsPage: true)
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:

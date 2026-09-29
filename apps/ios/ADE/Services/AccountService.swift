@@ -2040,6 +2040,32 @@ final class AccountService: ObservableObject {
     }
   }
 
+  /// Removes `machine` from the account for every device (desktop "Remove from
+  /// account"), then drops it from the local list.
+  func removeMachineFromAccount(_ machine: AccountMachine) async throws {
+    guard isSignedIn,
+          let requestedOwnerId = identity?.userId,
+          let baseURL = AccountConfig.directoryBaseURL,
+          let initialSession = await pairingSession(),
+          initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
+    try await directory.deleteMachine(
+      baseURL: baseURL,
+      token: initialSession.token,
+      machineKey: machine.machineKey,
+      refreshToken: { [weak self] in
+        guard let self,
+              self.isPairingCommitAuthorized(initialSession.authorization) else { return nil }
+        return try? await self.freshRelaySession(
+          expectedAuthorization: initialSession.authorization
+        ).token
+      }
+    )
+    machines.removeAll { $0.machineKey == machine.machineKey }
+  }
+
   // MARK: - Identity mapping
 
   private func emailAuthActions() -> AccountEmailAuthActions {

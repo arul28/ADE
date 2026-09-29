@@ -11,6 +11,10 @@ struct ConnectionSettingsView: View {
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   @StateObject private var presentationModel = SettingsConnectionPresentationModel()
+  @StateObject private var machineController = SettingsMachineController()
+  @EnvironmentObject private var machineFleet: MachineFleet
+  @ObservedObject private var account = AccountService.shared
+  @State private var signInPresented = false
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
@@ -35,31 +39,20 @@ struct ConnectionSettingsView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 18) {
-          if pairingOnly {
-            pairingOnlyGroup
-          } else {
-            // Settings is organised by SCOPE, in the same four groups and the
-            // same order as the desktop app: Account, Preferences, this
-            // repository, this device. The group name is the answer to "where
-            // does this save", said once, instead of a badge on every row.
-            //
-            // Connection sits ABOVE the groups rather than inside one. It is
-            // not a scope — it is the thing you open Settings to fix when it
-            // breaks — so burying it under a heading would put the most urgent
-            // row behind the least urgent question.
-            connectionHeaderGroup
-            accountGroup
-            preferencesGroup
-            deviceGroup
+      Group {
+        if pairingOnly {
+          ScrollView {
+            LazyVStack(spacing: 18) {
+              pairingOnlyGroup
+              Spacer(minLength: 20)
+            }
+            .padding(.vertical, 12)
           }
-
-          Spacer(minLength: 20)
+          .background(SettingsAuroraBackground().ignoresSafeArea())
+        } else {
+          settingsList
         }
-        .padding(.vertical, 12)
       }
-      .background(SettingsAuroraBackground().ignoresSafeArea())
       .adeNavigationGlass()
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
@@ -107,7 +100,30 @@ struct ConnectionSettingsView: View {
         }
       }
       .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
+      .adeToast($machineController.toast)
+      .sheet(isPresented: $signInPresented) {
+        AccountSignInView(onConnect: connectToAccountMachine)
+      }
+      .confirmationDialog(
+        machineController.limitPrompt.map { "Connect \($0.target.name)?" } ?? "",
+        isPresented: Binding(
+          get: { machineController.limitPrompt != nil },
+          set: { if !$0 { machineController.limitPrompt = nil } }
+        ),
+        titleVisibility: .visible,
+        presenting: machineController.limitPrompt
+      ) { prompt in
+        ForEach(prompt.candidates, id: \.key) { candidate in
+          Button("Disconnect \(candidate.name)") {
+            machineController.resolveLimit(disconnecting: candidate.key, then: prompt.target)
+          }
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: { _ in
+        Text("The phone keeps \(MachineFleet.liveMachineLimit) machines live at a time. Pick one to disconnect.")
+      }
       .onAppear {
+        machineController.bind(syncService: syncService, fleet: machineFleet)
         presentationModel.bind(to: syncService)
         if let request = syncService.requestedPairingQrNavigation {
           syncService.requestedPairingQrNavigation = nil
@@ -153,140 +169,120 @@ struct ConnectionSettingsView: View {
     .padding(.top, 4)
   }
 
-  @ViewBuilder
-  private var connectionHeaderGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsConnectionHeader(
-        snapshot: presentationModel.connectionSnapshot,
-        onDisconnect: { syncService.disconnectForUserConnectionChange() },
-        onReconnect: {
-          Task { await syncService.reconnectForUserConnectionChange() }
-        },
-        onPairWithPin: {
-          if let host = syncService.accountPairingPinFallbackHost {
-            pinPreset = .discover(host)
-          }
-        },
-        onWake: wakeAsleepMachine,
-        showsLiveFleet: true
-      )
-    }
-    .padding(.horizontal, 16)
-    .padding(.top, 4)
-  }
-
-  // ── ACCOUNT ────────────────────────────────────────────────────────────
-  @ViewBuilder
-  private var accountGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "ACCOUNT")
-
-      // Identity. Self-hides when there is no Clerk key configured.
-      AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
-
-      SettingsMachinesSection(
+  private var settingsList: some View {
+    List {
+      Section {
+        accountRow
+      }
+      SettingsMachineSections(
         syncService: syncService,
-        onPairWithPin: { host in
-          pinPreset = .discover(host)
-        }
-      )
-
-      SettingsPairingSection(
-        snapshot: presentationModel.pairingSnapshot,
+        controller: machineController,
         presentedSheet: $presentedSheet
       )
-
-      SettingsNavigationRow(
-        title: "Usage",
-        subtitle: "Cost, activity, and live limits",
-        systemImage: "chart.line.uptrend.xyaxis"
-      ) {
-        SettingsUsagePage(syncService: syncService)
+      Section {
+        linkRow("Appearance", systemImage: "circle.lefthalf.filled") {
+          SettingsDestinationPage(title: "Appearance") { SettingsAppearanceSection() }
+        }
+        linkRow("Notifications", systemImage: "bell.badge") {
+          SettingsDestinationPage(title: "Notifications") {
+            SettingsPushDeliverySection(
+              snapshot: presentationModel.pushDeliverySnapshot,
+              pushService: PushNotificationService.shared
+            )
+          }
+        }
+        linkRow("Usage", systemImage: "chart.line.uptrend.xyaxis") {
+          SettingsUsagePage(syncService: syncService)
+        }
+      } header: {
+        ADEFlatSectionHeader("App")
+      }
+      Section {
+        linkRow("Connection details", systemImage: "point.3.connected.trianglepath.dotted") {
+          SettingsDestinationPage(title: "Connection details") {
+            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
+          }
+        }
+        linkRow("Delivery diagnostics", systemImage: "stethoscope") {
+          SettingsDestinationPage(title: "Delivery diagnostics") {
+            SettingsPushDeliverySection(
+              snapshot: presentationModel.pushDeliverySnapshot,
+              pushService: PushNotificationService.shared,
+              content: .diagnostics
+            )
+          }
+        }
+        linkRow("About \(thisDeviceGroupLabel.replacingOccurrences(of: "This ", with: "this "))", systemImage: "info.circle") {
+          SettingsDestinationPage(title: "About") {
+            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
+          }
+        }
+      } header: {
+        ADEFlatSectionHeader("About")
       }
     }
-    .padding(.horizontal, 16)
+    .adeFlatList()
   }
 
-  // ── PREFERENCES ────────────────────────────────────────────────────────
-  // Only what this device can act on. A phone showing a terminal font size or
-  // a lane rebase rule would be offering a control whose result it cannot
-  // show you.
   @ViewBuilder
-  private var preferencesGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(
-        label: "PREFERENCES",
-        hint: "Saved on this \(UIDevice.current.model)"
-      )
-
-      SettingsAppearanceSection()
-
-      SettingsNavigationRow(
-        title: "Notifications",
-        subtitle: "Alerts and Live Activities",
-        systemImage: "bell.badge"
-      ) {
-        SettingsDestinationPage(title: "Notifications") {
-          SettingsPushDeliverySection(
-            snapshot: presentationModel.pushDeliverySnapshot,
-            pushService: PushNotificationService.shared
-          )
+  private var accountRow: some View {
+    if account.isConfigured {
+      switch account.phase {
+      case .signedIn:
+        if let identity = account.identity {
+          NavigationLink {
+            SettingsAccountPage()
+          } label: {
+            HStack(spacing: 12) {
+              AccountAvatar(identity: identity)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(identity.displayName)
+                  .font(.body.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                if let email = identity.email {
+                  Text(email)
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
+              }
+            }
+          }
+          .adeFlatRow()
         }
+      case .loading:
+        ProgressView()
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .adeFlatRow()
+      default:
+        Button {
+          signInPresented = true
+        } label: {
+          Label("Sign in to ADE", systemImage: "person.crop.circle.badge.plus")
+            .foregroundStyle(ADEColor.accent)
+        }
+        .adeFlatRow()
       }
     }
-    .padding(.horizontal, 16)
   }
 
-  // ── THIS DEVICE ────────────────────────────────────────────────────────
-  // Named from the device, never spelled out, for the same reason the desktop
-  // group is sourced rather than hardcoded: an iPad reading "This iPhone" is a
-  // small lie the user notices.
-  @ViewBuilder
-  private var deviceGroup: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: thisDeviceGroupLabel.uppercased())
-
-      SettingsNavigationRow(
-        title: "Connection details",
-        subtitle: "Route and connection performance",
-        systemImage: "point.3.connected.trianglepath.dotted"
-      ) {
-        SettingsDestinationPage(title: "Connection details") {
-          SettingsDiagnosticsSection(
-            snapshot: presentationModel.diagnosticsSnapshot,
-            content: .connection
-          )
-        }
-      }
-
-      SettingsNavigationRow(
-        title: "Delivery diagnostics",
-        subtitle: "Push registration and relay status",
-        systemImage: "stethoscope"
-      ) {
-        SettingsDestinationPage(title: "Delivery diagnostics") {
-          SettingsPushDeliverySection(
-            snapshot: presentationModel.pushDeliverySnapshot,
-            pushService: PushNotificationService.shared,
-            content: .diagnostics
-          )
-        }
-      }
-
-      SettingsNavigationRow(
-        title: "About",
-        subtitle: "App, machine, and device information",
-        systemImage: "info.circle"
-      ) {
-        SettingsDestinationPage(title: "About") {
-          SettingsDiagnosticsSection(
-            snapshot: presentationModel.diagnosticsSnapshot,
-            content: .about
-          )
-        }
+  private func linkRow<Destination: View>(
+    _ title: String,
+    systemImage: String,
+    @ViewBuilder destination: @escaping () -> Destination
+  ) -> some View {
+    NavigationLink(destination: destination) {
+      Label {
+        Text(title)
+          .foregroundStyle(ADEColor.textPrimary)
+      } icon: {
+        Image(systemName: systemImage)
+          .foregroundStyle(ADEColor.accent)
       }
     }
-    .padding(.horizontal, 16)
+    .adeFlatRow()
   }
 
   @ViewBuilder
@@ -373,56 +369,6 @@ struct ConnectionSettingsView: View {
   }
 }
 
-private struct SettingsNavigationRow<Destination: View>: View {
-  let title: String
-  let subtitle: String
-  let systemImage: String
-  @ViewBuilder let destination: () -> Destination
-
-  var body: some View {
-    NavigationLink(destination: destination) {
-      HStack(spacing: 14) {
-        Image(systemName: systemImage)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 34, height: 34)
-          .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .fill(ADEColor.purpleAccent.opacity(0.14))
-          )
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.body.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(subtitle)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-
-        Spacer(minLength: 8)
-
-        Image(systemName: "chevron.right")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent.opacity(0.65))
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 12)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(ADEColor.surfaceBackground.opacity(0.5))
-      )
-      .glassEffect(in: .rect(cornerRadius: 14))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
-      )
-    }
-    .buttonStyle(ADEScaleButtonStyle())
-  }
-}
-
 private struct SettingsDestinationPage<Content: View>: View {
   let title: String
   @ViewBuilder let content: () -> Content
@@ -433,7 +379,7 @@ private struct SettingsDestinationPage<Content: View>: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
-    .background(SettingsAuroraBackground().ignoresSafeArea())
+    .background(ADEColor.pageBackground.ignoresSafeArea())
     .adeNavigationGlass()
     .navigationTitle(title)
     .navigationBarTitleDisplayMode(.inline)
@@ -757,556 +703,6 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
-/// A paired machine's row subtitle while the fleet holds (or tries to hold) a
-/// roster link to it. One line, so the state never renders as loose text
-/// between rows.
-func settingsFleetMachineSubtitle(
-  _ state: MachineFleet.MachineState,
-  lastUpdateAt: Date?,
-  powerClause: String?,
-  now: Date = Date()
-) -> String {
-  switch state {
-  case .live:
-    return powerClause.map { "Live · \($0)" } ?? "Live"
-  case .paused:
-    return "Paused (\(MachineFleet.liveMachineLimit)-machine limit)"
-  default:
-    return machineFleetStateLabel(state, lastUpdateAt: lastUpdateAt, now: now)
-  }
-}
-
-/// The CONNECTIONS machine list: a unified, deduplicated roster of the computers a
-/// phone can reach — machines on the signed-in account plus previously-paired
-/// machines — ranked current → online → offline. Shows the top three inline
-/// with a "See all machines" sheet for the rest. Offline machines render grayed
-/// and non-tappable (desktop-style). A failed connect surfaces inline on the
-/// tapped row (M14) rather than in a separate lower banner.
-struct SettingsMachinesSection: View {
-  let syncService: SyncService
-  let onPairWithPin: (DiscoveredSyncHost) -> Void
-  @ObservedObject private var account = AccountService.shared
-  /// Live state of every machine other than the focused one (the Hub shows
-  /// all machines' projects; this is where the user sees and manages them).
-  @EnvironmentObject private var machineFleet: MachineFleet
-  /// Machines removed from this phone's lists ("Remove from this list").
-  @ObservedObject private var hiddenMachines = HiddenMachineStore.shared
-  @State private var keepLivePrompt: MachineFleetKeepLivePrompt?
-
-  @State private var seeAllPresented = false
-  @State private var renamingMachine: AccountMachine?
-  @State private var connectingId: String?
-  @State private var rowErrors: [String: String] = [:]
-
-  struct Entry: Identifiable {
-    enum Kind {
-      case account(AccountMachine)
-      case saved(DiscoveredSyncHost)
-    }
-    let id: String
-    let name: String
-    let routeHint: String
-    let online: Bool
-    /// The machine said it was asleep, or has been silent long enough that
-    /// asleep is the only honest reading. Turns "Connect" into "Wake".
-    let isAsleep: Bool
-    /// This phone holds a socket to it. Still true for a machine that has since
-    /// announced a suspend — the socket does not report itself closed — which
-    /// is why it is not what the row RENDERS.
-    let isCurrent: Bool
-    let kind: Kind
-    /// The fleet's roster connection to this machine, when it is paired and not
-    /// the focused one.
-    var fleet: MachineFleet.Machine? = nil
-
-    /// What the row is allowed to show as connected. An announced sleep
-    /// outranks the socket: a green CONNECTED pill on a Mac that told us it was
-    /// going dark is the claim this whole pass exists to stop making.
-    var presentsAsConnected: Bool { (isCurrent || isFleetLive) && !isAsleep }
-
-    /// The phone holds a live roster link to this machine (not the focused
-    /// one). It reads as connected, and a tap must not move focus to it.
-    var isFleetLive: Bool { !isCurrent && fleet?.state == .live }
-
-    /// The key this row is hidden under: the machine's device identity, or its
-    /// name for a saved machine that never reported one.
-    var hiddenIdentity: String {
-      switch kind {
-      case .account(let machine):
-        return nonEmptyTrimmed(machine.deviceId) ?? "account:\(machine.machineKey)"
-      case .saved(let host):
-        return nonEmptyTrimmed(host.hostIdentity) ?? "name:\(host.hostName)"
-      }
-    }
-  }
-
-  private var isConnected: Bool {
-    syncService.connectionState == .connected
-  }
-
-  /// Row id of the machine currently attached, so its stale failure — and only
-  /// its — can be retired the moment it is disproven.
-  private var currentEntryId: String? {
-    entries.first(where: \.isCurrent)?.id
-  }
-
-  private var currentIdentity: String? {
-    let value = syncService.activeHostProfile?.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return (value?.isEmpty == false) ? value : nil
-  }
-
-  private var currentHostName: String? {
-    let value = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return (value?.isEmpty == false) ? value : nil
-  }
-
-  private var entries: [Entry] {
-    var result: [Entry] = []
-    var seen = Set<String>()
-
-    let accountEntries = account.machines.map { machine in
-      let current = if let currentIdentity, let deviceId = machine.deviceId {
-        isConnected && deviceId.caseInsensitiveCompare(currentIdentity) == .orderedSame
-      } else {
-        false
-      }
-      let lastSeen = machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
-      // An announced sleep beats attached, not the other way round. A channel
-      // to a sleeping machine does not report itself closed — the socket simply
-      // stops answering — so `current` is the flag that has not found out yet,
-      // and the machine's own "I'm going to sleep now" is the better evidence.
-      // Saying "Connected" to a Mac that had been asleep for three minutes is
-      // the bug this ordering exists to fix.
-      let asleep = syncMachinePresence(
-        connected: current,
-        online: machine.online,
-        sleepState: machine.sleepState,
-        sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
-        lastSeenAt: lastSeen
-      ) == .asleep
-      let fleet = current ? nil : fleetMachine(identity: machine.deviceId)
-      let powerClause = syncMachinePowerReadingIsFresh(
-        directoryOnline: machine.online,
-        lastSeenAt: lastSeen
-      ) ? accountMachinePowerClause(machine.power) : nil
-      return (
-        key: (machine.deviceId ?? machine.machineKey).lowercased(),
-        entry: Entry(
-          id: "account-\(machine.id)",
-          name: machine.rowLabel,
-          // Route-neutral to match the saved rows below; the route kind stays
-          // in the Connection details section, never on the primary list. A
-          // machine the fleet holds (or tries to hold) a roster link to says
-          // that instead, in the same line, unless the machine announced
-          // sleep (the rule above: the announcement beats a socket).
-          routeHint: (asleep ? nil : fleet).map {
-            settingsFleetMachineSubtitle($0.state, lastUpdateAt: $0.lastUpdateAt, powerClause: powerClause)
-          } ?? accountMachineDetailLine(
-            isConnected: current && !asleep,
-            isAsleep: asleep,
-            directoryOnline: machine.online,
-            lastSeenAt: lastSeen,
-            power: machine.power
-          ),
-          online: machine.online,
-          isAsleep: asleep,
-          isCurrent: current,
-          kind: .account(machine),
-          fleet: fleet
-        )
-      )
-    }
-
-    // Reachable account routes are preferred, but stale directory rows must
-    // not hide a currently-discovered saved route for the same Mac.
-    for candidate in accountEntries {
-      guard seen.insert(candidate.key).inserted else { continue }
-      result.append(candidate.entry)
-    }
-
-    let live = syncService.discoveredHosts
-    for host in syncService.savedReconnectHosts {
-      let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let key = identity.flatMap { $0.isEmpty ? nil : $0.lowercased() }
-        ?? "name:\(host.hostName.lowercased())"
-      guard seen.insert(key).inserted else { continue }
-      let online = live.contains { sameSyncHost(host, $0) }
-      let identityMatches = if let currentIdentity, let identity {
-        currentIdentity.caseInsensitiveCompare(identity) == .orderedSame
-      } else {
-        false
-      }
-      let nameMatchesWithoutStableIdentity = currentIdentity == nil
-        && identity == nil
-        && currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame
-      let current = isConnected && (identityMatches || nameMatchesWithoutStableIdentity)
-      let fleet = current ? nil : fleetMachine(identity: identity)
-      result.append(Entry(
-        id: "saved-\(host.id)",
-        name: host.hostName,
-        routeHint: fleet.map {
-          settingsFleetMachineSubtitle($0.state, lastUpdateAt: $0.lastUpdateAt, powerClause: nil)
-        } ?? machineReachabilityText(
-          isConnected: current,
-          directoryOnline: online,
-          lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
-        ),
-        online: online,
-        // A directly-paired host publishes no power or sleep state, so it keeps
-        // exactly the row it had before any of this existed.
-        isAsleep: false,
-        isCurrent: current,
-        kind: .saved(host),
-        fleet: fleet
-      ))
-    }
-
-    // A removed machine stays off this list until it comes back (see
-    // `HiddenMachineStore`). The attached machine is never hidden.
-    let visible = result.filter { entry in
-      entry.isCurrent || !hiddenMachines.isHidden(identity: entry.hiddenIdentity)
-    }
-
-    return visible.sorted { lhs, rhs in
-      if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
-      if lhs.isFleetLive != rhs.isFleetLive { return lhs.isFleetLive }
-      if lhs.online != rhs.online { return lhs.online }
-      return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-    }
-  }
-
-  var body: some View {
-    let all = entries
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsSectionHeader(label: "MACHINES")
-
-      // The phone keeps live updates for a limited number of machines.
-      if machineFleet.pairedMachineCount > MachineFleet.liveMachineLimit {
-        MachineFleetLimitNotice(
-          pairedMachineCount: machineFleet.pairedMachineCount,
-          pausedCount: machineFleet.machines.filter { $0.state == .paused }.count
-        )
-      }
-
-      if all.isEmpty {
-        Text("No machines yet. Add one below.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-          .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.5))
-      } else {
-        VStack(spacing: 8) {
-          ForEach(all.prefix(3)) { entry in
-            machineRow(entry)
-          }
-        }
-
-        if all.count > 3 {
-          Button {
-            seeAllPresented = true
-          } label: {
-            HStack(spacing: 6) {
-              Text("See all machines")
-                .font(.subheadline.weight(.semibold))
-              Text("\(all.count)")
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(ADEColor.textMuted)
-              Spacer(minLength: 0)
-              Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(ADEColor.accent)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 4)
-          }
-          .buttonStyle(.plain)
-        }
-      }
-    }
-    .task { await account.loadMachines() }
-    .onChange(of: currentEntryId) { _, entryId in
-      rowErrors = settingsMachineRowErrorsRetiring(rowErrors, attachedEntryId: entryId)
-    }
-    .sheet(isPresented: $seeAllPresented) {
-      allMachinesSheet
-        .environmentObject(machineFleet)
-    }
-    .confirmationDialog(
-      keepLivePrompt.map { "Keep \($0.machineName) live?" } ?? "",
-      isPresented: Binding(get: { keepLivePrompt != nil }, set: { if !$0 { keepLivePrompt = nil } }),
-      titleVisibility: .visible,
-      presenting: keepLivePrompt
-    ) { prompt in
-      Button("Keep \(prompt.machineName) live") {
-        machineFleet.keepLive(machineKey: prompt.machineKey)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: { prompt in
-      Text("The phone keeps live updates for \(MachineFleet.liveMachineLimit) machines at a time. \(prompt.pausedName) will pause and show its last update.")
-    }
-    .sheet(item: $renamingMachine) { machine in
-      SettingsMachineRenameSheet(machine: machine)
-        .presentationDetents([.medium, .large])
-    }
-  }
-
-  private var allMachinesSheet: some View {
-    NavigationStack {
-      ScrollView {
-        LazyVStack(spacing: 8) {
-          ForEach(entries) { entry in
-            machineRow(entry)
-          }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("All machines")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Done") { seeAllPresented = false }
-        }
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func machineRow(_ entry: Entry) -> some View {
-    let isConnecting = connectingId == entry.id
-    // Follows what the row PRESENTS, not the socket: a machine that announced a
-    // suspend while we still held a channel keeps its Wake, and keeps it
-    // tappable, for the seconds it takes that channel to notice.
-    let tappable = !entry.presentsAsConnected && connectingId == nil
-
-    VStack(alignment: .leading, spacing: 0) {
-      Group {
-        if tappable {
-          Button {
-            connect(entry)
-          } label: {
-            machineRowLabel(entry, isConnecting: isConnecting)
-          }
-          .buttonStyle(ADEScaleButtonStyle())
-        } else {
-          machineRowLabel(entry, isConnecting: isConnecting)
-        }
-      }
-      .accessibilityLabel("\(entry.name), \(entry.routeHint)")
-      .accessibilityHint(tappable ? (entry.isAsleep ? "Wake and connect." : "Connect.") : "")
-      .contextMenu {
-        if let machine = accountMachine(from: entry) {
-          Button {
-            renamingMachine = machine
-          } label: {
-            Label("Rename", systemImage: "pencil")
-          }
-        }
-        if let fleetMachine = entry.fleet {
-          if fleetMachine.state == .paused {
-            Button {
-              requestKeepLive(fleetMachine)
-            } label: {
-              Label("Keep live", systemImage: "bolt.fill")
-            }
-          } else if fleetMachine.isPinned {
-            Button {
-              machineFleet.stopKeepingLive(machineKey: fleetMachine.machineKey)
-            } label: {
-              Label("Stop keeping live", systemImage: "bolt.slash")
-            }
-          }
-          if machineFleetCanRetry(fleetMachine.state) {
-            Button {
-              machineFleet.retry(machineKey: fleetMachine.machineKey)
-            } label: {
-              Label("Try again", systemImage: "arrow.clockwise")
-            }
-          }
-        }
-        if canRemove(entry) {
-          Button(role: .destructive) {
-            remove(entry)
-          } label: {
-            Label("Remove from this list", systemImage: "eye.slash")
-          }
-        }
-      }
-      .opacity(tappable || entry.presentsAsConnected ? 1 : 0.72)
-
-      if let error = rowErrors[entry.id] {
-        VStack(alignment: .leading, spacing: 7) {
-          Text(error)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize(horizontal: false, vertical: true)
-          if let fallbackHost = pinFallbackHost(for: entry) {
-            Button("Pair with PIN instead") {
-              onPairWithPin(fallbackHost)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .frame(minHeight: 44)
-            .buttonStyle(.plain)
-          }
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 6)
-      } else if isConnecting, let stage = syncService.accountConnectStageLabel {
-        Text(stage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 12)
-          .padding(.top, 6)
-      }
-    }
-  }
-
-  private func machineRowLabel(_ entry: Entry, isConnecting: Bool) -> some View {
-    MachineRowView(
-      deviceSymbol: deviceSymbol(entry),
-      title: entry.name,
-      routeHint: entry.routeHint,
-      online: entry.online,
-      isAuthenticatedCurrent: entry.presentsAsConnected,
-      statusPill: entry.presentsAsConnected ? .connected : nil,
-      affordance: rowAffordance(entry, isConnecting: isConnecting),
-      surface: .row
-    )
-  }
-
-  /// The fleet's view of this machine (its roster connection), keyed like
-  /// saved profiles: `machine:<device id>`.
-  private func fleetMachine(identity: String?) -> MachineFleet.Machine? {
-    guard let identity = nonEmptyTrimmed(identity) else { return nil }
-    return machineFleet.machine(for: "machine:\(identity.lowercased())")
-  }
-
-  /// Any machine but the one this phone is attached to, or has in focus, can
-  /// leave the list. The focused one would come straight back: focusing a
-  /// machine is connecting to it.
-  private func canRemove(_ entry: Entry) -> Bool {
-    guard !entry.isCurrent else { return false }
-    if let focusedKey = syncService.focusedMachineKey,
-       let focusedIdentity = HiddenMachineStore.identity(fromFleetKey: focusedKey),
-       HiddenMachineStore.key(forIdentity: focusedIdentity) == HiddenMachineStore.key(forIdentity: entry.hiddenIdentity) {
-      return false
-    }
-    return true
-  }
-
-  /// Hides the machine on this phone. A saved pairing keeps its credential, so
-  /// connecting to the machine again (which also brings it back) needs no PIN;
-  /// the fleet drops its roster link and the Hub and Work stop merging it.
-  private func remove(_ entry: Entry) {
-    rowErrors.removeValue(forKey: entry.id)
-    hiddenMachines.hide(
-      identity: entry.hiddenIdentity,
-      isAvailableNow: entry.online || entry.isFleetLive
-    )
-    ADEHaptics.light()
-  }
-
-  private func requestKeepLive(_ machine: MachineFleet.Machine) {
-    if let wouldPause = machineFleet.machineThatWouldPause(forKeepingLive: machine.machineKey) {
-      keepLivePrompt = MachineFleetKeepLivePrompt(
-        machineKey: machine.machineKey,
-        machineName: machine.name,
-        pausedName: wouldPause.name
-      )
-    } else {
-      machineFleet.keepLive(machineKey: machine.machineKey)
-    }
-  }
-
-  private func accountMachine(from entry: Entry) -> AccountMachine? {
-    guard case .account(let machine) = entry.kind else { return nil }
-    return machine
-  }
-
-  private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
-    if isConnecting { return .connecting }
-    // Asleep first, for the same reason the pill defers to it: offering a
-    // checkmark on a machine that announced a suspend tells the user the one
-    // thing they cannot act on.
-    if entry.isAsleep { return .wake }
-    if entry.isCurrent || entry.isFleetLive { return .connected }
-    return .connect
-  }
-
-  private func deviceSymbol(_ entry: Entry) -> String {
-    switch entry.kind {
-    case .account(let machine):
-      return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
-    case .saved:
-      return machineDeviceSymbol(deviceType: nil, platform: nil)
-    }
-  }
-
-  private func pinFallbackHost(for entry: Entry) -> DiscoveredSyncHost? {
-    guard case .account(let machine) = entry.kind,
-          let fallback = syncService.accountPairingPinFallbackHost,
-          fallback.hostIdentity == machine.deviceId else {
-      return nil
-    }
-    return fallback
-  }
-
-  private func connect(_ entry: Entry) {
-    // Same reading as `tappable`, so a row that offers Wake can take the tap.
-    guard !entry.presentsAsConnected, connectingId == nil else { return }
-    connectingId = entry.id
-    rowErrors = [:]
-    Task { @MainActor in
-      switch entry.kind {
-      case .account(let machine):
-        guard let authorization = AccountService.shared.currentPairingAuthorization else {
-          connectingId = nil
-          rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your computer."
-          return
-        }
-        let connected = await syncService.pairWithAccountMachine(
-          machine,
-          authorization: authorization
-        )
-        connectingId = nil
-        if connected {
-          ADEHaptics.success()
-        } else {
-          ADEHaptics.error()
-          rowErrors[entry.id] = settingsMachineRowErrorMessage(
-            attemptFailure: syncService.lastConnectAttemptFailure,
-            lastError: syncService.lastError,
-            fallback: "ADE could not connect to that computer. Try again."
-          )
-        }
-
-      case .saved(let host):
-        // Ask the call what happened. `connectionState` can be attached here
-        // because a failed attempt restored the PREVIOUS machine, which is not
-        // the same thing as this row succeeding.
-        let reconnected = await syncService.reconnect(toSavedHost: host)
-        connectingId = nil
-        if reconnected {
-          ADEHaptics.success()
-        } else {
-          ADEHaptics.error()
-          rowErrors[entry.id] = settingsMachineRowErrorMessage(
-            attemptFailure: syncService.lastConnectAttemptFailure,
-            lastError: syncService.lastError,
-            fallback: "ADE could not reconnect to \(host.hostName)."
-          )
-        }
-      }
-    }
-  }
-}
-
 private struct SettingsAuroraBackground: View {
   var body: some View {
     ZStack {
@@ -1347,6 +743,55 @@ private struct SettingsAuroraBackground: View {
         startRadius: 6,
         endRadius: 240
       )
+    }
+  }
+}
+
+/// Settings > Account: who is signed in, and Sign out.
+struct SettingsAccountPage: View {
+  @ObservedObject private var account = AccountService.shared
+  @State private var confirmSignOut = false
+
+  var body: some View {
+    List {
+      if let identity = account.identity {
+        Section {
+          HStack(spacing: 14) {
+            AccountAvatar(identity: identity)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(identity.displayName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              if let email = identity.email {
+                Text(email)
+                  .font(.footnote)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .truncationMode(.middle)
+              }
+            }
+            Spacer(minLength: 8)
+            ADEFlatBadge(text: identity.providerLabel, tint: identity.accent)
+          }
+          .adeFlatRow(separator: .hidden)
+        }
+      }
+      Section {
+        Button("Sign out", role: .destructive) {
+          confirmSignOut = true
+        }
+        .adeFlatRow()
+      }
+    }
+    .adeFlatList()
+    .navigationTitle("Account")
+    .navigationBarTitleDisplayMode(.inline)
+    .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+      Button("Sign out", role: .destructive) {
+        Task { await account.signOut() }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
     }
   }
 }

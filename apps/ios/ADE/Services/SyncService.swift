@@ -24904,6 +24904,17 @@ extension SyncService {
     return await reconnect(toSavedHost: host)
   }
 
+  /// Settings "Forget on this phone": drops the saved pairing (profile and
+  /// token) of `machineKey`. Returns false when the phone holds none.
+  @discardableResult
+  func forgetMachine(machineKey: String) -> Bool {
+    guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
+          let host = discoveredHost(fromSavedProfile: entry.profile)
+    else { return false }
+    removeSavedHost(host)
+    return true
+  }
+
   /// Open a project that lives on another machine: focus that machine, then
   /// select the project from its catalog.
   func openProject(_ project: MobileProjectSummary, onMachine machineKey: String) async {

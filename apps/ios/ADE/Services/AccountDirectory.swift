@@ -527,6 +527,62 @@ struct AccountDirectoryClient {
   }
 }
 
+extension AccountDirectoryClient {
+  /// Removes a machine from the account (`DELETE /account/machines/<key>`), as
+  /// the desktop's "Remove from account" does. The machine can only rejoin when
+  /// someone confirms it on that computer.
+  func deleteMachine(
+    baseURL: URL,
+    token: String,
+    machineKey: String,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws {
+    let key = machineKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !key.isEmpty else { throw DirectoryError.transport("No machine to remove.") }
+    let url = baseURL
+      .appendingPathComponent("account/machines")
+      .appendingPathComponent(key)
+    let correlationID = UUID().uuidString.lowercased()
+
+    func request(using accessToken: String) async throws -> HTTPURLResponse {
+      var request = URLRequest(url: url)
+      request.httpMethod = "DELETE"
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      request.timeoutInterval = 12
+      request.cachePolicy = .reloadIgnoringLocalCacheData
+      do {
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+          throw DirectoryError.transport("The directory returned an unexpected response.")
+        }
+        return http
+      } catch let error as DirectoryError {
+        throw error
+      } catch {
+        throw DirectoryError.transport("Couldn't reach the machine directory.")
+      }
+    }
+
+    var response = try await request(using: token)
+    if response.statusCode == 401,
+       let refreshToken,
+       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !refreshed.isEmpty {
+      response = try await request(using: refreshed)
+    }
+    switch response.statusCode {
+    case 200...299:
+      return
+    case 401, 403:
+      throw DirectoryError.unauthorized
+    default:
+      throw DirectoryError.server(response.statusCode)
+    }
+  }
+}
+
 /// Authenticated client for the account-wide Attention API hosted by the push
 /// relay. It intentionally shares Clerk session semantics with the account
 /// directory but stores the resulting snapshot in the App Group so widgets
