@@ -31,7 +31,7 @@ import type {
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
   AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
-  keyEventForAgentInput,
+  keyEventsForAgentInput,
   parseObservationElementHandle,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
@@ -355,7 +355,21 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         })
       : null;
     const diagnostics = input.includeDiagnostics === false ? null : snapshotAgentDiagnostics();
+    const visibility = await client
+      .send("Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true })
+      .then((result) => (result as { result?: { value?: unknown } } | null)?.result?.value)
+      .catch(() => null);
     const observation = await writeObservation(session, screenshot, input, dom, elementMapScreenshot, diagnostics);
+    if (visibility === "hidden") {
+      // Not written into the JSON on disk: it describes this capture's
+      // conditions, and the caller reads it from the result.
+      observation.warnings = [
+        "The page reports document.visibilityState \"hidden\" (its window is covered or minimized). "
+          + "The screenshot may be the last frame painted before that, and may not match the DOM. "
+          + "Bring the window forward, or relaunch it through App Control, which passes "
+          + "--disable-backgrounding-occluded-windows and --disable-renderer-backgrounding.",
+      ];
+    }
     if (observation.url) lastObservedUrl = observation.url;
     if (observation.title) lastObservedTitle = observation.title;
     deps.updateSession({ lastObservationId: observation.id });
@@ -707,15 +721,10 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         await captureActionBaseline(client, input, tracker);
       }
       await noteDemoAction(client, session, "key", { element, label: key });
-      const event = keyEventForAgentInput(key);
+      const events = keyEventsForAgentInput(key);
       await deps.enablePageDomain(client);
-      await client.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
-      await client.send("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        ...event,
-        text: undefined,
-        unmodifiedText: undefined,
-      });
+      await client.send("Input.dispatchKeyEvent", events.down);
+      await client.send("Input.dispatchKeyEvent", events.up);
     });
 
   const agentScroll = async (input: AppControlAgentScrollArgs): Promise<AppControlAgentActionResult> =>

@@ -136,6 +136,13 @@ export type ThreadRefreshOptions = {
    * same `refresh` does not restart the provider.
    */
   mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Replaces the thread's `attachmentRoots` (see `ThreadOpenOptions`); `[]`
+   * clears them. On a resume the SDK sends them with `updateSession`, which
+   * needs runtime >= 1.2.82; on a recreate or a create they are the roots the
+   * session starts with. The stored record is updated either way. SDK >= 0.4.
+   */
+  attachmentRoots?: string[];
 };
 
 /** Escape hatches for tests and embedders. Not part of the stable surface. */
@@ -295,6 +302,27 @@ export type ThreadOpenOptions = {
    * differs. See {@link ThreadResumeOptions}.
    */
   cwd?: string;
+  /**
+   * Extra directories an attachment's ABSOLUTE path may point into, beside
+   * the chat's working directory and the runtime's state directory. SDK >= 0.4,
+   * runtime >= 1.2.82 (an older runtime ignores the field, and an attachment
+   * outside the default roots still throws on send).
+   *
+   * Use it for a folder the user drops files from (Downloads, a music
+   * library), so the host can attach the file in place instead of copying it.
+   * Combined with `hydrate: false`, a File Provider placeholder is attached
+   * without being downloaded.
+   *
+   * Each entry follows the `cwd` rules (absolute, no `~`, not a filesystem
+   * root, not the home directory itself, not inside the SDK home); at most 32.
+   * These are READ roots for attachments only: they do not change where the
+   * agent runs, and they are not a sandbox. A path is matched after the
+   * runtime resolves symlinks on both sides (see the attachments guide).
+   *
+   * IGNORED ON RESUME, like `cwd`: a known key keeps the roots on record. Pass
+   * `refresh.attachmentRoots` to replace them on a live thread.
+   */
+  attachmentRoots?: string[];
   /**
    * Which on-disk configuration layers the provider loads.
    *

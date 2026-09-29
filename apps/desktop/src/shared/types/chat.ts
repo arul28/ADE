@@ -2772,6 +2772,12 @@ export type AgentChatSession = {
   importedFrom?: AgentChatImportedFrom;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
+  /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. Validated and canonicalized by the personal-chat scope.
+   */
+  attachmentRoots?: string[];
   createdAt: string;
   lastActivityAt: string;
 } & HostSessionConfigFields & SpawnLineageSessionFields;
@@ -3000,6 +3006,12 @@ export type AgentChatSessionSummary = {
   importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
   /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. Validated and canonicalized by the personal-chat scope.
+   */
+  attachmentRoots?: string[];
+  /**
    * Linear issues attached to this session (chat or CLI), independent of any
    * lane link. Populated from `session_linear_issues`; empty/omitted when the
    * session has no attached issues.
@@ -3188,6 +3200,38 @@ export type AgentChatRewindFilesResult = {
   conversationRollback?: boolean;
   /** Links the SDK could not restore while otherwise completing the rewind. */
   skippedLinks?: number;
+};
+
+/**
+ * Run the chat's last user turn again: roll the provider conversation back to
+ * just before that turn, cut the turn out of the durable transcript, and send
+ * the message again. With `text`, the message is replaced first (edit last).
+ * Files the turn changed are not restored.
+ */
+export type AgentChatRerunLastTurnArgs = {
+  sessionId: string;
+  /** Replacement text. Omit to send the original message again. */
+  text?: string;
+  /** What the transcript shows for `text`, when it differs. Ignored without `text`. */
+  displayText?: string;
+  /** Replacement attachments. Omit to keep the original message's attachments. */
+  attachments?: AgentChatFileRef[];
+};
+
+export type AgentChatRerunLastTurnResult = {
+  /** The first `sequence` removed from the history. Every event at or after it is gone. */
+  retractedFromSequence: number;
+  /** The history generation after the cut. A cached history of an older generation is stale. */
+  historyGeneration: number;
+  /**
+   * How the provider conversation went back. `not_delivered`: the turn never
+   * reached the provider, so only the transcript changed.
+   */
+  conversationRollback:
+    | "claude_fork"
+    | "claude_new_session"
+    | "codex_thread"
+    | "not_delivered";
 };
 
 export type AgentChatClaudeSessionListArgs = {
@@ -3656,6 +3700,12 @@ export type AgentChatCreateArgs = {
   automationRunId?: string | null;
   openInUi?: boolean;
   requestedCwd?: string;
+  /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. Validated and canonicalized by the personal-chat scope.
+   */
+  attachmentRoots?: string[];
   runtimeMode?: AgentChatRuntimeMode;
   goal?: string | null;
   recoveredFromSessionId?: string;
@@ -4892,6 +4942,11 @@ export type AgentChatUpdateSessionArgs = {
    * stores them (see `AgentChatMcpServerConfig.headerNames`).
    */
   mcpServers?: Record<string, AgentChatMcpServerConfig> | null;
+  /**
+   * Personal (SDK) chats only: replaces the chat's `attachmentRoots`. `null` or
+   * an empty list clears them. Refused on any other chat.
+   */
+  attachmentRoots?: string[] | null;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;

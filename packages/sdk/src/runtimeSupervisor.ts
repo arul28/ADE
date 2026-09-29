@@ -417,12 +417,17 @@ export class RuntimeSupervisor {
         this.watch();
         await this.deps.onRebound();
         logger(`ade sdk: runtime restarted (attempt ${attempt})`);
-        emitClient("restart", { attempt, ok: true, error: null });
+        emitClient("restart", { attempt, ok: true, error: null, final: true });
         emitClient("transport", { state: "reconnected", error: null });
         return;
       } catch (error) {
         recordError(`restart attempt ${attempt}`, error);
-        emitClient("restart", { attempt, ok: false, error: errorMessage(error) });
+        emitClient("restart", {
+          attempt,
+          ok: false,
+          error: errorMessage(error),
+          final: attempt >= policy.maxAttempts,
+        });
       }
     }
     logger(`ade sdk: gave up restarting the runtime after ${policy.maxAttempts} attempts`);

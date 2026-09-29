@@ -416,6 +416,19 @@ export function cliArgvOwnsRuntime(argv: readonly string[]): boolean {
   return word !== null && RUNTIME_OWNING_COMMANDS.has(word);
 }
 
+const VERSION_FLAGS = new Set(["--version", "-v"]);
+
+/**
+ * `ade --version`, `ade -v` and `ade version` describe the binary that was
+ * run, so they never delegate. An embedder checks a bundled runtime with
+ * `--version`; when its own process inherited `ADE_CLI_PATH` (it was started
+ * from an ADE terminal), a delegated answer named the ADE app's CLI instead.
+ */
+export function cliArgvAsksVersion(argv: readonly string[]): boolean {
+  if (VERSION_FLAGS.has(argv[0] ?? "")) return true;
+  return cliCommandWord(argv) === "version";
+}
+
 /**
  * Entry-point hook, called once at the top of the CLI bundle. Returns null when
  * this process should run normally. Otherwise the child is already running and
@@ -429,7 +442,7 @@ export function startCliDelegationIfNeeded(): Promise<boolean> | null {
   // delegate their own `ade` calls.
   if (guardSet) delete process.env[CLI_DELEGATED_ENV];
   if (guardSet || process.env.VITEST || !isCliMainArgv(process.argv[1])) return null;
-  if (cliArgvOwnsRuntime(process.argv.slice(2))) return null;
+  if (cliArgvOwnsRuntime(process.argv.slice(2)) || cliArgvAsksVersion(process.argv.slice(2))) return null;
 
   const currentEntry = resolveCurrentCliEntry();
   const target = resolveCliDelegationTarget(process.env, currentEntry);

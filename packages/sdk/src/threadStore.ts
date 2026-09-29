@@ -65,6 +65,8 @@ export type ThreadRecord = {
    */
   instructions?: AgentChatInstructions;
   cwd?: string;
+  /** Host-approved attachment read roots (SDK >= 0.4). See `ThreadOpenOptions.attachmentRoots`. */
+  attachmentRoots?: string[];
   settingSources?: AgentChatSettingSources;
   permissionPolicy?: ThreadPermissionPolicy;
   /**
@@ -259,6 +261,10 @@ function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean }
         ? { instructions: record.instructions }
         : {}),
       ...(typeof record.cwd === "string" && record.cwd ? { cwd: record.cwd } : {}),
+      ...(Array.isArray(record.attachmentRoots)
+        && record.attachmentRoots.every((root) => typeof root === "string" && root.length > 0)
+        ? { attachmentRoots: [...record.attachmentRoots] }
+        : {}),
       ...(isStoredSettingSources(record.settingSources)
         ? { settingSources: record.settingSources }
         : {}),

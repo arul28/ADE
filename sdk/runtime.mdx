@@ -96,6 +96,7 @@ The SDK and the runtime release on separate cadences, and a downloaded runtime c
 
 | SDK | Supported runtime |
 |---|---|
+| 0.4.0 | `>=1.2.82 <2.0.0` |
 | 0.3.0 | `>=1.2.81 <2.0.0` |
 
 ```ts
@@ -105,7 +106,7 @@ import { SUPPORTED_RUNTIME_RANGE } from "@ade-dev/sdk";
 After the handshake, the SDK compares the runtime's reported version with the range:
 
 - **Inside the range:** nothing happens.
-- **Outside the range:** the runtime still connects. The SDK logs one line, and features that the runtime lacks degrade feature by feature. For example, `thread.updateMcpServers()` throws `invalid_option`, and `hydrate: false` is ignored.
+- **Outside the range:** the runtime still connects. The SDK logs one line, and features that the runtime lacks degrade feature by feature. For example, `thread.updateMcpServers()` throws `invalid_option`, `hydrate: false` is ignored, `thread.retry()` throws `unsupported`, and `attachmentRoots` is ignored.
 - **With `requireCompatibleRuntime: true`:** `createAdeChat` throws `AdeError("runtime_incompatible")` and stops the runtime.
 
 A pre-release suffix is ignored, so `1.2.81-alpha.3` counts as `1.2.81`. A development build (`0.0.0`, or no version) counts as supported, and `note` says so. A version that the SDK cannot parse counts as not supported.

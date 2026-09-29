@@ -29,7 +29,7 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 
 `resolvePackagedRuntime(resourcesPath, { dir?, platform?, arch? })` returns `{ binaryPath, runtimeRoot, runtimeNodeModules, source: "packaged" }` or `null`. Spread it into the options. See [Bundling](/sdk/bundling#inside-a-packaged-app).
 
-`SUPPORTED_RUNTIME_RANGE` is the runtime range this SDK build supports. SDK 0.3.0 supports `>=1.2.81 <2.0.0`.
+`SUPPORTED_RUNTIME_RANGE` is the runtime range this SDK build supports. See [Version compatibility](/sdk/runtime#version-compatibility) for each SDK version's range.
 
 Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev/runtime-<target>` package, then the home cache, then `ade` on `PATH`, then a download. See [Bundling](/sdk/bundling).
 
@@ -39,13 +39,16 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 |---|---|
 | `threads.open(key, opts?)` | Open-or-resume. Create requires `provider` + `model`. Resume reads the stored record. |
 | `threads.list()` | Every chat in this home as [`ThreadSummary`](#threadsummary), archived ones included. Not sorted. |
+| `threads.get(key)` | One chat's [`ThreadSummary`](#threadsummary), or `null` when the runtime has no session for the key. SDK 0.4. |
 | `threads.delete(key)` | Interrupt a running turn, delete the runtime session and its transcript, and remove the key. |
 | `threads.archive(key)` / `threads.unarchive(key)` | Keep the key and the transcript; `list()` reports `archived`. A running turn is interrupted first. |
-| `on("exit" \| "transport" \| "restart", cb)` | Runtime lifecycle events. See [Runtime](/sdk/runtime#when-the-runtime-exits). Returns unsubscribe. |
+| `on("exit" \| "transport" \| "restart" \| "threadLifecycle", cb)` | Runtime and thread lifecycle events. See [Runtime](/sdk/runtime#when-the-runtime-exits) and [Client events](#client-events). Returns unsubscribe. |
 | `providers.status()` | Map of provider id → [`ProviderStatus`](#providerstatus). Served from the runtime's probe cache. |
 | `providers.refresh()` | The same map with the probe cache bypassed. Spawns `--version` per provider. |
 | `providers.onChange(cb)` | Full status list on each change. Never bypasses the cache. Returns unsubscribe. |
 | `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
+| `models.onChange(cb)` | The whole catalog, each time a model's id, `isAvailable`, `connected` or `isDefault` changes. Not called on subscribe. Returns unsubscribe. SDK 0.4. |
+| `models.defaultModel({ available?, providers? }?)` | The model a new thread should use, or `null`. See [`pickDefaultModel`](#pickdefaultmodel). SDK 0.4. |
 | `doctor()` | Structured health check. |
 | `exportThread(key)` | Transcript as JSONL. |
 | `dispose()` | Stop the runtime. Idempotent. Ends in-flight turns without `error`/`done`. |
@@ -59,16 +62,17 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `permissions` | `"always-allow"` \| `"default"` \| `ThreadPermissionPolicy`. See [Permissions](/sdk/permissions). |
 | `instructions` | `string \| { mode: "append" \| "replace", text }`. A bare string means append. |
 | `cwd` | Absolute path the provider runs in. Created at mode `0755`. Defaults to `<home>/personal-chats/workspaces`. |
+| `attachmentRoots` | `string[]`. Extra directories an absolute attachment path may point into. Same rules as `cwd`; at most 32. Runtime 1.2.82 or later. See [Attachments](/sdk/threads#where-a-path-may-point). SDK 0.4. |
 | `settingSources` | `"none"` (default) \| `"project"` \| `"user"` \| `"all"`. |
 | `reasoningEffort` | Provider-native effort token, when the model offers one. |
 | `title` | Display title stored on the thread record. |
 | `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
 | `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
-| `refresh` | `{ mcpServers }`. Replaces the thread's MCP servers on a resume, so a new token or port takes effect. The one option a resume does not ignore. |
+| `refresh` | `{ mcpServers?, attachmentRoots? }`. Replaces the thread's MCP servers or attachment roots on a resume, so a new token, port or folder takes effect. The one option a resume does not ignore. |
 
 All four host-configuration options persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
 
-They apply on **create only**, with one exception: `refresh.mcpServers`. A resume reads `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
+They apply on **create only**, with one exception: `refresh`. A resume reads `cwd`, `attachmentRoots`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
 
 A **recreate** (the key is stored, but the runtime lost its session) uses the stored record first. This call's options fill only fields the record does not have. The SDK logs one line for each stored value it used.
 
@@ -96,7 +100,8 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `steer(text, { attachments }?)` | Mid-turn follow-up. Does not start a turn. Text or at least one attachment. |
 | `interrupt()` | Stop the in-flight turn. |
 | `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. Returns the selection plus `capabilities` (the four reports for the new provider), and emits `capabilities_changed` on the `status` channel. |
-| `update({ title?, reasoningEffort?, fastMode? }, { force? }?)` | Rename, or change effort or fast mode. A rename always works; the other two are refused mid-turn unless `{ force: true }`. Returns `{ title, model }`. |
+| `update({ title?, reasoningEffort?, fastMode? }, { force? }?)` | Rename, or change effort or fast mode. A rename always works; the other two are refused mid-turn with `turn_in_flight` unless `{ force: true }`. Returns `{ title, model }`. |
+| `retry()` / `editLast(text, { displayText?, attachments? }?)` | Run the last user message again, or a new one in its place. The old turn leaves the history. Claude and Codex, runtime 1.2.82. Returns `{ retractedFromSequence, historyGeneration, conversationRollback }`. See [Retry and edit](/sdk/threads#retry-and-edit). SDK 0.4. |
 | `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn. Returns the new `mcpCapability`. Needs runtime 1.2.81 or later. |
 | `history({ limit }?)` | Envelopes in transcript order. |
 | `historyPage({ beforeSequence?, limit? }?)` | One page: `{ events, hasMore, nextBeforeSequence }`. Omit `beforeSequence` for the newest page. |
@@ -108,6 +113,28 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. When the runtime exits, each live thread receives `{ type: "status", turnStatus: "failed", message, synthetic: true }` on `status`. |
 
 The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
+
+## Client events {#client-events}
+
+| Event | Payload | |
+|---|---|---|
+| `exit` | `{ code, signal, error }` | The runtime this client spawned exited without `dispose()`. |
+| `transport` | `{ state: "closed" \| "reconnected", error }` | The socket closed, or `autoRestart` brought it back. |
+| `restart` | `{ attempt, ok, error, final }` | One `autoRestart` attempt finished. `final` (SDK 0.4) is `true` when no attempt follows: it succeeded, or it was the last one `maxAttempts` allows. |
+| `threadLifecycle` | `{ key, change: "deleted" \| "archived" \| "unarchived" }` | A `threads.delete`, `archive` or `unarchive` through this client succeeded, from main or from a renderer over the bridge. SDK 0.4. |
+
+## `pickDefaultModel` {#pickdefaultmodel}
+
+```ts
+function pickDefaultModel(
+  models: readonly ModelCatalogEntry[],
+  opts?: { available?: boolean; providers?: readonly string[] },
+): ModelCatalogEntry | null
+```
+
+`available` (default `true`) keeps only models with `isAvailable` and `connected`. `providers` keeps only those providers and tries them in order. Within a provider, or within all of them when `providers` is absent, the catalog's `isDefault` model wins, then the first model the catalog lists. `client.models.defaultModel(opts)` is the same rule on a fresh catalog.
+
+`isSupportedProvider(value)` narrows a string such as `ModelCatalogEntry.provider` to `AdeProvider` without a cast.
 
 ## `ThreadSummary` {#threadsummary}
 
@@ -216,9 +243,13 @@ type DoctorReport = {
 
 `AdeError` with `code`:
 
-`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed`
+`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed` · `turn_in_flight` · `unsupported`
 
-`setModel` mid-turn without `{ force: true }` throws `invalid_option`. So does a relative or refused `cwd`, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code.
+`turn_in_flight` (SDK 0.4) is every refusal that exists only because a turn is running: `setModel` or a reasoning `update` without `{ force: true }`, and a runtime action that must wait for the turn to end. Nothing changed; wait for the turn to finish, or call `interrupt()`, then call again. Before 0.4 these used `invalid_option`.
+
+`unsupported` (SDK 0.4): the provider or the runtime cannot do what you asked. `retry()` and `editLast()` throw it for a provider other than Claude or Codex, and on a runtime without the `rerunLastTurn` action.
+
+A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRoots` entry, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code.
 
 `runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
 

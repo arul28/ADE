@@ -30,6 +30,22 @@ export function summaryTurnActive(summary: AgentChatSessionSummary | null | unde
  * personalChatScope.ts`). Unwrapping in one place keeps that envelope from
  * leaking into the public API.
  */
+/**
+ * The SDK code for a runtime refusal that names its own reason, or null.
+ *
+ * The runtime puts the reason in the JSON-RPC `error.data.code`, and also at
+ * the start of the message (`turn_in_flight: …`) for a transport that drops
+ * `data`. `turn_in_flight`: the refusal exists only because a turn is running.
+ * `unsupported`: the provider cannot do what was asked (for example `retry`).
+ */
+function runtimeErrorCode(error: AdeError): "turn_in_flight" | "unsupported" | null {
+  const data = (error.cause as { data?: { code?: unknown } } | undefined)?.data;
+  const fromData = typeof data?.code === "string" ? data.code : null;
+  if (fromData === "turn_in_flight" || fromData === "unsupported") return fromData;
+  const prefix = /(?:^|: )(turn_in_flight|unsupported):/.exec(error.message);
+  return prefix ? (prefix[1] as "turn_in_flight" | "unsupported") : null;
+}
+
 export class PersonalChatsApi {
   private readonly connectionOf: () => JsonRpcConnection;
 
@@ -65,8 +81,14 @@ export class PersonalChatsApi {
         timeoutMs ? { timeoutMs } : {},
       );
     } catch (error) {
-      if (error instanceof AdeError && error.code === "rpc_error" && /invalid_argument:/.test(error.message)) {
-        throw new AdeError("invalid_option", error.message, { cause: error });
+      if (error instanceof AdeError && error.code === "rpc_error") {
+        // A stable code from the runtime (1.2.82+) wins over the prose rule
+        // below: a mid-turn refusal can also carry `invalid_argument:` text.
+        const runtimeCode = runtimeErrorCode(error);
+        if (runtimeCode) throw new AdeError(runtimeCode, error.message, { cause: error });
+        if (/invalid_argument:/.test(error.message)) {
+          throw new AdeError("invalid_option", error.message, { cause: error });
+        }
       }
       throw error;
     }
@@ -171,6 +193,20 @@ export class PersonalChatsApi {
    */
   updateSession(args: Record<string, unknown>): Promise<AgentChatSessionSummary | null> {
     return this.call<AgentChatSessionSummary | null>("updateSession", args);
+  }
+
+  /**
+   * Rolls the last user turn back and sends it again, or `text` in its place.
+   * The runtime cuts the turn out of the history before it sends, so the
+   * timeout covers a provider rollback as well as the dispatch.
+   */
+  rerunLastTurn(args: {
+    sessionId: string;
+    text?: string;
+    displayText?: string;
+    attachments?: AgentChatFileRef[];
+  }): Promise<{ retractedFromSequence: number; historyGeneration: number; conversationRollback: string } | null> {
+    return this.call("rerunLastTurn", args, 300_000);
   }
 
   /**

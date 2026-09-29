@@ -46,6 +46,7 @@ packages/chat-ui/
       ApprovalCard.tsx           inline approval card
       transcriptRows.ts          ported row collapsing/grouping
       markdown.tsx               dependency-free markdown renderer
+      links.tsx                  AdeLink + onLinkClick context (every link chat-ui draws)
     models/
       ModelPicker.tsx            rail + search + grouped list
       ProviderCard.tsx           ProviderCard, ProviderCards
@@ -83,6 +84,11 @@ Transcript above, composer with the model rail below. No header bar.
 | `theme` | `Partial<AdeChatTheme>` | — | usually `createTheme(...)` |
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
+| `value` / `onValueChange` | | — | controlled draft, forwarded to `<Composer>` (0.4) |
+| `onSend` | `(input, thread) => void \| boolean \| Promise<…>` | — | runs before a new message is sent; return `false` to take over (0.4) |
+| `children` | `(thread: ThreadState) => ReactNode` | — | drawn between transcript and composer (0.4) |
+| `threadRef` | `{ current: ThreadState \| null }` | — | the live thread state for code outside the tree (0.4) |
+| `onLinkClick` | `(href, { source, text }) => void` | — | handle links yourself; pass it in Electron (0.4) |
 | `modelRail` | `ReactNode` | built-in picker | replaces the default picker; `null` = empty rail |
 | `actions` | `ReactNode` | — | extra composer controls (right rail) |
 | `attachments` / `onAttachmentsChange` | | — | controlled staging; see the merge rule under `<Composer>` |
@@ -145,6 +151,7 @@ it.
 | `hideReasoning` | `boolean` | `false` | |
 | `expandReasoning` | `boolean` | `false` | reasoning starts collapsed |
 | `renderMarkdown` | `(text: string) => ReactNode` | built-in | |
+| `onLinkClick` | `(href, { source, text }) => void` | — | chat-ui calls `preventDefault()` and hands you the link. Without it, links open with `target="_blank"` — in Electron, a chrome-less app window (0.4) |
 | `onApprove` | `(itemId, decision) => void \| Promise<void>` | — | omit to render approval cards read-only |
 | `approvals` | `{ render?, labels? }` | — | custom approval card and button wording |
 | `emptyState` | `ReactNode` | `"No messages yet."` | |

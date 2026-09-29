@@ -30,6 +30,7 @@ import type {
   ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
+  ThreadUpdatePatch,
   ThreadUsage,
 } from "../sdkTypes";
 import type { ActivityLabelConfig } from "../activity/labels";
@@ -152,6 +153,21 @@ export type ThreadState = {
   interrupt: () => Promise<void>;
   /** Switch the open thread's model in place. No-op when already bound to it. */
   setModel: (modelId: string) => Promise<void>;
+  /**
+   * Change the open thread's title, reasoning effort or fast mode. Rejects
+   * with the thread's own error (a reasoning change mid-turn is refused with
+   * code `turn_in_flight`). No-op on a thread without `update`; check
+   * `canUpdate`.
+   */
+  update: (patch: ThreadUpdatePatch) => Promise<void>;
+  /**
+   * Run the last user message again, or with new text (`editLast`). The
+   * transcript reloads when the runtime reports the old turn removed, so the
+   * message shows once. Rejects with the thread's error (`turn_in_flight`,
+   * `unsupported`). No-op on a thread without them; check `canRetry`.
+   */
+  retry: () => Promise<void>;
+  editLast: (input: SendInput | string) => Promise<void>;
   /** Answer an approval. No-op on a thread that cannot answer them. */
   approve: (itemId: string, decision: ApprovalDecision, responseText?: string) => Promise<void>;
   /** Outstanding approvals, or `[]` on a thread that cannot report them. */
@@ -168,6 +184,10 @@ export type ThreadState = {
    * reason instead of offering a button whose click would throw.
    */
   canApprove: boolean;
+  /** Whether the open thread has `update` (an SDK >= 0.3 thread does). */
+  canUpdate: boolean;
+  /** Whether the open thread has `retry` and `editLast` (an SDK >= 0.4 thread does). */
+  canRetry: boolean;
   /**
    * The model the runtime has the thread on, as it resolved it — which can be
    * a successor of the id the host asked for. Read on open and after every
@@ -228,6 +248,10 @@ function cursorFrom(
  * one patches the tail rather than rebuilding every row; the collapse rules
  * (streaming text merge, tool call→result upgrade) are the same code for
  * replayed and live events. Loading an older page rebuilds once.
+ *
+ * After the client reports a successful runtime restart (`client.on("restart")`
+ * with `ok: true`), the thread is re-opened and its history re-read. The old
+ * rows stay on screen until the new history replaces them.
  */
 export function useAdeThread(
   key: string,
@@ -287,6 +311,15 @@ export function useAdeThread(
   const [status, setStatus] = useState<ThreadStatus>(IDLE_STATUS);
   const [usage, setUsage] = useState<ThreadUsage | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  /**
+   * Bumped after the client reports a successful runtime restart, to re-run
+   * the open effect: the runtime may have recreated the session, and events
+   * that were emitted while the old one died never reached this view. The ref
+   * tells that re-run to keep the old rows on screen until the fresh history
+   * replaces them, rather than flashing an empty transcript.
+   */
+  const [restartEpoch, setRestartEpoch] = useState(0);
+  const reopenAfterRestartRef = useRef(false);
 
   const modelId = options?.modelId;
   const providerId = options?.providerId;
@@ -328,14 +361,27 @@ export function useAdeThread(
   );
 
   useEffect(() => {
+    if (typeof client.on !== "function") return;
+    return client.on("restart", (payload) => {
+      if (!payload.ok) return;
+      reopenAfterRestartRef.current = true;
+      setRestartEpoch((value) => value + 1);
+    });
+  }, [client]);
+
+  useEffect(() => {
     let cancelled = false;
     const disposers: Array<() => void> = [];
     const epoch = ++openEpochRef.current;
+    const keepRows = reopenAfterRestartRef.current;
+    reopenAfterRestartRef.current = false;
 
     setThread(null);
-    envelopesRef.current = [];
-    builderRef.current = new TranscriptRowBuilder();
-    setRows([]);
+    if (!keepRows) {
+      envelopesRef.current = [];
+      builderRef.current = new TranscriptRowBuilder();
+      setRows([]);
+    }
     setOlderCursor(null);
     setLoadingOlder(false);
     // An older-page read from the previous key may still be in flight; its
@@ -376,6 +422,14 @@ export function useAdeThread(
         };
         disposers.push(
           opened.on("event", (envelope) => {
+            // The runtime rewrote the transcript (a retry or an edit removed
+            // the last turn). The rows held here still show the removed turn,
+            // so re-open and re-read, keeping the rows on screen meanwhile.
+            if (isHistoryInvalidation(envelope)) {
+              reopenAfterRestartRef.current = true;
+              setRestartEpoch((value) => value + 1);
+              return;
+            }
             if (!historyApplied) {
               live.push(envelope);
               return;
@@ -446,7 +500,7 @@ export function useAdeThread(
       for (const dispose of disposers) dispose();
     };
     // `modelId` is intentionally absent: see requestedModelIdRef above.
-  }, [client, key, providerId, resume, enabled, rebuildRows]);
+  }, [client, key, providerId, resume, enabled, rebuildRows, restartEpoch]);
 
   const threadRef = useRef<AdeThread | null>(null);
   threadRef.current = thread;
@@ -481,6 +535,33 @@ export function useAdeThread(
     if (threadRef.current === target) {
       setModelInfo(target.model ?? readThreadModelSelection(selection));
     }
+  }, []);
+
+  /** See `ThreadState.update`. */
+  const update = useCallback(async (patch: ThreadUpdatePatch) => {
+    const target = threadRef.current;
+    if (typeof target?.update !== "function") return;
+    const updated = await target.update(patch);
+    // A reasoning change can move the runtime to a different resolved model
+    // entry; read the thread's live property, then what `update` returned.
+    if (threadRef.current === target) {
+      const next = target.model ?? readThreadModelSelection(
+        (updated as { model?: unknown } | null | undefined)?.model,
+      );
+      if (next) setModelInfo(next);
+    }
+  }, []);
+
+  /** See `ThreadState.retry`. */
+  const retry = useCallback(async () => {
+    const target = threadRef.current;
+    if (typeof target?.retry !== "function") return;
+    await target.retry();
+  }, []);
+  const editLast = useCallback(async (input: SendInput | string) => {
+    const target = threadRef.current;
+    if (typeof target?.editLast !== "function") return;
+    await target.editLast(input);
   }, []);
 
   /** See `ThreadState.loadOlder`. */
@@ -552,15 +633,26 @@ export function useAdeThread(
     steer,
     interrupt,
     setModel,
+    update,
+    retry,
+    editLast,
     approve,
     pendingApprovals,
     canSetModel: typeof thread?.setModel === "function",
     canApprove: typeof thread?.approve === "function",
+    canUpdate: typeof thread?.update === "function",
+    canRetry: typeof thread?.retry === "function" && typeof thread?.editLast === "function",
     model,
     hasOlder: olderCursor !== null,
     loadingOlder,
     loadOlder,
   };
+}
+
+/** A `session_meta_updated` envelope saying the durable transcript was rewritten. */
+function isHistoryInvalidation(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event as { type?: unknown; historyInvalidated?: unknown } | undefined;
+  return event?.type === "session_meta_updated" && event.historyInvalidated === true;
 }
 
 /**

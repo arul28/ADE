@@ -315,6 +315,11 @@ export const SUPPORTED_PROVIDERS: readonly AdeProvider[] = [
   "pi",
 ];
 
+/**
+ * Narrow a provider string (for example `ModelCatalogEntry.provider`, typed
+ * open for catalog groups newer than this SDK) to `AdeProvider` without a cast.
+ * Exported from the package root since SDK 0.4.
+ */
 export function isSupportedProvider(value: string): value is AdeProvider {
   return (SUPPORTED_PROVIDERS as readonly string[]).includes(value);
 }

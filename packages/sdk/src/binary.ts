@@ -22,9 +22,14 @@ const execFileAsync = promisify(execFile);
  * Which of the five resolution steps produced the binary. Reported verbatim on
  * `doctor().runtime.source`, where it is the difference between a five-minute
  * diagnosis of a packaging mistake and a day of one.
+ *
+ * `"packaged"` is an explicit binary whose options came from
+ * `resolvePackagedRuntime()` (SDK >= 0.4 lists it here; before, only
+ * `DoctorReport["runtime"]["source"]` had it).
  */
 export type ResolvedBinarySource =
   | "explicit"
+  | "packaged"
   | "bundled-package"
   | "cached-download"
   | "path"
@@ -40,6 +45,7 @@ export type LegacyResolvedBinarySource = "option" | "path" | "cache" | "download
 
 export const LEGACY_BINARY_SOURCE: Record<ResolvedBinarySource, LegacyResolvedBinarySource> = {
   explicit: "option",
+  packaged: "option",
   "bundled-package": "option",
   "cached-download": "cache",
   path: "path",
@@ -339,9 +345,14 @@ export async function readBinaryVersion(
     // The sidecar env must be in place before ANY `--version` run: the binary
     // loads its native modules through it, so a preflight without it tests a
     // configuration the real runtime never uses.
-    const resolvedEnv = runtimeRoot
+    const spawnEnv = runtimeRoot
       ? runtimeSpawnEnv(runtimeRoot, env, nodeModulesPath ?? undefined)
       : env;
+    // An `ade` started from inside another ADE (a host launched from an ADE
+    // terminal inherits `ADE_CLI_PATH`) hands most commands, `--version`
+    // included on runtime 1.2.81 and older, to THAT CLI. The probe then
+    // reported the desktop app's version, not this binary's.
+    const resolvedEnv = { ...spawnEnv, ADE_CLI_NO_DELEGATE: "1" };
     // A PATH-discovered `ade` can be a .cmd shim, which Node refuses to execute
     // directly (CVE-2024-27980). Without this, doctor() reported a null version
     // for a perfectly working install.

@@ -32,6 +32,7 @@ import type { ActivityLabelConfig } from "../activity/labels";
 import { resolveActivityLabel, DEFAULT_THINKING_LABEL } from "../activity/labels";
 import type { ThreadStatus } from "../sdkTypes";
 import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./ApprovalCard";
+import { AdeLinkHandlerProvider, type AdeLinkClickHandler } from "./links";
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
 import { ToolChip, type ToolChipAction } from "./ToolChip";
 import type { ToolChipRow, TranscriptRow } from "./transcriptRows";
@@ -50,6 +51,15 @@ export type TranscriptProps = {
   expandReasoning?: boolean;
   /** Replace the built-in markdown renderer. */
   renderMarkdown?: (text: string) => ReactNode;
+  /**
+   * Decide what a link in assistant text does (see `AdeLinkClickHandler`).
+   * Without it a link opens with `target="_blank"`. In Electron that is a new,
+   * chrome-less app window showing a URL a model wrote, so an Electron host
+   * should pass this and open allowed URLs with `shell.openExternal`. A custom
+   * `renderMarkdown` draws its own links; this applies only to the built-in
+   * renderer (and to anything that renders `<AdeLink>`).
+   */
+  onLinkClick?: AdeLinkClickHandler;
   /**
    * Answer an approval. Omit when the thread has no `approve`: approval cards
    * then render read-only with a line saying why.
@@ -113,6 +123,7 @@ export function Transcript({
   hideReasoning = false,
   expandReasoning = false,
   renderMarkdown = defaultRenderMarkdown,
+  onLinkClick,
   onApprove,
   approvals,
   renderToolResult,
@@ -203,59 +214,61 @@ export function Transcript({
     || (status === "running" && (visible.length === 0 || tail!.event.type !== "tool_chip"));
 
   return (
-    <div
-      ref={scrollRef}
-      className={["adechat-transcript", className].filter(Boolean).join(" ")}
-      onScroll={handleScroll}
-      role="log"
-      aria-live="polite"
-      aria-relevant="additions text"
-    >
-      {hasOlder && onLoadOlder ? (
-        <button
-          type="button"
-          className="adechat-transcript-older"
-          onClick={() => void onLoadOlder()}
-          disabled={loadingOlder}
-        >
-          {loadingOlder ? "Loading older messages…" : "Load older messages"}
-        </button>
-      ) : null}
+    <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+      <div
+        ref={scrollRef}
+        className={["adechat-transcript", className].filter(Boolean).join(" ")}
+        onScroll={handleScroll}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+      >
+        {hasOlder && onLoadOlder ? (
+          <button
+            type="button"
+            className="adechat-transcript-older"
+            onClick={() => void onLoadOlder()}
+            disabled={loadingOlder}
+          >
+            {loadingOlder ? "Loading older messages…" : "Load older messages"}
+          </button>
+        ) : null}
 
-      {visible.length === 0 && !showActivity ? (
-        <div className="adechat-transcript-empty">{emptyState ?? "No messages yet."}</div>
-      ) : null}
+        {visible.length === 0 && !showActivity ? (
+          <div className="adechat-transcript-empty">{emptyState ?? "No messages yet."}</div>
+        ) : null}
 
-      {topSpacer > 0 ? (
-        <div className="adechat-transcript-spacer" style={{ height: topSpacer }} aria-hidden="true" />
-      ) : null}
+        {topSpacer > 0 ? (
+          <div className="adechat-transcript-spacer" style={{ height: topSpacer }} aria-hidden="true" />
+        ) : null}
 
-      {rendered.map((row) => (
-        <RowSlot key={row.key} rowKey={row.key} observer={observer}>
-          <TranscriptRowView
-            row={row}
-            {...(labels ? { labels } : {})}
-            expandReasoning={expandReasoning}
-            renderMarkdown={renderMarkdown}
-            {...(onApprove ? { onApprove } : {})}
-            {...(approvals ? { approvals } : {})}
-            {...(renderToolResult ? { renderToolResult } : {})}
-            {...(toolChipActions ? { toolChipActions } : {})}
+        {rendered.map((row) => (
+          <RowSlot key={row.key} rowKey={row.key} observer={observer}>
+            <TranscriptRowView
+              row={row}
+              {...(labels ? { labels } : {})}
+              expandReasoning={expandReasoning}
+              renderMarkdown={renderMarkdown}
+              {...(onApprove ? { onApprove } : {})}
+              {...(approvals ? { approvals } : {})}
+              {...(renderToolResult ? { renderToolResult } : {})}
+              {...(toolChipActions ? { toolChipActions } : {})}
+            />
+          </RowSlot>
+        ))}
+
+        {bottomSpacer > 0 ? (
+          <div className="adechat-transcript-spacer" style={{ height: bottomSpacer }} aria-hidden="true" />
+        ) : null}
+
+        {showActivity ? (
+          <ActivityIndicator
+            labels={labels}
+            {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
           />
-        </RowSlot>
-      ))}
-
-      {bottomSpacer > 0 ? (
-        <div className="adechat-transcript-spacer" style={{ height: bottomSpacer }} aria-hidden="true" />
-      ) : null}
-
-      {showActivity ? (
-        <ActivityIndicator
-          labels={labels}
-          {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
-        />
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </AdeLinkHandlerProvider>
   );
 }
 

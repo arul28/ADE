@@ -1,6 +1,6 @@
 ---
 title: "Electron"
-description: "Bridge @ade-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, a copy-paste sandboxed preload, createAdeIpcClient, the openOptions hook, and runtime lifecycle events."
+description: "Bridge @ade-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, a copy-paste sandboxed preload, createAdeIpcClient, the openOptions hook, link handling, and runtime lifecycle events."
 icon: "atom"
 ---
 
@@ -70,6 +70,38 @@ app.on("before-quit", async () => {
 
 `registerAdeIpc` returns a disposer. Call it before `client.dispose()` so no event is pushed at a closing runtime.
 
+The disposer also has a `forget(key)` method (SDK 0.4). It releases every renderer's handles and subscriptions for one key and does not touch the conversation. You seldom need it: the bridge already releases a key when it is deleted through the client it serves, by a renderer or by your own `client.threads.delete(key)` in main. Call `forget` for a key that you removed some other way.
+
+## Links in the chat
+
+`@ade-dev/chat-ui` draws links in assistant text and a "Documentation" link on `ProviderCard`. Without a handler these links use `target="_blank"`. In Electron, `target="_blank"` opens a new `BrowserWindow` with no browser chrome. That window looks like part of your app and shows a URL that a model wrote, so text from a prompt injection becomes a phishing page inside your app.
+
+Do two things:
+
+1. Pass `onLinkClick` to `<AdeChat>`, `<Transcript>`, `<ProviderCard>` or `<ProviderCards>`. chat-ui then calls `preventDefault()` and gives you the link. Nothing opens unless you open it.
+2. Deny new windows in main as a backstop, for any link that you did not handle.
+
+```tsx
+// renderer
+<AdeChat
+  client={client}
+  threadKey="main"
+  onLinkClick={(href, { source }) => window.app.openExternal(href, source)}
+/>
+```
+
+```ts
+// main
+window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+ipcMain.handle("app:open-external", (_event, href: string) => {
+  const url = new URL(href);
+  if (url.protocol === "https:" && ALLOWED_HOSTS.has(url.host)) return shell.openExternal(href);
+});
+```
+
+`source` is `"markdown"` for a link in assistant text and `"provider-docs"` for a provider card's documentation link. `href` has already passed chat-ui's `safeHref`, so it is never `javascript:` or `data:`. Check the host in main anyway: the renderer is not trusted.
+
 ### Hosts with many threads
 
 The example pins one key. A host with a chat list has many keys, and `allowThreadKey` must then check that the key is in **your own catalog**: a `Set` of the keys you created, or a lookup in the store that holds your chat list. Do not check a prefix such as `key.startsWith("chat-")`. A compromised renderer can make any number of keys that match a prefix, and each new key opens a new thread with the tool surface that your options give it.
@@ -84,6 +116,28 @@ registerAdeIpc(ipcMain, client, {
 ```
 
 Add a key to the catalog in main when the user creates a chat, before the renderer opens it. Remove the key when you delete the thread.
+
+From SDK 0.4 the gate can be async, so it can ask the runtime instead of a copy that you keep in sync by hand:
+
+```ts
+allowThreadKey: async (key) => key === "new-chat" || (await client.threads.get(key)) !== null,
+```
+
+The gate runs on every keyed call, so keep it cheap. `allowModel` can also be async.
+
+To keep your own list correct when a renderer deletes or archives a chat over the bridge, listen for `threadLifecycle` in main:
+
+```ts
+client.on("threadLifecycle", ({ key, change }) => {
+  if (change === "deleted") catalog.delete(key);
+});
+```
+
+To stop the renderer from deleting or archiving at all, refuse those methods in `authorize`:
+
+```ts
+authorize: (event, method) => isTrustedFrame(event.sender) && method !== "threads.delete",
+```
 
 ### Preload
 
@@ -122,7 +176,16 @@ contextBridge.exposeInMainWorld("ade", {
 
 This is what `exposeAdeBridge` in `@ade-dev/sdk/electron/preload` does. The surface is two functions. Every method name and argument shape is in the renderer half, so this file does not change when the SDK adds methods. A preload that you wrote for 0.2 keeps working with 0.3.
 
-The channel name is the contract between two processes. A wrong name gives no error: the bridge never answers. Keep a test in main that compares your names with `invokeChannel(prefix)` and `eventChannel(prefix)` from `@ade-dev/sdk/electron`.
+The channel name is the contract between two processes. A wrong name gives no error: the bridge never answers. From SDK 0.4, check your copy in your test suite with `checkAdeBridge`:
+
+```ts
+import { checkAdeBridge } from "@ade-dev/sdk/electron";
+
+// Run the bridge part of your preload with fakes, and compare it with the SDK's own.
+await checkAdeBridge((contextBridge, ipcRenderer) => exposeMyBridge(contextBridge, ipcRenderer));
+```
+
+`checkAdeBridge` runs your function with a fake `contextBridge` and `ipcRenderer`. It checks the `window` key, the two channel names, the `{ method, args }` payload, that events pass through unchanged, and that the unsubscribe removes the same listener. It rejects with `invalid_option` and names the first difference. Pass `{ key, channelPrefix }` when you do not use the defaults. Run it again after each SDK upgrade.
 
 If you prefer to import `exposeAdeBridge`, bundle it into one file. See [Bundle the preload](#bundle-the-preload).
 
@@ -144,7 +207,9 @@ export function App() {
 
 `createAdeIpcClient` returns the shape `adaptSdkClient` expects. There is no cast and no host glue.
 
-`@ade-dev/sdk/electron/global` is types only. It declares `window.ade: AdeBridge`, and its JavaScript is empty, so the import costs nothing and is safe under a strict CSP. You can also list it in `tsconfig.json` `compilerOptions.types`. It declares the default key `ade` only. If your preload uses another key, declare `interface Window { <key>: AdeBridge }` yourself.
+`@ade-dev/sdk/electron/global` is types only. It declares `window.ade?: AdeBridge`, and its JavaScript is empty, so the import costs nothing and is safe under a strict CSP. You can also list it in `tsconfig.json` `compilerOptions.types`. It declares the default key `ade` only. If your preload uses another key, declare `interface Window { <key>: AdeBridge }` yourself.
+
+From SDK 0.4 `window.ade` is optional, because a preload that failed to load leaves it undefined. You can check `if (!window.ade)` with no cast. `createAdeIpcClient(window.ade)` still compiles, and throws `invalid_option` when the bridge is missing.
 
 A page with no bundler cannot import an ES module over `file://`. Load `dist/electron/renderer.global.js` with a plain `<script>` tag instead and read `window.AdeElectron.createAdeIpcClient`.
 
@@ -197,14 +262,16 @@ Everything that crosses `contextBridge` is structured-cloned, which drops protot
 | `providers.subscribe` / `providers.unsubscribe` | `providers.onChange(cb)` | `authorize` | a subscription; the unsubscribe reaches main |
 | `models.list` | `models.list()` | `authorize` | request and response |
 | `doctor` | `doctor()` | `authorize` | the full `DoctorReport` |
-| `client.subscribe` / `client.unsubscribe` | `on("exit" \| "transport" \| "restart", cb)` | `authorize` | runtime lifecycle; see [below](#runtime-lifecycle-in-the-renderer) |
+| `client.subscribe` / `client.unsubscribe` | `on("exit" \| "transport" \| "restart" \| "threadLifecycle", cb)` | `authorize` | runtime and thread lifecycle; see [below](#runtime-lifecycle-in-the-renderer) |
 | `threads.open` | `threads.open(key, opts)` | `authorize`, `allowThreadKey` | returns a thread handle; see [what a renderer may send](#what-a-renderer-may-send-to-threadsopen) |
 | `threads.list` | `threads.list()` | `authorize` | every `ThreadSummary` whose key `allowThreadKey` accepts. Rows with no key are left out |
+| `threads.get` | `threads.get(key)` | `authorize`, `allowThreadKey` | one `ThreadSummary`, or `null`. SDK 0.4 |
 | `threads.delete` / `threads.archive` / `threads.unarchive` | `threads.delete(key)` / `.archive(key)` / `.unarchive(key)` | `authorize`, `allowThreadKey` | the renderer does not need to open the key first. Delete also drops the key's handles on every renderer |
 | `thread.export` | `exportThread(key)` | `authorize`, `allowThreadKey` | JSONL |
 | `thread.update` | `thread.update(patch, { force })` | `authorize`, `allowThreadKey` | only `title`, `reasoningEffort` and `fastMode` cross |
-| `thread.send` | `thread.send(text, opts)` | `authorize`, `allowThreadKey` | resolves on dispatch, matching the SDK's own asymmetry |
-| `thread.steer` | `thread.steer(text, { attachments })` | `authorize`, `allowThreadKey` | attachments cross as paths |
+| `thread.retry` / `thread.editLast` | `thread.retry()` / `thread.editLast(text, opts)` | `authorize`, `allowThreadKey` | SDK 0.4. `editLast` takes only `displayText` and `attachments` |
+| `thread.send` | `thread.send(text, opts)` | `authorize`, `allowThreadKey` | resolves on dispatch, matching the SDK's own asymmetry. Options are filtered; see [below](#what-a-renderer-may-send-to-threadsend) |
+| `thread.steer` | `thread.steer(text, { attachments })` | `authorize`, `allowThreadKey` | attachments cross as paths, filtered like `thread.send` |
 | `thread.interrupt` | `thread.interrupt()` | `authorize`, `allowThreadKey` | request and response |
 | `thread.history` | `thread.history({ limit })` | `authorize`, `allowThreadKey` | merged against the live stream; see [ordering](#ordering) |
 | `thread.historyPage` | `thread.historyPage({ beforeSequence, limit })` | `authorize`, `allowThreadKey` | the newest page is merged like `history()` |
@@ -239,7 +306,28 @@ registerAdeIpc(ipcMain, client, {
 });
 ```
 
-The hook gets the key and the options that the renderer sent. Read them if you want, but do not trust them. The SDK opens the key with what the hook returns, and ignores the renderer's options. Return `undefined` to reopen a stored key with its record. For a key that this home never saw, that fails with `invalid_option`.
+The hook gets the key, the options that the renderer sent, and (from SDK 0.4) a `context`. Read the renderer's options if you want, but do not trust them. The SDK opens the key with what the hook returns, and ignores the renderer's options. Return `undefined` to reopen a stored key with its record. For a key that this home never saw, that fails with `invalid_option`.
+
+#### Resume or create: `context.exists`
+
+The third argument tells a resume from a create:
+
+```ts
+openOptions: async (key, _rendererOptions, { exists, summary }) => {
+  if (exists) return { refresh: { mcpServers: appMcpServers() } };   // resume: stored record applies
+  return {                                                             // create, or recreate
+    provider: "claude",
+    model: await pickModel(),
+    permissions: lockedPolicy,
+    mcpServers: appMcpServers(),
+  };
+},
+```
+
+- `exists: true`: the runtime has a session for the key, and `summary` is its `ThreadSummary` (from `client.threads.get`). The stored provider, model and policy apply. Return `{ refresh }` alone, or `undefined`. Full options also work, but the SDK logs one "ignored" line for each field that differs from the record.
+- `exists: false`: the key is new, or the runtime lost its session. Return the full create options. For a lost session the stored record still wins over them (see [Threads](/sdk/threads#when-the-runtime-lost-the-session)).
+
+Do not pick a model inside the hook for a resume. A model pick can fail, for example when no provider CLI is signed in, and a failure in the hook fails the open of a chat that already exists.
 
 `refresh.mcpServers` on every open is safe. Every renderer `threads.open` reaches the hook, including a key the renderer already holds, and the SDK sends the servers to the runtime only when they differ from what it last sent for that key. An unchanged token does not restart the provider.
 
@@ -258,6 +346,16 @@ This is a breaking change in 0.3. Before 0.3 the bridge forwarded every renderer
 </Warning>
 
 A key that the runtime lost is recreated from the SDK's stored record, and the record wins over any option. See [Threads](/sdk/threads#when-the-runtime-lost-the-session).
+
+### What a renderer may send to `thread.send`
+
+From SDK 0.4 the bridge rebuilds the `thread.send` and `thread.steer` options field by field:
+
+| Kept | Dropped |
+| --- | --- |
+| `displayText` (string), `reasoningEffort` (string or `null`), and `attachments` with `path`, `name`, `mimeType`, `bytes`, `type`, `hydrate` of the right types | every other field, with one log line each |
+
+The runtime's own path rules still decide which attachment paths it reads. See [Where a path may point](/sdk/threads#where-a-path-may-point).
 
 ### `allowModel`
 
@@ -311,13 +409,19 @@ An `ipcMain.handle` rejection reaches the renderer as a plain `Error` with a rew
 try {
   await thread.setModel(next);
 } catch (error) {
-  if (error.code === "invalid_option") showBusyHint();
+  if (error.code === "turn_in_flight") showBusyHint();
 }
 ```
 
 `error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `AdeError` from `@ade-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
 
 `authorize`, `allowThreadKey` or `allowModel` returning false rejects with code `unauthorized`, and the SDK is not called at all.
+
+A call that is refused only because a turn is running (`setModel`, a reasoning `update`, `retry`, `editLast`) rejects with code `turn_in_flight` from SDK 0.4. Before 0.4 those refusals used `invalid_option`. Branch on the code, not on the message:
+
+```ts
+if (error.code === "turn_in_flight") showHint("Wait for the reply to finish, then try again.");
+```
 
 ## Transport degradation and restarts
 
@@ -335,11 +439,19 @@ A renderer can read both values with `doctor()` over the bridge.
 const ipcClient = createAdeIpcClient(window.ade);
 
 ipcClient.on("exit", ({ code, signal, error }) => showBanner("Chat stopped", error));
-ipcClient.on("restart", ({ attempt, ok }) => { if (ok) reloadTranscript(); });
+ipcClient.on("restart", ({ attempt, ok, final }) => {
+  if (ok) reloadTranscript();
+  else if (final) showBanner("Chat could not restart");   // no more attempts
+});
 ipcClient.on("transport", ({ state }) => setOnline(state === "reconnected"));
+ipcClient.on("threadLifecycle", ({ key, change }) => refreshChatList(key, change));
 ```
 
 The payloads are the same as `client.on` in main. One IPC subscription serves every listener in the renderer.
+
+`restart.final` (SDK 0.4) is `true` when no further attempt follows: the attempt succeeded, or it failed and was the last one that `autoRestart.maxAttempts` allows. You do not need your own copy of `maxAttempts`.
+
+`useAdeThread` in `@ade-dev/chat-ui` 0.4 re-opens the thread and re-reads its history after a successful restart by itself. You do not need to remount the chat.
 
 ### Swap the client
 

@@ -443,6 +443,13 @@ export type AppControlObservation = {
   laneId: string | null;
   chatSessionId: string | null;
   cleanup: AppControlObservationCleanup;
+  /**
+   * Reasons to distrust this observation. Today: the page reported
+   * `document.visibilityState === "hidden"` (the window is covered or
+   * minimized), so the screenshot can be the last frame Chromium painted while
+   * the DOM has moved on.
+   */
+  warnings?: string[];
 };
 
 export type AppControlElementTargetArgs = {

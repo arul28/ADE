@@ -125,7 +125,7 @@ import { pathKey } from "../shared/pathCompare";
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
   AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
-  keyEventForAgentInput,
+  keyEventsForAgentInput,
   parseObservationElementHandle,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
@@ -5135,18 +5135,10 @@ function createBuiltInBrowserWindowService(args: {
         await captureActionBaseline(tab, input);
       }
       await noteDemoAction(tab, input, "key", { element, label: key });
-      const event = keyEventForAgentInput(key);
+      const events = keyEventsForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyDown",
-          ...event,
-        });
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyUp",
-          ...event,
-          text: undefined,
-          unmodifiedText: undefined,
-        });
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.down);
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.up);
       });
       emitStatus();
       return actionResult(tab, input);

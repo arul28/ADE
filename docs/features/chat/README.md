@@ -218,7 +218,6 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers (including scheduled-work create, list, per-job cancel, and per-chat pause), persists/retrieves parallel launch recovery state in `kv`, and refreshes the runtime scheduler after the global AI config pause changes. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 | `apps/desktop/src/shared/codexRequestUserInput.ts` | Parses Codex `requestUserInput` `isBlocking` / `is_blocking`. Missing means blocking (`unwrap_or(true)`). |
-| `apps/desktop/src/shared/codexComputerUseStatus.ts` | Darwin-only Codex Computer Use working-row status (`ready` / `not set up`). Hidden on Windows/Linux. |
 | `apps/desktop/src/shared/codexPluginList.ts` | Parses Codex `plugin/list` (`PluginListResponse`) into installed/enabled plugin rows. |
 | `apps/desktop/src/renderer/components/settings/providers/bodies/CodexBody.tsx` | Codex Settings card: list-only plugins via `listCodexPlugins`, with Refresh to re-fetch from a live Codex chat. |
 

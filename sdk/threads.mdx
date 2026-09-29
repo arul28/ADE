@@ -48,6 +48,12 @@ await ade.threads.delete("support");
 
 `list()` returns every chat in this home as a `ThreadSummary`, archived chats included. The order is not guaranteed. Sort on `updatedAt` yourself.
 
+To read one chat, use `get(key)` (SDK 0.4). It returns the same row as `list()`, or `null` when the runtime has no session for the key: a key that this home never opened, a deleted key, or a key whose session the runtime lost (the next `open()` recreates it).
+
+```ts
+const row = await ade.threads.get("support");   // ThreadSummary | null
+```
+
 | Field | |
 |---|---|
 | `key` | Your key, or `null` for a chat that was not created through the SDK |
@@ -63,6 +69,12 @@ await ade.threads.delete("support");
 
 `archive` and `delete` interrupt a running turn **first**, so subscribers get the turn's `done` event before the session changes. A key that the store does not know throws `thread_not_found`. A runtime without the matching action throws `invalid_option`.
 
+After a `delete`, `archive` or `unarchive` succeeds, the client emits `threadLifecycle` with `{ key, change }` (SDK 0.4). It fires for every call through this client, from your own code or from a renderer over the Electron bridge, so one listener keeps your chat list correct:
+
+```ts
+ade.on("threadLifecycle", ({ key, change }) => chatList.apply(key, change));
+```
+
 ### Title and model
 
 ```ts
@@ -71,6 +83,14 @@ thread.model;   // { modelId, provider, model, displayName } | null
 ```
 
 The runtime can give a thread a title after its first turn. `thread.title` shows that title after the next `open()` or `update()`.
+
+Which title wins:
+
+- A title that you set with `update({ title })` marks the chat as named. The runtime's automatic title never replaces it, at any time. That includes Claude's summary title and Codex's thread name.
+- Without a host title, the runtime may name the chat after its first message.
+- `update({ title: null })` clears the host title (runtime 1.2.82). The chat then shows the provider's placeholder title, for example `"Claude Chat"`, so `thread.title` reads that string, not `null`. The automatic title may name the chat again after its next message. Before 1.2.82, `null` set the placeholder and still counted as a host title.
+
+So a host that sets a title after the first message, as Versic does, keeps its title, whenever the automatic title runs.
 
 Show `thread.model.displayName` when it is not `null`. When a CLI update retires a model, the runtime resolves the old id to a newer model, and the id that you stored is then the wrong label.
 
@@ -83,7 +103,7 @@ await thread.update({ reasoningEffort: "high", fastMode: false });
 
 `update()` changes `title`, `reasoningEffort` or `fastMode` on a live thread. It returns `{ title, model }` as the runtime reports them after the change. The SDK also writes the title to its thread store. `title: null` clears the title, and `reasoningEffort: null` returns to the model default.
 
-A rename works at any time. `reasoningEffort` and `fastMode` are **refused while a turn is in flight** (`invalid_option`) unless you pass `{ force: true }`. On Codex, a settings change can restart the provider, and that ends the turn without `error` or `done`. Wait for the turn to end, or call `interrupt()` first.
+A rename works at any time. `reasoningEffort` and `fastMode` are **refused while a turn is in flight** with the code `turn_in_flight` (SDK 0.4; `invalid_option` before) unless you pass `{ force: true }`. On Codex, a settings change can restart the provider, and that ends the turn without `error` or `done`. Wait for the turn to end, or call `interrupt()` first.
 
 ## Send, steer, interrupt
 
@@ -102,7 +122,29 @@ Submitting during a running turn is a **steer**, not a second send. `steer()` is
 
 ### Retry and edit
 
-The SDK has no `retry()` and no `editLast()` in 0.3. A "retry" or "edit and resend" button today sends a **new** user message, and the transcript keeps the earlier message and reply. Providers differ in how they can roll a turn back, and that needs runtime work. It is planned, not released.
+```ts
+await thread.retry();                                   // run the last user message again
+await thread.editLast("Use the March numbers instead");  // replace it, then run it
+await thread.editLast("", { attachments: [{ path: "/Users/me/MyApp/work/new.csv" }] });
+```
+
+`retry()` and `editLast(text, { displayText?, attachments? })` (SDK 0.4, runtime 1.2.82) roll the provider conversation back to just before the last user message, remove that message and its reply from the history, and send the message again: the same one for `retry()`, the new one for `editLast()`. The transcript then shows the message **once**. `editLast` keeps the original attachments unless you pass `attachments`, and an empty array removes them.
+
+What a subscriber sees, in order:
+
+1. `session_meta_updated` with `historyInvalidated: true` and a new `historyGeneration`. Drop your copy of the events at or after `retractedFromSequence` (from the result), or read `history()` again. `useAdeThread` in chat-ui 0.4 re-reads by itself.
+2. The new turn: `user_message`, `status` started, and the rest of the turn.
+
+Both resolve when the new turn is dispatched, with `{ retractedFromSequence, historyGeneration, conversationRollback }`. `conversationRollback` says what the provider did: `claude_fork` or `claude_new_session` (Claude), `codex_thread` (Codex), or `not_delivered` (the old message never reached the provider, so only the transcript changed).
+
+Limits:
+
+- **Claude and Codex only.** Another provider, or a runtime older than 1.2.82, throws `unsupported`.
+- **Not during a turn.** A running turn, or one that waits on an approval, throws `turn_in_flight`, and nothing changes. Wait for the turn to end, or call `interrupt()` first.
+- **Files are not restored.** Changes that the old turn made on disk stay.
+- A thread with no user message yet throws `rpc_error`.
+
+Over the Electron bridge, `thread.retry` and `thread.editLast` are allowed methods. `editLast` takes only `displayText` and `attachments` from the renderer.
 
 ## Events
 
@@ -235,7 +277,7 @@ const next = await thread.setModel("claude-opus-4");
 
 Crossing providers is supported: the engine tears down the old provider thread and replays the transcript into the new one.
 
-`setModel` **refuses while a turn is in flight** (`invalid_option`) unless you pass `{ force: true }`. A forced switch ends that turn without `error` or `done` — subscribers just stop receiving. Interrupt first if you need a clean handoff.
+`setModel` **refuses while a turn is in flight** (`turn_in_flight` from SDK 0.4; `invalid_option` before) unless you pass `{ force: true }`. A forced switch ends that turn without `error` or `done` — subscribers just stop receiving. Interrupt first if you need a clean handoff.
 
 `setModel` returns the resolved model and `capabilities`: `mcpCapability`, `permissionCapability`, `instructionsCapability` and `settingSourcesCapability` as they are on the new provider. The thread also emits the same reports as a `capabilities_changed` envelope on the `status` channel. A switch across providers can lower a guarantee. For example, a policy that Claude enforces is best-effort on Codex. Read the new reports before you tell a user that their rules still apply.
 
@@ -298,10 +340,54 @@ A runtime older than 1.2.81 ignores `hydrate` and reads the bytes. See [Version 
 ### Where a path may point
 
 - A **relative** path resolves in the chat's working directory: the thread's `cwd`, or the runtime's scratch workspace when you did not set one.
-- An **absolute** path must be inside the chat's working directory, or inside `<home>/personal-chats/state`, the runtime's state directory.
+- An **absolute** path must be inside one of these roots:
+  - the chat's working directory;
+  - `<home>/personal-chats/state`, the runtime's state directory;
+  - a directory in the thread's `attachmentRoots` (SDK 0.4, runtime 1.2.82).
 - Any other path throws, and the send fails. The error names the path.
 
 Before runtime 1.2.81, an absolute path had to be inside `<home>/personal-chats/state`. A path inside your own `cwd` threw.
+
+#### How the runtime compares paths
+
+The runtime compares **resolved** paths, not strings:
+
+- It resolves each root with `realpath`, so a symlinked root (a Music folder that is a link) works. A root that no longer exists is skipped.
+- It resolves the attachment path one part at a time. Each part that exists is replaced by its real path, and `..` goes to the parent of that real path. A part that does not exist yet is kept as written, and the read fails later if the file is still missing.
+- The resolved path must be inside the resolved root. A symlink inside a root that points outside it is refused.
+- On macOS, letter case does not matter for parts that exist.
+
+You do not have to spell a path under the root exactly as you passed the root.
+
+#### `attachmentRoots`: attach files where they are
+
+To attach a file from a folder that is not the working directory (Downloads, a media library), add the folder to `attachmentRoots` instead of copying the file:
+
+```ts
+const thread = await ade.threads.open("main", {
+  provider: "claude",
+  model: "claude-sonnet-4-5",
+  cwd: workDir,
+  attachmentRoots: [app.getPath("downloads"), musicLibraryDir],
+});
+
+// Later, a new folder: replace the roots on the live thread.
+await ade.threads.open("main", { refresh: { attachmentRoots: [app.getPath("downloads"), newLibraryDir] } });
+```
+
+- Each root follows the `cwd` rules: absolute, no `~`, not a filesystem root, not the home directory itself, not inside the SDK `home`. At most 32. A bad entry throws `invalid_option` and names it.
+- The roots are **read roots for attachments only**. They do not change where the agent runs, and they are not a sandbox.
+- Like `cwd`, `attachmentRoots` on a resume is ignored (with a log line). Use `refresh.attachmentRoots` to replace them; `[]` clears them.
+- With `hydrate: false`, a file in a root is attached without being read, so a File Provider placeholder is not downloaded.
+
+#### Do you need to stage files yourself?
+
+No. The runtime already handles each file:
+
+- **Codex:** the runtime copies each attachment that it may read to its own temporary directory at send time. With `hydrate: false` it copies nothing and puts the path in the prompt.
+- **Claude:** the runtime reads the bytes into the message.
+
+The file must still be readable when you send. Copy a file yourself only when its folder cannot be a root.
 
 ### Size limits
 

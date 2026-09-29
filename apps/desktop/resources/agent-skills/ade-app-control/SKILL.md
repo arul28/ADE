@@ -103,7 +103,8 @@ ade app-control hover --test-id row-3 --text
 ade app-control fill --selector "#name" --value "Ada" --text
 ade app-control clear --selector "#name" --text
 ade app-control type "hello" --text          # into the focused element
-ade app-control press --key Enter --text     # alias: key
+ade app-control press --key Enter --text     # alias: key; Enter submits a focused form
+ade app-control press --key "Meta+n" --text  # modifiers: Alt, Control/Ctrl, Meta/Cmd, Shift
 ade app-control scroll --x 120 --y 420 --delta-y 600 --text
 ade app-control wait --text-match "Saved" --timeout-ms 8000 --text
 ade app-control wait --load-state network-idle --text

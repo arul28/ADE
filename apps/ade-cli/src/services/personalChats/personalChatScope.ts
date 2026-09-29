@@ -223,11 +223,14 @@ export function validatePersonalHostCwd(
     platform?: NodeJS.Platform;
     /** Injected so a test can stage a symlink without touching a real disk. */
     fs?: PersonalHostCwdFs;
+    /** The argument name the refusals quote. Defaults to `requestedCwd`. */
+    field?: string;
   },
 ): string | undefined {
+  const field = context.field ?? "requestedCwd";
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") {
-    throw new Error("invalid_argument: requestedCwd must be a string.");
+    throw new Error(`invalid_argument: ${field} must be a string.`);
   }
   const raw = value.trim();
   if (!raw.length) return undefined;
@@ -235,12 +238,12 @@ export function validatePersonalHostCwd(
   const impl = platform === "win32" ? path.win32 : path.posix;
   if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
     throw new Error(
-      "invalid_argument: requestedCwd must not start with '~'. Expand the home directory yourself "
+      `invalid_argument: ${field} must not start with '~'. Expand the home directory yourself `
       + "and pass an absolute path.",
     );
   }
   if (!impl.isAbsolute(raw)) {
-    throw new Error(`invalid_argument: requestedCwd must be an absolute path. Received '${raw}'.`);
+    throw new Error(`invalid_argument: ${field} must be an absolute path. Received '${raw}'.`);
   }
   const fsImpl = context.fs ?? { realpathSync: (target: string) => fs.realpathSync.native(target) };
   // Strip `\\?\` after canonicalize and before every refusal. realpath on
@@ -253,7 +256,7 @@ export function validatePersonalHostCwd(
   const adeDir = stripExtendedLengthPrefix(canonicalDeepestExisting(context.adeDir, impl, fsImpl), platform);
   if (isFilesystemRoot(resolved, impl)) {
     throw new Error(
-      `invalid_argument: requestedCwd must not be a filesystem root. Received '${raw}'.`,
+      `invalid_argument: ${field} must not be a filesystem root. Received '${raw}'.`,
     );
   }
   // `samePathOnPlatform`, not `===`: the case fold and the trailing-separator trim both
@@ -262,15 +265,52 @@ export function validatePersonalHostCwd(
   // refusal while the OS opens the very same folder.
   if (samePathOnPlatform(resolved, homeDir, platform)) {
     throw new Error(
-      "invalid_argument: requestedCwd must not be the home directory itself. Name a folder inside it.",
+      `invalid_argument: ${field} must not be the home directory itself. Name a folder inside it.`,
     );
   }
   if (pathIsWithinRoot(adeDir, resolved, platform)) {
     throw new Error(
-      "invalid_argument: requestedCwd must not be inside ADE's own state directory.",
+      `invalid_argument: ${field} must not be inside ADE's own state directory.`,
     );
   }
   return trimTrailingSeparators(resolved, impl);
+}
+
+export const MAX_PERSONAL_ATTACHMENT_ROOTS = 32;
+
+/**
+ * The extra directories a host lets absolute attachment paths point into.
+ *
+ * Each entry passes the same rule as `requestedCwd` (see
+ * `validatePersonalHostCwd`), and the refusal names its index:
+ * `attachmentRoots[2] must be an absolute path. …`. One bad entry refuses the
+ * whole call. `undefined` means "not given"; `null` and `[]` both clear.
+ * Duplicates after canonicalization are dropped.
+ */
+export function validatePersonalAttachmentRoots(
+  value: unknown,
+  context: Omit<Parameters<typeof validatePersonalHostCwd>[1], "field">,
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("invalid_argument: attachmentRoots must be an array of absolute paths.");
+  }
+  if (value.length > MAX_PERSONAL_ATTACHMENT_ROOTS) {
+    throw new Error(
+      `invalid_argument: attachmentRoots accepts at most ${MAX_PERSONAL_ATTACHMENT_ROOTS} entries. Received ${value.length}.`,
+    );
+  }
+  const roots: string[] = [];
+  value.forEach((entry, index) => {
+    const field = `attachmentRoots[${index}]`;
+    if (typeof entry !== "string" || !entry.trim()) {
+      throw new Error(`invalid_argument: ${field} must be a non-empty string.`);
+    }
+    const root = validatePersonalHostCwd(entry, { ...context, field });
+    if (root && !roots.includes(root)) roots.push(root);
+  });
+  return roots;
 }
 
 /**
@@ -386,8 +426,13 @@ export class PersonalChatScope {
           automationRunId: _automationRunId,
           orchestrationParentSessionId: _orchestrationParentSessionId,
           kickoffText: _kickoffText,
+          attachmentRoots: _attachmentRoots,
           ...forwarded
         } = args;
+        const attachmentRoots = validatePersonalAttachmentRoots(args.attachmentRoots, {
+          adeDir: machineLayout.adeDir,
+          homeDir: os.homedir(),
+        });
         const created = await service.createSession({
           ...forwarded,
           // Named explicitly rather than left to `...forwarded`: these are the
@@ -412,6 +457,7 @@ export class PersonalChatScope {
           // would silently drop it the moment someone reads that list as the
           // definition of what a personal chat may not set.
           ...(hostCwd ? { requestedCwd: hostCwd } : {}),
+          ...(attachmentRoots?.length ? { attachmentRoots } : {}),
           laneId,
           provider,
           model,
@@ -547,13 +593,33 @@ export class PersonalChatScope {
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
+        const machineLayout = resolveMachineAdeLayout();
+        const attachmentRoots = validatePersonalAttachmentRoots(args.attachmentRoots, {
+          adeDir: machineLayout.adeDir,
+          homeDir: os.homedir(),
+        });
         // `mcpServers` rides through with the rest: the chat service accepts
         // it only for a personal session, which `requirePersonalSession` has
         // just established, and validates it exactly as create does.
-        await service.updateSession(args as never);
+        // `attachmentRoots` is replaced by its validated, canonical form.
+        await service.updateSession({
+          ...args,
+          ...(attachmentRoots !== undefined ? { attachmentRoots } : {}),
+        } as never);
         // The same shape create returns. The summary already withholds header
         // values, so the reply never echoes back a credential the host sent.
         result = await service.getSessionSummary(sessionId);
+        break;
+      }
+      case "rerunLastTurn": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.rerunLastTurn({
+          sessionId,
+          ...(args.text !== undefined ? { text: args.text as string } : {}),
+          ...(typeof args.displayText === "string" ? { displayText: args.displayText } : {}),
+          ...(Array.isArray(args.attachments) ? { attachments: args.attachments as never } : {}),
+        });
         break;
       }
       case "archive":

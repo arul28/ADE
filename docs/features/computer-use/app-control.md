@@ -323,7 +323,10 @@ resolve it on another machine) and the `terminal` domain (`list`, `read`,
 1. **Arguments.** `appKind` defaults to `electron`. `cwd` is resolved against the
    lane worktree and refused if it escapes it. A free `cdpPort` is picked when
    none is given. ADE sets `ADE_APP_CONTROL_CDP_PORT` and
-   `ADE_APP_CONTROL_DEBUG_FLAGS`, then:
+   `ADE_APP_CONTROL_DEBUG_FLAGS`. The debug flags also carry
+   `--disable-backgrounding-occluded-windows` and
+   `--disable-renderer-backgrounding`, so a covered window keeps painting and
+   a screenshot matches the DOM. ADE then:
    - substitutes a literal `{ADE_APP_CONTROL_DEBUG_FLAGS}` in the command; or
    - for a package script (`npm`/`pnpm`/`yarn`/`bun run …`), resolves the
      script and adds the debug flags; or
@@ -373,6 +376,15 @@ iframe ADE cannot reach).
   frame. A hidden renderer tries an in-page DOM click first.
 - `typeText` uses `Input.insertText`; `dispatchKey` is the escape hatch for
   shortcuts.
+- `press` (and the built-in browser's key press) builds its events with
+  `keyEventsForAgentInput` (`src/shared/agentObservation.ts`): `keyDown` with
+  `text` for a key that types (Enter types `"\r"`, so a focused form
+  submits), `rawKeyDown` otherwise, and `modifiers` for combinations such as
+  `Meta+n` (Alt 1, Control 2, Meta 4, Shift 8). A native menu accelerator is
+  handled by the OS menu, and a CDP key event does not reach it.
+- `observe` adds a `warnings` entry when the page reports
+  `document.visibilityState === "hidden"`: the screenshot may then be the last
+  painted frame.
 - `scroll` is a `mouseWheel` event.
 - All input shares one `CdpClient` per session.
 

@@ -8,6 +8,7 @@ import {
   normalizePermissionCapability,
   normalizeSettingSources,
   normalizeSettingSourcesCapability,
+  validateAttachmentRoots,
   validateThreadCwd,
   type InstructionsCapability,
   type PermissionCapability,
@@ -114,6 +115,7 @@ export type ThreadOpenerContext = {
     updateMcpServers(): boolean;
     pendingInputs(): boolean;
     historyPage(): boolean;
+    rerunLastTurn(): boolean;
   };
 };
 
@@ -161,6 +163,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
         ...(patch.mcpServers !== undefined
           ? { mcpServers: toStoredMcpServers(patch.mcpServers), requestedMcp: true }
           : {}),
+        ...(patch.attachmentRoots !== undefined ? { attachmentRoots: patch.attachmentRoots } : {}),
       });
     } catch (error) {
       recordError("threadStore.touch", error);
@@ -188,6 +191,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       pendingInputsSupported: ctx.runtime.pendingInputs,
       updateMcpServersSupported: ctx.runtime.updateMcpServers,
       historyPageSupported: ctx.runtime.historyPage,
+      rerunLastTurnSupported: ctx.runtime.rerunLastTurn,
       ...(ctx.mcpHeaders ? { resolveMcpHeaders: ctx.mcpHeaders } : {}),
       mcpPushed: {
         get: () => mcpPushed.get(init.key),
@@ -213,6 +217,30 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
    * Never throws: a refresh that fails leaves the thread usable on its old
    * servers, and says so. Returns the runtime's summary after a push, else null.
    */
+  /**
+   * Replace a resumed session's attachment roots with `refresh.attachmentRoots`.
+   * Skipped when the roots equal the record's. Throws `invalid_option` for a
+   * bad root (the host's mistake, not a runtime fault); a runtime failure is
+   * logged and leaves the old roots in place.
+   */
+  const refreshAttachmentRootsOnResume = async (
+    key: string,
+    sessionId: string,
+    record: ThreadRecord,
+    refreshRoots: string[] | undefined,
+  ): Promise<void> => {
+    if (refreshRoots === undefined) return;
+    const roots = validateAttachmentRoots(refreshRoots, ctx.home);
+    const current = record.attachmentRoots ?? [];
+    if (roots.length === current.length && roots.every((root, index) => root === current[index])) return;
+    try {
+      await chats.updateSession({ sessionId, attachmentRoots: roots });
+      await persistThread(key)({ attachmentRoots: roots });
+    } catch (error) {
+      recordError(`refresh attachmentRoots for "${key}"`, error);
+    }
+  };
+
   const refreshMcpOnResume = async (
     key: string,
     sessionId: string,
@@ -275,6 +303,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     // A refresh that pushed servers is itself an MCP request, so its report is
     // always read.
     const refreshed = await refreshMcpOnResume(key, summary.sessionId, record, opts.refresh?.mcpServers);
+    await refreshAttachmentRootsOnResume(key, summary.sessionId, record, opts.refresh?.attachmentRoots);
     const resumedCapability = refreshed
       ? normalizeMcpCapability(refreshed.mcpCapability)
       : record.requestedMcp === false
@@ -335,6 +364,9 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       // canonical spelling, so a plain `path.resolve` compares two names for
       // one directory and reports a caller's own unchanged `cwd` as ignored.
       ...(opts.cwd !== undefined ? { cwd: canonicalThreadCwd(opts.cwd) } : {}),
+      ...(opts.attachmentRoots !== undefined && opts.refresh?.attachmentRoots === undefined
+        ? { attachmentRoots: validateAttachmentRoots(opts.attachmentRoots, ctx.home) }
+        : {}),
       ...(opts.instructions !== undefined ? { instructions: normalizeInstructions(opts.instructions) } : {}),
       ...(opts.settingSources !== undefined ? { settingSources: opts.settingSources } : {}),
       ...(opts.permissions !== undefined ? { permissions: opts.permissions } : {}),
@@ -351,6 +383,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     if (record) {
       const stored = {
         ...(record.cwd !== undefined ? { cwd: record.cwd } : {}),
+        ...(record.attachmentRoots !== undefined ? { attachmentRoots: record.attachmentRoots } : {}),
         ...(record.instructions !== undefined ? { instructions: record.instructions } : {}),
         ...(record.settingSources !== undefined ? { settingSources: record.settingSources } : {}),
         ...(record.permissionPolicy !== undefined ? { permissionPolicy: record.permissionPolicy } : {}),
@@ -410,6 +443,12 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     const instructions =
       record?.instructions ?? normalizeInstructions(opts.instructions) ?? normalizeInstructions(ctx.defaultInstructions);
     const cwd = record?.cwd ?? (opts.cwd !== undefined ? validateThreadCwd(opts.cwd, ctx.home) : undefined);
+    // `refresh` replaces the record's roots, as it does the MCP servers.
+    const attachmentRoots =
+      opts.refresh?.attachmentRoots !== undefined
+        ? validateAttachmentRoots(opts.refresh.attachmentRoots, ctx.home)
+        : record?.attachmentRoots
+          ?? (opts.attachmentRoots !== undefined ? validateAttachmentRoots(opts.attachmentRoots, ctx.home) : undefined);
     const settingSources = record?.settingSources ?? normalizeSettingSources(opts.settingSources);
     // The stored policy, then the stored preset (0.3+ records), then the call.
     // A pre-0.3 record has neither and keeps the older rule.
@@ -471,6 +510,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(instructions ? { instructions } : {}),
       // `requestedCwd` is the field name the engine has always used for this.
       ...(cwd ? { requestedCwd: cwd } : {}),
+      ...(attachmentRoots?.length ? { attachmentRoots } : {}),
       ...(settingSources ? { settingSources } : {}),
       // `suppliedServers`, NOT truthiness. `mcpServers: {}` is an empty object,
       // which is truthy — so a bare `opts.mcpServers` check made an empty map
@@ -524,6 +564,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       ...(loadUserMcpServers !== undefined ? { loadUserMcpServers } : {}),
       ...(instructions ? { instructions } : {}),
       ...(recordedCwd ? { cwd: recordedCwd } : {}),
+      ...(attachmentRoots?.length ? { attachmentRoots } : {}),
       ...(settingSources ? { settingSources } : {}),
       ...(permissionPolicy ? { permissionPolicy } : {}),
       ...(permissionPreset ? { permissionPreset } : {}),

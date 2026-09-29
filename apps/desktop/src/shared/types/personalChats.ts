@@ -61,6 +61,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
   "updateSession",
+  "rerunLastTurn",
   "archive",
   "unarchive",
   "delete",

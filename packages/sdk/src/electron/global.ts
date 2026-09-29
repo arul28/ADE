@@ -20,8 +20,14 @@ import type { AdeBridge } from "./protocol.js";
 
 declare global {
   interface Window {
-    /** The bridge `exposeAdeBridge` put on `window` (default key `"ade"`). */
-    ade: AdeBridge;
+    /**
+     * The bridge `exposeAdeBridge` put on `window` (default key `"ade"`).
+     * Optional since SDK 0.4: a preload that failed to load leaves it
+     * undefined, and a host can check that without a cast.
+     * `createAdeIpcClient(window.ade)` still type-checks, and throws
+     * `invalid_option` when it is missing.
+     */
+    ade?: AdeBridge;
   }
 }
 

@@ -62,6 +62,13 @@ export {
   parseInline,
   safeHref,
 } from "./transcript/markdown";
+export {
+  AdeLink,
+  AdeLinkHandlerProvider,
+  type AdeLinkClickHandler,
+  type AdeLinkClickInfo,
+  type AdeLinkSource,
+} from "./transcript/links";
 
 export { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 export {
@@ -142,6 +149,7 @@ export { adeChatCss, injectAdeChatStyles, type InjectAdeChatStylesOptions } from
 
 export type {
   AdeChatClient,
+  AdeChatClientEventMap,
   AdeThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -160,6 +168,7 @@ export type {
   ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
+  ThreadUpdatePatch,
   ThreadUsage,
   ToolCallStatus,
   Unsubscribe,

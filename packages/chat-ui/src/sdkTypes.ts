@@ -381,6 +381,26 @@ export type ThreadHistoryPage = {
   nextBeforeSequence?: number | null;
 };
 
+/** A change to an open thread's settings (`AdeThread.update`). */
+export type ThreadUpdatePatch = {
+  /** New title. `null` clears the host title. */
+  title?: string | null;
+  /** Reasoning effort for later turns. `null` returns to the model default. */
+  reasoningEffort?: string | null;
+  /** Provider fast mode, where the provider has one. */
+  fastMode?: boolean;
+};
+
+/** The runtime lifecycle events a client can report (`AdeChatClient.on`). */
+export type AdeChatClientEventMap = {
+  /**
+   * One automatic runtime restart attempt finished (`@ade-dev/sdk`
+   * `autoRestart`). `ok: true` means the runtime is back and open threads were
+   * reattached. `attempt` counts from 1 per outage.
+   */
+  restart: { attempt: number; ok: boolean; error: string | null; final?: boolean };
+};
+
 export interface AdeThread {
   readonly key: string;
   send(input: SendInput | string): Promise<void>;
@@ -434,6 +454,28 @@ export interface AdeThread {
    * catalog alone.
    */
   readonly model?: ThreadModelSelection | null;
+  /**
+   * Change the thread's title, reasoning effort or fast mode
+   * (`@ade-dev/sdk` >= 0.3 `thread.update`).
+   *
+   * OPTIONAL for the same reason as `setModel`. `ThreadState.canUpdate`
+   * reports its presence. A reasoning or fast-mode change is refused while a
+   * turn runs (`AdeError` code `turn_in_flight` on `@ade-dev/sdk` >= 0.4).
+   */
+  update?(patch: ThreadUpdatePatch): Promise<unknown>;
+  /**
+   * Run the last user message again (`@ade-dev/sdk` >= 0.4 `thread.retry`).
+   * The runtime rolls the provider conversation back to before that message,
+   * removes the old turn from the transcript, and sends the message again.
+   * Files the old turn changed are not restored.
+   *
+   * OPTIONAL like `setModel`; `ThreadState.canRetry` reports its presence. A
+   * provider that cannot roll back (only Claude and Codex can) rejects with
+   * code `unsupported`, and a running turn with `turn_in_flight`.
+   */
+  retry?(): Promise<unknown>;
+  /** Like `retry`, with new text (and optionally attachments) for the last user message. */
+  editLast?(input: SendInput | string): Promise<unknown>;
   on(type: "event", cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
   on(type: "usage", cb: (usage: ThreadUsage) => void): Unsubscribe;
   on(type: "status", cb: (status: ThreadStatus) => void): Unsubscribe;
@@ -457,4 +499,16 @@ export interface AdeChatClient {
   threads: {
     open(key: string, opts?: ThreadOpenOptions): Promise<AdeThread>;
   };
+  /**
+   * Runtime lifecycle events.
+   *
+   * OPTIONAL: a client without a runtime it can restart has nothing to report.
+   * `useAdeThread` subscribes to `restart` and, after a successful restart,
+   * re-opens the thread and re-reads its history, so the transcript shows what
+   * the runtime has rather than what this view held before the outage.
+   */
+  on?<E extends keyof AdeChatClientEventMap>(
+    event: E,
+    cb: (payload: AdeChatClientEventMap[E]) => void,
+  ): Unsubscribe;
 }

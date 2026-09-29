@@ -56,6 +56,8 @@ export type {
   ThreadUpdate,
   ThreadUpdateOptions,
   ThreadUpdateResult,
+  ThreadRerunResult,
+  EditLastOptions,
 } from "./thread.js";
 export { SUPPORTED_RUNTIME_RANGE, checkRuntimeCompatibility } from "./compatibility.js";
 export { parseToolIdentity, type ToolIdentity } from "./toolIdentity.js";
@@ -69,7 +71,8 @@ export {
 export { AdeError, type AdeErrorCode } from "./errors.js";
 export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
-export { SUPPORTED_PROVIDERS } from "./permissions.js";
+export { SUPPORTED_PROVIDERS, isSupportedProvider } from "./permissions.js";
+export { pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 
 export { APPROVAL_DECISIONS, isApprovalShaped } from "./approvals.js";
 export type { ApprovalDecision, ApprovalRequest } from "./approvals.js";

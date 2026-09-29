@@ -5,6 +5,43 @@ import type {
   ProviderStatusRpcResult,
 } from "./types.js";
 
+/** Options for `pickDefaultModel` and `client.models.defaultModel`. */
+export type DefaultModelOptions = {
+  /**
+   * Only models a thread can use now: `isAvailable` and `connected` (the
+   * provider is signed in). Default true.
+   */
+  available?: boolean;
+  /**
+   * Only these providers, in order of preference: the first provider with a
+   * qualifying model wins. Omit for every provider.
+   */
+  providers?: readonly string[];
+};
+
+/**
+ * The model a new thread should use, or null when none qualifies.
+ *
+ * Among the qualifying models (see `DefaultModelOptions`), per provider in the
+ * order `providers` gives (or all at once without it): the catalog's
+ * `isDefault` model first, else the first model the catalog lists.
+ */
+export function pickDefaultModel(
+  models: readonly ModelCatalogEntry[],
+  opts: DefaultModelOptions = {},
+): ModelCatalogEntry | null {
+  const available = opts.available ?? true;
+  const usable = available ? models.filter((model) => model.isAvailable && model.connected) : [...models];
+  const pick = (pool: readonly ModelCatalogEntry[]): ModelCatalogEntry | null =>
+    pool.find((model) => model.isDefault) ?? pool[0] ?? null;
+  if (!opts.providers) return pick(usable);
+  for (const provider of opts.providers) {
+    const found = pick(usable.filter((model) => model.provider === provider));
+    if (found) return found;
+  }
+  return null;
+}
+
 /** Flattens the nested catalog into the row shape the SDK exposes. */
 export function flattenCatalog(catalog: AgentChatModelCatalog | null): ModelCatalogEntry[] {
   const rows: ModelCatalogEntry[] = [];
