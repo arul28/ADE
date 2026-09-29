@@ -1,6 +1,7 @@
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
+import { AdeLink, AdeLinkHandlerProvider } from "../src/transcript/links";
 import { parseInline, parseMarkdownBlocks, renderMarkdown, safeHref } from "../src/transcript/markdown";
 
 describe("parseMarkdownBlocks", () => {
@@ -120,6 +121,26 @@ describe("renderMarkdown", () => {
     const anchor = container.querySelector("a")!;
     expect(anchor.getAttribute("rel")).toContain("noopener");
     expect(anchor.getAttribute("target")).toBe("_blank");
+  });
+
+  it("routes middle clicks while preserving auxiliary browser navigation", () => {
+    const onLinkClick = vi.fn();
+    const { getByRole } = render(
+      <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+        <AdeLink href="https://x.test" source="markdown">x</AdeLink>
+      </AdeLinkHandlerProvider>,
+    );
+    const link = getByRole("link");
+    const backButtonClick = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 3 });
+    const middleClick = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
+
+    link.dispatchEvent(backButtonClick);
+    expect(backButtonClick.defaultPrevented).toBe(false);
+    expect(onLinkClick).not.toHaveBeenCalled();
+
+    link.dispatchEvent(middleClick);
+    expect(middleClick.defaultPrevented).toBe(true);
+    expect(onLinkClick).toHaveBeenCalledWith("https://x.test", { source: "markdown", text: "x" });
   });
 
   it("degrades a scene fence to a code block instead of running it", () => {

@@ -78,7 +78,6 @@ export function AdeLink({
   // A middle click fires `auxclick`, not `click`, and its default opens the
   // link in a new window — in Electron, the app window this handler replaces.
   const onAuxClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    event.preventDefault();
     if (event.button === 1) onClick(event);
   };
   // No `target`: with a handler, the anchor never navigates by itself. `href`

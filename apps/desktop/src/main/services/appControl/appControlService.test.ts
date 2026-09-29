@@ -212,6 +212,43 @@ describe("appControlService", () => {
     }
   });
 
+  it("adds rendering flags without replacing an explicit CDP port or address", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const create = vi.fn(async () => ({
+      sessionId: "terminal-explicit-cdp",
+      ptyId: "pty-explicit-cdp",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({
+        command: "electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0",
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        startupCommand: expect.stringContaining(
+          "electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
+        ),
+      }));
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   it("passes shell-specific Windows package-script commands through to the PTY", async () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
