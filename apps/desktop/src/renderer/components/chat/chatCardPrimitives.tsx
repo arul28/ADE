@@ -523,7 +523,7 @@ function ProofFilmstripVideoTile({
           preview={preview}
           badgeSize="sm"
           interactive={false}
-          className="aspect-[16/10] w-full object-cover"
+          className="aspect-[16/10] w-full"
           onError={onMediaError}
         />
       ) : (
