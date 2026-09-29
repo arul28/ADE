@@ -16,19 +16,19 @@ struct WorkNewChatMachineOption: Identifiable, Equatable {
 /// ones that are not connected (a pick reconnects them).
 @MainActor
 func workNewChatMachineOptions(syncService: SyncService, fleet: MachineFleet) -> [WorkNewChatMachineOption] {
-  let primaryName = nonEmptyTrimmed(syncService.hostName) ?? "Primary machine"
+  let primaryName = syncService.focusedMachineDisplayName
   var options = [WorkNewChatMachineOption(
     machineKey: nil,
     name: primaryName,
-    symbol: settingsMachineSymbol(forName: primaryName),
+    symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: primaryName),
     isLive: syncService.connectionState == .connected
   )]
   let others = syncService.remoteReposForActiveProject().map { repo in
     WorkNewChatMachineOption(
       machineKey: repo.machineKey,
       name: repo.machineName,
-      symbol: settingsMachineSymbol(forName: repo.machineName),
-      isLive: fleet.machine(for: repo.machineKey)?.state == .live
+      symbol: machineSymbol(machineKey: repo.machineKey, name: repo.machineName),
+      isLive: fleet.isLive(repo.machineKey)
     )
   }
   options += others.filter(\.isLive) + others.filter { !$0.isLive }
@@ -40,6 +40,34 @@ func workNewChatMachineOptions(syncService: SyncService, fleet: MachineFleet) ->
 func workNewChatProvidersWithAccounts(_ inventory: AccountMachineInventorySummary?) -> Set<String>? {
   guard let inventory, !inventory.providers.isEmpty else { return nil }
   return Set(inventory.providers.filter { $0.accounts > 0 }.map { providerFamilyKey($0.provider) })
+}
+
+/// Whether the chosen model can run on the chosen machine.
+enum WorkNewChatModelCheck: Equatable {
+  /// The machine has an account for the model's provider, or said nothing.
+  case fits
+  /// It has none, and no provider of its own has a default model.
+  case noAccount
+  /// It has none; its first provider's default model runs there.
+  case fallback(modelId: String, provider: String)
+}
+
+/// A model needs an account on the machine that runs the chat. Reads the
+/// machine's account inventory (`machineKey` is its fleet key).
+@MainActor
+func workNewChatModelCheck(machineKey: String?, provider: String, mode: WorkCursorAvailabilityMode) -> WorkNewChatModelCheck {
+  guard let identity = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:)),
+        let machine = AccountService.shared.machines.first(where: {
+          $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
+        }),
+        let available = workNewChatProvidersWithAccounts(machine.inventory),
+        !available.contains(providerFamilyKey(provider))
+  else { return .fits }
+  guard let fallbackProvider = available.sorted().first,
+        let fallback = workDefaultModelIdForAvailabilityMode(preferredProvider: fallbackProvider, mode: mode),
+        available.contains(providerFamilyKey(fallback.provider))
+  else { return .noAccount }
+  return .fallback(modelId: fallback.modelId, provider: fallback.provider)
 }
 
 /// The machine dropdown beside the lane dropdown: same floating glass capsule.

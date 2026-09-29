@@ -170,15 +170,21 @@ extension LanesTabView {
 
   /// The focused machine's name for its chip and filter.
   var focusedMachineName: String {
-    syncService.hostName ?? syncService.activeHostProfile?.hostName ?? "This machine"
+    syncService.focusedMachineDisplayName
   }
 
   var laneMachineChips: LaneMachineChips {
     guard !remoteLanes.machines.isEmpty else { return .none }
     return LaneMachineChips(
-      focused: LaneMachineChip(name: focusedMachineName, isLive: true),
+      focused: LaneMachineChip(
+        name: focusedMachineName,
+        isLive: true,
+        symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName)
+      ),
       byMachineKey: Dictionary(
-        remoteLanes.machines.map { ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive)) },
+        remoteLanes.machines.map {
+          ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive, symbol: machineSymbol(machineKey: $0.machineKey, name: $0.name)))
+        },
         uniquingKeysWith: { first, _ in first }
       )
     )
@@ -226,7 +232,7 @@ extension LanesTabView {
         }
         LaneMachineFilterChip(
           title: focusedMachineName,
-          symbol: settingsMachineSymbol(forName: focusedMachineName),
+          symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
           liveDot: true,
           selected: machineFilter == .focused
         ) {
@@ -235,7 +241,7 @@ extension LanesTabView {
         ForEach(remoteLanes.machines) { machine in
           LaneMachineFilterChip(
             title: machine.name,
-            symbol: settingsMachineSymbol(forName: machine.name),
+            symbol: machineSymbol(machineKey: machine.machineKey, name: machine.name),
             liveDot: machine.isLive,
             selected: machineFilter == .machine(machine.machineKey)
           ) {

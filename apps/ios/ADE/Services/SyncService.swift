@@ -971,6 +971,15 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case lan = 0
   case tailnet = 1
   case relay = 2
+
+  /// The route's name in machine rows and pages.
+  var label: String {
+    switch self {
+    case .lan: return "Local network"
+    case .tailnet: return "Tailscale"
+    case .relay: return "ADE relay"
+    }
+  }
 }
 
 /// The machine a user-initiated connect is aimed at, which is NOT the same
@@ -4020,6 +4029,9 @@ final class SyncService: ObservableObject {
   @Published var ctoHomeMachineKey: String?
   /// The home machine's name, also when the phone cannot reach it.
   @Published var ctoHomeMachineName: String?
+  /// The project the CTO home above was read for; another project's CTO
+  /// home is unknown until read again.
+  var ctoHomeProjectId: String?
   /// Short, route-specific progress shown while a fresh account machine is
   /// being adopted. This is intentionally separate from the general reconnect
   /// state so background reconnects do not overwrite the guided account flow.
@@ -4455,7 +4467,7 @@ final class SyncService: ObservableObject {
   private var pendingRelayTransportReady: [Int: CheckedContinuation<Void, Error>] = [:]
   private var relayTransportNegotiationTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private var relayTransportOverallTimeoutTasks: [Int: Task<Void, Never>] = [:]
-  private let decoder = JSONDecoder()
+  let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
   private let syncDateFormatter = ISO8601DateFormatter()
   private let compressionThresholdBytes = 4 * 1024
@@ -9855,7 +9867,7 @@ final class SyncService: ObservableObject {
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
-    let target = ctoCommandTarget()
+    let target = try ctoCommandTarget()
     let summary = try await sendDecodableCommand(
       action: "cto.ensureSession",
       targetProjectId: target.projectId,
@@ -9882,7 +9894,7 @@ final class SyncService: ObservableObject {
   func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
     var args: [String: Any] = [:]
     if let recentLimit { args["recentLimit"] = recentLimit }
-    let target = ctoCommandTarget()
+    let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.getState",
       args: args,
@@ -9899,7 +9911,7 @@ final class SyncService: ObservableObject {
   /// talking to an older brain simply never lights the dot instead of erroring.
   /// Callers should check `supportsRemoteAction("cto.getAttention")` first.
   func fetchCtoAttention() async throws -> CtoAttention {
-    let target = ctoCommandTarget()
+    let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.getAttention",
       targetProjectId: target.projectId,
@@ -9913,7 +9925,7 @@ final class SyncService: ObservableObject {
   /// with a command error, which callers surface as a quiet "not available"
   /// row rather than an error card.
   func fetchCtoMemory() async throws -> CtoMemory {
-    let target = ctoCommandTarget()
+    let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.getMemory",
       targetProjectId: target.projectId,
@@ -10282,7 +10294,7 @@ final class SyncService: ObservableObject {
 
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
-    let target = ctoCommandTarget()
+    let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
       args: ["patch": patchArgs],
@@ -21386,7 +21398,7 @@ final class SyncService: ObservableObject {
     )
   }
 
-  private func sendDecodableCommand<T: Decodable>(
+  func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
     disconnectOnTimeout: Bool = true,
@@ -21830,7 +21842,7 @@ final class SyncService: ObservableObject {
     return try unwrapSyncCommandResponse(raw)
   }
 
-  private func sendCommand(
+  func sendCommand(
     action: String,
     args rawArgs: [String: Any],
     disconnectOnTimeout: Bool = true,
@@ -22376,6 +22388,14 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     targetProjectId: String? = nil
   ) async throws -> Any {
+    var args = args
+    // A lane whose machine became the focused one: the focused host knows it
+    // by its plain id.
+    if let raw = args["workspaceId"] as? String,
+       let remote = workParseRemoteLaneId(raw),
+       remote.machineKey == focusedMachineKey {
+      args["workspaceId"] = remote.laneId
+    }
     // Files of a lane on another machine: that machine, in the project that
     // holds the lane (the workspace id is the lane id).
     if let route = try remoteWorkspaceFileRoute(args: args) {
@@ -22415,9 +22435,7 @@ final class SyncService: ObservableObject {
           let remote = workParseRemoteLaneId(raw),
           remote.machineKey != focusedMachineKey
     else { return nil }
-    guard let repo = remoteLaneRepo(machineKey: remote.machineKey) else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This lane's machine no longer lists this project."])
-    }
+    let repo = try requireRemoteLaneRepo(machineKey: remote.machineKey)
     guard let route = try fleetRoute(machineKey: remote.machineKey, projectId: repo.projectId, rootPath: repo.rootPath) else {
       return nil
     }
@@ -24883,10 +24901,8 @@ extension SyncService {
     if let laneTarget {
       args = laneTarget.args
       if laneTarget.machineKey != focusedMachineKey {
-        guard let repo = remoteLaneRepo(machineKey: laneTarget.machineKey) else {
-          throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This lane's machine no longer lists this project."])
-        }
-        targetProjectId = syncFleetMarkedProjectId(machineKey: laneTarget.machineKey, projectId: repo.projectId)
+        let repo = try requireRemoteLaneRepo(machineKey: laneTarget.machineKey)
+        targetProjectId = repo.markedProjectId
         targetProjectRootPath = repo.rootPath
       }
     }
@@ -24976,14 +24992,33 @@ extension SyncService {
     return await reconnect(toSavedHost: host)
   }
 
-  /// Settings "Forget on this phone": drops the saved pairing (profile and
-  /// token) of `machineKey`. Returns false when the phone holds none.
-  @discardableResult
-  func forgetMachine(machineKey: String) -> Bool {
-    guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
-          let host = discoveredHost(fromSavedProfile: entry.profile)
-    else { return false }
-    removeSavedHost(host)
+  /// Settings "Forget on this phone": the machine leaves the connected set,
+  /// its saved pairing (profile and token) is dropped, and it is hidden from
+  /// this phone's lists until it comes back (`HiddenMachineStore`).
+  func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String, isAvailableNow: Bool) {
+    if let machineKey {
+      machineFleet?.stopKeepingLive(machineKey: machineKey)
+      if let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
+         let host = discoveredHost(fromSavedProfile: entry.profile) {
+        removeSavedHost(host)
+      }
+    }
+    HiddenMachineStore.shared.hide(identity: hiddenIdentity, isAvailableNow: isAvailableNow)
+  }
+
+  /// Pairs an account machine this phone never paired and keeps it connected.
+  /// Pairing attaches the phone to it; the previous primary machine stays
+  /// primary. Returns false when the pairing fails.
+  func pairAccountMachineKeepingPrimary(
+    _ machine: AccountMachine,
+    authorization: AccountPairingAuthorization
+  ) async -> Bool {
+    let previousKey = focusedMachineKey
+    guard await pairWithAccountMachine(machine, authorization: authorization) else { return false }
+    if let previousKey, let newKey = focusedMachineKey, newKey != previousKey {
+      machineFleet?.markConnected(machineKey: newKey)
+      _ = await switchFocus(toMachineKey: previousKey)
+    }
     return true
   }
 
@@ -25083,174 +25118,5 @@ extension SyncService {
       }
     }
     return nil
-  }
-}
-
-// MARK: - Lanes of other machines (see SyncService+RemoteLanes.swift)
-
-extension SyncService {
-  /// Every other paired machine's checkout of the focused repository, as the
-  /// fleet's rosters report it. The same rule the Work tab and the Hub use.
-  func remoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
-    guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
-    let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
-      ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
-    return workRemoteMachineRepos(
-      machines: fleet.machines,
-      identity: identity,
-      folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
-    )
-  }
-
-  /// `machineKey`'s checkout of the focused repository, if it has one.
-  func remoteLaneRepo(machineKey: String) -> WorkRemoteMachineRepo? {
-    remoteReposForActiveProject().first { $0.machineKey == machineKey }
-  }
-
-  /// The lane snapshots of one other machine's checkout, with namespaced
-  /// ids. Throws when that machine is not live.
-  func fetchRemoteLaneSnapshots(repo: WorkRemoteMachineRepo, timeoutNanoseconds: UInt64) async throws -> [LaneListSnapshot] {
-    let args: [String: Any] = [
-      "includeArchived": true,
-      "includeStatus": true,
-      "includeConflictStatus": true,
-      "includeRebaseSuggestions": true,
-      "includeAutoRebaseStatus": true,
-    ]
-    let raw = try await sendCommand(
-      action: "lanes.refreshSnapshots",
-      args: args,
-      timeoutNanoseconds: timeoutNanoseconds,
-      targetProjectId: syncFleetMarkedProjectId(machineKey: repo.machineKey, projectId: repo.projectId),
-      targetProjectRootPath: repo.rootPath,
-      fallbackToActiveProjectScope: false
-    )
-    // The router tagged the reply's lane ids (a `lanes.*` reply from another
-    // machine).
-    let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
-    if let snapshots = payload.snapshots { return snapshots }
-    return payload.lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
-  }
-}
-
-// MARK: - CTO home machine
-
-extension SyncService {
-  /// Git origin of the focused project, the key of its account repo settings.
-  var activeProjectGitOriginUrl: String? {
-    guard let activeProject else { return nil }
-    if let origin = nonEmptyTrimmed(rosterProject(for: activeProject)?.repoOriginUrl) { return origin }
-    guard let owner = nonEmptyTrimmed(activeProject.repoOwner),
-          let name = nonEmptyTrimmed(activeProject.repoName) else { return nil }
-    return "https://github.com/\(owner)/\(name)"
-  }
-
-  /// Where CTO commands go: the home machine's checkout of this project when
-  /// it is another live machine, else the primary machine (nil target).
-  func ctoCommandTarget() -> (projectId: String?, rootPath: String?, repo: WorkRemoteMachineRepo?) {
-    guard let key = ctoHomeMachineKey,
-          key != focusedMachineKey,
-          machineFleet?.machine(for: key)?.state == .live,
-          let repo = remoteLaneRepo(machineKey: key)
-    else { return (nil, nil, nil) }
-    return (syncFleetMarkedProjectId(machineKey: key, projectId: repo.projectId), repo.rootPath, repo)
-  }
-
-  /// Reads the project's CTO home machine from the account settings (through
-  /// the primary machine). An older brain leaves the CTO on the primary one.
-  func refreshCtoHomeMachine() async {
-    guard supportsRemoteAction("cto.getHomeMachine"), let origin = activeProjectGitOriginUrl else { return }
-    guard let raw = try? await sendCommand(action: "cto.getHomeMachine", args: ["gitOriginUrl": origin]),
-          let result = raw as? [String: Any],
-          result["available"] as? Bool == true
-    else { return }
-    let record = result["value"] as? [String: Any]
-    let deviceId = (record?["deviceId"] as? String).flatMap(nonEmptyTrimmed)
-    let key = deviceId.map { "machine:\($0.lowercased())" }
-    let nextKey = key == focusedMachineKey ? nil : key
-    if ctoHomeMachineKey != nextKey { ctoHomeMachineKey = nextKey }
-    let name = (record?["name"] as? String).flatMap(nonEmptyTrimmed)
-    if ctoHomeMachineName != name { ctoHomeMachineName = name }
-  }
-
-  /// Makes `machineKey` (nil = the primary machine) the project's CTO home
-  /// for every device on the account.
-  func setCtoHomeMachine(machineKey: String?, name: String) async throws {
-    guard let origin = activeProjectGitOriginUrl else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This project has no git origin, so its CTO home can't be shared."])
-    }
-    let deviceId = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:))
-      ?? nonEmptyTrimmed(activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId)
-    guard let deviceId else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine has no account identity yet."])
-    }
-    _ = try await sendCommand(
-      action: "cto.setHomeMachine",
-      args: ["gitOriginUrl": origin, "record": ["deviceId": deviceId, "name": name]]
-    )
-    ctoHomeMachineKey = machineKey == focusedMachineKey ? nil : machineKey
-    ctoHomeMachineName = name
-  }
-}
-
-// MARK: - PRs of other machines (see Views/PRs/PrRemoteMachines.swift)
-
-extension SyncService {
-  /// One other machine's PR rows for its checkout of the focused repository,
-  /// with namespaced lane ids. Throws when that machine is not live.
-  func fetchRemotePullRequestRows(repo: WorkRemoteMachineRepo, timeoutNanoseconds: UInt64) async throws -> [PrRemoteSummaryRow] {
-    let raw = try await sendCommand(
-      action: "prs.list",
-      args: [:],
-      timeoutNanoseconds: timeoutNanoseconds,
-      targetProjectId: syncFleetMarkedProjectId(machineKey: repo.machineKey, projectId: repo.projectId),
-      targetProjectRootPath: repo.rootPath,
-      fallbackToActiveProjectScope: false
-    )
-    // The router tagged the reply's lane ids (a `prs.*` reply from another
-    // machine).
-    return try decodeHydrationPayload(raw, as: [PrRemoteSummaryRow].self, domainLabel: "pull request", decoder: decoder)
-  }
-
-  /// `preflightCreateLaneFromPrBranch` on the machine the lane would be made on.
-  func preflightCreateLaneFromPrBranch(
-    repoOwner: String,
-    repoName: String,
-    githubPrNumber: Int,
-    on machine: PrLaneMachine
-  ) async throws -> PrAutoMapPreflightResult {
-    guard let projectId = machine.targetProjectId else {
-      return try await preflightCreateLaneFromPrBranch(repoOwner: repoOwner, repoName: repoName, githubPrNumber: githubPrNumber)
-    }
-    return try await sendDecodableCommand(
-      action: "prs.preflightCreateLaneFromPrBranch",
-      args: ["repoOwner": repoOwner, "repoName": repoName, "githubPrNumber": githubPrNumber],
-      targetProjectId: projectId,
-      targetProjectRootPath: machine.targetRootPath,
-      fallbackToActiveProjectScope: false,
-      as: PrAutoMapPreflightResult.self
-    )
-  }
-
-  /// `createLaneFromPrBranch` on the chosen machine. The new lane and the PR
-  /// row live there; the reply's lane ids come back namespaced.
-  @discardableResult
-  func createLaneFromPrBranch(
-    repoOwner: String,
-    repoName: String,
-    githubPrNumber: Int,
-    on machine: PrLaneMachine
-  ) async throws -> PrAutoMapCreateResult {
-    guard let projectId = machine.targetProjectId else {
-      return try await createLaneFromPrBranch(repoOwner: repoOwner, repoName: repoName, githubPrNumber: githubPrNumber)
-    }
-    return try await sendDecodableCommand(
-      action: "prs.createLaneFromPrBranch",
-      args: ["repoOwner": repoOwner, "repoName": repoName, "githubPrNumber": githubPrNumber],
-      targetProjectId: projectId,
-      targetProjectRootPath: machine.targetRootPath,
-      fallbackToActiveProjectScope: false,
-      as: PrAutoMapCreateResult.self
-    )
   }
 }

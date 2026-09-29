@@ -123,9 +123,6 @@ struct CtoSettingsScreen: View {
     }
   }
 
-  // MARK: - Identity
-
-  @ViewBuilder
   // MARK: - Home machine
 
   /// The machine the project's one CTO lives on, for every device on the
@@ -133,7 +130,7 @@ struct CtoSettingsScreen: View {
   private var homeMachineSection: some View {
     let options = workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
     let currentName = syncService.ctoHomeMachineKey == nil
-      ? options.first?.name ?? "Primary machine"
+      ? syncService.focusedMachineDisplayName
       : syncService.ctoHomeMachineName ?? options.first { $0.machineKey == syncService.ctoHomeMachineKey }?.name ?? "Another machine"
     return VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Home machine")
@@ -206,6 +203,9 @@ struct CtoSettingsScreen: View {
     }
   }
 
+  // MARK: - Identity
+
+  @ViewBuilder
   private func identitySection(_ snapshot: CtoSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Identity")

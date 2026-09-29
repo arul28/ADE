@@ -13,6 +13,11 @@ import {
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  CTO_HOME_SETTING_KEY,
+  isCtoHomeMachineRecord,
+  type CtoHomeMachineRecord,
+} from "../../../../desktop/src/shared/ctoHomeMachine";
 import { runWithAbortSignal } from "./abortSignal";
 import {
   buildSyncResultTooLargeError,
@@ -5999,9 +6004,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getHomeMachine", { viewerAllowed: true }, async (payload) => {
     const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
     if (!scope || !args.accountSettingsStore) return { available: false, value: null };
-    return { available: true, value: args.accountSettingsStore.get(scope, "cto.homeMachine") ?? null };
+    const value = args.accountSettingsStore.get(scope, CTO_HOME_SETTING_KEY);
+    return { available: true, value: isCtoHomeMachineRecord(value) ? value : null };
   });
-  register("cto.setHomeMachine", { viewerAllowed: false }, async (payload) => {
+  // A phone write like `cto.updateIdentity`: paired devices may call it.
+  register("cto.setHomeMachine", { viewerAllowed: true }, async (payload) => {
     const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
     if (!scope) throw new Error("cto.setHomeMachine requires the repository's git origin.");
     const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
@@ -6009,14 +6016,14 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const deviceId = asTrimmedString(record?.deviceId);
     const name = asTrimmedString(record?.name);
     if (!deviceId || !name) throw new Error("cto.setHomeMachine requires record.deviceId and record.name.");
-    const value = {
+    const value: CtoHomeMachineRecord = {
       version: 1,
       deviceId,
       name,
       hostname: asTrimmedString(record?.hostname) ?? null,
       chosenAt: new Date().toISOString(),
     };
-    store.set(scope, "cto.homeMachine", value);
+    store.set(scope, CTO_HOME_SETTING_KEY, value);
     return { ok: true, value };
   });
   register("cto.getAttention", { viewerAllowed: true }, async () => {

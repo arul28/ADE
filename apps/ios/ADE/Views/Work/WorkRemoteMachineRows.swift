@@ -15,6 +15,11 @@ struct WorkRemoteMachineRepo: Equatable {
   let rootPath: String?
   let lanes: [RemoteRosterLane]
   let chats: [RemoteRosterChat]
+
+  /// The project id a command for this checkout carries: routed to its machine.
+  var markedProjectId: String {
+    syncFleetMarkedProjectId(machineKey: machineKey, projectId: projectId)
+  }
 }
 
 /// `owner/name`, lowercased, from a git origin URL in any common form:

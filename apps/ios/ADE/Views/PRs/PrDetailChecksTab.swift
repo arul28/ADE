@@ -41,11 +41,6 @@ func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> Pr
   }
 }
 
-func prChecksHasFailedSignal(checks: [PrCheck], overallChecksStatus: String?) -> Bool {
-  checks.contains { prCheckConclusionKind($0) == .failure }
-    || prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus).fail > 0
-}
-
 func prChecksEmptyStateCopy(overallChecksStatus: String?, checksReason: String? = nil) -> (title: String, message: String) {
   switch overallChecksStatus?.lowercased() {
   case "not_run":
@@ -79,27 +74,6 @@ struct PrChecksGroupSummaryPart: Equatable {
   enum Tone: Equatable { case fail, pending, pass, muted }
   let text: String
   let tone: Tone
-}
-
-/// ADE-135: when the host says `not_run`, successful rows are reported as
-/// arrived-but-unverifying, so no green survives.
-func prChecksGroupSummaryParts(checks: [PrCheck], notRun: Bool) -> [PrChecksGroupSummaryPart] {
-  var pass = 0, fail = 0, pending = 0
-  for check in checks {
-    switch prCheckConclusionKind(check) {
-    case .success: pass += 1
-    case .failure: fail += 1
-    case .pending: pending += 1
-    case .neutral: break
-    }
-  }
-  var parts: [PrChecksGroupSummaryPart] = []
-  if fail > 0 { parts.append(.init(text: "\(fail) fail", tone: .fail)) }
-  if pending > 0 { parts.append(.init(text: "\(pending) pending", tone: .pending)) }
-  if pass > 0 {
-    parts.append(notRun ? .init(text: "\(pass) reported", tone: .muted) : .init(text: "\(pass) pass", tone: .pass))
-  }
-  return parts.isEmpty ? [.init(text: "\(checks.count) total", tone: .muted)] : parts
 }
 
 enum PrCheckConclusionKind {

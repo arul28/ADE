@@ -182,10 +182,6 @@ struct SettingsConnectionHeader: View {
   /// connect attempt as every other path, so the card always lands back on a
   /// definite state.
   var onWake: ((String) -> Void)?
-  /// List the other machines the phone holds a live roster link to, under the
-  /// focused one. Needs a `MachineFleet` in the environment; the pairing-only
-  /// screen leaves it off.
-  var showsLiveFleet = false
 
   @State private var pulsing = false
 
@@ -217,7 +213,7 @@ struct SettingsConnectionHeader: View {
           ))
             .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          if let detail = listsConnectedMachines ? connectedMachinesCountLine : stateDetailLine {
+          if let detail = stateDetailLine {
             Text(detail)
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
@@ -226,7 +222,6 @@ struct SettingsConnectionHeader: View {
           }
           if health.transport.isConnected,
              outcome == .standard,
-             !listsConnectedMachines,
              let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
             Text(routeLabel)
               .font(.caption2.weight(.semibold))
@@ -245,14 +240,6 @@ struct SettingsConnectionHeader: View {
           onReconnect: onReconnect
         )
         .layoutPriority(1)
-      }
-
-      if listsConnectedMachines {
-        SettingsConnectedMachineList(
-          focusedName: snapshot.hostDisplayName ?? "This machine",
-          focusedDetail: syncTransportBadgeText(routeKind: snapshot.routeKind) ?? "Connected",
-          liveMachines: liveFleetMachines
-        )
       }
 
       if let wakeMachineKey, let onWake {
@@ -351,26 +338,6 @@ struct SettingsConnectionHeader: View {
 
   private var isActiveState: Bool {
     health.transport == .connecting
-  }
-
-  @EnvironmentObject private var machineFleet: MachineFleet
-
-  /// Other machines the phone holds a live link to, when the card may list
-  /// them (the pairing-only screen has no fleet).
-  private var liveFleetMachines: [MachineFleet.Machine] {
-    guard showsLiveFleet else { return [] }
-    return machineFleet.machines.filter { $0.state == .live }
-  }
-
-  /// Connected to more than one machine: the card lists every one of them the
-  /// same way, instead of naming the focused one in the title and the others
-  /// in a smaller list below it.
-  private var listsConnectedMachines: Bool {
-    health.transport.isConnected && outcome == .standard && !liveFleetMachines.isEmpty
-  }
-
-  private var connectedMachinesCountLine: String {
-    "\(liveFleetMachines.count + 1) machines"
   }
 
   private var pulseTaskKey: Bool {
@@ -646,74 +613,4 @@ private struct SettingsInlineErrorBanner: View {
         .stroke(ADEColor.danger.opacity(0.25), lineWidth: 0.6)
     )
   }
-}
-
-/// Every machine this phone is connected to right now, one row each and all
-/// alike: the focused machine (full sync, its route) and each machine the
-/// fleet holds a live roster link to. Disconnect in the card header belongs to
-/// the focused machine.
-struct SettingsConnectedMachineList: View {
-  let focusedName: String
-  let focusedDetail: String
-  let liveMachines: [MachineFleet.Machine]
-
-  var body: some View {
-    VStack(spacing: 0) {
-      SettingsConnectedMachineRow(name: focusedName, detail: focusedDetail)
-      ForEach(liveMachines) { machine in
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.45))
-          .frame(height: 0.5)
-          .padding(.leading, 52)
-        SettingsConnectedMachineRow(name: machine.name, detail: "Live")
-      }
-    }
-    .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.5), lineWidth: 0.6)
-    )
-  }
-}
-
-private struct SettingsConnectedMachineRow: View {
-  let name: String
-  let detail: String
-
-  var body: some View {
-    HStack(spacing: 12) {
-      Image(systemName: settingsMachineSymbol(forName: name))
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(ADEColor.success)
-        .frame(width: 30, height: 30)
-        .background(ADEColor.success.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-      VStack(alignment: .leading, spacing: 2) {
-        Text(name)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-        Text(detail)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 8)
-      Circle()
-        .fill(ADEColor.success)
-        .frame(width: 8, height: 8)
-        .shadow(color: ADEColor.success.opacity(0.6), radius: 3)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 9)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(name), connected, \(detail)")
-  }
-}
-
-/// A laptop for a machine named like one, a desktop otherwise.
-func settingsMachineSymbol(forName name: String) -> String {
-  let lower = name.lowercased()
-  if lower.contains("macbook") || lower.contains("laptop") { return "laptopcomputer" }
-  return "desktopcomputer"
 }

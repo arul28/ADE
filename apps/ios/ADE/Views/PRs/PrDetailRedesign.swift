@@ -395,22 +395,9 @@ func prChangesRequestedBy(_ reviews: [PrReview]) -> [String] {
     .map { $0.login }
 }
 
-/// "opened 3 days ago", plus "· updated 2 hours ago" only when that says
-/// something the opened time does not (desktop `PrDetailHeader`).
-func prHeaderAgeLabel(createdAt: String?, updatedAt: String?) -> String {
-  let opened = "opened \(prRelativeTime(createdAt))"
-  guard prParsedDate(createdAt) != nil, prParsedDate(updatedAt) != nil else { return opened }
-  let updated = prRelativeTime(updatedAt)
-  return updated == prRelativeTime(createdAt) ? opened : "\(opened) · updated \(updated)"
-}
-
 /// Id prefix of the timeline events made from bot blocks in the PR body
 /// (desktop `PR_DESCRIPTION_BOT_EVENT_PREFIX`).
 let prDescriptionBotEventPrefix = "desc-bot:"
-
-func prIsDescriptionBotEvent(_ event: PrTimelineEvent) -> Bool {
-  event.id.hasPrefix(prDescriptionBotEventPrefix)
-}
 
 // MARK: - Bot blocks in the PR body (desktop `prBodyBotSections.ts`)
 

@@ -851,12 +851,15 @@ struct PrDetailView: View {
 
   // MARK: - Next step (desktop Merge card parity)
 
+  /// Counted the way the Checks tab sorts them (`prCheckConclusionKind`), so
+  /// the bar and the tab never disagree on what failed.
   private var checkCounts: (failing: Int, pending: Int, passing: Int) {
-    let checks = snapshot?.checks ?? []
-    let failing = checks.filter { $0.status == "completed" && ["failure", "timed_out", "cancelled", "action_required"].contains($0.conclusion ?? "") }.count
-    let pending = checks.filter { $0.status != "completed" }.count
-    let passing = checks.filter { $0.status == "completed" && $0.conclusion == "success" }.count
-    return (failing, pending, passing)
+    let kinds = (snapshot?.checks ?? []).map(prCheckConclusionKind)
+    return (
+      kinds.filter { $0 == .failure }.count,
+      kinds.filter { $0 == .pending }.count,
+      kinds.filter { $0 == .success }.count
+    )
   }
 
   private var nextStep: PrNextStep {
@@ -1289,7 +1292,7 @@ struct PrDetailView: View {
     let repo = currentPr.repoName
     let number = currentPr.githubPrNumber
     guard !owner.isEmpty, !repo.isEmpty else { return }
-    let onRemote = machine?.targetProjectId != nil
+    let onRemote = machine?.target != nil
     runPrAction(
       "Creating lane from PR branch",
       success: "Lane created",

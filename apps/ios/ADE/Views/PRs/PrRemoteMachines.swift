@@ -43,10 +43,8 @@ struct PrLaneMachine: Identifiable, Equatable {
   /// The machine key, or "" for the focused machine.
   let id: String
   let name: String
-  /// Where the create command goes: a machine-marked project id and the
-  /// checkout's root. Nil for the focused machine.
-  let targetProjectId: String?
-  let targetRootPath: String?
+  /// Where the create command goes. Nil for the focused machine.
+  let target: LaneCreateTarget?
   /// Chats running in the project on that machine: fewer is shown first.
   let runningCount: Int
 }
@@ -119,17 +117,21 @@ final class PrRemoteMachinesModel: ObservableObject {
     /// Its PR ↔ lane links. Empty when not live.
     let links: [PrRemoteLaneLink]
     var id: String { machineKey }
+    /// The project id a command for this checkout carries.
+    var markedProjectId: String { syncFleetMarkedProjectId(machineKey: machineKey, projectId: projectId) }
   }
 
-  /// Same cadence and bound as the Lanes tab and the desktop union.
-  static let refreshIntervalNanoseconds: UInt64 = 30_000_000_000
-  static let readTimeoutNanoseconds: UInt64 = 8_000_000_000
+  /// Same cadence as the Lanes tab and the desktop union.
+  static let refreshIntervalNanoseconds: UInt64 = LaneRemoteMachinesModel.refreshIntervalNanoseconds
 
   @Published private(set) var machines: [Machine] = []
   /// The last successful read of each machine: kept while a read fails and the
   /// machine is still live.
+  /// Keyed by `laneRemoteReadKey`: a read belongs to one machine's checkout.
   private var lastRead: [String: [PrRemoteSummaryRow]] = [:]
-  private var refreshing = false
+  /// Bumped by `reset()`: a refresh from before it publishes nothing.
+  private var generation = 0
+  private var inFlightGeneration: Int?
 
   var links: [PrRemoteLaneLink] { machines.flatMap(\.links) }
 
@@ -141,42 +143,45 @@ final class PrRemoteMachinesModel: ObservableObject {
   }
 
   func refresh(sync: SyncService, fleet: MachineFleet) async {
-    guard !refreshing else { return }
-    refreshing = true
-    defer { refreshing = false }
+    let runGeneration = generation
+    guard inFlightGeneration != runGeneration else { return }
+    inFlightGeneration = runGeneration
+    defer { if inFlightGeneration == runGeneration { inFlightGeneration = nil } }
     let repos = sync.remoteReposForActiveProject()
-    let liveKeys = Set(repos.map(\.machineKey).filter { fleet.connection(for: $0)?.isLive == true })
     var results: [String: [PrRemoteSummaryRow]] = [:]
     await withTaskGroup(of: (String, [PrRemoteSummaryRow]?).self) { group in
-      for repo in repos where liveKeys.contains(repo.machineKey) {
+      for repo in repos where fleet.isLive(repo.machineKey) {
         group.addTask { @MainActor in
           // A failed read keeps the last one; an offline machine is not an error.
           let rows = try? await sync.fetchRemotePullRequestRows(
             repo: repo,
-            timeoutNanoseconds: Self.readTimeoutNanoseconds
+            timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
           )
-          return (repo.machineKey, rows)
+          return (laneRemoteReadKey(repo), rows)
         }
       }
-      for await (machineKey, rows) in group {
-        if let rows { results[machineKey] = rows }
+      for await (key, rows) in group {
+        if let rows { results[key] = rows }
       }
     }
+    guard runGeneration == generation else { return }
     // The project or the fleet may have changed while the reads ran; build
-    // from the repos as they are now.
+    // from the repos as they are now. A read of another checkout (the project
+    // switched) matches no current key and is dropped.
     let current = sync.remoteReposForActiveProject()
-    let currentKeys = Set(current.map(\.machineKey))
+    let currentKeys = Set(current.map(laneRemoteReadKey))
     lastRead = lastRead.filter { currentKeys.contains($0.key) }
-    for (machineKey, rows) in results where currentKeys.contains(machineKey) {
-      lastRead[machineKey] = rows
+    for (key, rows) in results where currentKeys.contains(key) {
+      lastRead[key] = rows
     }
     var next: [Machine] = []
     for repo in current {
-      let isLive = fleet.connection(for: repo.machineKey)?.isLive == true
-      if !isLive { lastRead[repo.machineKey] = nil }
-      let lanes = isLive ? prRemoteRosterLanes(repo) : []
+      let isLive = fleet.isLive(repo.machineKey)
+      let key = laneRemoteReadKey(repo)
+      if !isLive { lastRead[key] = nil }
+      let lanes = isLive ? laneRemoteRosterSnapshots(repo).map(\.lane) : []
       let names = Dictionary(lanes.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
-      let links: [PrRemoteLaneLink] = (lastRead[repo.machineKey] ?? []).compactMap { row in
+      let links: [PrRemoteLaneLink] = (lastRead[key] ?? []).compactMap { row in
         guard row.unmapped != true, let laneId = row.laneId, !laneId.isEmpty else { return nil }
         // The router namespaced the reply's lane ids; do it here too when an
         // id came back plain, so it can never reach the focused machine.
@@ -209,16 +214,9 @@ final class PrRemoteMachinesModel: ObservableObject {
   }
 
   func reset() {
+    generation &+= 1
     lastRead = [:]
     if !machines.isEmpty { machines = [] }
   }
 }
 
-/// A machine's lanes from its roster, with namespaced ids.
-private func prRemoteRosterLanes(_ repo: WorkRemoteMachineRepo) -> [LaneSummary] {
-  repo.lanes.map { rosterLane in
-    var lane = rosterLane.asLaneSummary()
-    lane.id = workRemoteLaneId(machineKey: repo.machineKey, laneId: rosterLane.id)
-    return lane
-  }
-}

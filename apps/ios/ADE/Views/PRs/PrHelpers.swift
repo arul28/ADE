@@ -805,33 +805,6 @@ func matchesPullRequestListItemSearch(_ item: PullRequestListItem, query: String
   return haystack.contains(query)
 }
 
-func prChecksTint(_ status: String) -> Color {
-  switch status {
-  case "passing", "success":
-    return ADEColor.success
-  case "failing", "failure":
-    return ADEColor.danger
-  case "pending", "queued", "in_progress":
-    return ADEColor.warning
-  // ADE-135. `not_run` means nothing verified the commit. It reads as an empty
-  // slot, not an alarm, so it stays in the muted tone rather than danger red.
-  case "not_run":
-    return ADEColor.textSecondary
-  default:
-    return ADEColor.textSecondary
-  }
-}
-
-func prChecksLabel(_ status: String) -> String {
-  switch status {
-  case "passing": return "Passing"
-  case "failing": return "Failing"
-  case "pending": return "Pending"
-  case "not_run": return "Not run"
-  default: return titleCase(status)
-  }
-}
-
 func prCheckStatusLabel(_ check: PrCheck) -> String {
   if check.status == "completed" {
     return check.conclusion.map(titleCase) ?? "Completed"
@@ -1114,7 +1087,7 @@ private final class PrMarkdownAttributedStringBox: NSObject {
 
 // MARK: - PrGlassPalette extension (foundation tokens for the PRs overhaul).
 //
-// The base palette lives in `PrMergeGateCard.swift`. These additions are
+// The base palette lives in `PrGlassPalette.swift`. These additions are
 // purely additive — they introduce the extra tokens the upcoming PRs tab
 // overhaul needs (surface fills, text hierarchy, info accent, eyebrow tint,
 // and a couple of alias names so future callers can use the spec vocabulary
@@ -1122,7 +1095,7 @@ private final class PrMarkdownAttributedStringBox: NSObject {
 
 extension PrGlassPalette {
   // Surface fills — route to the adaptive card tokens defined alongside the
-  // base palette (PrMergeGateCard.swift) so light mode renders correctly.
+  // base palette (PrGlassPalette.swift) so light mode renders correctly.
   static var cardFill: Color { threadCard }
   static var cardElevated: Color { panelCard }
 

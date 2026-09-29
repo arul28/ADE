@@ -195,7 +195,7 @@ extension FilesRootScreen {
 @MainActor
 func filesRemoteMachineWorkspaces(syncService: SyncService) async -> (workspaces: [FilesWorkspace], lanes: [LaneSummary]) {
   let repos = syncService.remoteReposForActiveProject().filter { repo in
-    syncService.machineFleet?.machine(for: repo.machineKey)?.state == .live
+    syncService.machineFleet?.isLive(repo.machineKey) == true
   }
   guard !repos.isEmpty else { return ([], []) }
   var workspaces: [FilesWorkspace] = []
@@ -203,7 +203,10 @@ func filesRemoteMachineWorkspaces(syncService: SyncService) async -> (workspaces
   await withTaskGroup(of: (WorkRemoteMachineRepo, [LaneListSnapshot]).self) { group in
     for repo in repos {
       group.addTask { @MainActor in
-        let snapshots = (try? await syncService.fetchRemoteLaneSnapshots(repo: repo, timeoutNanoseconds: 8_000_000_000)) ?? []
+        let snapshots = (try? await syncService.fetchRemoteLaneSnapshots(
+          repo: repo,
+          timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
+        )) ?? []
         return (repo, snapshots)
       }
     }
@@ -214,10 +217,11 @@ func filesRemoteMachineWorkspaces(syncService: SyncService) async -> (workspaces
           id: lane.id,
           kind: lane.laneType == "primary" ? "primary" : "worktree",
           laneId: lane.id,
-          name: "\(lane.name) · \(repo.machineName)",
+          name: lane.name,
           branchRef: lane.branchRef,
           rootPath: lane.worktreePath,
-          isReadOnlyByDefault: false
+          isReadOnlyByDefault: false,
+          machineName: repo.machineName
         ))
       }
     }

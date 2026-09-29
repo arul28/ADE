@@ -22,7 +22,7 @@ private let machineFleetLog = Logger(subsystem: "com.ade.ios", category: "fleet"
 ///   socket per phone per machine).
 @MainActor
 final class MachineFleet: ObservableObject {
-  static let liveMachineLimit = 4
+  nonisolated static let liveMachineLimit = 4
   private static let pinnedKeysDefaultsKey = "ade.fleet.pinnedMachineKeys.v1"
   /// Set once the pins became the user's connected set. Before, every paired
   /// machine was live up to the limit; the first reconcile after the change
@@ -75,6 +75,8 @@ final class MachineFleet: ObservableObject {
   private var lastLiveKeys: Set<String> = []
   private let hiddenMachines: HiddenMachineStore
   private var hiddenCancellables: Set<AnyCancellable> = []
+  /// Fleet keys of the machines the account showed online at its last load.
+  private var accountOnlineKeys: Set<String> = []
 
   init() {
     pinnedKeys = UserDefaults.standard.stringArray(forKey: Self.pinnedKeysDefaultsKey) ?? []
@@ -111,12 +113,17 @@ final class MachineFleet: ObservableObject {
         // bring them all back on the next load.
         guard state == .loaded else { return }
         MainActor.assumeIsolated {
-          // A machine the account shows online may answer now.
-          self?.machinesCameOnline(machineKeys: Set(machines.compactMap { machine in
+          // A machine the account now shows online (it was not before) may
+          // answer: dial it again if it had run out of retries.
+          guard let self else { return }
+          let online = Set(machines.compactMap { machine -> String? in
             guard machine.online, let deviceId = nonEmptyTrimmed(machine.deviceId) else { return nil }
-            return "machine:\(deviceId.lowercased())"
-          }))
-          self?.hiddenMachines.reconcile(
+            return HiddenMachineStore.fleetKey(deviceId: deviceId)
+          })
+          let cameOnline = online.subtracting(self.accountOnlineKeys)
+          self.accountOnlineKeys = online
+          self.machinesCameOnline(machineKeys: cameOnline)
+          self.hiddenMachines.reconcile(
             // Both keys a row can be hidden under: the device identity, and
             // `account:<machine key>` for a directory row without one.
             accountMachines: machines.flatMap { machine in
@@ -167,6 +174,7 @@ final class MachineFleet: ObservableObject {
   /// The account shows these machines online: dial the ones that ran out of
   /// retries again.
   func machinesCameOnline(machineKeys: Set<String>) {
+    guard !machineKeys.isEmpty else { return }
     var resumed = false
     for key in machineKeys {
       guard let connection = connections[key], connection.gaveUp else { continue }
@@ -224,39 +232,56 @@ final class MachineFleet: ObservableObject {
     machines.first { $0.machineKey == machineKey }
   }
 
+  /// The machine has a live roster link now.
+  func isLive(_ machineKey: String) -> Bool {
+    machine(for: machineKey)?.state == .live
+  }
+
+  /// Connects `machineKey` (adds it to the connected set and dials it) and
+  /// waits up to `timeout` for a live link. False when it needs the user,
+  /// runs out of retries, or is not live in time.
+  func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
+    if isLive(machineKey) { return true }
+    keepLive(machineKey: machineKey)
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline, !Task.isCancelled {
+      guard let machine = machine(for: machineKey) else { return false }
+      if machine.state == .live { return true }
+      if machine.gaveUp { return false }
+      if case .needsAttention = machine.state { return false }
+      try? await Task.sleep(for: .milliseconds(250))
+    }
+    return isLive(machineKey)
+  }
+
   // MARK: - User choices
 
-  /// Keep `machineKey` live. When that goes over the limit, the least recently
-  /// used live machine that the user did not choose is paused; returns it so
-  /// the caller can say so. Returns nil when nothing had to be paused.
-  @discardableResult
-  func keepLive(machineKey: String) -> Machine? {
-    let before = Set(machines.filter { $0.state != .paused }.map(\.machineKey))
+  /// Adds `machineKey` to the user's connected set and dials it now, also when
+  /// it had asked for attention or had run out of retries. The caller keeps
+  /// the set under the limit (Settings asks which machine to disconnect);
+  /// past it, the oldest choice other than the primary machine falls off.
+  func keepLive(machineKey: String) {
     pinnedKeys.removeAll { $0 == machineKey }
     pinnedKeys.insert(machineKey, at: 0)
-    // Never pin more than the limit allows: the oldest choice falls off.
-    if pinnedKeys.count > liveOtherMachineLimit {
-      pinnedKeys = Array(pinnedKeys.prefix(liveOtherMachineLimit))
+    // The primary machine may sit in the set (it stays connected when another
+    // machine becomes primary); it never counts toward the limit.
+    let focused = syncService?.focusedMachineKey
+    var others = 0
+    pinnedKeys = pinnedKeys.filter { key in
+      guard key != focused else { return true }
+      others += 1
+      return others <= liveOtherMachineLimit
     }
     persistPins()
-    if let connection = connections[machineKey], case .needsAttention = connection.phase {
-      connection.stop(reason: "Retry.", clearAttention: true)
+    if let connection = connections[machineKey] {
+      if case .needsAttention = connection.phase {
+        connection.stop(reason: "Retry.", clearAttention: true)
+      }
+      connection.resumeAfterGivingUp()
     }
     needsUpdateSince.removeValue(forKey: machineKey)
     reconcile()
-    let after = Set(machines.filter { $0.state != .paused }.map(\.machineKey))
-    guard let pausedKey = before.subtracting(after).first else { return nil }
-    return machine(for: pausedKey)
-  }
-
-  /// The machine that `keepLive(machineKey:)` would pause, without changing
-  /// anything. Nil when the machine fits under the limit.
-  func machineThatWouldPause(forKeepingLive machineKey: String) -> Machine? {
-    let order = liveOrder(candidates: machines.map(\.machineKey), pinnedFirst: [machineKey] + pinnedKeys)
-    let liveNow = machines.filter { $0.state != .paused }.map(\.machineKey)
-    let liveNext = Set(order.prefix(liveOtherMachineLimit))
-    guard !liveNext.contains(machineKey) || liveNow.contains(machineKey) else { return nil }
-    return liveNow.first { !liveNext.contains($0) }.flatMap(machine(for:))
   }
 
   func stopKeepingLive(machineKey: String) {
@@ -536,6 +561,12 @@ final class HiddenMachineStore: ObservableObject {
 
   /// The identity inside a fleet storage key (`machine:<device id>`). Nil for
   /// keys built from an address, site or name, which have no stable identity.
+  /// The fleet key of a machine with this device identity (the inverse of
+  /// `identity(fromFleetKey:)`).
+  static func fleetKey(deviceId: String) -> String {
+    "machine:\(deviceId.lowercased())"
+  }
+
   static func identity(fromFleetKey key: String) -> String? {
     let prefix = "machine:"
     guard key.hasPrefix(prefix) else { return nil }

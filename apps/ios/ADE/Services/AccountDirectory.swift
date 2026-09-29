@@ -8,6 +8,15 @@ struct AccountMachineEndpoint: Codable, Equatable, Hashable {
     case lan
     case tailnet
     case relay
+
+    /// The route's name in machine rows ("Local network").
+    var label: String {
+      switch self {
+      case .lan: return SyncConnectionRouteKind.lan.label
+      case .tailnet: return SyncConnectionRouteKind.tailnet.label
+      case .relay: return SyncConnectionRouteKind.relay.label
+      }
+    }
   }
 
   let kind: Kind
@@ -233,12 +242,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// vocabulary the pairing surfaces use ("lan" / "tailnet" / "relay"), never a
   /// raw IP or port.
   var routeLabel: String? {
-    guard let endpoint = preferredEndpoint else { return nil }
-    switch endpoint.kind {
-    case .lan: return "Local network"
-    case .tailnet: return "Tailscale"
-    case .relay: return "ADE relay"
-    }
+    preferredEndpoint?.kind.label
   }
 
   /// A best-effort `host` / `port` pair for one-tap connect, parsed from the
@@ -480,38 +484,13 @@ struct AccountDirectoryClient {
     let body = try JSONSerialization.data(
       withJSONObject: ["customName": encodedName]
     )
-    let correlationID = UUID().uuidString.lowercased()
-
-    func request(using accessToken: String) async throws -> (Data, HTTPURLResponse) {
-      var request = URLRequest(url: url)
-      request.httpMethod = "PATCH"
-      request.httpBody = body
-      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-      request.setValue("application/json", forHTTPHeaderField: "Accept")
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
-      request.timeoutInterval = 12
-      request.cachePolicy = .reloadIgnoringLocalCacheData
-      do {
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-          throw DirectoryError.transport("The directory returned an unexpected response.")
-        }
-        return (data, http)
-      } catch let error as DirectoryError {
-        throw error
-      } catch {
-        throw DirectoryError.transport("Couldn't reach the machine directory.")
-      }
-    }
-
-    var (data, response) = try await request(using: token)
-    if response.statusCode == 401,
-       let refreshToken,
-       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !refreshed.isEmpty {
-      (data, response) = try await request(using: refreshed)
-    }
+    let (data, response) = try await sendMachineRequest(
+      method: "PATCH",
+      url: url,
+      body: body,
+      token: token,
+      refreshToken: refreshToken
+    )
     switch response.statusCode {
     case 200:
       do {
@@ -542,36 +521,13 @@ extension AccountDirectoryClient {
     let url = baseURL
       .appendingPathComponent("account/machines")
       .appendingPathComponent(key)
-    let correlationID = UUID().uuidString.lowercased()
-
-    func request(using accessToken: String) async throws -> HTTPURLResponse {
-      var request = URLRequest(url: url)
-      request.httpMethod = "DELETE"
-      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-      request.setValue("application/json", forHTTPHeaderField: "Accept")
-      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
-      request.timeoutInterval = 12
-      request.cachePolicy = .reloadIgnoringLocalCacheData
-      do {
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-          throw DirectoryError.transport("The directory returned an unexpected response.")
-        }
-        return http
-      } catch let error as DirectoryError {
-        throw error
-      } catch {
-        throw DirectoryError.transport("Couldn't reach the machine directory.")
-      }
-    }
-
-    var response = try await request(using: token)
-    if response.statusCode == 401,
-       let refreshToken,
-       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !refreshed.isEmpty {
-      response = try await request(using: refreshed)
-    }
+    let (_, response) = try await sendMachineRequest(
+      method: "DELETE",
+      url: url,
+      body: nil,
+      token: token,
+      refreshToken: refreshToken
+    )
     switch response.statusCode {
     case 200...299:
       return
@@ -580,6 +536,50 @@ extension AccountDirectoryClient {
     default:
       throw DirectoryError.server(response.statusCode)
     }
+  }
+
+  /// One authenticated request to `account/machines/<key>`, retried once with
+  /// a refreshed token on 401. The caller maps the status.
+  private func sendMachineRequest(
+    method: String,
+    url: URL,
+    body: Data?,
+    token: String,
+    refreshToken: (() async -> String?)?
+  ) async throws -> (Data, HTTPURLResponse) {
+    let correlationID = UUID().uuidString.lowercased()
+    func send(using accessToken: String) async throws -> (Data, HTTPURLResponse) {
+      var request = URLRequest(url: url)
+      request.httpMethod = method
+      request.httpBody = body
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      if body != nil {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      }
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      request.timeoutInterval = 12
+      request.cachePolicy = .reloadIgnoringLocalCacheData
+      do {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+          throw DirectoryError.transport("The directory returned an unexpected response.")
+        }
+        return (data, http)
+      } catch let error as DirectoryError {
+        throw error
+      } catch {
+        throw DirectoryError.transport("Couldn't reach the machine directory.")
+      }
+    }
+    var result = try await send(using: token)
+    if result.1.statusCode == 401,
+       let refreshToken,
+       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !refreshed.isEmpty {
+      result = try await send(using: refreshed)
+    }
+    return result
   }
 }
 

@@ -7,6 +7,20 @@ struct LaneCreateTarget: Equatable {
   let rootPath: String?
 }
 
+/// Machines to create a lane on, least busy first; ties keep the given order
+/// (the focused machine first).
+func machineChoicesLeastBusyFirst<Choice>(_ choices: [Choice], runningCount: (Choice) -> Int) -> [Choice] {
+  choices.enumerated()
+    .sorted { (runningCount($0.element), $0.offset) < (runningCount($1.element), $1.offset) }
+    .map(\.element)
+}
+
+/// A machine choice's second line: its running chats, and "least busy" first.
+func machineChoiceSubtitle(runningCount: Int, isLeastBusy: Bool) -> String {
+  let running = runningCount == 0 ? "Nothing running" : "\(runningCount) running"
+  return isLeastBusy ? "\(running) · least busy" : running
+}
+
 struct LaneCreateSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService

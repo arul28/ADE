@@ -293,17 +293,11 @@ struct LanesTabView: View {
         name: machine.name,
         primaryLane: machine.snapshots.first { $0.lane.laneType == "primary" }?.lane,
         lanes: machine.snapshots.map(\.lane),
-        target: LaneCreateTarget(
-          projectId: syncFleetMarkedProjectId(machineKey: machine.machineKey, projectId: machine.projectId),
-          rootPath: machine.rootPath
-        ),
+        target: LaneCreateTarget(projectId: machine.markedProjectId, rootPath: machine.rootPath),
         runningCount: machine.snapshots.reduce(0) { $0 + $1.runtime.runningCount }
       ))
     }
-    // Stable sort: ties keep the focused machine first.
-    return machines.enumerated()
-      .sorted { ($0.element.runningCount, $0.offset) < ($1.element.runningCount, $1.offset) }
-      .map(\.element)
+    return machineChoicesLeastBusyFirst(machines, runningCount: \.runningCount)
   }
 
   // MARK: - Top bar

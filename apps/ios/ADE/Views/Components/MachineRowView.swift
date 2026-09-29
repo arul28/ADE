@@ -203,6 +203,23 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
   }
 }
 
+/// The SF Symbol for a machine known by fleet key and name: the account's
+/// device type when the account lists the machine, else a guess from the name
+/// (a laptop for a name like one, a desktop otherwise).
+@MainActor
+func machineSymbol(machineKey: String?, name: String) -> String {
+  if let identity = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:)),
+     let machine = AccountService.shared.machines.first(where: {
+       $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
+     }),
+     machine.deviceType != nil || machine.platform != nil {
+    return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
+  }
+  let lower = name.lowercased()
+  if lower.contains("macbook") || lower.contains("laptop") { return "laptopcomputer" }
+  return "desktopcomputer"
+}
+
 /// The unified status hint for a saved machine. Directory presence is only a
 /// routing hint; absence never claims the computer is powered off. Callers with a
 /// richer route label show that instead and fall back to this.

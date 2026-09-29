@@ -129,6 +129,12 @@ struct FilesWorkspacePickerDropdown: View {
 }
 
 func filesWorkspaceSubtitle(_ workspace: FilesWorkspace) -> String {
+  let base = filesWorkspaceBranchLabel(workspace)
+  guard let machine = workspace.machineName else { return base }
+  return "\(base) · \(machine)"
+}
+
+private func filesWorkspaceBranchLabel(_ workspace: FilesWorkspace) -> String {
   if let branchRef = workspace.branchRef?.trimmingCharacters(in: .whitespacesAndNewlines), !branchRef.isEmpty {
     return normalizedPrBranchName(branchRef)
   }
@@ -165,35 +171,25 @@ private struct FilesWorkspacePickerSheet: View {
   @Binding var searchQuery: String
   let onSelect: (String) -> Void
 
-  /// Workspaces grouped by machine: `nil` = this machine, then each other
-  /// machine in first-seen order, titled by the machine name.
-  private var groups: [(title: String, items: [(workspace: FilesWorkspace, title: String)])] {
-    var local: [(FilesWorkspace, String)] = []
-    var remoteOrder: [String] = []
-    var remote: [String: (name: String, items: [(FilesWorkspace, String)])] = [:]
+  /// Workspaces grouped by machine: this machine first, then each other
+  /// machine by name. Keyed by machine key, so two machines with one name stay
+  /// apart.
+  private var groups: [(id: String, title: String, items: [FilesWorkspace])] {
+    var local: [FilesWorkspace] = []
+    var remote: [String: (name: String, items: [FilesWorkspace])] = [:]
     for workspace in workspaces {
       guard let key = workParseRemoteLaneId(workspace.id)?.machineKey else {
-        local.append((workspace, workspace.name))
+        local.append(workspace)
         continue
       }
-      // Remote names read "lane · machine" (see `filesRemoteMachineWorkspaces`).
-      let parts = workspace.name.components(separatedBy: " · ")
-      let machine = parts.count > 1 ? parts.last! : "Other machine"
-      let title = parts.count > 1 ? parts.dropLast().joined(separator: " · ") : workspace.name
-      if remote[key] == nil {
-        remoteOrder.append(key)
-        remote[key] = (machine, [])
-      }
-      remote[key]?.items.append((workspace, title))
+      remote[key, default: (workspace.machineName ?? "Other machine", [])].items.append(workspace)
     }
-    var result: [(title: String, items: [(workspace: FilesWorkspace, title: String)])] = []
+    var result: [(id: String, title: String, items: [FilesWorkspace])] = []
     if !local.isEmpty {
-      result.append((remoteOrder.isEmpty ? "Workspaces" : "This machine", local.map { ($0.0, $0.1) }))
+      result.append(("local", remote.isEmpty ? "Workspaces" : "This machine", local))
     }
-    for key in remoteOrder {
-      if let entry = remote[key] {
-        result.append((entry.name, entry.items.map { ($0.0, $0.1) }))
-      }
+    for (key, entry) in remote.sorted(by: { $0.value.name.localizedCaseInsensitiveCompare($1.value.name) == .orderedAscending }) {
+      result.append((key, entry.name, entry.items))
     }
     return result
   }
@@ -207,10 +203,10 @@ private struct FilesWorkspacePickerSheet: View {
             .foregroundStyle(ADEColor.textSecondary)
             .adeFlatRow()
         }
-        ForEach(groups, id: \.title) { group in
+        ForEach(groups, id: \.id) { group in
           Section {
-            ForEach(group.items, id: \.workspace.id) { item in
-              row(item.workspace, title: item.title)
+            ForEach(group.items) { workspace in
+              row(workspace)
             }
           } header: {
             ADEFlatSectionHeader(group.title, detail: "\(group.items.count)")
@@ -224,9 +220,10 @@ private struct FilesWorkspacePickerSheet: View {
     }
   }
 
-  private func row(_ workspace: FilesWorkspace, title: String) -> some View {
+  private func row(_ workspace: FilesWorkspace) -> some View {
     let isSelected = workspace.id == selectedWorkspaceId
-    let subtitle = filesWorkspaceSubtitle(workspace)
+    // The section header names the machine.
+    let subtitle = filesWorkspaceBranchLabel(workspace)
     let lane = filesWorkspaceLaneSummary(workspace, lanes: lanes)
     return Button {
       onSelect(workspace.id)
@@ -246,7 +243,7 @@ private struct FilesWorkspacePickerSheet: View {
             .frame(width: 22)
         }
         VStack(alignment: .leading, spacing: 2) {
-          Text(title)
+          Text(workspace.name)
             .font(.body.weight(isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
@@ -279,8 +276,8 @@ struct FilesWorkspacePickerPreviewHost: View {
   private static let workspaces: [FilesWorkspace] = [
     FilesWorkspace(id: "s-main", kind: "primary", laneId: "s-main", name: "Primary", branchRef: "main", rootPath: "/Users/a/ADE", isReadOnlyByDefault: false),
     FilesWorkspace(id: "s-sync", kind: "worktree", laneId: "s-sync", name: "fix sync loop", branchRef: "ade/fix-sync-loop-2f81", rootPath: "/Users/a/ADE/.ade/worktrees/fix", isReadOnlyByDefault: false),
-    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-main"), kind: "primary", laneId: nil, name: "Primary · MacBook Pro (97)", branchRef: "main", rootPath: "/Users/b/ADE", isReadOnlyByDefault: false),
-    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-p4"), kind: "worktree", laneId: nil, name: "phase 4 lanes · MacBook Pro (97)", branchRef: "ade/mobile-multi-machine-phase-4", rootPath: "/Users/b/ADE/.ade/worktrees/p4", isReadOnlyByDefault: false),
+    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-main"), kind: "primary", laneId: nil, name: "Primary", branchRef: "main", rootPath: "/Users/b/ADE", isReadOnlyByDefault: false, machineName: "MacBook Pro (97)"),
+    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-p4"), kind: "worktree", laneId: nil, name: "phase 4 lanes", branchRef: "ade/mobile-multi-machine-phase-4", rootPath: "/Users/b/ADE/.ade/worktrees/p4", isReadOnlyByDefault: false, machineName: "MacBook Pro (97)"),
   ]
 
   var body: some View {

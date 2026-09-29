@@ -22,6 +22,8 @@ final class LaneRemoteMachinesModel: ObservableObject {
     /// Why the last read failed, when the rows are older than the last attempt.
     let error: String?
     var id: String { machineKey }
+    /// The project id a command for this checkout carries.
+    var markedProjectId: String { syncFleetMarkedProjectId(machineKey: machineKey, projectId: projectId) }
   }
 
   /// Same cadence and bound as the desktop union (`crossMachineLanes.ts`).
@@ -31,53 +33,60 @@ final class LaneRemoteMachinesModel: ObservableObject {
   @Published private(set) var machines: [MachineLanes] = []
   /// The last successful read of each machine: shown while a read runs or
   /// after it fails.
+  /// Keyed by `laneRemoteReadKey`: a read belongs to one machine's checkout.
   private var lastRead: [String: [LaneListSnapshot]] = [:]
-  private var refreshing = false
+  /// Bumped by `reset()`: a refresh from before it publishes nothing, and a
+  /// new one does not wait for it.
+  private var generation = 0
+  private var inFlightGeneration: Int?
 
   func refresh(sync: SyncService, fleet: MachineFleet) async {
-    guard !refreshing else { return }
-    refreshing = true
-    defer { refreshing = false }
+    let runGeneration = generation
+    guard inFlightGeneration != runGeneration else { return }
+    inFlightGeneration = runGeneration
+    defer { if inFlightGeneration == runGeneration { inFlightGeneration = nil } }
     let repos = sync.remoteReposForActiveProject()
-    let liveKeys = Set(repos.map(\.machineKey).filter { fleet.connection(for: $0)?.isLive == true })
     var results: [String: Result<[LaneListSnapshot], Error>] = [:]
     await withTaskGroup(of: (String, Result<[LaneListSnapshot], Error>).self) { group in
-      for repo in repos where liveKeys.contains(repo.machineKey) {
+      for repo in repos where fleet.isLive(repo.machineKey) {
         group.addTask { @MainActor in
           do {
             let snapshots = try await sync.fetchRemoteLaneSnapshots(
               repo: repo,
               timeoutNanoseconds: Self.readTimeoutNanoseconds
             )
-            return (repo.machineKey, .success(snapshots))
+            return (laneRemoteReadKey(repo), .success(snapshots))
           } catch {
-            return (repo.machineKey, .failure(error))
+            return (laneRemoteReadKey(repo), .failure(error))
           }
         }
       }
-      for await (machineKey, result) in group {
-        results[machineKey] = result
+      for await (key, result) in group {
+        results[key] = result
       }
     }
+    guard runGeneration == generation else { return }
     // The project or the fleet may have changed while the reads ran; build
-    // from the repos as they are now.
+    // from the repos as they are now. A read of another checkout (the project
+    // switched) matches no current key and is dropped.
     let current = sync.remoteReposForActiveProject()
-    let currentKeys = Set(current.map(\.machineKey))
+    let currentKeys = Set(current.map(laneRemoteReadKey))
     lastRead = lastRead.filter { currentKeys.contains($0.key) }
     var next: [MachineLanes] = []
     for repo in current {
-      let isLive = fleet.connection(for: repo.machineKey)?.isLive == true
+      let isLive = fleet.isLive(repo.machineKey)
+      let key = laneRemoteReadKey(repo)
       var error: String?
-      switch results[repo.machineKey] {
+      switch results[key] {
       case .success(let snapshots)?:
-        lastRead[repo.machineKey] = snapshots
+        lastRead[key] = snapshots
       case .failure(let failure)?:
         error = SyncUserFacingError.message(for: failure)
       case nil:
         break
       }
       let snapshots = isLive
-        ? (lastRead[repo.machineKey] ?? laneRemoteRosterSnapshots(repo))
+        ? (lastRead[key] ?? laneRemoteRosterSnapshots(repo))
         : laneRemoteRosterSnapshots(repo)
       next.append(MachineLanes(
         machineKey: repo.machineKey,
@@ -93,9 +102,15 @@ final class LaneRemoteMachinesModel: ObservableObject {
   }
 
   func reset() {
+    generation &+= 1
     lastRead = [:]
     if !machines.isEmpty { machines = [] }
   }
+}
+
+/// One machine's checkout of the repository: a read result belongs to it.
+func laneRemoteReadKey(_ repo: WorkRemoteMachineRepo) -> String {
+  "\(repo.machineKey)|\(repo.projectId)"
 }
 
 /// Lane rows from a machine's roster alone: name, branch, color and type.

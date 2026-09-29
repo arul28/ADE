@@ -186,10 +186,12 @@ function isTailscaleAddress(ipAddress: string): boolean {
   return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
-// Host-only virtual adapters (WSL / Hyper-V switches, Docker bridges, VM
-// networks). Their addresses exist only inside this computer, so a phone that
-// dials them just burns a connect attempt.
-const VIRTUAL_ADAPTER_PATTERN = /^vEthernet|docker|^br-|virbr|vmnet|vboxnet/i;
+// Host-only virtual adapters (the WSL and Default Switch Hyper-V switches,
+// Docker bridges, VM host-only networks). Their addresses exist only inside
+// this computer, so a phone that dials them just burns a connect attempt.
+// Other `vEthernet (...)` adapters stay: with a Hyper-V External switch, or WSL
+// in bridged mode, Windows moves the real LAN address onto one of them.
+const VIRTUAL_ADAPTER_PATTERN = /^vEthernet \((WSL|Default Switch)|docker|^br-|virbr|vmnet|vboxnet/i;
 
 function readLocalNetworkMetadata(): LocalNetworkMetadata {
   const interfaces = os.networkInterfaces();

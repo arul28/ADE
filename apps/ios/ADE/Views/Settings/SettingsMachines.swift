@@ -113,7 +113,7 @@ func settingsMachines(
 
   func pairedKey(identity: String?) -> String? {
     guard let identity = nonEmptyTrimmed(identity) else { return nil }
-    let key = "machine:\(identity.lowercased())"
+    let key = HiddenMachineStore.fleetKey(deviceId: identity)
     if key == focusedKey || fleet.machine(for: key) != nil { return key }
     return nil
   }
@@ -150,7 +150,7 @@ func settingsMachines(
       ? accountMachinePowerClause(machine.power)
       : nil
     let route = key == focusedKey
-      ? syncService.lastConnectedRouteKind.map(settingsRouteWord) ?? machine.routeLabel
+      ? syncService.lastConnectedRouteKind?.label ?? machine.routeLabel
       : machine.routeLabel
     let detail = [route, power].compactMap { $0 }.joined(separator: " · ")
     result.append(SettingsMachine(
@@ -186,20 +186,12 @@ func settingsMachines(
       isAsleep: false,
       lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt),
       hiddenIdentity: identity ?? "name:\(host.hostName)",
-      detail: key == focusedKey ? syncService.lastConnectedRouteKind.map(settingsRouteWord) : nil,
+      detail: key == focusedKey ? syncService.lastConnectedRouteKind?.label : nil,
       projects: projects(for: key)
     ))
   }
 
   return result.filter { $0.isConnectedSet || !hidden.isHidden(identity: $0.hiddenIdentity) }
-}
-
-func settingsRouteWord(_ kind: SyncConnectionRouteKind) -> String {
-  switch kind {
-  case .lan: return "Local network"
-  case .tailnet: return "Tailscale"
-  case .relay: return "ADE relay"
-  }
 }
 
 /// Connected first (primary, then the rest by name), then available (online
@@ -240,6 +232,16 @@ final class SettingsMachineController: ObservableObject {
     self.fleet = fleet
   }
 
+  /// A machine that is live disproves its own failure; failures of other
+  /// machines stay (see `settingsMachineRowErrorsRetiring`).
+  func retireErrors(liveMachineIds: [String]) {
+    var next = errors
+    for id in liveMachineIds {
+      next = settingsMachineRowErrorsRetiring(next, attachedEntryId: id)
+    }
+    if next != errors { errors = next }
+  }
+
   /// Connected machines right now: the primary plus the fleet's live set.
   func liveCount(_ machines: [SettingsMachine]) -> Int {
     machines.filter(\.isLive).count
@@ -251,7 +253,7 @@ final class SettingsMachineController: ObservableObject {
     if syncService.focusedMachineKey != nil, fleet.isAtLiveLimit {
       var candidates = fleet.connectedMachinesLeastRecentFirst.map { (key: $0.machineKey, name: $0.name) }
       if let primary = syncService.focusedMachineKey {
-        candidates.append((key: primary, name: syncService.hostName ?? "Primary machine"))
+        candidates.append((key: primary, name: syncService.focusedMachineDisplayName))
       }
       limitPrompt = SettingsMachineLimitPrompt(target: machine, candidates: candidates)
       return
@@ -264,14 +266,17 @@ final class SettingsMachineController: ObservableObject {
     guard let syncService, let fleet else { return }
     limitPrompt = nil
     if key == syncService.focusedMachineKey {
-      // The new machine takes the primary's place.
+      // The new machine takes the primary's place; the old primary leaves the
+      // connected set.
       guard let targetKey = target.machineKey else {
         performConnect(target)
         return
       }
       run(target, success: "\(target.name) is primary") {
         fleet.markConnected(machineKey: targetKey)
-        return await syncService.switchFocus(toMachineKey: targetKey)
+        guard await syncService.switchFocus(toMachineKey: targetKey) else { return false }
+        fleet.stopKeepingLive(machineKey: key)
+        return true
       }
       return
     }
@@ -299,15 +304,8 @@ final class SettingsMachineController: ObservableObject {
       errors[machine.id] = "Your account session ended. Sign in again, then connect."
       return
     }
-    let previousKey = syncService.focusedMachineKey
     run(machine, success: "\(machine.name) connected") {
-      let paired = await syncService.pairWithAccountMachine(accountMachine, authorization: authorization)
-      guard paired else { return false }
-      if let previousKey, let newKey = syncService.focusedMachineKey, newKey != previousKey {
-        fleet.markConnected(machineKey: newKey)
-        _ = await syncService.switchFocus(toMachineKey: previousKey)
-      }
-      return true
+      await syncService.pairAccountMachineKeepingPrimary(accountMachine, authorization: authorization)
     }
   }
 
@@ -318,7 +316,10 @@ final class SettingsMachineController: ObservableObject {
       // The most recently connected live machine becomes primary.
       if let next = fleet.connectedMachinesLeastRecentFirst.last(where: { $0.state == .live }) {
         run(machine, success: "\(next.name) is primary") {
-          await syncService.switchFocus(toMachineKey: next.machineKey)
+          guard await syncService.switchFocus(toMachineKey: next.machineKey) else { return false }
+          // The old primary is now a fleet machine: out of the connected set.
+          fleet.stopKeepingLive(machineKey: key)
+          return true
         }
       } else {
         syncService.disconnectForUserConnectionChange()
@@ -354,12 +355,12 @@ final class SettingsMachineController: ObservableObject {
 
   /// Drops the pairing and hides the machine on this phone.
   func forget(_ machine: SettingsMachine) {
-    guard let syncService, let fleet else { return }
-    if let key = machine.machineKey {
-      fleet.stopKeepingLive(machineKey: key)
-      syncService.forgetMachine(machineKey: key)
-    }
-    HiddenMachineStore.shared.hide(identity: machine.hiddenIdentity, isAvailableNow: machine.online)
+    guard let syncService else { return }
+    syncService.forgetMachineOnThisPhone(
+      machineKey: machine.machineKey,
+      hiddenIdentity: machine.hiddenIdentity,
+      isAvailableNow: machine.online
+    )
     toast = ADEToastMessage(text: "\(machine.name) forgotten on this phone")
     ADEHaptics.light()
   }
@@ -444,6 +445,9 @@ struct SettingsMachineSections: View {
       }
     }
     .task { await account.loadMachines() }
+    .onChange(of: machines.filter(\.isLive).map(\.id)) { _, liveIds in
+      controller.retireErrors(liveMachineIds: liveIds)
+    }
   }
 
   private func row(_ machine: SettingsMachine) -> some View {
@@ -698,7 +702,7 @@ struct SettingsMachinePageContent: View {
         Section {
           ForEach(inventory.providers, id: \.provider) { provider in
             HStack {
-              Text(providerDisplayName(provider.provider))
+              Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
                 .font(.subheadline)
                 .foregroundStyle(ADEColor.textPrimary)
               Spacer(minLength: 8)
@@ -845,13 +849,7 @@ struct SettingsMachinePageContent: View {
   private var connectionFacts: [Fact] {
     var facts: [Fact] = []
     if let endpoints = machine.account?.reachableEndpoints, !endpoints.isEmpty {
-      let kinds = endpoints.map { endpoint -> String in
-        switch endpoint.kind {
-        case .lan: return "Local network"
-        case .tailnet: return "Tailscale"
-        case .relay: return "ADE relay"
-        }
-      }
+      let kinds = endpoints.map(\.kind.label)
       var seen = Set<String>()
       facts.append(Fact(label: "Routes", value: kinds.filter { seen.insert($0).inserted }.joined(separator: " · ")))
     }
@@ -899,18 +897,6 @@ func settingsPlatformName(_ raw: String) -> String {
   case "darwin", "macos", "mac": return "macOS"
   case "win32", "windows": return "Windows"
   case "linux": return "Linux"
-  default: return raw.capitalized
-  }
-}
-
-private func providerDisplayName(_ raw: String) -> String {
-  switch raw.lowercased() {
-  case "claude", "anthropic": return "Claude"
-  case "codex", "openai": return "Codex"
-  case "cursor": return "Cursor"
-  case "opencode": return "OpenCode"
-  case "gemini", "google": return "Gemini"
-  case "droid", "factory": return "Droid"
   default: return raw.capitalized
   }
 }

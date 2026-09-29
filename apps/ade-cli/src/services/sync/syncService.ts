@@ -64,8 +64,8 @@ import {
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
-  runSyncFileServiceRequest,
 } from "./syncHostService";
+import { runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";

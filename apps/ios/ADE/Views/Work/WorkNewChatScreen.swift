@@ -1052,9 +1052,6 @@ struct WorkNewChatScreen: View {
   private func selectMachine(_ option: WorkNewChatMachineOption) {
     errorMessage = nil
     guard option.machineKey != selectedMachineKey else { return }
-    if let key = option.machineKey, !option.isLive {
-      machineFleet.keepLive(machineKey: key)
-    }
     selectedMachineKey = option.machineKey
     let keepsAutoCreate = isAutoCreateLane
     if option.machineKey == nil {
@@ -1072,17 +1069,22 @@ struct WorkNewChatScreen: View {
     guard let key = selectedMachineKey else { return }
     remoteLanesLoading = true
     defer { remoteLanesLoading = false }
-    // A reconnecting machine: give it a moment to come live.
-    for _ in 0..<20 where machineFleet.machine(for: key)?.state != .live {
-      try? await Task.sleep(for: .milliseconds(500))
-      guard selectedMachineKey == key else { return }
-    }
+    // A machine that is not connected is connected now (a pick reconnects it).
+    let live = await machineFleet.connect(machineKey: key)
+    guard selectedMachineKey == key else { return }
     guard let repo = syncService.remoteLaneRepo(machineKey: key) else {
       errorMessage = "That machine has no checkout of this project."
       return
     }
+    guard live else {
+      errorMessage = "Can’t reach \(repo.machineName) right now."
+      return
+    }
     do {
-      let snapshots = try await syncService.fetchRemoteLaneSnapshots(repo: repo, timeoutNanoseconds: 8_000_000_000)
+      let snapshots = try await syncService.fetchRemoteLaneSnapshots(
+        repo: repo,
+        timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
+      )
       guard selectedMachineKey == key else { return }
       remoteLanes = snapshots.map(\.lane).filter { $0.archivedAt == nil }
       if !keepSelection || !remoteLanes.contains(where: { $0.id == selectedLaneId }) && !isAutoCreateLane {
@@ -1100,28 +1102,23 @@ struct WorkNewChatScreen: View {
   private func checkModelOnMachine() {
     machineModelHint = nil
     let machineName = selectedMachineOption.name
-    let identity = selectedMachineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:))
-      ?? syncService.focusedMachineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:))
-    guard let identity,
-          let machine = AccountService.shared.machines.first(where: {
-            $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
-          }),
-          let available = workNewChatProvidersWithAccounts(machine.inventory),
-          !available.contains(providerFamilyKey(provider))
-    else { return }
     let mode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
-    guard let fallbackProvider = available.sorted().first,
-          let fallback = workDefaultModelIdForAvailabilityMode(preferredProvider: fallbackProvider, mode: mode),
-          available.contains(providerFamilyKey(fallback.provider))
-    else {
-      machineModelHint = "\(machineName) has no account for this model."
+    switch workNewChatModelCheck(
+      machineKey: selectedMachineKey ?? syncService.focusedMachineKey,
+      provider: provider,
+      mode: mode
+    ) {
+    case .fits:
       return
+    case .noAccount:
+      machineModelHint = "\(machineName) has no account for this model."
+    case .fallback(let fallbackModelId, let fallbackProvider):
+      let previous = prettyNewChatModelName(modelId)
+      selectedModelOption = nil
+      modelId = fallbackModelId
+      provider = sessionMode == .chat ? workNormalizedChatProvider(fallbackProvider) : fallbackProvider
+      machineModelHint = "\(machineName) has no account for \(previous). Using \(prettyNewChatModelName(fallbackModelId))."
     }
-    let previous = prettyNewChatModelName(modelId)
-    selectedModelOption = nil
-    modelId = fallback.modelId
-    provider = sessionMode == .chat ? workNormalizedChatProvider(fallback.provider) : fallback.provider
-    machineModelHint = "\(machineName) has no account for \(previous). Using \(prettyNewChatModelName(fallback.modelId))."
   }
 
   /// Parks composer focus while the lane sheet is up and restores it after the
@@ -1454,7 +1451,7 @@ struct WorkNewChatScreen: View {
           name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
           branchName: temporaryBranch,
-          targetProjectId: remoteRepo.map { syncFleetMarkedProjectId(machineKey: $0.machineKey, projectId: $0.projectId) },
+          targetProjectId: remoteRepo?.markedProjectId,
           targetProjectRootPath: remoteRepo?.rootPath
         )
         targetLaneId = lane.id
@@ -1476,7 +1473,7 @@ struct WorkNewChatScreen: View {
     }
     let targetScope = remoteRepo.map {
       WorkProjectCommandScope(
-        projectId: syncFleetMarkedProjectId(machineKey: $0.machineKey, projectId: $0.projectId),
+        projectId: $0.markedProjectId,
         projectRootPath: $0.rootPath
       )
     } ?? targetLaneForScope

@@ -148,7 +148,7 @@ struct AddLaneSheet: View {
                 Text(machine.name)
                   .font(.subheadline.weight(.semibold))
                   .foregroundStyle(ADEColor.textPrimary)
-                Text(laneCreateMachineSubtitle(machine, isLeastBusy: index == 0))
+                Text(machineChoiceSubtitle(runningCount: machine.runningCount, isLeastBusy: index == 0))
                   .font(.caption)
                   .foregroundStyle(ADEColor.textSecondary)
               }
@@ -235,9 +235,4 @@ private struct LaneCreateOptionLink<Destination: View>: View {
   }
 }
 
-private func laneCreateMachineSubtitle(_ machine: LaneCreateMachine, isLeastBusy: Bool) -> String {
-  let running = machine.runningCount == 0
-    ? "Nothing running"
-    : "\(machine.runningCount) running"
-  return isLeastBusy ? "\(running) · least busy" : running
-}
+

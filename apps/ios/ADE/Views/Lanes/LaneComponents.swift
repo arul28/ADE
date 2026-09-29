@@ -496,6 +496,8 @@ struct LaneMachineChip: Equatable {
   /// False for a machine the phone has no live link to: its rows are the last
   /// roster it sent, dimmed, with no actions.
   let isLive: Bool
+  /// SF Symbol from `machineSymbol(machineKey:name:)`.
+  var symbol: String = "desktopcomputer"
 }
 
 /// The chip of every lane in a list that spans machines, by lane id.
@@ -543,7 +545,7 @@ struct LaneStackCard: View, Equatable {
       depth: depth,
       pullRequest: pullRequest,
       isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive) }
+      machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive, symbol: $0.symbol) }
     )
   }
 
@@ -648,7 +650,7 @@ struct LaneStackCard: View, Equatable {
     HStack(spacing: 6) {
       if let machine, showsMachineChip {
         HStack(spacing: 3) {
-          Image(systemName: settingsMachineSymbol(forName: machine.name))
+          Image(systemName: machine.symbol)
             .font(.system(size: 9, weight: .semibold))
           Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
             .font(.caption2.weight(.semibold))

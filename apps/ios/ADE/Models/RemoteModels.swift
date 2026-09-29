@@ -4615,6 +4615,9 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var branchRef: String? = nil
   var rootPath: String
   var isReadOnlyByDefault: Bool
+  /// The machine of a lane workspace on another machine (in memory only; the
+  /// id is that lane's namespaced id). Nil for this machine's workspaces.
+  var machineName: String? = nil
 
   init(
     id: String,
@@ -4623,7 +4626,8 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     name: String,
     branchRef: String? = nil,
     rootPath: String,
-    isReadOnlyByDefault: Bool
+    isReadOnlyByDefault: Bool,
+    machineName: String? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -4632,6 +4636,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     self.branchRef = branchRef
     self.rootPath = rootPath
     self.isReadOnlyByDefault = isReadOnlyByDefault
+    self.machineName = machineName
   }
 
   private enum CodingKeys: String, CodingKey {

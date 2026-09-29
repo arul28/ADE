@@ -28,33 +28,18 @@ import type { ProjectMachine } from "../../state/projectMachines";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types";
+import {
+  CTO_HOME_SETTING_KEY,
+  isCtoHomeMachineRecord,
+  type CtoHomeMachineRecord,
+} from "../../../shared/ctoHomeMachine";
 
-export const CTO_HOME_SETTING_KEY = "cto.homeMachine";
+export { CTO_HOME_SETTING_KEY, isCtoHomeMachineRecord, type CtoHomeMachineRecord };
+
 
 /** Shown while This computer's account device id is still being read. */
 export const STILL_IDENTIFYING_THIS_COMPUTER = "Still identifying this computer…";
 const LOCAL_STORAGE_KEY = "ade.cto.homeMachine.v1";
-
-export type CtoHomeMachineRecord = {
-  version: 1;
-  /** Sync device id of the home machine. Null for SSH targets. */
-  deviceId: string | null;
-  /** The machine's own name, for display on machines that cannot reach it. */
-  name: string;
-  hostname: string | null;
-  chosenAt: string;
-};
-
-export function isCtoHomeMachineRecord(value: unknown): value is CtoHomeMachineRecord {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return record.version === 1
-    && (record.deviceId === null || (typeof record.deviceId === "string" && record.deviceId.length > 0))
-    && typeof record.name === "string"
-    && record.name.trim().length > 0
-    && (record.hostname === null || typeof record.hostname === "string")
-    && typeof record.chosenAt === "string";
-}
 
 /**
  * The key this repository's choice is filed under, in both stores.

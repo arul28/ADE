@@ -320,23 +320,7 @@ final class PrDetailRedesignTests: XCTestCase {
     }
   }
 
-  func testDescriptionBotEventsCarryThePrefix() {
-    let event = PrTimelineEvent(id: "\(prDescriptionBotEventPrefix)cursor-summary", kind: .comment, title: "", author: "cursor", body: "x", timestamp: "2026-01-01T00:00:00Z", metadata: nil)
-    XCTAssertTrue(prIsDescriptionBotEvent(event))
-    XCTAssertFalse(prIsDescriptionBotEvent(self.event("c-1", .comment, at: "2026-01-01T00:00:00Z")))
-  }
-
   // MARK: - Header
-
-  func testHeaderShowsUpdatedOnlyWhenItDiffersFromOpened() {
-    let formatter = ISO8601DateFormatter()
-    let opened = formatter.string(from: Date().addingTimeInterval(-10 * 86_400))
-    let recent = formatter.string(from: Date().addingTimeInterval(-3_600))
-    XCTAssertTrue(prHeaderAgeLabel(createdAt: opened, updatedAt: recent).contains("· updated "))
-    XCTAssertFalse(prHeaderAgeLabel(createdAt: opened, updatedAt: opened).contains("updated"))
-    XCTAssertFalse(prHeaderAgeLabel(createdAt: opened, updatedAt: nil).contains("updated"))
-    XCTAssertTrue(prHeaderAgeLabel(createdAt: opened, updatedAt: nil).hasPrefix("opened "))
-  }
 
   // MARK: - Optional PR actions (prs.setDraft / prs.setAutoMerge)
 
