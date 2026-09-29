@@ -1080,7 +1080,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("emits Computer Use status only on macOS and folds MCP live events into the working row", async () => {
+    it("omits Computer Use readiness and folds MCP live events into the working row", async () => {
       const originalPlatform = process.platform;
       const events: AgentChatEventEnvelope[] = [];
       try {
@@ -1112,13 +1112,10 @@ describe("createAgentChatService", () => {
           method: "mcpServer/startupStatus/updated",
           params: { serverName: "computer_use", status: "ok" },
         });
-        await vi.waitFor(() => {
-          expect(events.some((event) =>
-            event.event.type === "tool_call"
-            && event.event.tool === "computer_use"
-            && (event.event.args as { status?: string } | undefined)?.status === "ready"
-          )).toBe(true);
-        });
+        await Promise.resolve();
+        expect(events.some((event) =>
+          event.event.type === "tool_call" && event.event.tool === "computer_use"
+        )).toBe(false);
 
         mockState.emitCodexPayload({
           jsonrpc: "2.0",

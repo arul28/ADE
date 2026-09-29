@@ -1032,7 +1032,7 @@ describe("thread.setModel", () => {
     runtime.sessions.get(thread.id)!.status = "active";
 
     await expect(thread.setModel("gpt-5-codex")).rejects.toMatchObject({
-      code: "invalid_option",
+      code: "turn_in_flight",
     });
     await expect(thread.setModel("gpt-5-codex")).rejects.toThrow(/turn in flight/);
     // Nothing was changed on the way to refusing.

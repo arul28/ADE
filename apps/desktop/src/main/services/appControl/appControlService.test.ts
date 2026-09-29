@@ -196,6 +196,8 @@ describe("appControlService", () => {
         args: [
           "electron",
           expect.stringMatching(/^--remote-debugging-port=\d+$/),
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding",
           "C:\\Program Files\\My & App café",
         ],
         startupCommand: expect.not.stringContaining("ADE_TEST="),
