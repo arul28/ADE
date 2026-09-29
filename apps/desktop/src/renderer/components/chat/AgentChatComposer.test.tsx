@@ -3221,6 +3221,7 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
       path: "/tmp/ade-pasted-text.txt",
       type: "file",
+      intent: "user_prompt",
     }));
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(saveTempAttachment).toHaveBeenCalledWith(

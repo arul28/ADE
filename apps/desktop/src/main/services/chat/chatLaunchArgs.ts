@@ -132,10 +132,15 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
 }
 
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
+  const messageFields = parseAgentChatMessageFields(value);
+  const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
+  if (text === null || (!text && !messageFields.attachments?.length)) {
+    throw new Error("chat.send requires text.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
-    text: requireString(value.text, "chat.send requires text."),
-    ...parseAgentChatMessageFields(value),
+    text,
+    ...messageFields,
   };
 }
 

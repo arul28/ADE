@@ -8198,7 +8198,10 @@ describe("AgentChatPane submit recovery", () => {
       fastMode: false,
       executionMode: "focused",
       controls: {},
-      attachments: [{ path: "/tmp/project-under-test/spec.md", type: "file" }],
+      attachments: [
+        { path: "/tmp/project-under-test/spec.md", type: "file" },
+        { path: "/tmp/project-under-test/pasted-text.txt", type: "file", intent: "user_prompt" },
+      ],
       attachmentOwnerBinding: {
         kind: "local",
         key: "local:/tmp/project-under-test",
@@ -8224,14 +8227,20 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByDisplayValue("Persist this Work draft.")).toBeTruthy();
     expect(screen.getByText("spec.md")).toBeTruthy();
+    expect(screen.getByText("pasted-text.txt")).toBeTruthy();
     await waitFor(() => {
-      expect(JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
         projectRoot: "/tmp/project-under-test",
         companionStateKey: "draft:lane-1",
-      }))!).attachmentOwnerBinding).toMatchObject({
+      }))!);
+      expect(stored.attachmentOwnerBinding).toMatchObject({
         kind: "local",
         key: "local:/tmp/project-under-test",
       });
+      expect(stored.attachments).toEqual(expect.arrayContaining([
+        { path: "/tmp/project-under-test/spec.md", type: "file" },
+        { path: "/tmp/project-under-test/pasted-text.txt", type: "file", intent: "user_prompt" },
+      ]));
     });
   });
 
