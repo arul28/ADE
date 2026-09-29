@@ -234,14 +234,12 @@ describe("appControlService", () => {
 
     try {
       await service.launch({
-        command: "electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0",
+        command: "echo before && electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 && echo after",
         cwd: projectRoot,
       });
 
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        startupCommand: expect.stringContaining(
-          "electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
-        ),
+        startupCommand: "echo before && electron --disable-backgrounding-occluded-windows --disable-renderer-backgrounding . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 && echo after",
       }));
     } finally {
       service.dispose();

@@ -2004,8 +2004,9 @@ export function createAppControlLaneController(context: AppControlLaneController
       } else if (
         /(?:^|\s)--remote-debugging-port(?:=|\s)/.test(command)
         && !command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")
+        && !/\bADE_APP_CONTROL_DEBUG_FLAGS\b/.test(command)
       ) {
-        command = `${command} ${APP_CONTROL_RENDER_FLAGS.map(shellQuote).join(" ")}`;
+        command = insertDebugFlagsIntoDirectElectronCommand(command, [...APP_CONTROL_RENDER_FLAGS]);
       }
       if (command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")) {
         command = command.replace(/\{ADE_APP_CONTROL_DEBUG_FLAGS\}/g, debugFlags.map(shellQuote).join(" "));
