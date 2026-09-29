@@ -93,7 +93,16 @@ export type SteerOptions = {
  * so they follow the same mid-turn rule `setModel` does.
  */
 export type ThreadUpdate = {
-  /** New title. `null` clears it. Persisted in the thread store as well. */
+  /**
+   * New title. Persisted in the thread store as well. A host title marks the
+   * chat as named: the runtime's automatic title never replaces it.
+   *
+   * `null` clears the host title. The chat then shows the provider's
+   * placeholder title ("Claude Chat", "Codex Chat"), so `thread.title` reads
+   * that string, not null, and the automatic title may name the chat again
+   * after its next message (runtime >= 1.2.82; before, `null` set the
+   * placeholder and still counted as named).
+   */
   title?: string | null;
   /** Reasoning effort for later turns. `null` returns to the model default. */
   reasoningEffort?: string | null;
@@ -115,6 +124,43 @@ export type ThreadUpdateOptions = {
 export type ThreadUpdateResult = {
   title: string | null;
   model: ThreadModelSelection | null;
+};
+
+/** Options for `editLast`. */
+export type EditLastOptions = {
+  /** Text shown to the user when it differs from what the agent receives. */
+  displayText?: string;
+  /**
+   * Files for the edited message, replacing the original's. Omit to keep the
+   * original message's attachments; pass `[]` to drop them.
+   */
+  attachments?: AgentChatFileRef[];
+};
+
+/**
+ * What `retry` and `editLast` return, once the runtime has cut the old turn
+ * out and dispatched the new one. The new turn's events follow on the stream.
+ */
+export type ThreadRerunResult = {
+  /**
+   * The first history `sequence` removed. Every event at or after it is gone
+   * from the runtime's history; drop the same events from any copy you keep.
+   */
+  retractedFromSequence: number;
+  /**
+   * The thread's history generation after the cut. The runtime also emits a
+   * `session_meta_updated` event with `historyInvalidated: true` and this
+   * generation, before the new turn's first event.
+   */
+  historyGeneration: number;
+  /**
+   * How the provider conversation went back: `claude_fork` (the Claude session
+   * was copied up to the entry before the turn), `claude_new_session` (the
+   * turn was the first, so a new Claude session starts), `codex_thread` (the
+   * Codex thread was reverted or forked before the turn), or `not_delivered`
+   * (the turn never reached the provider, so only the history changed).
+   */
+  conversationRollback: "claude_fork" | "claude_new_session" | "codex_thread" | "not_delivered";
 };
 
 export interface AdeThread {
@@ -212,7 +258,8 @@ export interface AdeThread {
    * Rename the thread, or change its reasoning effort or fast mode.
    *
    * A title-only update is allowed at any time. `reasoningEffort` and
-   * `fastMode` are refused while a turn is in flight unless `{ force: true }`:
+   * `fastMode` are refused while a turn is in flight (`AdeError` code
+   * `turn_in_flight`, SDK >= 0.4) unless `{ force: true }`:
    * on Codex a settings change the provider rejects tears the provider down,
    * which ends the turn without `error` or `done` — the silent truncation the
    * client's destructive-while-streaming rule forbids. Await the turn or
@@ -221,6 +268,39 @@ export interface AdeThread {
    * Resolves with the title and model as the runtime reports them afterwards.
    */
   update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /**
+   * Run the last user turn again, as if the first attempt never happened.
+   *
+   * The runtime rolls the provider conversation back to just before the last
+   * user message, removes that message and everything after it from the
+   * thread's history, and sends the same message (text and attachments) again.
+   * The history then holds the message once. Files the old turn changed are
+   * NOT restored.
+   *
+   * What a subscriber sees, in order: `session_meta_updated` with
+   * `historyInvalidated: true` and the new `historyGeneration` (drop your copy
+   * of the events at or after `retractedFromSequence`, or re-read `history()`),
+   * then the new turn's `user_message`, `status: started`, and the rest of the
+   * turn. A `history()` or `historyPage()` read after the call returns only the
+   * new attempt.
+   *
+   * Claude and Codex only. Throws `turn_in_flight` while a turn runs or waits
+   * on an approval (nothing changed; await it or `interrupt()` first),
+   * `unsupported` for another provider or a runtime without the action, and
+   * `rpc_error` when the thread has no user message yet.
+   *
+   * Resolves once the new turn is dispatched, not once it ends.
+   */
+  retry(): Promise<ThreadRerunResult>;
+  /**
+   * Replace the last user message with `text` and run it again.
+   *
+   * Everything `retry` says applies: same rollback, same event sequence, same
+   * errors, and the history shows only the edited message. `text` may be empty
+   * only when `opts.attachments` is non-empty. Attachments default to the
+   * original message's.
+   */
+  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
   /**
    * Replace this thread's caller MCP servers wholesale.
    *
@@ -250,7 +330,8 @@ export interface AdeThread {
    * Switch this thread's model, including across providers — the runtime tears
    * the old one down and replays the transcript into the new one.
    *
-   * Refused while a turn is in flight unless `{ force: true }`: the switch would
+   * Refused while a turn is in flight (code `turn_in_flight`, SDK >= 0.4)
+   * unless `{ force: true }`: the switch would
    * end that turn without emitting `error` or `done`, so a caller who did not
    * know a turn was running would see the response simply stop. Await the turn
    * or `interrupt()` first.
@@ -384,6 +465,8 @@ export type ThreadHostConfig = {
   updateMcpServersSupported?: () => boolean;
   /** Whether the CURRENT runtime lists the `getEventHistoryPage` action. */
   historyPageSupported?: () => boolean;
+  /** Whether the CURRENT runtime lists the `rerunLastTurn` action. */
+  rerunLastTurnSupported?: () => boolean;
   /** The client's `mcpHeaders` callback, for servers passed without headers. */
   resolveMcpHeaders?: McpHeadersResolver;
   /**
@@ -398,6 +481,7 @@ export type ThreadHostConfig = {
 export type ThreadRecordPatch = {
   title?: string | null;
   mcpServers?: Record<string, McpServerConfig>;
+  attachmentRoots?: string[];
   provider?: string;
   model?: string;
   modelId?: string;
@@ -686,7 +770,7 @@ export class Thread implements AdeThread {
     // never refused.
     if (reconfigures && !opts.force && (await this.turnInFlight("change reasoning settings"))) {
       throw new AdeError(
-        "invalid_option",
+        "turn_in_flight",
         `Thread "${this.key}" has a turn in flight, and changing reasoningEffort or fastMode can end it without a completion event. ` +
           `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
       );
@@ -709,6 +793,50 @@ export class Thread implements AdeThread {
         })) ?? current;
     }
     return { title: this.currentTitle, model: this.currentModel };
+  }
+
+  async retry(): Promise<ThreadRerunResult> {
+    return await this.rerunLastTurn(undefined, {});
+  }
+
+  async editLast(text: string, opts: EditLastOptions = {}): Promise<ThreadRerunResult> {
+    if (typeof text !== "string") {
+      throw new AdeError("invalid_option", "editLast() takes the new message text as a string.");
+    }
+    if (!text.trim() && !(opts.attachments?.length)) {
+      throw new AdeError("invalid_option", "editLast() needs text or at least one attachment.");
+    }
+    return await this.rerunLastTurn(text, opts);
+  }
+
+  private async rerunLastTurn(text: string | undefined, opts: EditLastOptions): Promise<ThreadRerunResult> {
+    this.assertUsable();
+    const action = text === undefined ? "retry()" : "editLast()";
+    if (this.provider !== "claude" && this.provider !== "codex") {
+      throw new AdeError(
+        "unsupported",
+        `${action} is available for Claude and Codex threads; "${this.key}" runs on ${this.provider}.`,
+      );
+    }
+    if (!this.hostConfig.rerunLastTurnSupported?.()) {
+      throw new AdeError(
+        "unsupported",
+        `${action} needs an ADE runtime with the rerunLastTurn action (1.2.82 or later).`,
+      );
+    }
+    // A running turn is refused by the runtime itself (code `turn_in_flight`),
+    // under its own per-session lock; a pre-check here would add a round trip
+    // and still race.
+    const result = await this.chats.rerunLastTurn({
+      sessionId: this.id,
+      ...(text !== undefined ? { text } : {}),
+      ...(text !== undefined && opts.displayText !== undefined ? { displayText: opts.displayText } : {}),
+      ...(opts.attachments ? { attachments: completeAttachments(opts.attachments) } : {}),
+    });
+    if (!result || typeof result.retractedFromSequence !== "number") {
+      throw new AdeError("protocol_error", `The runtime answered ${action} without a result.`);
+    }
+    return result;
   }
 
   async updateMcpServers(
@@ -764,7 +892,7 @@ export class Thread implements AdeThread {
     // available here, so it takes an explicit `force` to choose it.
     if (!opts.force && (await this.turnInFlight("switch models"))) {
       throw new AdeError(
-        "invalid_option",
+        "turn_in_flight",
         `Thread "${this.key}" has a turn in flight, and switching models would end it without a completion event. ` +
           `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
       );

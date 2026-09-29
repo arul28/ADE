@@ -179,6 +179,7 @@ export type ThreadResumeMismatchInput = {
   /** Options the caller passed to this `open()` call, already normalized. */
   supplied: {
     cwd?: string | undefined;
+    attachmentRoots?: string[] | undefined;
     instructions?: AgentChatInstructions | undefined;
     settingSources?: string | undefined;
     permissions?: unknown;
@@ -188,6 +189,7 @@ export type ThreadResumeMismatchInput = {
   /** What the key was created with, off the durable record. */
   stored: {
     cwd?: string | undefined;
+    attachmentRoots?: string[] | undefined;
     instructions?: AgentChatInstructions | undefined;
     settingSources?: string | undefined;
     permissionPolicy?: ThreadPermissionPolicy | undefined;
@@ -198,7 +200,8 @@ export type ThreadResumeMismatchInput = {
   };
 };
 
-function sameJson(a: unknown, b: unknown): boolean {
+/** Structural equality by JSON spelling; false when either side is absent or unserializable. */
+export function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   try {
@@ -232,6 +235,12 @@ export function threadResumeMismatchWarnings(input: ThreadResumeMismatchInput): 
   // scratch workspace.
   if (supplied.cwd !== undefined && supplied.cwd !== stored.cwd) {
     lines.push(ignored("cwd", stored.cwd ?? "the runtime's default workspace"));
+  }
+  if (supplied.attachmentRoots !== undefined && !sameJson(supplied.attachmentRoots, stored.attachmentRoots ?? [])) {
+    lines.push(
+      `${ignored("attachmentRoots", stored.attachmentRoots?.length ? stored.attachmentRoots.join(", ") : "none")}; ` +
+        `pass refresh.attachmentRoots to replace them`,
+    );
   }
   if (supplied.instructions !== undefined && !sameJson(supplied.instructions, stored.instructions)) {
     lines.push(ignored("instructions", stored.instructions ? "the stored text" : "none"));

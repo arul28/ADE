@@ -224,8 +224,38 @@ export function canonicalThreadCwd(value: string): string {
 }
 
 export function validateThreadCwd(value: string, sdkHome: string): string {
+  return validateHostDirectory(value, sdkHome, "cwd");
+}
+
+/** Most roots one thread may name. Matches the runtime's own cap. */
+export const MAX_ATTACHMENT_ROOTS = 32;
+
+/**
+ * Validate `attachmentRoots` by the same rules as `cwd`, entry by entry, and
+ * return them canonicalized and de-duplicated. An empty list is valid and
+ * means "no extra roots".
+ */
+export function validateAttachmentRoots(value: unknown, sdkHome: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new AdeError("invalid_option", "attachmentRoots must be an array of absolute directory paths.");
+  }
+  if (value.length > MAX_ATTACHMENT_ROOTS) {
+    throw new AdeError(
+      "invalid_option",
+      `attachmentRoots takes at most ${MAX_ATTACHMENT_ROOTS} directories; got ${value.length}.`,
+    );
+  }
+  const roots: string[] = [];
+  value.forEach((entry, index) => {
+    const root = validateHostDirectory(entry, sdkHome, `attachmentRoots[${index}]`);
+    if (!roots.includes(root)) roots.push(root);
+  });
+  return roots;
+}
+
+function validateHostDirectory(value: unknown, sdkHome: string, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new AdeError("invalid_option", "cwd must be a non-empty absolute path.");
+    throw new AdeError("invalid_option", `${label} must be a non-empty absolute path.`);
   }
   const raw = value.trim();
   // `~`, `~/` and `~\` only, which is exactly what the engine refuses. A bare
@@ -235,13 +265,13 @@ export function validateThreadCwd(value: string, sdkHome: string): string {
   if (raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\")) {
     throw new AdeError(
       "invalid_option",
-      `cwd must be an absolute path, and "~" is not expanded: pass the real path instead of "${raw}".`,
+      `${label} must be an absolute path, and "~" is not expanded: pass the real path instead of "${raw}".`,
     );
   }
   if (!path.isAbsolute(raw)) {
     throw new AdeError(
       "invalid_option",
-      `cwd must be an absolute path; "${raw}" is relative and would resolve against the runtime's own working directory, not yours.`,
+      `${label} must be an absolute path; "${raw}" is relative and would resolve against the runtime's own working directory, not yours.`,
     );
   }
   // Canonicalized BEFORE the refusals below, not after, and that ordering is
@@ -252,21 +282,21 @@ export function validateThreadCwd(value: string, sdkHome: string): string {
   if (isFilesystemRoot(resolved)) {
     throw new AdeError(
       "invalid_option",
-      `cwd must not be a filesystem root; "${resolved}" would put the agent's working directory at the top of the disk.`,
+      `${label} must not be a filesystem root; "${resolved}" would put the agent's working directory at the top of the disk.`,
     );
   }
   const home = canonicalizePath(path.resolve(os.homedir()));
   if (samePath(resolved, home)) {
     throw new AdeError(
       "invalid_option",
-      `cwd must not be the user's home directory itself ("${resolved}"). Point it at a directory your app owns.`,
+      `${label} must not be the user's home directory itself ("${resolved}"). Point it at a directory your app owns.`,
     );
   }
   const stateRoot = canonicalizePath(path.resolve(sdkHome));
   if (isInside(stateRoot, resolved)) {
     throw new AdeError(
       "invalid_option",
-      `cwd must not be inside the SDK home ("${stateRoot}"): that directory holds the runtime's own state, and an agent editing it corrupts the client that started it.`,
+      `${label} must not be inside the SDK home ("${stateRoot}"): that directory holds the runtime's own state, and an agent editing it corrupts the client that started it.`,
     );
   }
   return resolved;

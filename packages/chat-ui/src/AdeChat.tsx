@@ -9,6 +9,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,14 +18,22 @@ import {
 } from "react";
 
 import { Composer, type ComposerProps } from "./composer/Composer";
-import { AdeChatProvider, useAdeProviders, useAdeThread } from "./context/AdeChatContext";
+import {
+  AdeChatProvider,
+  useAdeProviders,
+  useAdeThread,
+  type ThreadState,
+} from "./context/AdeChatContext";
 import { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 import { isModelSelectable } from "./models/modelSearch";
 import type { ActivityLabelConfig } from "./activity/labels";
-import type { AdeChatClient, ModelDescriptor } from "./sdkTypes";
+import type { AdeChatClient, ModelDescriptor, SendInput } from "./sdkTypes";
 import { AdeChatStyles } from "./theme/AdeChatStyles";
 import type { AdeChatTheme } from "./theme/createTheme";
 import { Transcript, type TranscriptProps } from "./transcript/Transcript";
+
+/** What `AdeChatProps.onSend` may return. See `onSend`. */
+export type AdeChatSendResult = void | boolean | "handled";
 
 export type AdeChatProps = {
   client: AdeChatClient;
@@ -44,6 +53,44 @@ export type AdeChatProps = {
 
   placeholder?: ComposerProps["placeholder"];
   sendOnEnter?: ComposerProps["sendOnEnter"];
+  /**
+   * Controlled draft text, passed to the internal `<Composer>`. Pass with
+   * `onValueChange` to fill the composer from outside (prompt cards, a
+   * "retry with edits" flow). Omit both to let the composer own the draft.
+   */
+  value?: ComposerProps["value"];
+  /** Called with the next draft text. See `value`. */
+  onValueChange?: ComposerProps["onValueChange"];
+  /**
+   * Called when the person sends a new message, before it reaches the thread.
+   * What it returns (or resolves) decides what happens next:
+   *   - `false` cancels: nothing is sent, and the composer keeps the draft and
+   *     the staged attachments (a confirmation or a validation step);
+   *   - `"handled"` means the host sent the message itself (for example with
+   *     `thread.send` and other text): nothing more is sent, and the composer
+   *     stays cleared;
+   *   - anything else sends the message as usual.
+   * A throw is shown under the composer as a failed send, and the draft is
+   * restored. Steering a running turn does not call this. `thread` is the
+   * live thread state (see `children`).
+   */
+  onSend?: (
+    input: SendInput,
+    thread: ThreadState,
+  ) => AdeChatSendResult | Promise<AdeChatSendResult>;
+  /**
+   * Render prop drawn between the transcript and the composer, with the live
+   * thread state: rows, status, `send`, `update`, the resolved model. Use it
+   * for prompt cards, a retry bar, or a status line. Return null to draw
+   * nothing there.
+   */
+  children?: (thread: ThreadState) => ReactNode;
+  /**
+   * Receives the live thread state on every render (null before mount and
+   * after unmount), for host code outside the render tree: a toolbar "Retry"
+   * button, a title set after the first reply.
+   */
+  threadRef?: { current: ThreadState | null };
   onRequestAttachment?: ComposerProps["onRequestAttachment"];
   /**
    * Controlled staged attachments, passed straight to the internal
@@ -81,6 +128,11 @@ export type AdeChatProps = {
   hideReasoning?: TranscriptProps["hideReasoning"];
   renderMarkdown?: TranscriptProps["renderMarkdown"];
   /**
+   * Decide what a link in the transcript does. See
+   * `TranscriptProps["onLinkClick"]`; an Electron host should pass it.
+   */
+  onLinkClick?: TranscriptProps["onLinkClick"];
+  /**
    * Approval card wording, or a replacement card.
    *
    * The card itself is not opt-in: a provider that asks for permission blocks
@@ -110,6 +162,12 @@ export type AdeChatProps = {
   className?: string;
 };
 
+/**
+ * `useLayoutEffect` in a browser; `useEffect` during server rendering, where
+ * React warns about a layout effect and neither one runs anyway.
+ */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 export function AdeChat(props: AdeChatProps) {
   return (
     <AdeChatProvider client={props.client} {...(props.labels ? { labels: props.labels } : {})}>
@@ -129,6 +187,11 @@ function AdeChatInner({
   disableStyles = false,
   placeholder,
   sendOnEnter,
+  value,
+  onValueChange,
+  onSend,
+  children,
+  threadRef,
   onRequestAttachment,
   attachments,
   onAttachmentsChange,
@@ -139,6 +202,7 @@ function AdeChatInner({
   hideToolCalls,
   hideReasoning,
   renderMarkdown,
+  onLinkClick,
   approvals,
   renderToolResult,
   toolChipActions,
@@ -177,6 +241,22 @@ function AdeChatInner({
     ...(activeModelId ? { modelId: activeModelId } : {}),
     ...(historyPageSize !== undefined ? { historyPageSize } : {}),
   });
+
+  // Internal: read after the `await` in the send handler, where the render's
+  // own `thread` could be a stale snapshot.
+  const threadStateRef = useRef(thread);
+  threadStateRef.current = thread;
+  // The host's ref is written at commit, not during render, so host code never
+  // reads the state of a render React discarded.
+  useIsomorphicLayoutEffect(() => {
+    if (threadRef) threadRef.current = thread;
+  });
+  useEffect(() => {
+    if (!threadRef) return;
+    return () => {
+      threadRef.current = null;
+    };
+  }, [threadRef]);
 
   // Token overrides are custom properties, which React accepts on `style` but
   // `CSSProperties` has no index signature for.
@@ -336,6 +416,7 @@ function AdeChatInner({
         {...(hideToolCalls !== undefined ? { hideToolCalls } : {})}
         {...(hideReasoning !== undefined ? { hideReasoning } : {})}
         {...(renderMarkdown ? { renderMarkdown } : {})}
+        {...(onLinkClick ? { onLinkClick } : {})}
         {...(approvals ? { approvals } : {})}
         {...approvalHandler}
         {...(renderToolResult ? { renderToolResult } : {})}
@@ -345,14 +426,22 @@ function AdeChatInner({
         onLoadOlder={thread.loadOlder}
         {...(emptyState !== undefined ? { emptyState } : {})}
       />
+      {children ? children(thread) : null}
       <Composer
-        onSend={(input) => thread.send(input)}
+        onSend={async (input) => {
+          const result = onSend ? await onSend(input, threadStateRef.current) : undefined;
+          if (result === false) return false;
+          if (result === "handled") return;
+          await threadStateRef.current.send(input);
+        }}
         onSteer={(input) => thread.steer(input)}
         onInterrupt={thread.interrupt}
         status={thread.status.state}
         ready={thread.ready}
         {...(placeholder !== undefined ? { placeholder } : {})}
         {...(sendOnEnter !== undefined ? { sendOnEnter } : {})}
+        {...(value !== undefined ? { value } : {})}
+        {...(onValueChange ? { onValueChange } : {})}
         {...attachmentProps}
         modelRail={modelRail !== undefined ? modelRail : defaultRail}
         {...(actions !== undefined ? { actions } : {})}

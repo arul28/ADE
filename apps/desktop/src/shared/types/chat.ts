@@ -2641,7 +2641,22 @@ export type HostSessionConfigFields = {
   permissionCapability?: AgentChatPermissionCapability;
 };
 
-export type AgentChatSession = {
+/**
+ * The attachment roots of a personal (SDK) chat, shared by the session, its
+ * summary and the create arguments.
+ */
+export type PersonalAttachmentRootsField = {
+  /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. The chat service validates and canonicalizes them when
+   * they are set (`validatePersonalAttachmentRoots`) and refuses them on any
+   * other chat.
+   */
+  attachmentRoots?: string[];
+};
+
+export type AgentChatSession = PersonalAttachmentRootsField & {
   id: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -2827,7 +2842,7 @@ export type AgentChatUsageLimitResume = {
   alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
-export type AgentChatSessionSummary = {
+export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   sessionId: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -3188,6 +3203,38 @@ export type AgentChatRewindFilesResult = {
   conversationRollback?: boolean;
   /** Links the SDK could not restore while otherwise completing the rewind. */
   skippedLinks?: number;
+};
+
+/**
+ * Run the chat's last user turn again: roll the provider conversation back to
+ * just before that turn, cut the turn out of the durable transcript, and send
+ * the message again. With `text`, the message is replaced first (edit last).
+ * Files the turn changed are not restored.
+ */
+export type AgentChatRerunLastTurnArgs = {
+  sessionId: string;
+  /** Replacement text. Omit to send the original message again. */
+  text?: string;
+  /** What the transcript shows for `text`, when it differs. Ignored without `text`. */
+  displayText?: string;
+  /** Replacement attachments. Omit to keep the original message's attachments. */
+  attachments?: AgentChatFileRef[];
+};
+
+export type AgentChatRerunLastTurnResult = {
+  /** The first `sequence` removed from the history. Every event at or after it is gone. */
+  retractedFromSequence: number;
+  /** The history generation after the cut. A cached history of an older generation is stale. */
+  historyGeneration: number;
+  /**
+   * How the provider conversation went back. `not_delivered`: the turn never
+   * reached the provider, so only the transcript changed.
+   */
+  conversationRollback:
+    | "claude_fork"
+    | "claude_new_session"
+    | "codex_thread"
+    | "not_delivered";
 };
 
 export type AgentChatClaudeSessionListArgs = {
@@ -3603,7 +3650,7 @@ export type AgentChatPermissionPolicy = {
   fallback: "ask" | "deny";
 };
 
-export type AgentChatCreateArgs = {
+export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
@@ -4892,6 +4939,11 @@ export type AgentChatUpdateSessionArgs = {
    * stores them (see `AgentChatMcpServerConfig.headerNames`).
    */
   mcpServers?: Record<string, AgentChatMcpServerConfig> | null;
+  /**
+   * Personal (SDK) chats only: replaces the chat's `attachmentRoots`. `null` or
+   * an empty list clears them. Refused on any other chat.
+   */
+  attachmentRoots?: string[] | null;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;

@@ -1,6 +1,6 @@
 ---
 title: "Chat UI"
-description: "Embeddable React chat for @ade-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, CSS-token theming, and activity labels."
+description: "Embeddable React chat for @ade-dev/sdk: AdeChat, Composer, Transcript, ModelPicker, link handling, CSS-token theming, and activity labels."
 icon: "window-restore"
 ---
 
@@ -26,6 +26,83 @@ import { AdeChat, createTheme, adaptSdkClient } from "@ade-dev/chat-ui";
 `<AdeChat>` is transcript above, composer with the model rail below. No header bar. Changing `threadKey` opens a different conversation.
 
 `adaptSdkClient` maps a real `@ade-dev/sdk` client onto the view contract. Any SDK-shaped proxy works — for example a renderer that talks to main over a WebSocket.
+
+## Links
+
+Every link that chat-ui draws goes through one component, `<AdeLink>`: links in assistant markdown, and the "Documentation" link on a provider card. Pass `onLinkClick` to decide what opens and where:
+
+```tsx
+<AdeChat
+  client={client}
+  threadKey="main"
+  onLinkClick={(href, { source, text }) => openInBrowser(href)}
+/>
+```
+
+With `onLinkClick`, chat-ui calls `preventDefault()` and then calls your handler, so nothing opens unless you open it. `source` is `"markdown"` or `"provider-docs"`. `href` has already passed `safeHref`: only `http:`, `https:`, `mailto:`, `tel:`, `#` and relative paths get through, never `javascript:` or `data:`.
+
+Without `onLinkClick`, a link opens with `target="_blank"` and `rel="noreferrer noopener"`, which is right for a web page.
+
+<Warning>
+In Electron, `target="_blank"` opens a new `BrowserWindow` with no browser chrome. It looks like part of your app and shows a page at a URL that a model wrote. Pass `onLinkClick`, and deny new windows in main with `setWindowOpenHandler`. See [Electron: Links in the chat](/sdk/electron#links-in-the-chat).
+</Warning>
+
+`<Transcript>`, `<ProviderCard>` and `<ProviderCards>` take the same `onLinkClick` prop. A custom `renderMarkdown` draws its own links, so `onLinkClick` does not reach them unless your renderer uses `<AdeLink>`, which is exported.
+
+## Host control of the composer
+
+`<AdeChat>` accepts these props for a host that drives the conversation itself (chat-ui 0.4):
+
+| Prop | Effect |
+|---|---|
+| `value` / `onValueChange` | Controlled draft. Fill the composer from outside, for example from a prompt card. |
+| `onSend(input, thread)` | Runs when the person sends a new message, before it reaches the thread. Return `false` to cancel: nothing is sent, and the composer keeps the draft and the staged files (a confirmation or a validation step). Return `"handled"` when you sent the message yourself (with `thread.send`): nothing more is sent, and the composer stays cleared. Any other result sends as usual. A throw shows as a failed send and restores the draft. A steer during a running turn does not call it. |
+| `children(thread)` | Render prop drawn between the transcript and the composer, with the live `ThreadState`. Return `null` to draw nothing. |
+| `threadRef` | An object whose `current` receives the live `ThreadState` on every render, for code outside the tree (a toolbar button). |
+
+```tsx
+const threadRef = useRef<ThreadState | null>(null);
+
+<AdeChat
+  client={client}
+  threadKey={key}
+  value={draft}
+  onValueChange={setDraft}
+  threadRef={threadRef}
+  onSend={async (input, thread) => {
+    if (thread.rows.length === 0) await thread.update({ title: titleFrom(input.text) });
+  }}
+>
+  {(thread) => (thread.rows.length === 0 ? <PromptCards onPick={setDraft} /> : null)}
+</AdeChat>;
+```
+
+`ThreadState` carries `rows`, `status`, `model`, `send`, `steer`, `interrupt`, `setModel`, `update`, `retry`, `editLast`, `approve`, and the flags `ready`, `canSetModel`, `canUpdate`, `canRetry` and `canApprove`.
+
+A "Retry" button calls `thread.retry()`, and an "Edit" flow calls `thread.editLast(input)`. When the runtime reports that the old turn left the history (`session_meta_updated` with `historyInvalidated`), `useAdeThread` re-reads the history, so the message shows once. `canRetry` is `false` on an SDK before 0.4. See [Retry and edit](/sdk/threads#retry-and-edit) for the providers and errors.
+
+### Reasoning effort
+
+`ThreadState.update(patch)` changes the title, the reasoning effort or fast mode of the open thread (`thread.update` on `@ade-dev/sdk` 0.3 and later). `canUpdate` is `false` on a client whose thread has no `update`. Use it with the built-in effort control:
+
+```tsx
+<AdeChat
+  client={client}
+  threadKey={key}
+  threadRef={threadRef}
+  reasoningEffort={effort}
+  onReasoningEffortChange={async (next) => {
+    await threadRef.current?.update({ reasoningEffort: next });   // throws turn_in_flight mid-turn
+    setEffort(next);                                               // show it only once the thread took it
+  }}
+/>;
+```
+
+A reasoning change while a turn runs is refused with the code `turn_in_flight` (SDK 0.4).
+
+### Runtime restarts
+
+When the client reports a successful runtime restart (`client.on("restart")` with `ok: true`, from `autoRestart`), `useAdeThread` re-opens the thread and re-reads its history. The old rows stay on screen until the new history replaces them. You do not need to remount the chat. `adaptSdkClient` forwards `on` when the SDK client (or the Electron renderer client) has it.
 
 ## Approvals
 
@@ -121,6 +198,19 @@ Two slots let a host act on a result:
 
 `row.resourceLinks` holds the MCP `resource_link` items of the result, when the provider passes them through. See [MCP](/sdk/mcp#resource-links) for which providers do.
 
+The best source for an action is a `resource_link` that your own MCP tool returns. When a tool returns only ids, build the action from the structured result yourself. Do not let the model write the link: a model can invent a URL for the wrong environment.
+
+```tsx
+toolChipActions={(row) => {
+  if (row.identity?.server !== "versic" || row.status !== "completed") return [];
+  const result = parseToolResult(row.result);        // your own parse of the tool's JSON
+  if (!result?.projectId) return [];
+  return [{ label: "Open project", onSelect: () => openProject(result.projectId) }];
+}}
+```
+
+`row.result` is the tool's result as the provider reported it. Check `row.status` first: a running chip has no result.
+
 ## Activity labels
 
 Tool names stay in the agent transcript. Your users should see a sentence.
@@ -140,6 +230,8 @@ labels={{
 Resolution order: `resolve()` → exact key → longest wildcard prefix → `*` → the raw tool name. A bare string labels the **running** phase only, so a finished chip never keeps saying "Searching…".
 
 A key can use the same tool names as a [permission policy](/sdk/permissions). `mcp:versic:*`, `mcp:versic:search`, `versic:search`, `mcp__versic__search` and `search` all match the tool `search` of the server `versic`. You list each tool once.
+
+Some providers report an MCP tool by its bare name (`search`). A server-qualified key (`mcp:versic:*`) matches that tool when the event names its MCP server, which the runtime does for Claude and Codex (`ToolChipRow.identity`). A bare name with no MCP server on the event matches only a bare key. `matchLabelKey(keys, name, identity?)` takes the identity as its third argument for your own lookups.
 
 ## Theming
 
@@ -169,7 +261,7 @@ Every piece is importable without `<AdeChat>`:
 | `<Composer>` | Draft, send / steer, stop, attachments. Enter sends by default (Shift+Enter is a newline). `sendOnEnter={false}` inverts that: Enter is a newline and Cmd/Ctrl+Enter submits. |
 | `<Transcript>` | Rows, tool chips, reasoning, empty state. |
 | `<ModelPicker>` | Grouped catalog; disabled when the provider is not authenticated. Shows a reasoning-effort control when you pass `onReasoningEffortChange` and the model lists `reasoningEfforts`. The host applies the effort (for example with `thread.update`). |
-| `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. |
+| `<ProviderCard>` / `<ProviderCards>` | Install / login copy for providers that need attention. With `onlyNeedsAttention={false}`, also a one-line "Ready" card for each signed-in provider. |
 | `<ApprovalCard>` | One inline approval, with Allow once / Always allow / Reject. |
 
 Composer rule: submitting during a running turn dispatches `onSteer`, never a second `onSend`. A failed send restores the draft.
@@ -180,6 +272,8 @@ Composer rule: submitting during a running turn dispatches `onSteer`, never a se
 
 - **`source: "probed"`** — a runtime looked at the filesystem. `installed: false` renders "Not installed", and `binaryPath` and `version` are real.
 - **`source: "derived"`** — nobody looked; `installed` is "ADE knows models for this provider". The card renders **"Not detected"** instead, because telling someone to install a CLI they already have is worse than saying you are not sure.
+
+`<ProviderCards>` shows only providers that need attention by default. Pass `onlyNeedsAttention={false}` to list every provider, for example in a settings page: a signed-in provider renders as one line (status dot, name, "Ready") with no command.
 
 `showDetail` adds a line with the probed version and a truncated binary path. It is off by default, and the basename is never cut — "…/claude" identifies the binary where a head-first truncation would not.
 

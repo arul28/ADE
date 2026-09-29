@@ -23,6 +23,8 @@ export const ADE_ERROR_CODES = [
   "unauthorized",
   "disposed",
   "runtime_incompatible",
+  "turn_in_flight",
+  "unsupported",
 ] as const;
 
 /**
@@ -69,7 +71,22 @@ export type AdeErrorCode =
    * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
    * Without that option an unsupported runtime connects with a logged warning.
    */
-  | "runtime_incompatible";
+  | "runtime_incompatible"
+  /**
+   * The call was refused only because a turn is running on the thread:
+   * `setModel`, a reasoning `update`, `retry`, `editLast`, or a runtime action
+   * that must wait for the turn to end. Nothing changed. Wait for the turn to
+   * finish (or `interrupt()` it), then call again. `setModel` and `update`
+   * also accept `{ force: true }`. Before SDK 0.4 these refusals used
+   * `invalid_option`.
+   */
+  | "turn_in_flight"
+  /**
+   * The thread's provider, or the runtime, cannot do what was asked. Nothing
+   * changed. `retry` and `editLast` throw it for a provider other than Claude
+   * or Codex, and for a runtime older than the `rerunLastTurn` action.
+   */
+  | "unsupported";
 
 /**
  * The list and the union must stay identical. Both directions are checked, so

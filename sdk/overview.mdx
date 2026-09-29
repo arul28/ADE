@@ -51,6 +51,24 @@ The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --soc
 
 Provider logins are **not** stored under the sidecar home. Claude / Codex / Cursor credentials stay in those tools' own config homes. If the machine user can already run that provider in a terminal, the sidecar can too.
 
+## What's new in 0.4
+
+`@ade-dev/sdk` 0.4.0, `@ade-dev/chat-ui` 0.4.0 and runtime 1.2.82 release together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).
+
+- **Retry and edit.** `thread.retry()` and `thread.editLast(text)` run the last user message again, and the transcript shows it once. Claude and Codex. See [Retry and edit](/sdk/threads#retry-and-edit).
+- **Links.** `onLinkClick` on `<AdeChat>`, `<Transcript>`, `<ProviderCard>` and `<ProviderCards>`, so a host decides what opens and where. In Electron, pass it. See [Links](/sdk/chat-ui#links).
+- **Attachment roots.** `attachmentRoots` lets a thread attach files from folders outside its `cwd` without a copy. The attachments guide now says how paths compare. See [Where a path may point](/sdk/threads#where-a-path-may-point).
+- **Bridge.** `openOptions` gets `{ exists, summary }`, so a host can tell a resume from a create. `allowThreadKey` and `allowModel` can be async. `thread.send` options are filtered. `threads.get`, `forget(key)`, and `checkAdeBridge` for a hand-copied preload. See [Electron](/sdk/electron).
+- **Client.** `threads.get(key)`, `models.onChange`, `models.defaultModel`, `pickDefaultModel`, the `threadLifecycle` event, and `final` on `restart`. See [Reference](/sdk/reference).
+- **Chat UI.** Controlled draft, `onSend`, a render prop and `threadRef` on `<AdeChat>`; `ThreadState.update`, `retry` and `editLast`; a reload after a runtime restart or a retry. See [Chat UI](/sdk/chat-ui#host-control-of-the-composer).
+- **Runtime.** Codex no longer shows a `computer_use` tool call that never ends, and the Computer Use server is not started for a thread whose policy does not allow it. `update({ title: null })` clears the title. `--version` reports the runtime's own version. No `canUseTool` warning on every Claude turn. The `doctor().runtime.version` probe of the SDK also works on a 1.2.81 binary started from inside ADE.
+
+### Breaking changes
+
+- Refusals caused by a running turn (`setModel`, a reasoning `update`) now throw `turn_in_flight`, not `invalid_option`. Branch on `turn_in_flight`.
+- `window.ade` from `@ade-dev/sdk/electron/global` is optional. `createAdeIpcClient(window.ade)` still compiles; code that reads `window.ade.invoke` directly needs a check.
+- The `restart` event payload has a new `final` field, and `ADE_CLIENT_EVENTS` has `threadLifecycle`. A listener table typed on the old list must add it.
+
 ## What's new in 0.3
 
 `@ade-dev/sdk` 0.3.0 and `@ade-dev/chat-ui` 0.3.0 release together. SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0`. See [Version compatibility](/sdk/runtime#version-compatibility).
@@ -71,7 +89,7 @@ Provider logins are **not** stored under the sidecar home. Claude / Codex / Curs
 - When the runtime lost a session, the recreate uses the stored record first, not the call's options. See [Threads](/sdk/threads#when-the-runtime-lost-the-session).
 - `setModel()` returns `displayName` and `capabilities` beside `modelId`, `provider` and `model`. A test that compares the whole result with `toEqual` must change.
 
-`thread.retry()` and `thread.editLast()` are not in 0.3. See [Retry and edit](/sdk/threads#retry-and-edit).
+`thread.retry()` and `thread.editLast()` are not in 0.3. They are in 0.4.
 
 ## What this is not
 

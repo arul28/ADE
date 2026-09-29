@@ -24,7 +24,7 @@ npm install @ade-dev/sdk
 Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
-SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). An
+SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). An
 older or newer runtime still connects, logs one warning, and degrades feature
 by feature. Pass `requireCompatibleRuntime: true` to refuse it with
 `runtime_incompatible`. `doctor().runtime.compatibility` reports the verdict.
@@ -107,12 +107,16 @@ Attachments are `{ path, name?, mimeType?, type?, hydrate? }` refs. `type`
 (`"file"` or `"image"`) is inferred from the MIME type or extension when
 absent, so an image reaches the model as an image. `hydrate: false` sends the
 path only and the runtime never reads the bytes. An absolute path must be
-inside the chat's `cwd` or `<home>/personal-chats/state`. See
+inside the chat's `cwd`, `<home>/personal-chats/state`, or a directory in the
+thread's `attachmentRoots` (0.4, runtime 1.2.82). See
 [Attachments](https://www.ade-app.dev/docs/sdk/threads#attachments) for the
 size limits.
 
-There is no `retry()` or `editLast()` in 0.3. A retry today sends a new
-message.
+`thread.retry()` and `thread.editLast(text)` (0.4, runtime 1.2.82) roll the
+provider back and run the last user message again, and the transcript shows it
+once. Claude and Codex only; another provider throws `unsupported`, and a
+running turn throws `turn_in_flight`. Files the old turn changed are not
+restored.
 
 Host configuration applies on **create only**. A resume re-applies what the key
 was created with and ignores the `cwd`, `instructions`, `settingSources`,

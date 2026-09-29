@@ -81,6 +81,26 @@ const SOURCE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".
 const SOURCE_SKIP_DIRS = new Set([".git", ".ade", "node_modules", "dist", "build", "out", "coverage", ".next", ".vite"]);
 const SOURCE_FILE_CACHE_MAX = 200;
 const MAX_PENDING_NETWORK_REQUESTS = 500;
+/**
+ * Chromium flags every App Control launch gets beside the debug port. A window
+ * that another window covers is "occluded": Chromium stops painting it and
+ * throttles its timers, so a screenshot shows the last frame painted and the
+ * DOM moves on without it. An agent then reads a transcript that the page no
+ * longer shows. These keep an occluded or background window rendering.
+ */
+const APP_CONTROL_RENDER_FLAGS = [
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+] as const;
+
+/** The flags a launch passes (or exports as `ADE_APP_CONTROL_DEBUG_FLAGS`) for one CDP port. */
+function appControlDebugFlags(debugPort: number): string[] {
+  return [
+    `--remote-debugging-port=${debugPort}`,
+    "--remote-debugging-address=127.0.0.1",
+    ...APP_CONTROL_RENDER_FLAGS,
+  ];
+}
 
 export function cleanClaimId(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -1896,13 +1916,10 @@ export function createAppControlLaneController(context: AppControlLaneController
 
   const resolveLaunch = (launchArgs: AppControlLaunchArgs, debugPort: number): ResolvedLaunch => {
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
-    const debugFlags = [
-      `--remote-debugging-port=${debugPort}`,
-      "--remote-debugging-address=127.0.0.1",
-    ];
-    const autoDebugFlags = [
-      `--remote-debugging-port=${debugPort}`,
-    ];
+    const debugFlags = appControlDebugFlags(debugPort);
+    // The flags ADE inserts into a launch command by itself carry no address
+    // flag, as they did before the render flags were added.
+    const autoDebugFlags = debugFlags.filter((flag) => !flag.startsWith("--remote-debugging-address"));
 
     if (launchArgs.command?.trim()) {
       const cwd = normalizeCwd(launchArgs.cwd, projectRoot);
@@ -1984,6 +2001,12 @@ export function createAppControlLaneController(context: AppControlLaneController
         } else if (commandLooksLikeDirectElectronLaunch(command)) {
           command = insertDebugFlagsIntoDirectElectronCommand(command, autoDebugFlags);
         }
+      } else if (
+        /(?:^|\s)--remote-debugging-port(?:=|\s)/.test(command)
+        && !command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")
+        && !/\bADE_APP_CONTROL_DEBUG_FLAGS\b/.test(command)
+      ) {
+        command = insertDebugFlagsIntoDirectElectronCommand(command, [...APP_CONTROL_RENDER_FLAGS]);
       }
       if (command.includes("{ADE_APP_CONTROL_DEBUG_FLAGS}")) {
         command = command.replace(/\{ADE_APP_CONTROL_DEBUG_FLAGS\}/g, debugFlags.map(shellQuote).join(" "));
@@ -2193,7 +2216,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       ADE_APP_CONTROL_CDP_PORT: String(debugPort),
       ADE_APP_CONTROL_REMOTE_DEBUGGING_PORT: String(debugPort),
       ADE_APP_CONTROL_REMOTE_DEBUGGING_ADDRESS: "127.0.0.1",
-      ADE_APP_CONTROL_DEBUG_FLAGS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1`,
+      ADE_APP_CONTROL_DEBUG_FLAGS: appControlDebugFlags(debugPort).join(" "),
     };
     args.logger.info("app_control.launch", {
       cwd: resolved.cwd,

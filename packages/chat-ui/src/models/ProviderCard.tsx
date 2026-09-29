@@ -12,6 +12,8 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { useAdeProviders } from "../context/AdeChatContext";
 import type { AdeChatClient, ProviderStatus } from "../sdkTypes";
+import { AdeLink, AdeLinkHandlerProvider, type AdeLinkClickHandler } from "../transcript/links";
+import { safeHref } from "../transcript/markdown";
 
 export type ProviderCardProps = {
   status: ProviderStatus;
@@ -24,6 +26,12 @@ export type ProviderCardProps = {
    * filesystem path as noise, and the ones building a setup screen need it.
    */
   showDetail?: boolean;
+  /**
+   * Handle the "Documentation" link yourself (see `AdeLinkClickHandler`).
+   * Without it the link opens with `target="_blank"`, which in Electron is a
+   * new app window; an Electron host should pass this.
+   */
+  onLinkClick?: AdeLinkClickHandler;
   className?: string;
 };
 
@@ -78,6 +86,7 @@ export function ProviderCard({
   renderAction,
   onCopy,
   showDetail = false,
+  onLinkClick,
   className,
 }: ProviderCardProps) {
   const state = resolveState(status);
@@ -88,50 +97,52 @@ export function ProviderCard({
         ? status.loginCommand
         : undefined;
   const commandKind = state === "not_installed" ? "install" : "login";
+  const docsHref = status.docsUrl ? safeHref(status.docsUrl) : null;
 
   return (
-    <div
-      className={["adechat-providercard", className].filter(Boolean).join(" ")}
-      data-state={state}
-    >
-      <div className="adechat-providercard-head">
-        <span
-          className="adechat-status-dot"
-          data-status={state === "ready" ? "ok" : state === "unauthenticated" ? "unauthed" : "missing"}
-          aria-hidden="true"
-        />
-        <span className="adechat-providercard-name">{status.displayName ?? status.id}</span>
-        <span className="adechat-providercard-state">{resolveStateCopy(status)}</span>
+    <AdeLinkHandlerProvider onLinkClick={onLinkClick}>
+      <div
+        className={["adechat-providercard", className].filter(Boolean).join(" ")}
+        data-state={state}
+      >
+        <div className="adechat-providercard-head">
+          <span
+            className="adechat-status-dot"
+            data-status={state === "ready" ? "ok" : state === "unauthenticated" ? "unauthed" : "missing"}
+            aria-hidden="true"
+          />
+          <span className="adechat-providercard-name">{status.displayName ?? status.id}</span>
+          <span className="adechat-providercard-state">{resolveStateCopy(status)}</span>
+        </div>
+
+        {status.detail ? <p className="adechat-providercard-detail">{status.detail}</p> : null}
+
+        {showDetail && (status.version || status.binaryPath) ? (
+          <p className="adechat-providercard-probe">
+            {status.version ? <span>{status.version}</span> : null}
+            {status.binaryPath ? (
+              <code title={status.binaryPath}>{truncateBinaryPath(status.binaryPath)}</code>
+            ) : null}
+          </p>
+        ) : null}
+
+        {command
+          ? (renderAction?.(command, commandKind) ?? (
+              <CopyableCommand command={command} {...(onCopy ? { onCopy } : {})} />
+            ))
+          : null}
+
+        {docsHref ? (
+          <AdeLink
+            className="adechat-providercard-detail"
+            href={docsHref}
+            source="provider-docs"
+          >
+            Documentation
+          </AdeLink>
+        ) : null}
       </div>
-
-      {status.detail ? <p className="adechat-providercard-detail">{status.detail}</p> : null}
-
-      {showDetail && (status.version || status.binaryPath) ? (
-        <p className="adechat-providercard-probe">
-          {status.version ? <span>{status.version}</span> : null}
-          {status.binaryPath ? (
-            <code title={status.binaryPath}>{truncateBinaryPath(status.binaryPath)}</code>
-          ) : null}
-        </p>
-      ) : null}
-
-      {command
-        ? (renderAction?.(command, commandKind) ?? (
-            <CopyableCommand command={command} {...(onCopy ? { onCopy } : {})} />
-          ))
-        : null}
-
-      {status.docsUrl ? (
-        <a
-          className="adechat-providercard-detail"
-          href={status.docsUrl}
-          target="_blank"
-          rel="noreferrer noopener"
-        >
-          Documentation
-        </a>
-      ) : null}
-    </div>
+    </AdeLinkHandlerProvider>
   );
 }
 
@@ -177,12 +188,18 @@ export type ProviderCardsProps = {
   /** Supply statuses directly; omit to read from the client/context. */
   statuses?: readonly ProviderStatus[];
   client?: AdeChatClient;
-  /** Show only providers that need attention. Default true. */
+  /**
+   * Show only providers that need attention. Default true. Pass `false` for a
+   * settings page that lists every provider: a ready provider then renders as
+   * a one-line card (status dot, name, "Ready"), with no command.
+   */
   onlyNeedsAttention?: boolean;
   renderAction?: ProviderCardProps["renderAction"];
   onCopy?: ProviderCardProps["onCopy"];
   /** Forwarded to every card. Off by default. */
   showDetail?: ProviderCardProps["showDetail"];
+  /** Forwarded to every card. See `ProviderCardProps["onLinkClick"]`. */
+  onLinkClick?: ProviderCardProps["onLinkClick"];
   className?: string;
 };
 
@@ -206,6 +223,7 @@ function ProviderCardsView({
   renderAction,
   onCopy,
   showDetail,
+  onLinkClick,
   className,
 }: ProviderCardsProps) {
   const visible = onlyNeedsAttention
@@ -223,6 +241,7 @@ function ProviderCardsView({
           {...(renderAction ? { renderAction } : {})}
           {...(onCopy ? { onCopy } : {})}
           {...(showDetail !== undefined ? { showDetail } : {})}
+          {...(onLinkClick ? { onLinkClick } : {})}
           {...(className ? { className } : {})}
         />
       ))}

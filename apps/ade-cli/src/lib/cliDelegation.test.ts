@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildDelegatedCliEnv,
+  cliArgvAsksVersion,
   cliArgvOwnsRuntime,
   cliCommandWord,
   parseAdeCmdShim,
@@ -226,6 +227,14 @@ describe("cliArgvOwnsRuntime", () => {
     // Same socket-path test as the CLI's own parser, Windows spellings included.
     expect(cliCommandWord(["--socket", "C:\\ade\\ade.sock", "apple"])).toBe("apple");
     expect(cliCommandWord(["--socket", "\\\\.\\pipe\\ade", "apple"])).toBe("apple");
+  });
+
+  it("keeps version queries local after leading global options", () => {
+    expect(cliArgvAsksVersion(["--socket", "/tmp/ade.sock", "--version"])).toBe(true);
+    expect(cliArgvAsksVersion(["--socket", "/tmp/ade.sock", "-v"])).toBe(true);
+    expect(cliArgvAsksVersion(["version"])).toBe(true);
+    expect(cliArgvAsksVersion(["chat", "send", "--version"])).toBe(false);
+    expect(cliArgvAsksVersion(["--", "--version"])).toBe(false);
   });
 
   it("never hands a brain start to another install", () => {

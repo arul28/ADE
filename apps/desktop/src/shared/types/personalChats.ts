@@ -61,6 +61,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "resumeUsageLimitNow",
   "continueUsageLimitOnAlternate",
   "updateSession",
+  "rerunLastTurn",
   "archive",
   "unarchive",
   "delete",
@@ -77,6 +78,9 @@ export const PERSONAL_CHAT_ACTIONS = [
 ] as const;
 
 export type PersonalChatAction = (typeof PERSONAL_CHAT_ACTIONS)[number];
+
+/** The most `attachmentRoots` one personal chat may name. */
+export const MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS = 32;
 
 export type PersonalChatRemoteCommandAction =
   | `personalChats.${PersonalChatAction}`

@@ -47,6 +47,8 @@ import type {
   ThreadUpdate,
   ThreadUpdateOptions,
   ThreadUpdateResult,
+  ThreadRerunResult,
+  EditLastOptions,
 } from "../thread.js";
 import {
   STATUS_EVENT_TYPES,
@@ -107,6 +109,10 @@ export interface AdeIpcThread {
   setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
   /** See `AdeThread.update`. Refreshes this handle's `title` and `model`. */
   update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /** See `AdeThread.retry`. */
+  retry(): Promise<ThreadRerunResult>;
+  /** See `AdeThread.editLast`. */
+  editLast(text: string, opts?: EditLastOptions): Promise<ThreadRerunResult>;
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
   /**
    * See `AdeThread.historyPage`. The newest page (no `beforeSequence`) is
@@ -136,6 +142,8 @@ export interface AdeIpcClient {
     open(key: string, opts?: Record<string, unknown>): Promise<AdeIpcThread>;
     /** Every thread the host lets this renderer name (`allowThreadKey`). */
     list(): Promise<ThreadSummary[]>;
+    /** See `AdeChatClient.threads.get`. Gated by `allowThreadKey`. SDK >= 0.4. */
+    get(key: string): Promise<ThreadSummary | null>;
     /** See `AdeChatClient.threads.delete`. Drops this renderer's handle for the key. */
     delete(key: string): Promise<void>;
     /** See `AdeChatClient.threads.archive`. */
@@ -149,7 +157,8 @@ export interface AdeIpcClient {
   exportThread(key: string): Promise<string>;
   /**
    * Runtime lifecycle events from the main process: `"exit"`, `"transport"`,
-   * `"restart"`, with the payloads `AdeClientEventMap` documents. One IPC
+   * `"restart"`, `"threadLifecycle"`, with the payloads `AdeClientEventMap`
+   * documents. One IPC
    * subscription serves every listener in this renderer.
    */
   on<E extends AdeClientEvent>(event: E, cb: (payload: AdeClientEventMap[E]) => void): Unsubscribe;
@@ -199,15 +208,17 @@ type ThreadState = {
  * Build an SDK-shaped client on top of the preload bridge.
  *
  * `bridge` is whatever `exposeAdeBridge` put on `window` — `window.ade` by
- * default. Nothing else is required of the host.
+ * default. Nothing else is required of the host. A missing bridge (undefined,
+ * because the preload did not run) throws `invalid_option`.
  */
-export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
-  if (!bridge || typeof bridge.invoke !== "function" || typeof bridge.onEvent !== "function") {
+export function createAdeIpcClient(bridgeInput: AdeBridge | null | undefined): AdeIpcClient {
+  if (!bridgeInput || typeof bridgeInput.invoke !== "function" || typeof bridgeInput.onEvent !== "function") {
     throw new AdeError(
       "invalid_option",
       "createAdeIpcClient needs the object exposeAdeBridge exposed (window.ade by default).",
     );
   }
+  const bridge: AdeBridge = bridgeInput;
 
   const threads = new Map<string, ThreadState>();
   const opening = new Map<string, Promise<AdeIpcThread>>();
@@ -450,6 +461,12 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
         };
         return result;
       },
+      async retry() {
+        return await call<ThreadRerunResult>("thread.retry", [key]);
+      },
+      async editLast(text, opts) {
+        return await call<ThreadRerunResult>("thread.editLast", [key, text, opts ?? null]);
+      },
       async update(patch, opts) {
         const result = await call<ThreadUpdateResult>("thread.update", [key, patch, opts ?? null]);
         state.snapshot = { ...state.snapshot, title: result.title, model: result.model };
@@ -570,6 +587,7 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
     threads: {
       open: openThread,
       list: () => call<ThreadSummary[]>("threads.list", []),
+      get: (key) => call<ThreadSummary | null>("threads.get", [key]),
       async delete(key) {
         await call<null>("threads.delete", [key]);
         forgetThread(typeof key === "string" ? key.trim() : key);

@@ -5,7 +5,7 @@
  * assembly of them, not a required entry point.
  */
 
-export { AdeChat, type AdeChatProps } from "./AdeChat";
+export { AdeChat, type AdeChatProps, type AdeChatSendResult } from "./AdeChat";
 
 export { Composer, mergeAttachments, type ComposerProps } from "./composer/Composer";
 export {
@@ -62,6 +62,13 @@ export {
   parseInline,
   safeHref,
 } from "./transcript/markdown";
+export {
+  AdeLink,
+  AdeLinkHandlerProvider,
+  type AdeLinkClickHandler,
+  type AdeLinkClickInfo,
+  type AdeLinkSource,
+} from "./transcript/links";
 
 export { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 export {
@@ -142,6 +149,7 @@ export { adeChatCss, injectAdeChatStyles, type InjectAdeChatStylesOptions } from
 
 export type {
   AdeChatClient,
+  AdeChatClientEventMap,
   AdeThread,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -160,6 +168,8 @@ export type {
   ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
+  ThreadUpdatePatch,
+  ThreadUpdateReply,
   ThreadUsage,
   ToolCallStatus,
   Unsubscribe,

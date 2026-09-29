@@ -8,7 +8,7 @@ import { ChatEventHub } from "./eventStream.js";
 import { modelSelectionOf } from "./modelSelection.js";
 import { PersonalChatsApi, summaryTurnActive } from "./personalChats.js";
 import { probeRuntimeSignature, type RuntimeSignature } from "./runtimeSignature.js";
-import { flattenCatalog } from "./providers.js";
+import { flattenCatalog, pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 import { createProviderStatusPublisher } from "./providerStatusPublisher.js";
 import { readRestartPolicy, resolveRuntimeBinary, RuntimeSupervisor } from "./runtimeSupervisor.js";
 import { resolveRuntimeSocketPath } from "./socketPath.js";
@@ -85,7 +85,23 @@ export interface AdeChatClient {
     refresh(): Promise<Record<string, ProviderStatus>>;
     onChange(cb: (status: Record<string, ProviderStatus>) => void): Unsubscribe;
   };
-  models: { list(): Promise<ModelCatalogEntry[]> };
+  models: {
+    list(): Promise<ModelCatalogEntry[]>;
+    /**
+     * Called with the whole catalog when it changes: a provider signs in or
+     * out, or the runtime's catalog gains or drops a model. Driven by the same
+     * poll as `providers.onChange`, and called only when a model's id,
+     * `isAvailable`, `connected` or `isDefault` changed. Not called with the
+     * current list on subscribe; call `list()` for that. SDK >= 0.4.
+     */
+    onChange(cb: (models: ModelCatalogEntry[]) => void): Unsubscribe;
+    /**
+     * The model a new thread should use, or null when none qualifies. See
+     * `pickDefaultModel` for the rule; this reads a fresh catalog first.
+     * SDK >= 0.4.
+     */
+    defaultModel(opts?: DefaultModelOptions): Promise<ModelCatalogEntry | null>;
+  };
   threads: {
     /** Open a thread, creating it when the key is new to this home. */
     open(key: string, opts: ThreadOpenOptions): Promise<AdeThread>;
@@ -100,6 +116,13 @@ export interface AdeChatClient {
      * is NOT guaranteed — sort on `updatedAt` yourself.
      */
     list(): Promise<ThreadSummary[]>;
+    /**
+     * One thread's summary, by key, or null when the runtime has no session for
+     * it: a key this home never opened, a deleted key, or a key whose session
+     * the runtime lost (the next `open` recreates it). The same row `list()`
+     * would return, without reading every chat. SDK >= 0.4.
+     */
+    get(key: string): Promise<ThreadSummary | null>;
     /**
      * Delete a thread: its runtime session, its transcript, and its key.
      *
@@ -321,6 +344,7 @@ export async function createAdeChat(
        */
       pendingInputs: () => runtime.actionListed("pendingInputs"),
       historyPage: () => runtime.actionListed("getEventHistoryPage"),
+      rerunLastTurn: () => runtime.actionListed("rerunLastTurn"),
     },
   });
 
@@ -348,19 +372,25 @@ export async function createAdeChat(
     // the same reason: one key is one conversation, and re-applying options to
     // a live one would move an agent that is already running. The mismatch
     // warning lives on the resume path, which is where the stored values are.
-    // `refresh` is the exception and is applied through `updateMcpServers`,
-    // which skips a map identical to the one it last sent.
+    // `refresh` is the exception. Its attachment roots are applied first and a
+    // refusal fails the open (see `refreshLiveAttachmentRoots`); its MCP
+    // servers go through `updateMcpServers`, which skips a map identical to
+    // the one it last sent, and a failure there is logged.
     const existing = liveSessions.get(trimmedKey);
     if (existing) {
-      const refreshServers = opts.refresh?.mcpServers;
-      if (!refreshServers) return Promise.resolve(existing);
-      return existing.updateMcpServers(refreshServers).then(
-        () => existing,
-        (error: unknown) => {
-          logger(`ade sdk: thread "${trimmedKey}" could not apply refresh.mcpServers: ${errorMessage(error)}`);
-          return existing;
-        },
-      );
+      const refresh = opts.refresh;
+      if (!refresh?.mcpServers && refresh?.attachmentRoots === undefined) return Promise.resolve(existing);
+      return (async () => {
+        if (refresh.attachmentRoots !== undefined) {
+          await opener.refreshLiveAttachmentRoots(trimmedKey, existing.id, refresh.attachmentRoots);
+        }
+        if (refresh.mcpServers) {
+          await existing.updateMcpServers(refresh.mcpServers).catch((error: unknown) => {
+            logger(`ade sdk: thread "${trimmedKey}" could not apply refresh.mcpServers: ${errorMessage(error)}`);
+          });
+        }
+        return existing;
+      })();
     }
 
     const pending = openInFlight.get(trimmedKey);
@@ -379,6 +409,89 @@ export async function createAdeChat(
     return started;
   };
 
+  const summaryRow = (
+    session: AgentChatSessionSummary,
+    record: { key: string; modelId?: string | null } | undefined,
+    names: Map<string, string>,
+  ): ThreadSummary => ({
+    key: record?.key ?? null,
+    sessionId: session.sessionId,
+    provider: session.provider,
+    model: session.model,
+    title: session.title ?? null,
+    status: session.status,
+    startedAt: session.startedAt,
+    lastActivityAt: session.lastActivityAt,
+    updatedAt: session.lastActivityAt,
+    archived: Boolean(session.archivedAt),
+    modelSelection: modelSelectionOf(session, names, record?.modelId ? { modelId: record.modelId } : undefined),
+  });
+
+  const listModels = async (): Promise<ModelCatalogEntry[]> => {
+    assertUsable();
+    return flattenCatalog(await readCatalog("refresh-stale"));
+  };
+
+  // One provider-status subscription serves every `models.onChange` listener,
+  // and exists only while there is one.
+  const modelListeners = new Set<(models: ModelCatalogEntry[]) => void>();
+  let stopModelWatch: Unsubscribe | null = null;
+  let lastModelSignature: string | null = null;
+  // Bumped per watch, so a catalog read from an ended watch cannot seed or
+  // notify the next one.
+  let modelWatchGeneration = 0;
+  const modelSignature = (models: readonly ModelCatalogEntry[]): string =>
+    models
+      .map((model) => `${model.id}|${model.isAvailable ? 1 : 0}${model.connected ? 1 : 0}${model.isDefault ? 1 : 0}`)
+      .join("\n");
+  const onModelsChange = (cb: (models: ModelCatalogEntry[]) => void): Unsubscribe => {
+    assertUsable();
+    modelListeners.add(cb);
+    if (!stopModelWatch) {
+      const generation = ++modelWatchGeneration;
+      void listModels()
+        .then((models) => {
+          if (generation === modelWatchGeneration) lastModelSignature ??= modelSignature(models);
+        })
+        .catch(() => {});
+      stopModelWatch = providerStatus.onChange(() => {
+        void listModels()
+          .then((models) => {
+            if (generation !== modelWatchGeneration) return;
+            const signature = modelSignature(models);
+            // The first read to land is the baseline, never a change: the seed
+            // read above may not have answered yet.
+            if (lastModelSignature === null) {
+              lastModelSignature = signature;
+              return;
+            }
+            if (signature === lastModelSignature) return;
+            lastModelSignature = signature;
+            for (const listener of [...modelListeners]) {
+              try {
+                listener(models);
+              } catch (error) {
+                logger(`ade sdk: a models.onChange listener threw: ${errorMessage(error)}`);
+              }
+            }
+          })
+          .catch((error) => recordError("models.onChange", error));
+      });
+    }
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      modelListeners.delete(cb);
+      if (modelListeners.size === 0 && stopModelWatch) {
+        stopModelWatch();
+        stopModelWatch = null;
+        lastModelSignature = null;
+        modelWatchGeneration += 1;
+      }
+    };
+  };
+
   const listThreads = async (): Promise<ThreadSummary[]> => {
     assertUsable();
     const [sessions, records, names] = await Promise.all([
@@ -390,22 +503,26 @@ export async function createAdeChat(
       displayNames(),
     ]);
     const recordBySession = new Map(records.map((record) => [record.sessionId, record]));
-    return sessions.map((session) => {
-      const record = recordBySession.get(session.sessionId);
-      return {
-        key: record?.key ?? null,
-        sessionId: session.sessionId,
-        provider: session.provider,
-        model: session.model,
-        title: session.title ?? null,
-        status: session.status,
-        startedAt: session.startedAt,
-        lastActivityAt: session.lastActivityAt,
-        updatedAt: session.lastActivityAt,
-        archived: Boolean(session.archivedAt),
-        modelSelection: modelSelectionOf(session, names, record?.modelId ? { modelId: record.modelId } : undefined),
-      };
-    });
+    return sessions.map((session) => summaryRow(session, recordBySession.get(session.sessionId), names));
+  };
+
+  const getThread = async (key: string): Promise<ThreadSummary | null> => {
+    assertUsable();
+    const trimmedKey = typeof key === "string" ? key.trim() : "";
+    if (!trimmedKey) throw new AdeError("invalid_option", "A thread key must be a non-empty string.");
+    await openInFlight.get(trimmedKey)?.catch(() => {});
+    const record = await store.get(trimmedKey);
+    const sessionId = liveSessions.get(trimmedKey)?.id ?? record?.sessionId;
+    if (!sessionId) return null;
+    let session: AgentChatSessionSummary | null = null;
+    try {
+      session = await chats.getSummary(sessionId);
+    } catch (error) {
+      if (isAbsentSessionError(error)) return null;
+      throw error;
+    }
+    if (!session) return null;
+    return summaryRow(session, record ?? { key: trimmedKey }, await displayNames());
   };
 
   /**
@@ -472,21 +589,24 @@ export async function createAdeChat(
     const current = liveSessions.get(trimmedKey) ?? live;
     current?.dispose();
     liveSessions.delete(trimmedKey);
+    emitClient("threadLifecycle", { key: trimmedKey, change: "deleted" });
   };
 
   const archiveThread = async (key: string): Promise<void> => {
     assertUsable();
     requireAction("archive", "archive");
-    const { sessionId } = await sessionForKey(key);
+    const { trimmedKey, sessionId } = await sessionForKey(key);
     await interruptIfRunning(sessionId);
     await chats.archive(sessionId);
+    emitClient("threadLifecycle", { key: trimmedKey, change: "archived" });
   };
 
   const unarchiveThread = async (key: string): Promise<void> => {
     assertUsable();
     requireAction("unarchive", "unarchive");
-    const { sessionId } = await sessionForKey(key);
+    const { trimmedKey, sessionId } = await sessionForKey(key);
     await chats.unarchive(sessionId);
+    emitClient("threadLifecycle", { key: trimmedKey, change: "unarchived" });
   };
 
   // ---- client --------------------------------------------------------------
@@ -505,15 +625,15 @@ export async function createAdeChat(
     },
 
     models: {
-      list: async () => {
-        assertUsable();
-        return flattenCatalog(await readCatalog("refresh-stale"));
-      },
+      list: listModels,
+      onChange: onModelsChange,
+      defaultModel: async (opts) => pickDefaultModel(await listModels(), opts),
     },
 
     threads: {
       open: openThread,
       list: listThreads,
+      get: getThread,
       delete: deleteThread,
       archive: archiveThread,
       unarchive: unarchiveThread,

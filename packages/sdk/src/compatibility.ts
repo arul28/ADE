@@ -12,10 +12,12 @@ import type { RuntimeCompatibility } from "./types.js";
  * `AdeError("runtime_incompatible")`.
  *
  * The lower bound is the first runtime that carries every wire change this
- * SDK uses (`updateSession.mcpServers`, attachment `type` / `hydrate`, the
- * approval-shaped Codex elicitation). The upper bound is the next major.
+ * SDK uses: `updateSession.mcpServers`, attachment `type` / `hydrate`, the
+ * approval-shaped Codex elicitation (1.2.81), and `rerunLastTurn`,
+ * `attachmentRoots` and the `turn_in_flight` / `unsupported` error codes
+ * (1.2.82). The upper bound is the next major.
  */
-export const SUPPORTED_RUNTIME_RANGE = ">=1.2.81 <2.0.0";
+export const SUPPORTED_RUNTIME_RANGE = ">=1.2.82 <2.0.0";
 
 type Version = [number, number, number];
 

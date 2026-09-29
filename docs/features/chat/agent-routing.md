@@ -224,9 +224,10 @@ offered for Codex: 0.156 retired personality styles.
 On 0.156.0 ADE always enables `tools.update_plan` on `thread/start` and
 `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
 session snapshot, and treats `item/tool/requestUserInput` `isBlocking:
-false` as live steering rather than Needs you. Computer Use appears as a
-working-row tool line only after Codex actually starts that MCP server, and
-only on macOS. Plus/Team chats emit a quiet `Approaching Codex plan limit`
+false` as live steering rather than Needs you. ADE adds the Computer Use
+MCP server on macOS only, and not when a host `permissionPolicy` refuses it
+without naming one of its tools. Its startup emits no transcript event; a
+failed start shows in `turn_diagnostics`. Plus/Team chats emit a quiet `Approaching Codex plan limit`
 notice at ≥50% of the five-hour window (`primary.used_percent`), once per
 runtime. Settings lists installed Codex plugins from `plugin/reconcile` +
 `plugin/list` (name, on/off, bundled / local / installed remote) without a

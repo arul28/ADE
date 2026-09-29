@@ -12,11 +12,11 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 
 | Path | Role |
 |---|---|
-| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads (open, list, delete, archive, unarchive), models, providers, doctor, export, `on("exit" \| "transport" \| "restart")`, `autoRestart`, dispose. Owns the resume / recreate rule and the runtime-lost handling. |
-| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), interrupt, `update`, `updateMcpServers`, history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
+| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads (open, list, delete, archive, unarchive), models (change events and default selection), providers, doctor, export, `on("exit" \| "transport" \| "restart")`, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
+| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
-| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.81 <2.0.0` for SDK 0.3.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
 | `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only), `readStoredMcpServers` (migration), `withResolvedHeaders` (explicit headers, then the `mcpHeaders` callback), and the missing-headers warning. |
 | `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
 | `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
@@ -69,7 +69,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `apps/desktop/src/main/services/ai/providerAuthResolvers.ts` | Whether each provider has usable credentials, read from disk and the environment first, with one bounded `auth status` spawn as the last rung for Claude and Codex. Never opens the Keychain. |
 | `apps/desktop/src/main/services/ai/providerProbeSeams.ts` | The injectable edges of the probe — env, platform, filesystem, PATH lookup, spawn, file read, process termination — so the probe is testable without a real CLI on the machine. The clock is not a seam; `now` is a probe option. |
 | `apps/desktop/src/main/services/ai/providerStatusDetails.ts` | The probe's shared numbers and its generic `detail` builders. Zero imports, so anything may depend on it. Per-provider detail copy lives with the resolver that emits it — Cursor's in `providerBinaryResolvers.ts`, OpenCode's in `providerAuthResolvers.ts`. |
-| `packages/chat-ui/src/` | Embeddable React chat: Composer, Transcript, ModelPicker, activity labels, CSS-token theme. |
+| `packages/chat-ui/src/` | Embeddable React chat: Composer, Transcript, ModelPicker, retry/edit/update state, safe links, activity labels, CSS-token theme. |
 | `packages/chat-ui/src/adapters/sdkClient.ts` | `adaptSdkClient` — maps `@ade-dev/sdk` (or any SDK-shaped client) onto chat-ui props. |
 | `packages/chat-ui/src/transcript/ApprovalCard.tsx` | The inline approval row: Allow once / Always allow / Reject, settled in place, read-only without `approve`. |
 | `packages/demo/` | DataDesk reference app (Vite renderer + WS bridge host) and live e2e. |
@@ -160,6 +160,22 @@ Added for SDK 0.3 (runtime 1.2.81):
 - `send` / `steer` attachments: `AgentChatFileRef` gains `type?: "file" | "image"` (the SDK infers it) and `hydrate?: boolean` (default true; `false` = the runtime never reads the bytes and sends a path hint on every provider). Path rule: relative → resolved in the chat's working directory (the host `cwd`, else the scratch workspace); absolute → inside `projectRoot` (`<home>/personal-chats/state` for a personal chat) or inside that working directory, else the send throws. Size limits: Claude inline image 10 MB and jpeg/png/gif/webp only, else a path hint; Droid, Pi, Cursor and ACP inline text 512 KB, else a hint; Codex copies the whole file to a staging directory with no cap unless `hydrate: false`; `saveTempAttachment` accepts images only, 10 MB.
 - `tool_result.resourceLinks?: { uri, name?, title?, mimeType? }[]` — MCP `resource_link` items, on Codex (`mcpToolCall` result content) and Claude (`mcp__` tools only). No other provider sets it.
 
+SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. It adds `thread.retry()` and
+`thread.editLast(text, options)` for Claude and Codex, plus `attachmentRoots`
+for absolute file attachments outside the working directory. The runtime
+validates those roots on every create, update, resume and rerun route. A retry
+or edit refuses while a turn is running with `turn_in_flight`; unsupported
+providers or older runtimes report `unsupported`.
+
+The Electron bridge adds `threads.get`, lifecycle notifications and `forget`,
+async authorization gates, `openOptions` context, bridge compatibility
+checking, and field-by-field filtering of renderer send options. `AdeThread`
+also exposes `update` and can clear a host title with `update({ title: null })`.
+In chat-ui, `AdeChat` lets a host control its draft and decide whether a send is
+accepted, handled by the host, or declined. `ThreadState` exposes retry, edit,
+update and their capability state, and transcript links use the host's safe
+link handler.
+
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
 Durable threads: `threads.open("support", { provider, model })` creates or resumes by key stored under the home. Reopening the same key after a restart continues the conversation.
@@ -174,7 +190,11 @@ Header VALUES never reach durable state on either side. The SDK thread store kee
 
 `redactCallerMcpText` (`callerMcpServers.ts`) scrubs URL query / fragment / userinfo, `Bearer` tokens and exact header values from Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors. Still stored in plaintext: URL query strings (needed to reconnect) and stdio `env` values.
 
-`setModel` refuses while a turn is in flight (`interrupt()` first, or `{ force: true }` to accept losing the turn). `dispose()` is not guarded that way — a shutdown that can refuse is worse than a truncated reply; the transcript is durable either way.
+`setModel`, reasoning updates, retry and edit refuse while a turn is in flight
+(`interrupt()` first, or `{ force: true }` for a model/reasoning change that
+accepts losing the turn). `dispose()` is not guarded that way — a shutdown that
+can refuse is worse than a truncated reply; the transcript is durable either
+way.
 
 ## Strict MCP honesty
 

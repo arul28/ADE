@@ -14,12 +14,13 @@
  * MCP tool keys are matched on the tool's identity, not its spelling (see
  * `matchLabelKey`): `mcp:versic:*`, `versic:search`, `mcp__versic__search` and
  * a bare `search` all reach a Claude `mcp__versic__search` and a Codex
- * `versic:search` alike.
+ * `versic:search` alike. A tool reported by its bare name (`search`) with an
+ * MCP source naming `versic` is matched as `versic`'s tool too.
  */
 
 import type { AgentChatEvent } from "../sdkTypes";
 import type { ToolChipRow } from "../transcript/transcriptRows";
-import { parseToolIdentity } from "./toolIdentity";
+import { parseToolIdentity, type ToolIdentity } from "./toolIdentity";
 
 /** The phase a label is being rendered for. */
 export type ActivityPhase = "running" | "done" | "error";
@@ -49,6 +50,12 @@ export type ActivityLabelConfig = {
    * `mcp:srv:*`, Claude's `mcp__srv__tool`, Codex's `srv:tool`, or the bare
    * `tool` — and one key matches the tool under every provider. A
    * server-qualified key beats a bare one for the same tool.
+   *
+   * A server-qualified key matches a tool the provider reported by its bare
+   * name only when the event carries an MCP source naming that server
+   * (`tool_call.mcp.server`, surfaced as `ToolChipRow.identity`). A bare name
+   * with no MCP source has no server, so only a bare key (`tool`, `tool*`)
+   * matches it.
    */
   map?: Record<string, ActivityLabelEntry>;
   /** Runs before `map`. Return null to fall through to the map. */
@@ -75,7 +82,7 @@ const QUALIFIED_WILDCARD_BONUS = 10_000;
 function scoreLabelKey(
   key: string,
   candidate: string,
-  identity: ReturnType<typeof parseToolIdentity>,
+  identity: ToolIdentity,
 ): number {
   // The spelling the host wrote, verbatim: nothing is more specific.
   if (key === candidate) return 4 * TIER;
@@ -118,12 +125,19 @@ function scoreLabelKey(
  *
  * This is the one matcher: labels, icons and hosts' own lookups all use it, so
  * a tool never has to be listed once per provider spelling.
+ *
+ * `identity` is the tool's known `{ server, tool }` when the event says which
+ * MCP server ran it (`ToolChipRow.identity`, from the event's `mcp` source).
+ * Pass it: some providers report an MCP tool by its bare name (`search`), and
+ * only the event's MCP source tells the matcher that a server-qualified key
+ * (`mcp:srv:search`, `mcp:srv:*`) applies. Without it the identity is parsed
+ * from `candidate`, so a bare name has no server and matches only bare keys.
  */
 export function matchLabelKey(
   keys: readonly string[],
   candidate: string,
+  identity: ToolIdentity = parseToolIdentity(candidate),
 ): string | null {
-  const identity = parseToolIdentity(candidate);
   let best: string | null = null;
   let bestScore = -1;
   for (const key of keys) {
@@ -164,7 +178,8 @@ export function resolveActivityLabel(
 
   const key = source.tool;
   if (!key || !config.map) return null;
-  const matched = matchLabelKey(Object.keys(config.map), key);
+  const identity = source.kind === "tool" ? source.event.identity : undefined;
+  const matched = matchLabelKey(Object.keys(config.map), key, identity);
   if (!matched) return null;
   return entryForPhase(config.map[matched]!, source.phase);
 }
@@ -173,9 +188,10 @@ export function resolveActivityLabel(
 export function resolveActivityIcon(
   tool: string | null,
   config: ActivityLabelConfig | undefined,
+  identity?: ToolIdentity,
 ): unknown {
   if (!tool || !config?.icons) return undefined;
-  const matched = matchLabelKey(Object.keys(config.icons), tool);
+  const matched = matchLabelKey(Object.keys(config.icons), tool, identity);
   return matched ? config.icons[matched] : undefined;
 }
 
@@ -223,5 +239,5 @@ export function describeToolActivity(input: {
     phase === "running" && typeof input.elapsedMs === "number"
       ? formatElapsed(input.elapsedMs, config?.elapsedAfterMs ?? DEFAULT_ELAPSED_AFTER_MS)
       : null;
-  return { label, elapsed, icon: resolveActivityIcon(chip.tool, config) };
+  return { label, elapsed, icon: resolveActivityIcon(chip.tool, config, chip.identity) };
 }

@@ -395,12 +395,18 @@ function exitLike(result: DelegatedCliExit): never {
  */
 const RUNTIME_OWNING_COMMANDS = new Set(["serve", "runtime", "rpc"]);
 
-/** The first command word of an `ade` argv, after the global flags. */
-export function cliCommandWord(argv: readonly string[]): string | null {
+/**
+ * The leading global part of an `ade` argv: the flags before the first
+ * command word (a value flag's value is skipped, not listed), and that word.
+ * `--` ends the walk with no word.
+ */
+function scanCliArgv(argv: readonly string[]): { word: string | null; flags: string[] } {
+  const flags: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
-    if (token === "--") return null;
-    if (!token.startsWith("-")) return token;
+    if (token === "--") return { word: null, flags };
+    if (!token.startsWith("-")) return { word: token, flags };
+    flags.push(token);
     if (isCliGlobalValueFlag(token)) {
       index += 1;
     } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
@@ -408,12 +414,32 @@ export function cliCommandWord(argv: readonly string[]): string | null {
       index += 1;
     }
   }
-  return null;
+  return { word: null, flags };
+}
+
+/** The first command word of an `ade` argv, after the global flags. */
+export function cliCommandWord(argv: readonly string[]): string | null {
+  return scanCliArgv(argv).word;
 }
 
 export function cliArgvOwnsRuntime(argv: readonly string[]): boolean {
   const word = cliCommandWord(argv);
   return word !== null && RUNTIME_OWNING_COMMANDS.has(word);
+}
+
+const VERSION_FLAGS = new Set(["--version", "-v"]);
+
+/**
+ * `ade --version`, `ade -v` and `ade version` describe the binary that was
+ * run, so they never delegate. An embedder checks a bundled runtime with
+ * `--version`; when its own process inherited `ADE_CLI_PATH` (it was started
+ * from an ADE terminal), a delegated answer named the ADE app's CLI instead.
+ */
+export function cliArgvAsksVersion(argv: readonly string[]): boolean {
+  // A version flag anywhere among the leading global flags counts:
+  // `ade --socket /tmp/x.sock --version` asks for the version too.
+  const { word, flags } = scanCliArgv(argv);
+  return flags.some((flag) => VERSION_FLAGS.has(flag)) || word === "version";
 }
 
 /**
@@ -429,7 +455,7 @@ export function startCliDelegationIfNeeded(): Promise<boolean> | null {
   // delegate their own `ade` calls.
   if (guardSet) delete process.env[CLI_DELEGATED_ENV];
   if (guardSet || process.env.VITEST || !isCliMainArgv(process.argv[1])) return null;
-  if (cliArgvOwnsRuntime(process.argv.slice(2))) return null;
+  if (cliArgvOwnsRuntime(process.argv.slice(2)) || cliArgvAsksVersion(process.argv.slice(2))) return null;
 
   const currentEntry = resolveCurrentCliEntry();
   const target = resolveCliDelegationTarget(process.env, currentEntry);

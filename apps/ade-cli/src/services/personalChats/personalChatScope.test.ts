@@ -9,7 +9,11 @@ import {
   isPersonalChatActionQueueable,
   isPersonalChatActionViewerAllowed,
 } from "../../../../desktop/src/shared/types/personalChats";
-import { PersonalChatScope, validatePersonalHostCwd } from "./personalChatScope";
+import { PersonalChatScope } from "./personalChatScope";
+import {
+  validatePersonalAttachmentRoots,
+  validatePersonalHostCwd,
+} from "../../../../desktop/src/main/services/chat/personalHostPaths";
 
 describe("PersonalChatScope", () => {
   let adeHome: string;
@@ -288,6 +292,27 @@ describe("PersonalChatScope", () => {
     })).rejects.toThrow(/^invalid_argument:/);
     expect(service.createSession).not.toHaveBeenCalled();
     await scope.dispose();
+  });
+
+  it("refuses attachment roots whose resolved path escapes into ADE state", () => {
+    const fsImpl = {
+      realpathSync: (target: string) => target === "C:\\Allowed\\alias"
+        ? "C:\\ADE\\secrets"
+        : target,
+    };
+
+    expect(() => validatePersonalAttachmentRoots(["C:\\Allowed\\alias"], {
+      platform: "win32",
+      adeDir: "C:\\ADE",
+      homeDir: "C:\\Users\\tester",
+      fs: fsImpl,
+    })).toThrow(/^invalid_argument: attachmentRoots\[0\] must not be inside ADE's own state directory\./);
+    expect(validatePersonalAttachmentRoots(["C:\\Projects\\notes"], {
+      platform: "win32",
+      adeDir: "C:\\ADE",
+      homeDir: "C:\\Users\\tester",
+      fs: fsImpl,
+    })).toEqual(["C:\\Projects\\notes"]);
   });
 
   it("refuses the home directory itself but allows a folder inside it", () => {

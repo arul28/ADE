@@ -125,7 +125,7 @@ import { pathKey } from "../shared/pathCompare";
 import {
   AGENT_DOM_COLLECTOR_FUNCTION,
   AGENT_ELEMENT_MAP_OVERLAY_FUNCTION,
-  keyEventForAgentInput,
+  keyEventsForAgentInput,
   parseObservationElementHandle,
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
@@ -5128,6 +5128,8 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
+      // Parsed before any side effect, so a refused key records nothing.
+      const events = keyEventsForAgentInput(key);
       let element: BuiltInBrowserElementSnapshot | null = null;
       if (hasElementTarget(input)) {
         element = await focusElementTarget(tab, input, { select: false });
@@ -5135,18 +5137,9 @@ function createBuiltInBrowserWindowService(args: {
         await captureActionBaseline(tab, input);
       }
       await noteDemoAction(tab, input, "key", { element, label: key });
-      const event = keyEventForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyDown",
-          ...event,
-        });
-        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
-          type: "keyUp",
-          ...event,
-          text: undefined,
-          unmodifiedText: undefined,
-        });
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.down);
+        await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.up);
       });
       emitStatus();
       return actionResult(tab, input);

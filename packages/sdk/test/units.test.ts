@@ -872,8 +872,10 @@ describe("thread store", () => {
 
 describe("runtime compatibility", () => {
   it.each([
-    ["1.2.81", true],
-    ["1.2.81-alpha.3", true], // a pre-release carries the same wire as its release
+    ["1.2.81", false],
+    ["1.2.81-alpha.3", false],
+    ["1.2.82", true],
+    ["1.2.82-alpha.3", true], // a pre-release carries the same wire as its release
     ["1.9.7", true],
     ["2.0.0", false], // the next major
     ["1.2.80", false], // one patch below the floor

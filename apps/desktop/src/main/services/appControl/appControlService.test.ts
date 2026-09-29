@@ -196,6 +196,8 @@ describe("appControlService", () => {
         args: [
           "electron",
           expect.stringMatching(/^--remote-debugging-port=\d+$/),
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding",
           "C:\\Program Files\\My & App café",
         ],
         startupCommand: expect.not.stringContaining("ADE_TEST="),
@@ -203,6 +205,41 @@ describe("appControlService", () => {
           ADE_TEST: value,
           ADE_APP_CONTROL: "1",
         }),
+      }));
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("adds rendering flags without replacing an explicit CDP port or address", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const create = vi.fn(async () => ({
+      sessionId: "terminal-explicit-cdp",
+      ptyId: "pty-explicit-cdp",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({
+        command: "echo before && electron . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 && echo after",
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        startupCommand: "echo before && electron --disable-backgrounding-occluded-windows --disable-renderer-backgrounding . --remote-debugging-port=9234 --remote-debugging-address=0.0.0.0 && echo after",
       }));
     } finally {
       service.dispose();

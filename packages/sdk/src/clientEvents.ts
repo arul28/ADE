@@ -27,12 +27,27 @@ export type AdeClientEventMap = {
    * `autoRestart` brought it back (`"reconnected"`).
    */
   transport: { state: "closed" | "reconnected"; error: string | null };
-  /** One `autoRestart` attempt finished. `attempt` counts from 1 per outage. */
-  restart: { attempt: number; ok: boolean; error: string | null };
+  /**
+   * One `autoRestart` attempt finished. `attempt` counts from 1 per outage.
+   * `final` is true when no further attempt follows for this outage: the
+   * attempt succeeded (`ok: true`), or it failed and was the last one
+   * `maxAttempts` allows (the client gave up; the runtime stays down until the
+   * host creates a new client). SDK >= 0.4.
+   */
+  restart: { attempt: number; ok: boolean; error: string | null; final: boolean };
+  /**
+   * A thread left, or came back to, the host's active list through this
+   * client: `threads.delete` (`"deleted"`), `threads.archive` (`"archived"`)
+   * or `threads.unarchive` (`"unarchived"`). Emitted after the action
+   * succeeds, whoever called it: host code in the main process, or a renderer
+   * over the Electron bridge. A change made by another client of the same
+   * runtime (ADE desktop) is not reported. SDK >= 0.4.
+   */
+  threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
 };
 
 /** Every client-level event name, once. See {@link AdeClientEventMap}. */
-export const ADE_CLIENT_EVENTS = ["exit", "transport", "restart"] as const satisfies ReadonlyArray<
+export const ADE_CLIENT_EVENTS = ["exit", "transport", "restart", "threadLifecycle"] as const satisfies ReadonlyArray<
   keyof AdeClientEventMap
 >;
 

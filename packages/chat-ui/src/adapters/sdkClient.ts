@@ -39,6 +39,7 @@ import type {
 } from "@ade-dev/sdk";
 import type {
   AdeChatClient,
+  AdeChatClientEventMap,
   AdeThread,
   AgentChatEventEnvelope,
   ApprovalDecision,
@@ -52,6 +53,8 @@ import type {
   ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
+  ThreadUpdatePatch,
+  ThreadUpdateReply,
   ThreadUsage,
   Unsubscribe,
 } from "../sdkTypes";
@@ -178,6 +181,11 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      */
     approve?(itemId: string, decision: ApprovalDecision, responseText?: string): Promise<void>;
     pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
+    /** `@ade-dev/sdk` >= 0.3 `thread.update`. Forwarded only when present. */
+    update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
+    /** `@ade-dev/sdk` >= 0.4 `thread.retry` / `thread.editLast`. Forwarded only when present. */
+    retry?(): Promise<unknown>;
+    editLast?(text: string, opts?: { attachments?: SdkFileRef[] }): Promise<unknown>;
   };
 
 /**
@@ -205,6 +213,12 @@ export interface SdkLikeChatClient {
   threads: {
     open(key: string, opts?: Record<string, unknown>): Promise<SdkLikeThread>;
   };
+  /**
+   * Client lifecycle events (`@ade-dev/sdk` >= 0.3 `client.on`, and the
+   * Electron renderer client). OPTIONAL: only `restart` is read, and a client
+   * without `on` reports no restarts.
+   */
+  on?(event: "restart", cb: (payload: AdeChatClientEventMap["restart"]) => void): Unsubscribe;
 }
 
 /**
@@ -486,6 +500,16 @@ export function attachmentKind(attachment: ChatAttachment): "file" | "image" {
   return inferAttachmentType(attachment.uri || attachment.name || "", attachment.mimeType);
 }
 
+/**
+ * The positional arguments for an SDK `send` / `steer` / `editLast`: the text,
+ * plus `{ attachments }` only when there are some. An older SDK thread takes
+ * the text alone.
+ */
+function sdkSendArgs(input: SendInput | string): { text: string; opts?: { attachments: SdkFileRef[] } } {
+  const refs = toFileRefs(input);
+  return refs ? { text: toSendText(input), opts: { attachments: refs } } : { text: toSendText(input) };
+}
+
 function toFileRefs(input: SendInput | string): SdkFileRef[] | undefined {
   if (typeof input === "string") return undefined;
   const attachments = input.attachments ?? [];
@@ -539,6 +563,13 @@ class AdaptedThread implements AdeThread {
 
   readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
 
+  /** Present only when the inner thread has `update`. */
+  readonly update?: (patch: ThreadUpdatePatch) => Promise<ThreadUpdateReply>;
+
+  /** Present only when the inner thread has `retry` / `editLast`. */
+  readonly retry?: () => Promise<unknown>;
+  readonly editLast?: (input: SendInput | string) => Promise<unknown>;
+
   /** Present only when the inner thread pages, so the hook can feature-detect it. */
   readonly historyPage?: (request?: HistoryPageOptions) => Promise<ThreadHistoryPage>;
 
@@ -554,6 +585,22 @@ class AdaptedThread implements AdeThread {
     }
     if (inner.pendingApprovals) {
       this.pendingApprovals = () => inner.pendingApprovals!();
+    }
+    if (inner.update) {
+      this.update = (patch) => inner.update!(patch);
+    }
+    if (inner.retry) {
+      this.retry = () => inner.retry!();
+    }
+    if (inner.editLast) {
+      this.editLast = (input) => {
+        // An explicit empty list removes the original message's attachments;
+        // an absent one keeps them.
+        const dropAttachments = typeof input !== "string" && input.attachments?.length === 0;
+        if (dropAttachments) return inner.editLast!(toSendText(input), { attachments: [] });
+        const { text, opts } = sdkSendArgs(input);
+        return inner.editLast!(text, opts);
+      };
     }
     if (inner.historyPage) {
       this.historyPage = async (request) => {
@@ -580,14 +627,13 @@ class AdaptedThread implements AdeThread {
   }
 
   async send(input: SendInput | string): Promise<void> {
-    const refs = toFileRefs(input);
-    await this.inner.send(toSendText(input), refs ? { attachments: refs } : undefined);
+    const { text, opts } = sdkSendArgs(input);
+    await this.inner.send(text, opts);
   }
 
   async steer(input: SendInput | string): Promise<void> {
-    const refs = toFileRefs(input);
-    if (refs) await this.inner.steer(toSendText(input), { attachments: refs });
-    else await this.inner.steer(toSendText(input));
+    const { text, opts } = sdkSendArgs(input);
+    await this.inner.steer(text, opts);
   }
 
   async interrupt(): Promise<void> {
@@ -649,6 +695,7 @@ export function adaptSdkClient(
   };
 
   const refresh = sdk.providers.refresh;
+  const on = sdk.on;
   return {
     providers: {
       status: async () => providerStatusesFromSdk(await sdk.providers.status(), options),
@@ -672,5 +719,13 @@ export function adaptSdkClient(
     threads: {
       open: async (key, opts) => new AdaptedThread(await sdk.threads.open(key, openOptionsFor(opts))),
     },
+    ...(on
+      ? {
+          on: <E extends keyof AdeChatClientEventMap>(
+            event: E,
+            cb: (payload: AdeChatClientEventMap[E]) => void,
+          ): Unsubscribe => on.call(sdk, event, cb),
+        }
+      : {}),
   };
 }

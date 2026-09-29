@@ -55,36 +55,129 @@ export function clampObservationInteger(
   return Math.max(min, Math.min(max, raw));
 }
 
+const SHIFT_MODIFIER_BIT = 8;
+
+const KEY_MODIFIER_BITS: Record<string, number> = {
+  alt: 1,
+  option: 1,
+  opt: 1,
+  control: 2,
+  ctrl: 2,
+  meta: 4,
+  cmd: 4,
+  command: 4,
+  super: 4,
+  shift: SHIFT_MODIFIER_BIT,
+};
+
+type NamedKey = { key: string; code: string; windowsVirtualKeyCode: number; text?: string };
+
+const NAMED_KEYS: Record<string, NamedKey> = {
+  // Enter carries `text: "\r"`: Chromium turns a keyDown into the keypress
+  // that submits a `<form>` only when the event has text. Without it, Enter
+  // into a focused input did nothing.
+  enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+  delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+  space: { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+  end: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+  pageup: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
+  insert: { key: "Insert", code: "Insert", windowsVirtualKeyCode: 45 },
+  // A modifier pressed on its own (a page that reacts to a bare Shift press).
+  shift: { key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 },
+  control: { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 },
+  alt: { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18 },
+  meta: { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91 },
+  ...Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => {
+      const name = `F${index + 1}`;
+      return [name.toLowerCase(), { key: name, code: name, windowsVirtualKeyCode: 112 + index }];
+    }),
+  ),
+};
+
 /**
- * CDP `Input.dispatchKeyEvent` payload for a key name or single character.
- * Mirrors the built-in browser's key mapping so `press Enter` behaves the same
- * in an app as it does on a page.
+ * The CDP `Input.dispatchKeyEvent` payloads (down, then up) for a key name, a
+ * single character, or a combination such as `Meta+n`, `Control+Shift+K` or
+ * `Cmd+Enter`.
+ *
+ * Mirrors what a real key press sends, the way Puppeteer does: the down event
+ * is `keyDown` with `text` when the key types a character (Enter types `"\r"`)
+ * and `rawKeyDown` otherwise, and `modifiers` carries the held keys (Alt 1,
+ * Control 2, Meta 4, Shift 8). A modifier other than Shift suppresses the
+ * text, so `Meta+n` fires the page's shortcut handler instead of typing "n".
+ * Shared by the built-in browser and App Control, so `press Enter` behaves the
+ * same in an app as it does on a page.
+ *
+ * A key inside a native menu accelerator (an Electron `Menu` item's ⌘N) is
+ * handled by the OS menu, not the page, and CDP key events do not reach it.
+ *
+ * Shift changes only a letter's case. For a shifted symbol, pass the symbol
+ * itself (`"?"`, `"!"`), not `Shift+/` or `Shift+1`: the helper does not know
+ * the keyboard layout. A multi-character name it does not know (for example
+ * `PrintScreen`) throws rather than typing its first letter.
  */
-export function keyEventForAgentInput(input: string): Record<string, unknown> {
-  const normalized = input.length === 1 ? input : input.trim();
-  const named: Record<string, { key: string; code: string; windowsVirtualKeyCode: number }> = {
-    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Return: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
-    Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
-    Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Esc: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
-    Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-    Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
-    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
-    ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
-    ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
-    ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+export function keyEventsForAgentInput(input: string): {
+  down: Record<string, unknown>;
+  up: Record<string, unknown>;
+} {
+  // A single code point (an emoji is two UTF-16 units) is one key, as is.
+  const raw = [...input].length === 1 ? input : input.trim();
+  // `+` alone, or a trailing `+` ("Shift++"), names the plus key itself.
+  const parts = raw.length > 1 ? raw.split(/\+(?!$)/) : [raw];
+  let modifiers = 0;
+  const keyPart = parts.length > 1 ? parts[parts.length - 1]! : raw;
+  for (const part of parts.slice(0, -1)) {
+    const bit = KEY_MODIFIER_BITS[part.trim().toLowerCase()];
+    if (bit === undefined) throw new Error(`Unknown modifier "${part}" in key "${input}". Use Alt, Control, Meta or Shift.`);
+    modifiers |= bit;
+  }
+  const shift = (modifiers & SHIFT_MODIFIER_BIT) !== 0;
+  const typesText = (modifiers & ~SHIFT_MODIFIER_BIT) === 0;
+
+  let base: NamedKey;
+  const single = [...keyPart].length === 1;
+  const named = keyPart === " " ? NAMED_KEYS.space : single ? undefined : NAMED_KEYS[keyPart.toLowerCase()];
+  if (named) {
+    base = named;
+  } else if (!single) {
+    throw new Error(`Unknown key "${keyPart}" in "${input}". Use a single character or a key name such as Enter, Tab, Escape, ArrowUp or F5.`);
+  } else {
+    const char = keyPart;
+    const upper = char.toUpperCase();
+    const typed = shift && /^[a-z]$/.test(char) ? upper : char;
+    base = {
+      key: typed,
+      // A symbol's physical key depends on the layout, so it gets no `code`.
+      code: /^[a-z]$/i.test(char) ? `Key${upper}` : /^[0-9]$/.test(char) ? `Digit${char}` : "",
+      windowsVirtualKeyCode: upper.charCodeAt(0),
+      text: typed,
+    };
+  }
+  const common: Record<string, unknown> = {
+    key: base.key,
+    code: base.code,
+    windowsVirtualKeyCode: base.windowsVirtualKeyCode,
+    ...(modifiers ? { modifiers } : {}),
   };
-  const special = named[normalized];
-  if (special) return special;
-  const char = normalized.slice(0, 1);
-  const upper = char.toUpperCase();
+  const text = typesText ? base.text : undefined;
   return {
-    key: char,
-    code: /^[a-z]$/i.test(char) ? `Key${upper}` : char,
-    windowsVirtualKeyCode: upper.charCodeAt(0),
-    text: char,
-    unmodifiedText: char,
+    down: {
+      type: text ? "keyDown" : "rawKeyDown",
+      ...common,
+      ...(text ? { text, unmodifiedText: text } : {}),
+    },
+    up: { type: "keyUp", ...common },
   };
 }
 
