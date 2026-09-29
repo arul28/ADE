@@ -659,6 +659,39 @@ chat turn.
   does not block the brain. Only the per-turn append and the first quota
   snapshot's small seed read are synchronous.
 
+## Model router (shadow)
+
+The router answers "which route should run this task" for a subagent. A route is
+harness × model × effort (`claude`, `codex`, `opencode`, `cursor`), rated from
+the daily model registry — Artificial Analysis quality, cost, and speed plus
+models.dev prices — served by the account directory at `GET /router/registry` to
+signed-in accounts (see `apps/account-directory/README.md`, "Model registry").
+`modelRegistryStore` keeps this machine's copy at `<adeHome>/router/registry.json`
+and asks the Worker at most every 12 hours (30 minutes after a failure); a 304
+revalidates without reading the body, and `ADE_MODEL_REGISTRY_FILE` points the
+store at a local snapshot instead of the Worker.
+
+`routeCatalog` builds every route; `routerCore` classifies the task and picks the
+cheapest route that keeps the expected quality — within the task kind's tolerance
+of the model that would run it anyway, no more than 1.5× slower, and trusted (at
+least 30 own turns on the model, or a measured Artificial Analysis agent row).
+Plan routes are priced from the ledger's burn rates (dollars per percent of each
+live window, weighted by how fast the window is being used), and a window at 95%
+or more blocks its plan. A cross-plan pick needs medium-or-better burn confidence
+on both plans.
+
+It is **shadow**: it changes no turn. Each subagent start writes one decision line
+to `<adeHome>/usage/router-shadow-YYYY-MM.jsonl` (the route it would have picked,
+the estimated saving, and why it kept the original) and the finish writes the
+outcome line. `routeCatalog` and `routerCore` are pure, and the service never
+throws into the chat. Read it with `ade router shadow --days 7` (action
+`usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
+task with `ade router pick`, and force a fetch with `ade router refresh`.
+`ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
+
+Known limits: burn rates count ADE turns only, so a plan also used outside ADE
+looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.
+
 ## Daily usage research report
 
 Each machine sends one compact report for each finished local day to ADE's
