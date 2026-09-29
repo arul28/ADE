@@ -10298,7 +10298,7 @@ export function AgentChatPane({
     (left, right) => left === right,
   );
   useEffect(() => {
-    if (!cliLaunchReadyToClear) return;
+    if (!isWorkDraftComposer || !cliLaunchReadyToClear) return;
     for (const launchId of cliLaunchReadyToClear.split("\n")) {
       if (!launchId || clearedCliLaunchIdsRef.current.has(launchId)) continue;
       const draftSnapshot = getChatLaunchLocalRecord(launchId)?.draftSnapshot ?? null;
@@ -10306,7 +10306,7 @@ export function AgentChatPane({
       clearedCliLaunchIdsRef.current.add(launchId);
       clearDraftLaunchComposer(draftSnapshot);
     }
-  }, [clearDraftLaunchComposer, cliLaunchReadyToClear]);
+  }, [clearDraftLaunchComposer, cliLaunchReadyToClear, isWorkDraftComposer]);
 
   useEffect(() => {
     if (!forceDraft) return;

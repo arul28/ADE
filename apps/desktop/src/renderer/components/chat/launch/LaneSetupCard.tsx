@@ -617,7 +617,7 @@ export function LaneSetupCard({
       title: name === "cancel" ? "Cancel this launch?" : "Delete this launch?",
       message: laneExists
         ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
-        : `Setup stops before a lane is created. Your prompt stays in the composer.`,
+        : "Setup stops before a lane is created. Your prompt goes back into the composer.",
       confirmLabel: laneExists ? `Delete lane and ${subject}` : "Stop setup",
       destructive: true,
       signal: abort.signal,
