@@ -223,6 +223,7 @@ type SyncServiceArgs = {
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
+  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop and the TUI; the
@@ -1000,6 +1001,7 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
+      projectScopes: args.projectScopes,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,

@@ -562,6 +562,7 @@ export class ProjectScopeRegistry {
       hostStartupEnabled: isHost ? base.hostStartupEnabled ?? true : false,
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,
+      projectScopes: this,
     };
   }
 

@@ -51,12 +51,14 @@ extension FilesRootScreen {
       let previousSelectedWorkspaceId = selectedWorkspaceId
       async let loadedWorkspacesTask = syncService.listWorkspaces()
       async let loadedLanesTask = syncService.fetchLanes()
+      let localWorkspaces = try await loadedWorkspacesTask
+      let localLanes = try await loadedLanesTask
       // Lanes of this project on the other live machines, read in parallel; a
       // machine that fails or is slow adds nothing.
       async let remoteTask = filesRemoteMachineWorkspaces(syncService: syncService)
       let remote = await remoteTask
-      let loadedWorkspaces = try await loadedWorkspacesTask + remote.workspaces
-      let loadedLanes = try await loadedLanesTask + remote.lanes
+      let loadedWorkspaces = localWorkspaces + remote.workspaces
+      let loadedLanes = localLanes + remote.lanes
       if workspaces != loadedWorkspaces {
         workspaces = loadedWorkspaces
       }
@@ -198,8 +200,7 @@ func filesRemoteMachineWorkspaces(syncService: SyncService) async -> (workspaces
     syncService.machineFleet?.isLive(repo.machineKey) == true
   }
   guard !repos.isEmpty else { return ([], []) }
-  var workspaces: [FilesWorkspace] = []
-  var lanes: [LaneSummary] = []
+  var snapshotsByMachine: [String: [LaneListSnapshot]] = [:]
   await withTaskGroup(of: (WorkRemoteMachineRepo, [LaneListSnapshot]).self) { group in
     for repo in repos {
       group.addTask { @MainActor in
@@ -211,19 +212,24 @@ func filesRemoteMachineWorkspaces(syncService: SyncService) async -> (workspaces
       }
     }
     for await (repo, snapshots) in group {
-      for lane in snapshots.map(\.lane) where lane.archivedAt == nil {
-        lanes.append(lane)
-        workspaces.append(FilesWorkspace(
-          id: lane.id,
-          kind: lane.laneType == "primary" ? "primary" : "worktree",
-          laneId: lane.id,
-          name: lane.name,
-          branchRef: lane.branchRef,
-          rootPath: lane.worktreePath,
-          isReadOnlyByDefault: false,
-          machineName: repo.machineName
-        ))
-      }
+      snapshotsByMachine[repo.machineKey] = snapshots
+    }
+  }
+  var workspaces: [FilesWorkspace] = []
+  var lanes: [LaneSummary] = []
+  for repo in repos {
+    for lane in (snapshotsByMachine[repo.machineKey] ?? []).map(\.lane) where lane.archivedAt == nil {
+      lanes.append(lane)
+      workspaces.append(FilesWorkspace(
+        id: lane.id,
+        kind: lane.laneType == "primary" ? "primary" : "worktree",
+        laneId: lane.id,
+        name: lane.name,
+        branchRef: lane.branchRef,
+        rootPath: lane.worktreePath,
+        isReadOnlyByDefault: false,
+        machineName: repo.machineName
+      ))
     }
   }
   return (workspaces, lanes)

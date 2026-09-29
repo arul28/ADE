@@ -252,7 +252,7 @@ final class SettingsMachineController: ObservableObject {
     errors[machine.id] = nil
     if syncService.focusedMachineKey != nil, fleet.isAtLiveLimit {
       var candidates = fleet.connectedMachinesLeastRecentFirst.map { (key: $0.machineKey, name: $0.name) }
-      if let primary = syncService.focusedMachineKey {
+      if machine.machineKey != nil, let primary = syncService.focusedMachineKey {
         candidates.append((key: primary, name: syncService.focusedMachineDisplayName))
       }
       limitPrompt = SettingsMachineLimitPrompt(target: machine, candidates: candidates)
@@ -274,7 +274,10 @@ final class SettingsMachineController: ObservableObject {
       }
       run(target, success: "\(target.name) is primary") {
         fleet.markConnected(machineKey: targetKey)
-        guard await syncService.switchFocus(toMachineKey: targetKey) else { return false }
+        guard await syncService.switchFocus(toMachineKey: targetKey) else {
+          fleet.stopKeepingLive(machineKey: targetKey)
+          return false
+        }
         fleet.stopKeepingLive(machineKey: key)
         return true
       }
@@ -374,7 +377,11 @@ final class SettingsMachineController: ObservableObject {
         self.errors[machine.id] = error.localizedDescription
         return false
       }
-      self.forget(machine)
+      syncService?.forgetMachineOnThisPhone(
+        machineKey: machine.machineKey,
+        hiddenIdentity: machine.hiddenIdentity,
+        isAvailableNow: machine.online
+      )
       return true
     }
   }

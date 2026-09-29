@@ -1217,6 +1217,8 @@ type SyncHostServiceArgs = {
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
+  /** Booted project scopes only; routed file requests must never start a runtime. */
+  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -8035,13 +8037,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && executeFileRequest
     ) {
       // A phone reading a lane of this machine's other open project.
-      await handleRoutedFileRequest(
-        peer,
-        envelope.requestId,
-        projectScope.receivedProjectId,
-        envelope.payload as SyncFileRequest,
-        executeFileRequest,
-      );
+      const routedScope = await args.projectScopes?.getIfBooted(projectScope.receivedProjectId);
+      if (routedScope) {
+        await handleRoutedFileRequest(
+          peer,
+          envelope.requestId,
+          projectScope.receivedProjectId,
+          envelope.payload as SyncFileRequest,
+          executeFileRequest,
+        );
+      } else {
+        rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
+      }
       return;
     }
     if (!projectScope.ok) {

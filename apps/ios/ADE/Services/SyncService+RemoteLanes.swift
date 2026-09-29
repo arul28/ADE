@@ -102,12 +102,12 @@ extension SyncService {
     )
   }
 
-  /// `machineKey`'s checkout of the focused repository, if it has one.
   /// The primary (focused) machine's name for machine lists and chips.
   var focusedMachineDisplayName: String {
     nonEmptyTrimmed(hostName) ?? nonEmptyTrimmed(activeHostProfile?.hostName) ?? "This machine"
   }
 
+  /// `machineKey`'s checkout of the focused repository, if it has one.
   func remoteLaneRepo(machineKey: String) -> WorkRemoteMachineRepo? {
     remoteReposForActiveProject().first { $0.machineKey == machineKey }
   }

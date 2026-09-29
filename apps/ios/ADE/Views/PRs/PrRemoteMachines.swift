@@ -132,6 +132,8 @@ final class PrRemoteMachinesModel: ObservableObject {
   /// Bumped by `reset()`: a refresh from before it publishes nothing.
   private var generation = 0
   private var inFlightGeneration: Int?
+  private var inFlightTask: Task<Void, Never>?
+  private var refreshRequested = false
 
   var links: [PrRemoteLaneLink] { machines.flatMap(\.links) }
 
@@ -144,9 +146,37 @@ final class PrRemoteMachinesModel: ObservableObject {
 
   func refresh(sync: SyncService, fleet: MachineFleet) async {
     let runGeneration = generation
-    guard inFlightGeneration != runGeneration else { return }
+    if let inFlightTask {
+      guard inFlightGeneration == runGeneration else {
+        await inFlightTask.value
+        await refresh(sync: sync, fleet: fleet)
+        return
+      }
+      refreshRequested = true
+      await inFlightTask.value
+      return
+    }
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.refreshOnceOrAgain(sync: sync, fleet: fleet, generation: runGeneration)
+      if self.inFlightGeneration == runGeneration {
+        self.inFlightGeneration = nil
+        self.inFlightTask = nil
+      }
+    }
     inFlightGeneration = runGeneration
-    defer { if inFlightGeneration == runGeneration { inFlightGeneration = nil } }
+    inFlightTask = task
+    await task.value
+  }
+
+  private func refreshOnceOrAgain(sync: SyncService, fleet: MachineFleet, generation runGeneration: Int) async {
+    repeat {
+      refreshRequested = false
+      await refreshRead(sync: sync, fleet: fleet, generation: runGeneration)
+    } while refreshRequested && runGeneration == generation
+  }
+
+  private func refreshRead(sync: SyncService, fleet: MachineFleet, generation runGeneration: Int) async {
     let repos = sync.remoteReposForActiveProject()
     var results: [String: [PrRemoteSummaryRow]] = [:]
     await withTaskGroup(of: (String, [PrRemoteSummaryRow]?).self) { group in
@@ -215,8 +245,8 @@ final class PrRemoteMachinesModel: ObservableObject {
 
   func reset() {
     generation &+= 1
+    refreshRequested = false
     lastRead = [:]
     if !machines.isEmpty { machines = [] }
   }
 }
-

@@ -5980,6 +5980,7 @@ final class SyncService: ObservableObject {
     laneSnapshotSignatures.removeAll()
     laneDetailSignatures.removeAll()
     laneDetailRevisions.removeAll()
+    remoteLaneDetails.removeAll()
   }
 
   private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
@@ -24996,6 +24997,7 @@ extension SyncService {
   /// its saved pairing (profile and token) is dropped, and it is hidden from
   /// this phone's lists until it comes back (`HiddenMachineStore`).
   func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String, isAvailableNow: Bool) {
+    remoteLaneDetails.removeAll()
     if let machineKey {
       machineFleet?.stopKeepingLive(machineKey: machineKey)
       if let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),

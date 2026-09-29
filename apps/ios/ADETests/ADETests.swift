@@ -955,22 +955,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(hub.extraProjects.map(\.roster.projectId), ["fleet|machine-remote|remote-other-repo"])
   }
 
-  func testMachineConnectionBackoffCapsThenMovesToSlowRetry() {
-    let actual = (0...9).map {
+  func testMachineConnectionBackoffStopsAfterSlowRetry() {
+    let retryDelays = (1...4).map {
       machineConnectionBackoffNanoseconds(failures: $0, jitter: 1)
     }
-    XCTAssertEqual(actual, [
-      2_000_000_000,
-      2_000_000_000,
-      4_000_000_000,
-      8_000_000_000,
-      16_000_000_000,
-      32_000_000_000,
+    XCTAssertEqual(retryDelays, [
+      5_000_000_000,
+      15_000_000_000,
       60_000_000_000,
-      60_000_000_000,
-      300_000_000_000,
       300_000_000_000,
     ])
+    XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 5, jitter: 1))
+    XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 9, jitter: 1))
+    XCTAssertEqual(machineConnectionBackoffNanoseconds(failures: 0, jitter: 1), 5_000_000_000)
+  }
+
+  @MainActor
+  func testCtoCommandTargetFailsClosedForOfflineHomeAndIgnoresAnotherProjectHome() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    defer { service.disconnect(clearCredentials: false) }
+    service.ctoHomeMachineKey = "fleet|remote-machine"
+    service.ctoHomeMachineName = "Build Mac"
+
+    XCTAssertThrowsError(try service.ctoCommandTarget()) { error in
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 14)
+      XCTAssertTrue(nsError.localizedDescription.contains("Build Mac"))
+    }
+
+    service.ctoHomeProjectId = "another-project"
+    let target = try service.ctoCommandTarget()
+    XCTAssertNil(target.projectId)
+    XCTAssertNil(target.rootPath)
+    XCTAssertNil(target.repo)
   }
 
   func testSyncPreprocessRejectsMalformedOrUnsupportedCompressionMetadata() {

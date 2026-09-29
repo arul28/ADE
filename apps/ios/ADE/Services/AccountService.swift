@@ -2063,6 +2063,9 @@ final class AccountService: ObservableObject {
         ).token
       }
     )
+    guard isPairingCommitAuthorized(initialSession.authorization) else {
+      throw AccountDirectoryClient.DirectoryError.unauthorized
+    }
     machines.removeAll { $0.machineKey == machine.machineKey }
   }
 

@@ -61,6 +61,7 @@ function createService(options?: {
   getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
+  accountSettingsStore?: Record<string, unknown>;
   getProxyService?: () => { status: ReturnType<typeof vi.fn> } | null;
   pushPublisherService?: Record<string, unknown>;
   attachmentUploads?: AttachmentUploadRegistry | null;
@@ -127,6 +128,7 @@ function createService(options?: {
     ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
+    ...(options?.accountSettingsStore ? { accountSettingsStore: options.accountSettingsStore } : {}),
     ...(options?.getProxyService ? { getProxyService: options.getProxyService } : {}),
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
@@ -156,6 +158,41 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("reads only valid CTO home records from the repository account scope", async () => {
+    const accountSettingsStore = {
+      get: vi.fn().mockReturnValue({ version: 2, deviceId: "device-1", name: "Old shape" }),
+    };
+    const { service } = createService({ accountSettingsStore });
+
+    await expect(service.execute(makePayload("cto.getHomeMachine", {
+      gitOriginUrl: "git@github.com:Owner/Repo.git",
+    }))).resolves.toEqual({ available: true, value: null });
+    expect(accountSettingsStore.get).toHaveBeenCalledWith("repo:github.com/owner/repo", "cto.homeMachine");
+    await expect(service.execute(makePayload("cto.getHomeMachine", { gitOriginUrl: null })))
+      .resolves.toEqual({ available: false, value: null });
+    expect(accountSettingsStore.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes the shared CTO home record under the normalized repository scope", async () => {
+    const accountSettingsStore = { set: vi.fn() };
+    const { service } = createService({ accountSettingsStore });
+
+    const result = await service.execute(makePayload("cto.setHomeMachine", {
+      gitOriginUrl: "https://github.com/Owner/Repo.git",
+      record: { deviceId: "device-2", name: "Build Mac", hostname: "build.local" },
+    })) as { ok: boolean; value: { version: number; deviceId: string; name: string; hostname: string | null; chosenAt: string } };
+
+    expect(result.ok).toBe(true);
+    expect(result.value).toMatchObject({ version: 1, deviceId: "device-2", name: "Build Mac", hostname: "build.local" });
+    expect(result.value.chosenAt).not.toBe("");
+    expect(accountSettingsStore.set).toHaveBeenCalledWith("repo:github.com/owner/repo", "cto.homeMachine", result.value);
+    await expect(service.execute(makePayload("cto.setHomeMachine", {
+      gitOriginUrl: "https://github.com/Owner/Repo.git",
+      record: { deviceId: "device-2", name: "  " },
+    }))).rejects.toThrow(/record\.deviceId and record\.name/);
+    expect(accountSettingsStore.set).toHaveBeenCalledTimes(1);
+  });
+
   it("validates a phone's chat.startLaunch with the chat.create / chat.send parsers and hands it to the launch service", async () => {
     const start = vi.fn(async (args: unknown) => ({ launchId: (args as { launchId: string }).launchId, phase: "running" }));
     const { service } = createService({

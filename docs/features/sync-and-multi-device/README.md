@@ -633,6 +633,23 @@ package. The desktop tree only contains thin re-export proxies plus the
 legacy fallback; do not edit the desktop copies expecting the runtime to
 see your change.
 
+The iOS companion keeps a focused machine connection and a separate roster
+connection to each connected machine. `MachineFleet` owns the connected set,
+the four-machine limit, and foreground/background lifecycle; `MachineConnection`
+owns each roster socket and its bounded retry state. The Lanes and PRs screens
+read each live machine's checkout on demand, while chat, file, and CTO commands
+carry that machine and project identity back to the owning runtime.
+
+- `apps/ios/ADE/Services/MachineFleet.swift` and `MachineConnection.swift` —
+  account-wide connected machines and their lightweight roster sockets.
+- `apps/ios/ADE/Services/SyncService+RemoteLanes.swift` and
+  `apps/ios/ADE/Views/Lanes/LaneRemoteMachines.swift` — machine-qualified lane
+  reads and stale-result handling for the Lanes tab.
+- `apps/ios/ADE/Views/PRs/PrRemoteMachines.swift` — machine-qualified PR-to-lane
+  links for the PR list and detail screens.
+- `apps/ios/ADE/Services/SyncService+CtoHome.swift` — shared repository CTO
+  home selection and fail-closed routing when its machine is offline.
+
 Runtime support files outside `services/sync/`:
 
 - `apps/desktop/src/main/services/state/crsqliteExtension.ts` and

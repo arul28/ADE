@@ -376,9 +376,11 @@ struct PrRowContextPreview: View {
 
   private var checksLine: (text: String, symbol: String, tint: Color)? {
     if let checks = snapshot?.checks, !checks.isEmpty {
-      let summary = prChecksHeadline(checks: checks, overallChecksStatus: snapshot?.status?.checksStatus)
+      let overall = snapshot?.status?.checksStatus
+      let summary = prChecksHeadline(checks: checks, overallChecksStatus: overall)
+      let notRun = overall?.lowercased() == "not_run"
       return (summary.text, summary.failing > 0 ? "xmark.circle.fill" : summary.running > 0 ? "clock" : "checkmark.circle.fill",
-              summary.failing > 0 ? ADEColor.danger : summary.running > 0 ? ADEColor.warning : ADEColor.success)
+              summary.failing > 0 ? ADEColor.danger : summary.running > 0 ? ADEColor.warning : (notRun ? ADEColor.textMuted : ADEColor.success))
     }
     if let ci = data.ciIndicator { return (ci.title, "checklist", ci.color) }
     return nil

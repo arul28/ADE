@@ -432,7 +432,7 @@ test("Windows failed repair restores the previous shim and startup service", {
     'const fs = require("node:fs");',
     'if (process.argv.includes("--service-status")) {',
     '  process.stdout.write(JSON.stringify({ installed: true, running: false }));',
-    '} else if (process.argv.includes("--install-service")) {',
+    '} else if (process.argv.includes("brain") && process.argv.includes("start")) {',
     `  if (!fs.existsSync(${JSON.stringify(attemptMarker)})) {`,
     `    fs.writeFileSync(${JSON.stringify(attemptMarker)}, "attempted");`,
     "    process.exitCode = 17;",
