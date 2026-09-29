@@ -247,7 +247,13 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       // name no lane, so those rows are not draggable.
       draggable={!deleting && !foreign}
       onDragStart={(event) => {
-        if (deleting || foreign) return;
+        // Shift-click is range-select, not a deeplink drag. Starting a drag on
+        // the same gesture can swallow the click, which made Shift-select feel
+        // broken on rows that are draggable.
+        if (deleting || foreign || event.shiftKey) {
+          event.preventDefault();
+          return;
+        }
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
         const title = (lane.name || "ADE lane")
           .replace(/&/g, "&amp;")

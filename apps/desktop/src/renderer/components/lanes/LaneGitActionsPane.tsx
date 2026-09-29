@@ -416,6 +416,7 @@ function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
 
 function SectionCard({
   title,
+  titleAccessory,
   description,
   aside,
   children,
@@ -427,6 +428,8 @@ function SectionCard({
   bodyStyle,
 }: {
   title: string;
+  /** Sits next to the title, e.g. a changed-file count. */
+  titleAccessory?: React.ReactNode;
   description?: string;
   aside?: React.ReactNode;
   children: React.ReactNode;
@@ -448,8 +451,11 @@ function SectionCard({
         data-testid={dataTestId}
         style={{ display: "flex", flexDirection: "column", minWidth: 0, ...sectionStyle }}
       >
-        <div className="flex shrink-0 items-center justify-between gap-2 px-1 pb-1">
-          <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 px-1 pb-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
+            {titleAccessory}
+          </span>
           {aside}
         </div>
         <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...bodyStyle }}>
@@ -2362,6 +2368,11 @@ export function LaneGitActionsPane({
         >
           <SectionCard
             title={diffViewActive ? "Diff" : "Files"}
+            titleAccessory={
+              !diffViewActive && changedFileCount > 0 ? (
+                <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
+              ) : null
+            }
             description={
               diffViewActive
                 ? (selectedCommit
@@ -2409,12 +2420,9 @@ export function LaneGitActionsPane({
                 </SmartTooltip>
               ) : (
               <div className="flex flex-wrap items-center gap-2">
-                {/* A count is a fact you read, not a control you press. The
-                    accent-filled pill was the loudest thing in the pane and it
-                    said "0" most of the time. */}
-                {changedFileCount > 0 ? (
-                    <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
-                ) : null}
+                {/* A count is a fact you read, not a control you press. It sits
+                    beside the "Files" label in the header; the buttons wrap to
+                    their own line when the pane is too narrow for them. */}
                 {changes.unstaged.length > 0 ? (
                   <>
                     <SmartTooltip content={{

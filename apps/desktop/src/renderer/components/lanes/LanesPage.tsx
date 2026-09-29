@@ -26,6 +26,7 @@ import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { Dialog } from "../ui/dialog";
+import { showToast } from "../app/toast/toastStore";
 import {
   buildLaneActionClearedSearch,
   laneHasAncestor,
@@ -1347,6 +1348,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
+
+    // Close the dialog and reset the transient delete UI before any async work.
+    // The delete itself runs in the background: each lane's row shows the live
+    // progress, and the user can leave the Lanes tab while it finishes. The
+    // modal must never be what holds them on this screen.
+    setManageOpen(false);
+    setLaneActionBusy(false);
+    setLaneActionStatus(null);
+    setLaneActionKind(null);
+    setLaneActionError(null);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
     if (actionable.length === 0) return;
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
@@ -1373,14 +1386,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
       return next;
     });
-    setManageOpen(false);
-    setLaneActionBusy(false);
-    setLaneActionStatus(null);
-    setLaneActionKind(null);
     laneDeleteWarningMessagesRef.current.clear();
-    setLaneActionError(null);
-    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
-    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
     moveAwayFromDeletingLanes(laneIds);
 
     void (async () => {
@@ -2097,22 +2103,68 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     (row) => window.ade.lanes.archive({ laneId: row.lane.id }, row.pin),
   ), [runForeignLaneAction]);
 
-  const deleteForeignLane = useCallback(() => runForeignLaneAction(
-    "delete",
-    "Deleting lane...",
-    async (row) => {
-      const args: DeleteLaneArgs = {
-        laneId: row.lane.id,
-        force: deleteForce,
-        deleteBranch: deleteSelection.localBranch,
-      };
-      if (deleteSelection.remoteBranch) {
-        args.deleteRemoteBranch = true;
-        args.remoteName = "origin";
-      }
-      await window.ade.lanes.delete(args, row.pin);
-    },
-  ), [deleteForce, deleteSelection, runForeignLaneAction]);
+  const deleteForeignLane = useCallback(() => {
+    const key = foreignManageKey;
+    const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
+    if (!row || row.lane.laneType === "primary") return;
+    const reason = machineBlockedReason(row);
+    if (reason || !row.pin) {
+      setLaneActionError(reason ?? `${row.machineName} is unavailable`);
+      return;
+    }
+    const target = { ...row, pin: row.pin };
+    const args: DeleteLaneArgs = {
+      laneId: target.lane.id,
+      force: deleteForce,
+      deleteBranch: deleteSelection.localBranch,
+    };
+    if (deleteSelection.remoteBranch) {
+      args.deleteRemoteBranch = true;
+      args.remoteName = "origin";
+    }
+
+    // Background it like the local path and the Work tab do: close the dialog
+    // first, mark the row as deleting, and let the delete run on its own. That
+    // machine has no change feed here, so the pending entry is cleared when the
+    // promise settles rather than by a progress event.
+    setDeleteProgressByLaneId((prev) => ({
+      ...prev,
+      [target.key]: createPendingLaneDeleteProgress(target.key),
+    }));
+    setForeignManageKey(null);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+    setLaneActionError(null);
+
+    void window.ade.lanes.delete(args, target.pin)
+      .then(() => {
+        clearForeignSelection(target.key);
+      })
+      .catch((error) => {
+        showToast({
+          title: `Could not delete ${target.lane.name}`,
+          message: error instanceof Error ? error.message : String(error),
+          tone: "error",
+          durationMs: 0,
+        });
+      })
+      .finally(() => {
+        setDeleteProgressByLaneId((prev) => {
+          if (!prev[target.key]) return prev;
+          const next = { ...prev };
+          delete next[target.key];
+          return next;
+        });
+        requestCrossMachineLanesForMachine(target.machineId);
+      });
+  }, [
+    clearForeignSelection,
+    deleteForce,
+    deleteSelection,
+    foreignManageKey,
+    foreignRowByKeyRef,
+    requestCrossMachineLanesForMachine,
+    setDeleteProgressByLaneId,
+  ]);
 
   const contextMenuForeignRow = laneContextMenu ? foreignRowByKey.get(laneContextMenu.laneId) ?? null : null;
   const contextMenuForeignLanesById = useMemo(
