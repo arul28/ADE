@@ -742,6 +742,18 @@ export type UsageAccount = {
    * "Use reset" action on; `nextExpiresAt` is when the soonest credit lapses.
    */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
+  /**
+   * Why this account has no fresh numbers, when the polling host knows.
+   *
+   * Set only while the provider is throttling the usage check AND the account
+   * has no unexpired window to show: a carried reading still answers the
+   * question the row exists to answer, but "No usage yet" for an account the
+   * provider just 429'd reads as a broken account. `message` is a ready
+   * sentence; `nextRetryAt` is when the host will ask again, for clients that
+   * count it down. Local to the polling machine — a peer's notice describes the
+   * peer's attempt, so it never travels in a rollup.
+   */
+  notice?: { message: string; nextRetryAt?: string };
 };
 
 /**

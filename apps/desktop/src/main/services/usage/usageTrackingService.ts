@@ -422,6 +422,22 @@ function errorKindForHttpStatus(status: number): UsageProviderErrorKind {
   return "unknown";
 }
 
+/**
+ * Whether the Claude CLI fallback can help after a non-OK usage response.
+ *
+ * A 429 or 403 is the provider answering about the ACCOUNT: `claude /usage`
+ * reads the same endpoint with the same token, so spawning it adds a second
+ * request to an account that just asked us to back off — the exact way a
+ * transient throttle becomes a sustained one. Every other status is worth the
+ * bounded pty attempt the fallback exists for (401 repairs, 5xx/network are
+ * transport, an unrecognized body is a schema question). Codex refuses its CLI
+ * fallback for 403/409/429 under the same rule.
+ */
+export function claudeCliFallbackFitsStatus(status: number): boolean {
+  const kind = errorKindForHttpStatus(status);
+  return kind !== "rate_limited" && kind !== "forbidden";
+}
+
 function errorKindForThrown(error: unknown): UsageProviderErrorKind {
   const message = getErrorMessage(error).toLowerCase();
   if (message.includes("abort") || message.includes("timed out") || message.includes("timeout")) {
@@ -806,6 +822,34 @@ function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
 }
 
+/**
+ * Mark accounts the provider is throttling and that have nothing to show.
+ *
+ * Without it the row's only words are "No usage yet" — the same sentence a
+ * brand-new account gets — which is what made a throttle read as a broken
+ * account. Only accounts with no unexpired window are marked: a carried
+ * reading still answers the question the row exists to answer, and the host's
+ * own status already says it is stale.
+ *
+ * The `notice` is deliberately local: it describes THIS machine's last attempt,
+ * so `boundPeerAccount` drops it when accounts travel in a rollup.
+ */
+function attachAccountRateLimitNotices(
+  accounts: UsageAccount[],
+  windows: readonly UsageWindow[],
+  nowMs: number = Date.now(),
+): void {
+  for (const account of accounts) {
+    const nextAttemptAtMs = accountRateLimitNextAttemptAtMs(account.id, nowMs);
+    if (nextAttemptAtMs <= 0) continue;
+    if (windows.some((window) => window.provider === account.provider && window.accountId === account.id)) continue;
+    account.notice = {
+      message: "Rate-limited — retrying",
+      nextRetryAt: new Date(nextAttemptAtMs).toISOString(),
+    };
+  }
+}
+
 function noteAccountPollOutcome(
   accountId: string,
   result: UsageProviderPollResult | null,
@@ -1075,7 +1119,13 @@ async function pollClaudeInstance(
         }
       }
 
-      if (allowInteractiveSources) {
+      // A throttled or forbidden endpoint is the one status the CLI cannot fix:
+      // `claude /usage` reads the same endpoint with the same account, so
+      // spawning it doubles the pressure on a token that just asked us to back
+      // off — which is exactly how a transient 429 becomes a sustained one.
+      // Codex already refuses its CLI fallback for 403/409/429; same rule here.
+      const httpErrorKind = errorKindForHttpStatus(result.status);
+      if (allowInteractiveSources && claudeCliFallbackFitsStatus(result.status)) {
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
@@ -1088,7 +1138,7 @@ async function pollClaudeInstance(
         source: "oauth",
         extraUsage: null,
         errors: [`claude: API returned ${result.status}`],
-        errorKind: errorKindForHttpStatus(result.status),
+        errorKind: httpErrorKind,
         ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
       };
     }
@@ -4876,6 +4926,9 @@ export function createUsageTrackingService({
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
         });
+        // After attribution, so a legacy window with no accountId counts as the
+        // default account's before the notice decides the account has nothing.
+        attachAccountRateLimitNotices(accounts, allWindows);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -5520,6 +5573,7 @@ export const _testing = {
   pollClaudeUsage,
   pollCodexUsage,
   resetAccountRateLimitsForTest,
+  claudeCliFallbackFitsStatus,
   consumeCodexResetCredit,
   probeCodexResetCredits,
   readCachedCodexResetCredits,

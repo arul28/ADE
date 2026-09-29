@@ -10,7 +10,7 @@
  * never heard of instead of dropping it.
  */
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
-import type { UsageSnapshot } from "../../../../../shared/types";
+import type { UsageAccount, UsageSnapshot } from "../../../../../shared/types";
 
 /**
  * Eight accents that stay legible on both themes and do not collide with the
@@ -48,7 +48,7 @@ function usageAccountFor(
   snapshot: UsageSnapshot | null,
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
-): { id: string } | null {
+): UsageAccount | null {
   const accounts = snapshot?.accounts ?? [];
   const matched = accounts.find(
     (account) => account.provider === provider && account.instanceId === instance.id,
@@ -94,6 +94,21 @@ export function formatAccountUsage(percents: AccountUsagePercents): string | nul
   if (percents.fiveHourPercent != null) parts.push(`5h ${left(percents.fiveHourPercent)}%`);
   if (percents.weeklyPercent != null) parts.push(`wk ${left(percents.weeklyPercent)}%`);
   return parts.length ? `${parts.join(" · ")} left` : null;
+}
+
+/**
+ * The host's own reason this account has no numbers, or `null`.
+ *
+ * Shown in place of "No usage yet": an account the provider just throttled is
+ * not an account that has never reported, and the row must not make them look
+ * the same. Absent for a host that predates the field.
+ */
+export function accountUsageNotice(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+): string | null {
+  return usageAccountFor(snapshot, provider, instance)?.notice?.message ?? null;
 }
 
 /**

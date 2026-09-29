@@ -271,6 +271,15 @@ export function UsageAccountRow({
             />
           ))}
         </div>
+      ) : account?.notice ? (
+        // Better than "No usage yet": the host knows why there is no reading,
+        // and a throttle must read as a throttle rather than a broken account.
+        <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
+          {account.notice.message}
+          {account.notice.nextRetryAt
+            ? ` · retrying in ${formatCountdown(Date.parse(account.notice.nextRetryAt) - nowMs)}`
+            : ""}
+        </span>
       ) : account ? (
         <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>No usage yet</span>
       ) : null}

@@ -251,6 +251,21 @@ describe("claudePollAllowsKeychain", () => {
   });
 });
 
+describe("claudeCliFallbackFitsStatus", () => {
+  it("refuses the CLI fallback for the statuses the account itself caused", () => {
+    // A throttle or a permission refusal is answered the same way for the same
+    // token by `claude /usage`, so the pty fallback would only add a second
+    // request to an account that just asked us to back off.
+    expect(_testing.claudeCliFallbackFitsStatus(429)).toBe(false);
+    expect(_testing.claudeCliFallbackFitsStatus(403)).toBe(false);
+    // Everything else is what the bounded fallback exists for: auth repair,
+    // server faults, transport, and an unrecognized body.
+    expect(_testing.claudeCliFallbackFitsStatus(401)).toBe(true);
+    expect(_testing.claudeCliFallbackFitsStatus(500)).toBe(true);
+    expect(_testing.claudeCliFallbackFitsStatus(0)).toBe(true);
+  });
+});
+
 // ── calculatePacing ──────────────────────────────────────────────
 
 describe("calculatePacing", () => {
@@ -7508,6 +7523,61 @@ describe("per-account quota attribution", () => {
     expect(second.errors).toEqual([]);
     expect(second.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
     expect((second as { freshWindowCount?: number }).freshWindowCount).toBe(2);
+  });
+
+  it("names the throttle on the throttled account instead of a bare No usage yet", async () => {
+    const throttledHome = path.join(tempHome, "provider-homes", "claude", "rx-note-a");
+    const healthyHome = path.join(tempHome, "provider-homes", "claude", "rx-note-b");
+    fs.mkdirSync(throttledHome, { recursive: true });
+    fs.mkdirSync(healthyHome, { recursive: true });
+    writeClaudeCredentials(throttledHome, "rx-note-a-token");
+    writeClaudeCredentials(healthyHome, "rx-note-b-token");
+    const throttled = { id: "rx-note-a", label: "A", configHome: throttledHome, isDefault: true };
+    const healthy = { id: "rx-note-b", label: "B", configHome: healthyHome, isDefault: false };
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      if (token === "rx-note-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(40),
+      };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [throttled, healthy] : []),
+        scanClaudeLogs: vi.fn(async () => [] as never[]),
+        scanCodexLogs: vi.fn(async () => [] as never[]),
+        scanCursorLogs: vi.fn(async () => [] as never[]),
+        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+        scanOpenClawLogs: vi.fn(async () => [] as never[]),
+        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+        scanDroidLogs: vi.fn(async () => [] as never[]),
+        scanCopilotLogs: vi.fn(async () => [] as never[]),
+        scanGeminiLogs: vi.fn(async () => [] as never[]),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "automatic" });
+    const byId = new Map((snapshot.accounts ?? []).map((account) => [account.id, account]));
+    const throttledAccount = byId.get("claude:rx-note-a");
+    expect(throttledAccount?.notice?.message).toBe("Rate-limited — retrying");
+    expect(Date.parse(throttledAccount?.notice?.nextRetryAt ?? "")).toBeGreaterThan(Date.now());
+    // The account with numbers carries no note: a notice means "nothing to
+    // show", not "the provider was mentioned once".
+    expect(byId.get("claude:rx-note-b")?.notice).toBeUndefined();
+
+    service.dispose();
   });
 
   it("does not let carried windows clear the provider's backoff", async () => {

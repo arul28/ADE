@@ -215,6 +215,32 @@ describe("ProviderAccountsPanel", () => {
     expect(within(row).getByText("No usage yet")).toBeTruthy();
   });
 
+  it("names the host's throttle instead of saying No usage yet", async () => {
+    const throttled = snapshot();
+    // The throttled account has no windows — that is why it has no numbers —
+    // and the host recorded why. The healthy sibling keeps its meters.
+    throttled.windows = throttled.windows.filter((window) => window.accountId !== "claude:claude");
+    throttled.accounts = [
+      {
+        id: "claude:claude",
+        provider: "claude",
+        instanceId: "claude",
+        machines: [],
+        notice: { message: "Rate-limited — retrying", nextRetryAt: "2026-09-18T10:05:00.000Z" },
+      },
+      { id: "claude:claude-work", provider: "claude", instanceId: "claude-work", machines: [] },
+    ];
+    installBridge({ usage: throttled });
+    renderPanel();
+
+    const personal = await screen.findByRole("group", { name: "Personal account" });
+    expect(within(personal).getByText("Rate-limited — retrying")).toBeTruthy();
+    expect(within(personal).queryByText("No usage yet")).toBeNull();
+
+    const work = screen.getByRole("group", { name: "Work account" });
+    expect(within(work).getByText("5h 0% · wk 8% left")).toBeTruthy();
+  });
+
   it("offers a sign-in for an account whose config home has no login", async () => {
     installBridge({
       instances: [instance({ id: "claude", label: "Personal", isDefault: true, signedIn: false })],
