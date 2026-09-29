@@ -138,9 +138,11 @@ export type ThreadRefreshOptions = {
   mcpServers?: Record<string, McpServerConfig>;
   /**
    * Replaces the thread's `attachmentRoots` (see `ThreadOpenOptions`); `[]`
-   * clears them. On a resume the SDK sends them with `updateSession`, which
-   * needs runtime >= 1.2.82; on a recreate or a create they are the roots the
-   * session starts with. The stored record is updated either way. SDK >= 0.4.
+   * clears them. On a resume, and on a thread this client already holds open,
+   * the SDK sends them with `updateSession` (runtime >= 1.2.82) before the MCP
+   * refresh, and a refusal fails the `open` with the thread unchanged. On a
+   * recreate or a create they are the roots the session starts with. The
+   * stored record is updated either way. SDK >= 0.4.
    */
   attachmentRoots?: string[];
 };

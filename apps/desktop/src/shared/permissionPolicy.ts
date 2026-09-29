@@ -453,6 +453,23 @@ export function policyAllowedMcpServers(policy: AgentChatPermissionPolicy): stri
   return servers;
 }
 
+/**
+ * Whether the policy refuses every tool of MCP server `server`: the whole
+ * server evaluates to `deny`, and no `allowedTools` or `autoApproveMcpServers`
+ * entry names it. A policy that allows one of its tools does not refuse it;
+ * the gate then decides each call. A provider adapter uses this to leave out a
+ * server it would otherwise start.
+ */
+export function policyRefusesMcpServer(
+  policy: AgentChatPermissionPolicy,
+  server: string,
+  provider: string,
+): boolean {
+  const name = server.trim().toLowerCase();
+  if (evaluatePermissionPolicy(policy, { toolName: `mcp:${name}:*`, provider }) !== "deny") return false;
+  return !policyAllowedMcpServers(policy).some((allowed) => allowed.toLowerCase() === name);
+}
+
 function translateForClaude(patterns: readonly string[] | undefined): string[] {
   const out: string[] = [];
   for (const pattern of patterns ?? []) {

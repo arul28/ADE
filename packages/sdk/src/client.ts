@@ -372,19 +372,25 @@ export async function createAdeChat(
     // the same reason: one key is one conversation, and re-applying options to
     // a live one would move an agent that is already running. The mismatch
     // warning lives on the resume path, which is where the stored values are.
-    // `refresh` is the exception and is applied through `updateMcpServers`,
-    // which skips a map identical to the one it last sent.
+    // `refresh` is the exception. Its attachment roots are applied first and a
+    // refusal fails the open (see `refreshLiveAttachmentRoots`); its MCP
+    // servers go through `updateMcpServers`, which skips a map identical to
+    // the one it last sent, and a failure there is logged.
     const existing = liveSessions.get(trimmedKey);
     if (existing) {
-      const refreshServers = opts.refresh?.mcpServers;
-      if (!refreshServers) return Promise.resolve(existing);
-      return existing.updateMcpServers(refreshServers).then(
-        () => existing,
-        (error: unknown) => {
-          logger(`ade sdk: thread "${trimmedKey}" could not apply refresh.mcpServers: ${errorMessage(error)}`);
-          return existing;
-        },
-      );
+      const refresh = opts.refresh;
+      if (!refresh?.mcpServers && refresh?.attachmentRoots === undefined) return Promise.resolve(existing);
+      return (async () => {
+        if (refresh.attachmentRoots !== undefined) {
+          await opener.refreshLiveAttachmentRoots(trimmedKey, existing.id, refresh.attachmentRoots);
+        }
+        if (refresh.mcpServers) {
+          await existing.updateMcpServers(refresh.mcpServers).catch((error: unknown) => {
+            logger(`ade sdk: thread "${trimmedKey}" could not apply refresh.mcpServers: ${errorMessage(error)}`);
+          });
+        }
+        return existing;
+      })();
     }
 
     const pending = openInFlight.get(trimmedKey);
@@ -431,6 +437,9 @@ export async function createAdeChat(
   const modelListeners = new Set<(models: ModelCatalogEntry[]) => void>();
   let stopModelWatch: Unsubscribe | null = null;
   let lastModelSignature: string | null = null;
+  // Bumped per watch, so a catalog read from an ended watch cannot seed or
+  // notify the next one.
+  let modelWatchGeneration = 0;
   const modelSignature = (models: readonly ModelCatalogEntry[]): string =>
     models
       .map((model) => `${model.id}|${model.isAvailable ? 1 : 0}${model.connected ? 1 : 0}${model.isDefault ? 1 : 0}`)
@@ -439,15 +448,23 @@ export async function createAdeChat(
     assertUsable();
     modelListeners.add(cb);
     if (!stopModelWatch) {
+      const generation = ++modelWatchGeneration;
       void listModels()
         .then((models) => {
-          lastModelSignature ??= modelSignature(models);
+          if (generation === modelWatchGeneration) lastModelSignature ??= modelSignature(models);
         })
         .catch(() => {});
       stopModelWatch = providerStatus.onChange(() => {
         void listModels()
           .then((models) => {
+            if (generation !== modelWatchGeneration) return;
             const signature = modelSignature(models);
+            // The first read to land is the baseline, never a change: the seed
+            // read above may not have answered yet.
+            if (lastModelSignature === null) {
+              lastModelSignature = signature;
+              return;
+            }
             if (signature === lastModelSignature) return;
             lastModelSignature = signature;
             for (const listener of [...modelListeners]) {
@@ -470,6 +487,7 @@ export async function createAdeChat(
         stopModelWatch();
         stopModelWatch = null;
         lastModelSignature = null;
+        modelWatchGeneration += 1;
       }
     };
   };
@@ -504,7 +522,7 @@ export async function createAdeChat(
       throw error;
     }
     if (!session) return null;
-    return summaryRow(session, record ? { ...record, key: trimmedKey } : { key: trimmedKey }, await displayNames());
+    return summaryRow(session, record ?? { key: trimmedKey }, await displayNames());
   };
 
   /**

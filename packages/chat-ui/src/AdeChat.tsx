@@ -9,6 +9,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -59,11 +60,14 @@ export type AdeChatProps = {
   onValueChange?: ComposerProps["onValueChange"];
   /**
    * Called when the person sends a new message, before it reaches the thread.
-   * Return (or resolve) `false` to take over: nothing is sent, and the host may
-   * send it itself through `thread.send`. Any other result sends as usual. A
-   * throw is shown under the composer as a failed send, and the staged
-   * attachments are restored. Steering a running turn does not call this.
-   * `thread` is the live thread state (see `children`).
+   * Return (or resolve) `false` to cancel: nothing is sent, and the composer
+   * keeps the draft and the staged attachments (for a confirmation or a
+   * validation step). A host that sends the message itself calls
+   * `thread.send` here, returns `false`, and clears the draft through a
+   * controlled `value`. Any other result sends as usual. A throw is shown under
+   * the composer as a failed send, and the draft is restored. Steering a
+   * running turn does not call this. `thread` is the live thread state (see
+   * `children`).
    */
   onSend?: (
     input: SendInput,
@@ -153,6 +157,12 @@ export type AdeChatProps = {
   className?: string;
 };
 
+/**
+ * `useLayoutEffect` in a browser; `useEffect` during server rendering, where
+ * React warns about a layout effect and neither one runs anyway.
+ */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 export function AdeChat(props: AdeChatProps) {
   return (
     <AdeChatProvider client={props.client} {...(props.labels ? { labels: props.labels } : {})}>
@@ -227,17 +237,21 @@ function AdeChatInner({
     ...(historyPageSize !== undefined ? { historyPageSize } : {}),
   });
 
+  // Internal: read after the `await` in the send handler, where the render's
+  // own `thread` could be a stale snapshot.
   const threadStateRef = useRef(thread);
   threadStateRef.current = thread;
-  if (threadRef) threadRef.current = thread;
+  // The host's ref is written at commit, not during render, so host code never
+  // reads the state of a render React discarded.
+  useIsomorphicLayoutEffect(() => {
+    if (threadRef) threadRef.current = thread;
+  });
   useEffect(() => {
     if (!threadRef) return;
     return () => {
       threadRef.current = null;
     };
   }, [threadRef]);
-  const onSendRef = useRef(onSend);
-  onSendRef.current = onSend;
 
   // Token overrides are custom properties, which React accepts on `style` but
   // `CSSProperties` has no index signature for.
@@ -410,8 +424,7 @@ function AdeChatInner({
       {children ? children(thread) : null}
       <Composer
         onSend={async (input) => {
-          const hook = onSendRef.current;
-          if (hook && (await hook(input, threadStateRef.current)) === false) return;
+          if (onSend && (await onSend(input, threadStateRef.current)) === false) return false;
           await threadStateRef.current.send(input);
         }}
         onSteer={(input) => thread.steer(input)}

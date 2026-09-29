@@ -36,7 +36,7 @@ import {
 import type { PersonalChatsApi } from "./personalChats.js";
 import { Thread, type ThreadRecordPatch } from "./thread.js";
 import type { ThreadRecord, ThreadStore } from "./threadStore.js";
-import { threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
+import { sameJson, threadOpenWarnings, threadResumeMismatchWarnings } from "./threadWarnings.js";
 import type {
   AdeProvider,
   AgentChatEventEnvelope,
@@ -63,6 +63,20 @@ export function isAbsentSessionError(error: unknown): boolean {
   // genuine wipe.
   if (error.code !== "rpc_error") return false;
   return /not found/i.test(error.message);
+}
+
+/** `opts` with `attachmentRoots` and `refresh.attachmentRoots` validated and canonicalized. */
+function withValidatedAttachmentRoots(opts: ThreadResumeOptions, home: string): ThreadResumeOptions {
+  if (opts.attachmentRoots === undefined && opts.refresh?.attachmentRoots === undefined) return opts;
+  return {
+    ...opts,
+    ...(opts.attachmentRoots !== undefined
+      ? { attachmentRoots: validateAttachmentRoots(opts.attachmentRoots, home) }
+      : {}),
+    ...(opts.refresh?.attachmentRoots !== undefined
+      ? { refresh: { ...opts.refresh, attachmentRoots: validateAttachmentRoots(opts.refresh.attachmentRoots, home) } }
+      : {}),
+  };
 }
 
 /**
@@ -201,6 +215,35 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
   };
 
   /**
+   * Replace a session's attachment roots with `refresh.attachmentRoots`
+   * (already validated). Skipped when they equal the record's. A runtime
+   * refusal is thrown, not logged: the caller asked for new read roots (or for
+   * none), and an open that returned while the old roots stayed would let it
+   * believe a folder was added or removed when it was not.
+   */
+  const applyAttachmentRoots = async (
+    key: string,
+    sessionId: string,
+    recorded: string[] | undefined,
+    roots: string[] | undefined,
+  ): Promise<void> => {
+    if (roots === undefined || sameJson(roots, recorded ?? [])) return;
+    await chats.updateSession({ sessionId, attachmentRoots: roots });
+    await persistThread(key)({ attachmentRoots: roots });
+  };
+
+  /**
+   * `refresh.attachmentRoots` for a thread the client already holds live: the
+   * one `open` option that still applies to it. Validates first, so a bad root
+   * changes nothing.
+   */
+  const refreshLiveAttachmentRoots = async (key: string, sessionId: string, rawRoots: string[]): Promise<void> => {
+    const roots = validateAttachmentRoots(rawRoots, ctx.home);
+    const record = await store.get(key);
+    await applyAttachmentRoots(key, sessionId, record?.attachmentRoots, roots);
+  };
+
+  /**
    * Push fresh MCP servers onto a session that is being resumed.
    *
    * Runs when the caller passed `refresh.mcpServers`, or when the stored
@@ -217,30 +260,6 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
    * Never throws: a refresh that fails leaves the thread usable on its old
    * servers, and says so. Returns the runtime's summary after a push, else null.
    */
-  /**
-   * Replace a resumed session's attachment roots with `refresh.attachmentRoots`.
-   * Skipped when the roots equal the record's. Throws `invalid_option` for a
-   * bad root (the host's mistake, not a runtime fault); a runtime failure is
-   * logged and leaves the old roots in place.
-   */
-  const refreshAttachmentRootsOnResume = async (
-    key: string,
-    sessionId: string,
-    record: ThreadRecord,
-    refreshRoots: string[] | undefined,
-  ): Promise<void> => {
-    if (refreshRoots === undefined) return;
-    const roots = validateAttachmentRoots(refreshRoots, ctx.home);
-    const current = record.attachmentRoots ?? [];
-    if (roots.length === current.length && roots.every((root, index) => root === current[index])) return;
-    try {
-      await chats.updateSession({ sessionId, attachmentRoots: roots });
-      await persistThread(key)({ attachmentRoots: roots });
-    } catch (error) {
-      recordError(`refresh attachmentRoots for "${key}"`, error);
-    }
-  };
-
   const refreshMcpOnResume = async (
     key: string,
     sessionId: string,
@@ -303,7 +322,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     // A refresh that pushed servers is itself an MCP request, so its report is
     // always read.
     const refreshed = await refreshMcpOnResume(key, summary.sessionId, record, opts.refresh?.mcpServers);
-    await refreshAttachmentRootsOnResume(key, summary.sessionId, record, opts.refresh?.attachmentRoots);
+    await applyAttachmentRoots(key, summary.sessionId, record.attachmentRoots, opts.refresh?.attachmentRoots);
     const resumedCapability = refreshed
       ? normalizeMcpCapability(refreshed.mcpCapability)
       : record.requestedMcp === false
@@ -354,7 +373,10 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
    * session its record points at, recreate it from the record when the runtime
    * lost it, or create it from `opts` when the key is new.
    */
-  const open = async (key: string, opts: ThreadResumeOptions): Promise<Thread> => {
+  const open = async (key: string, rawOpts: ThreadResumeOptions): Promise<Thread> => {
+    // Validated once, before anything reaches the runtime: a bad root must
+    // refuse the open before a resume pushes MCP servers or a create starts.
+    const opts = withValidatedAttachmentRoots(rawOpts, ctx.home);
     // Provider/model are validated at the CREATE branch below, not here: a
     // durable key already recorded both, so reopening `"support"` after a
     // restart must not force the caller to remember how it was created.
@@ -365,7 +387,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       // one directory and reports a caller's own unchanged `cwd` as ignored.
       ...(opts.cwd !== undefined ? { cwd: canonicalThreadCwd(opts.cwd) } : {}),
       ...(opts.attachmentRoots !== undefined && opts.refresh?.attachmentRoots === undefined
-        ? { attachmentRoots: validateAttachmentRoots(opts.attachmentRoots, ctx.home) }
+        ? { attachmentRoots: opts.attachmentRoots }
         : {}),
       ...(opts.instructions !== undefined ? { instructions: normalizeInstructions(opts.instructions) } : {}),
       ...(opts.settingSources !== undefined ? { settingSources: opts.settingSources } : {}),
@@ -444,11 +466,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       record?.instructions ?? normalizeInstructions(opts.instructions) ?? normalizeInstructions(ctx.defaultInstructions);
     const cwd = record?.cwd ?? (opts.cwd !== undefined ? validateThreadCwd(opts.cwd, ctx.home) : undefined);
     // `refresh` replaces the record's roots, as it does the MCP servers.
-    const attachmentRoots =
-      opts.refresh?.attachmentRoots !== undefined
-        ? validateAttachmentRoots(opts.refresh.attachmentRoots, ctx.home)
-        : record?.attachmentRoots
-          ?? (opts.attachmentRoots !== undefined ? validateAttachmentRoots(opts.attachmentRoots, ctx.home) : undefined);
+    const attachmentRoots = opts.refresh?.attachmentRoots ?? record?.attachmentRoots ?? opts.attachmentRoots;
     const settingSources = record?.settingSources ?? normalizeSettingSources(opts.settingSources);
     // The stored policy, then the stored preset (0.3+ records), then the call.
     // A pre-0.3 record has neither and keeps the older rule.
@@ -655,5 +673,5 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     }
   };
 
-  return { open, rebindLiveThreads };
+  return { open, rebindLiveThreads, refreshLiveAttachmentRoots };
 }

@@ -79,6 +79,9 @@ export const PERSONAL_CHAT_ACTIONS = [
 
 export type PersonalChatAction = (typeof PERSONAL_CHAT_ACTIONS)[number];
 
+/** The most `attachmentRoots` one personal chat may name. */
+export const MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS = 32;
+
 export type PersonalChatRemoteCommandAction =
   | `personalChats.${PersonalChatAction}`
   | "personalChats.streamEvents";

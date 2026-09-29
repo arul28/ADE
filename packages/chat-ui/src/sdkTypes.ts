@@ -391,6 +391,12 @@ export type ThreadUpdatePatch = {
   fastMode?: boolean;
 };
 
+/**
+ * What `AdeThread.update` resolves to. An SDK thread resolves `{ title, model }`;
+ * only `model` is read, and a client may resolve nothing.
+ */
+export type ThreadUpdateReply = { model?: unknown } | null | void;
+
 /** The runtime lifecycle events a client can report (`AdeChatClient.on`). */
 export type AdeChatClientEventMap = {
   /**
@@ -462,7 +468,7 @@ export interface AdeThread {
    * reports its presence. A reasoning or fast-mode change is refused while a
    * turn runs (`AdeError` code `turn_in_flight` on `@ade-dev/sdk` >= 0.4).
    */
-  update?(patch: ThreadUpdatePatch): Promise<unknown>;
+  update?(patch: ThreadUpdatePatch): Promise<ThreadUpdateReply>;
   /**
    * Run the last user message again (`@ade-dev/sdk` >= 0.4 `thread.retry`).
    * The runtime rolls the provider conversation back to before that message,
@@ -474,7 +480,11 @@ export interface AdeThread {
    * code `unsupported`, and a running turn with `turn_in_flight`.
    */
   retry?(): Promise<unknown>;
-  /** Like `retry`, with new text (and optionally attachments) for the last user message. */
+  /**
+   * Like `retry`, with new text for the last user message. `attachments`
+   * replaces the original message's attachments; an empty list removes them,
+   * and leaving it out keeps them.
+   */
   editLast?(input: SendInput | string): Promise<unknown>;
   on(type: "event", cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
   on(type: "usage", cb: (usage: ThreadUsage) => void): Unsubscribe;

@@ -247,13 +247,13 @@ export function validateAttachmentRoots(value: unknown, sdkHome: string): string
   }
   const roots: string[] = [];
   value.forEach((entry, index) => {
-    const root = validateHostDirectory(entry as string, sdkHome, `attachmentRoots[${index}]`);
+    const root = validateHostDirectory(entry, sdkHome, `attachmentRoots[${index}]`);
     if (!roots.includes(root)) roots.push(root);
   });
   return roots;
 }
 
-function validateHostDirectory(value: string, sdkHome: string, label: string): string {
+function validateHostDirectory(value: unknown, sdkHome: string, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new AdeError("invalid_option", `${label} must be a non-empty absolute path.`);
   }

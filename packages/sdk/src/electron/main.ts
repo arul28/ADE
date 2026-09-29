@@ -31,7 +31,7 @@ import { AdeError, errorMessage } from "../errors.js";
 import type { AdeChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
 import { ADE_CLIENT_EVENTS } from "../clientEvents.js";
 import type { AdeThread, HistoryPageOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
-import type { AgentChatEventEnvelope, AgentChatFileRef, ThreadSummary, Unsubscribe } from "../types.js";
+import type { AgentChatEventEnvelope, ThreadSummary, Unsubscribe } from "../types.js";
 import {
   ADE_DEFAULT_CHANNEL_PREFIX,
   ADE_IPC_THREAD_KEY_METHODS,
@@ -48,6 +48,7 @@ import {
   type IpcMainLike,
   type WebContentsLike,
 } from "./protocol.js";
+import { rendererOpenOptions, rendererSendOptions } from "./rendererOptions.js";
 
 export type RegisterAdeIpcOptions = {
   /** Channel namespace. Defaults to `"ade"`, giving `ade:invoke` and `ade:event`. */
@@ -150,9 +151,6 @@ export type AdeIpcBridgeHandle = (() => void) & {
   forget(key: string): void;
 };
 
-/** The renderer `threads.open` fields the bridge forwards without an `openOptions` hook. */
-export const ADE_IPC_RENDERER_OPEN_FIELDS = ["provider", "model", "title", "reasoningEffort"] as const;
-
 /**
  * The client a bridge serves, or a function returning the current one.
  *
@@ -246,49 +244,6 @@ function requireString(value: unknown, label: string): string {
   return value;
 }
 
-/**
- * The `thread.send` / `thread.steer` options a renderer may pass, rebuilt
- * field by field. Before 0.4 the object crossed unfiltered.
- *
- * Kept: `displayText` and `reasoningEffort` (strings), and `attachments` with
- * `path`, `name`, `mimeType`, `bytes`, `type` and `hydrate` of the right types.
- * Anything else is dropped with one log line. The runtime's own path rules
- * still decide which attachment paths it reads.
- */
-function rendererSendOptions(
-  key: string,
-  raw: unknown,
-  log: (line: string) => void = () => {},
-): { attachments?: AgentChatFileRef[]; displayText?: string; reasoningEffort?: string | null } {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const input = raw as Record<string, unknown>;
-  const out: { attachments?: AgentChatFileRef[]; displayText?: string; reasoningEffort?: string | null } = {};
-  for (const [field, value] of Object.entries(input)) {
-    if (value === undefined) continue;
-    if (field === "displayText" && typeof value === "string") out.displayText = value;
-    else if (field === "reasoningEffort" && (typeof value === "string" || value === null)) out.reasoningEffort = value;
-    else if (field === "attachments" && Array.isArray(value)) {
-      const refs: AgentChatFileRef[] = [];
-      for (const item of value) {
-        if (!item || typeof item !== "object") continue;
-        const entry = item as Record<string, unknown>;
-        if (typeof entry.path !== "string" || !entry.path.trim()) continue;
-        const ref: AgentChatFileRef = { path: entry.path };
-        if (typeof entry.name === "string") ref.name = entry.name;
-        if (typeof entry.mimeType === "string") ref.mimeType = entry.mimeType;
-        if (typeof entry.bytes === "number" && Number.isFinite(entry.bytes)) ref.bytes = entry.bytes;
-        if (entry.type === "file" || entry.type === "image") ref.type = entry.type;
-        if (typeof entry.hydrate === "boolean") ref.hydrate = entry.hydrate;
-        refs.push(ref);
-      }
-      if (refs.length > 0) out.attachments = refs;
-    } else {
-      log(`[ade-electron] thread.send "${key}": dropped renderer option "${field}"`);
-    }
-  }
-  return out;
-}
-
 const DECISIONS: ReadonlySet<string> = new Set<string>(APPROVAL_DECISIONS);
 
 function requireApprovalDecision(value: unknown): ApprovalDecision {
@@ -357,9 +312,11 @@ export function registerAdeIpc(
   clientSource: AdeChatClientSource,
   opts: RegisterAdeIpcOptions = {},
 ): AdeIpcBridgeHandle {
-  // The client whose `threadLifecycle` events this bridge follows: the one it
-  // last served. A delete made on it by host code in main releases the
-  // renderers' handles for the key, as a delete over the bridge does.
+  // The client whose `threadLifecycle` events this bridge follows: a static
+  // client from registration on, and for a client getter the one it last
+  // served (see `syncClient`). A delete made on it by host code in main
+  // releases the renderers' handles for the key, as a delete over the bridge
+  // does.
   let watchedClient: AdeChatClient | null = null;
   let stopWatching: Unsubscribe | null = null;
   const watchLifecycle = (client: AdeChatClient): void => {
@@ -382,7 +339,6 @@ export function registerAdeIpc(
     if (!client || typeof client !== "object" || !client.threads) {
       throw new AdeError("disposed", "The host has no ADE chat client to serve this call.");
     }
-    if (!disposed) watchLifecycle(client);
     return client;
   };
   const prefix = opts.channelPrefix?.trim() || ADE_DEFAULT_CHANNEL_PREFIX;
@@ -491,28 +447,12 @@ export function registerAdeIpc(
       const context: AdeIpcOpenContext = { exists: summary !== null, summary };
       return (await opts.openOptions(key, rendererOptions, context)) ?? undefined;
     }
-    if (!rendererOptions) return undefined;
-    const allowed = new Set<string>(ADE_IPC_RENDERER_OPEN_FIELDS);
-    const filtered: Record<string, unknown> = {};
-    for (const [field, value] of Object.entries(rendererOptions)) {
-      if (value === undefined) continue;
-      if (!allowed.has(field)) {
-        log(
-          `[ade-electron] threads.open "${key}": dropped renderer option "${field}"; ` +
-            `only ${ADE_IPC_RENDERER_OPEN_FIELDS.join(", ")} cross the bridge. Use the openOptions hook to configure threads.`,
-        );
-        continue;
-      }
-      if (typeof value !== "string") {
-        log(`[ade-electron] threads.open "${key}": dropped renderer option "${field}" (not a string)`);
-        continue;
-      }
-      filtered[field] = value;
-    }
+    const filtered = rendererOpenOptions(key, rendererOptions, log);
+    if (!filtered) return undefined;
     if (typeof filtered.model === "string" && opts.allowModel && !(await opts.allowModel(key, { modelId: filtered.model }))) {
       throw unauthorized(`threads.open with model "${filtered.model}"`);
     }
-    return Object.keys(filtered).length > 0 ? (filtered as ThreadResumeOptions) : undefined;
+    return filtered;
   }
 
   /**
@@ -606,7 +546,19 @@ export function registerAdeIpc(
       client.on(event, (payload) => {
         // The cast restores what `ADE_CLIENT_EVENTS.map` loses: the pairing of
         // `event` with its payload type. `client.on(event, …)` checked it.
-        push(entry.webContents, { kind: "client", subscriptionId, event, payload } as AdeIpcEventPayload);
+        const message = { kind: "client", subscriptionId, event, payload } as AdeIpcEventPayload;
+        // A lifecycle event names a key, and a key the gate refuses may itself
+        // be private (the same rule `threads.list` follows).
+        const key = event === "threadLifecycle" ? (payload as { key?: unknown }).key : undefined;
+        if (!allowThreadKey || typeof key !== "string") {
+          push(entry.webContents, message);
+          return;
+        }
+        void Promise.resolve(allowThreadKey(key))
+          .then((allowed) => {
+            if (allowed && !entry.disposed) push(entry.webContents, message);
+          })
+          .catch((error: unknown) => log(`[ade-electron] allowThreadKey failed for "${key}": ${errorMessage(error)}`));
       }),
     );
     entry.subscriptions.set(subscriptionId, {
@@ -634,6 +586,7 @@ export function registerAdeIpc(
   async function syncClient(entry: RendererEntry): Promise<void> {
     while (entry.syncing) await entry.syncing;
     const client = currentClient();
+    if (!disposed) watchLifecycle(client);
     if (entry.client === client) return;
     const move = moveToClient(entry, client).finally(() => {
       entry.syncing = null;
@@ -820,14 +773,11 @@ export function registerAdeIpc(
       const key = requireString(args[0], "thread key");
       const text = typeof args[1] === "string" ? args[1] : "";
       // Only displayText and attachments cross, validated like a send. An
-      // explicit empty list means "drop the attachments", which the send
-      // reader would read as "none given".
-      const { displayText, attachments } = rendererSendOptions(key, args[2], log);
-      const rawAttachments = (args[2] as { attachments?: unknown } | null | undefined)?.attachments;
-      const dropAttachments = Array.isArray(rawAttachments) && rawAttachments.length === 0;
+      // explicit empty list crosses as one and drops the attachments.
+      const { displayText, attachments } = rendererSendOptions("thread.editLast", key, args[2], log);
       return requireThread(entry, key).editLast(text, {
         ...(displayText !== undefined ? { displayText } : {}),
-        ...(attachments ? { attachments } : dropAttachments ? { attachments: [] } : {}),
+        ...(attachments ? { attachments } : {}),
       });
     },
     "thread.historyPage": (entry, args) => {
@@ -838,13 +788,13 @@ export function registerAdeIpc(
     "thread.send": async (entry, args) => {
       const key = requireString(args[0], "thread key");
       const text = typeof args[1] === "string" ? args[1] : "";
-      await requireThread(entry, key).send(text, rendererSendOptions(key, args[2], log));
+      await requireThread(entry, key).send(text, rendererSendOptions("thread.send", key, args[2], log));
       return null;
     },
     "thread.steer": async (entry, args) => {
       const key = requireString(args[0], "thread key");
       const text = typeof args[1] === "string" ? args[1] : "";
-      const attachments = rendererSendOptions(key, args[2], log).attachments;
+      const attachments = rendererSendOptions("thread.steer", key, args[2], log).attachments;
       await requireThread(entry, key).steer(text, attachments ? { attachments } : {});
       return null;
     },
@@ -920,6 +870,11 @@ export function registerAdeIpc(
         const key = typeof args[0] === "string" ? args[0] : "";
         if (!(await allowThreadKey(key))) throw unauthorized(method);
       }
+      // The gates above may have awaited. A bridge disposed, or a renderer
+      // destroyed, meanwhile must not get a fresh registry entry: its
+      // `destroyed` listener would never fire, and its subscriptions would leak.
+      if (disposed) throw new AdeError("disposed", "The ADE IPC bridge has been disposed.");
+      if (event.sender.isDestroyed()) throw new AdeError("disposed", "The renderer that made this call is gone.");
       const handler = handlers[known];
       const entry = rendererFor(event);
       // Waits out a client-swap move already in progress for this renderer.
@@ -931,6 +886,8 @@ export function registerAdeIpc(
       return { ok: false, error: serializeError(error) };
     }
   }
+
+  if (typeof clientSource !== "function") watchLifecycle(clientSource);
 
   ipcMain.handle(invokeChannel(prefix), (event: IpcMainInvokeEventLike, payload: unknown) =>
     dispatch(event, (payload ?? {}) as AdeIpcInvokeRequest),

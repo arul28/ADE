@@ -24,12 +24,12 @@ export {
   registerAdeIpc,
   navigationEndsRendererWorld,
   adeErrorCodeOf,
-  ADE_IPC_RENDERER_OPEN_FIELDS,
   type AdeChatClientSource,
   type AdeIpcBridgeHandle,
   type AdeIpcOpenContext,
   type RegisterAdeIpcOptions,
 } from "./main.js";
+export { ADE_IPC_RENDERER_OPEN_FIELDS } from "./rendererOptions.js";
 export { checkAdeBridge, type CheckAdeBridgeOptions } from "./bridgeCheck.js";
 
 export {

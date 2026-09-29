@@ -56,7 +56,7 @@ In Electron, `target="_blank"` opens a new `BrowserWindow` with no browser chrom
 | Prop | Effect |
 |---|---|
 | `value` / `onValueChange` | Controlled draft. Fill the composer from outside, for example from a prompt card. |
-| `onSend(input, thread)` | Runs when the person sends a new message, before it reaches the thread. Return `false` to take over: nothing is sent, and you can call `thread.send` yourself. A throw shows as a failed send and restores the attachments. A steer during a running turn does not call it. |
+| `onSend(input, thread)` | Runs when the person sends a new message, before it reaches the thread. Return `false` to cancel: nothing is sent, and the composer keeps the draft and the staged files (a confirmation or a validation step). To send the message yourself, call `thread.send` in the hook, return `false`, and clear the draft through `value`. A throw shows as a failed send and restores the draft. A steer during a running turn does not call it. |
 | `children(thread)` | Render prop drawn between the transcript and the composer, with the live `ThreadState`. Return `null` to draw nothing. |
 | `threadRef` | An object whose `current` receives the live `ThreadState` on every render, for code outside the tree (a toolbar button). |
 
@@ -92,8 +92,8 @@ A "Retry" button calls `thread.retry()`, and an "Edit" flow calls `thread.editLa
   threadRef={threadRef}
   reasoningEffort={effort}
   onReasoningEffortChange={async (next) => {
-    setEffort(next);
-    await threadRef.current?.update({ reasoningEffort: next });
+    await threadRef.current?.update({ reasoningEffort: next });   // throws turn_in_flight mid-turn
+    setEffort(next);                                               // show it only once the thread took it
   }}
 />;
 ```

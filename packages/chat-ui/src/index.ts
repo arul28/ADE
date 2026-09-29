@@ -169,6 +169,7 @@ export type {
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUpdatePatch,
+  ThreadUpdateReply,
   ThreadUsage,
   ToolCallStatus,
   Unsubscribe,

@@ -55,6 +55,8 @@ export function clampObservationInteger(
   return Math.max(min, Math.min(max, raw));
 }
 
+const SHIFT_MODIFIER_BIT = 8;
+
 const KEY_MODIFIER_BITS: Record<string, number> = {
   alt: 1,
   option: 1,
@@ -65,7 +67,7 @@ const KEY_MODIFIER_BITS: Record<string, number> = {
   cmd: 4,
   command: 4,
   super: 4,
-  shift: 8,
+  shift: SHIFT_MODIFIER_BIT,
 };
 
 type NamedKey = { key: string; code: string; windowsVirtualKeyCode: number; text?: string };
@@ -90,6 +92,13 @@ const NAMED_KEYS: Record<string, NamedKey> = {
   end: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
   pageup: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
   pagedown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
+  insert: { key: "Insert", code: "Insert", windowsVirtualKeyCode: 45 },
+  ...Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => {
+      const name = `F${index + 1}`;
+      return [name.toLowerCase(), { key: name, code: name, windowsVirtualKeyCode: 112 + index }];
+    }),
+  ),
 };
 
 /**
@@ -107,6 +116,11 @@ const NAMED_KEYS: Record<string, NamedKey> = {
  *
  * A key inside a native menu accelerator (an Electron `Menu` item's ⌘N) is
  * handled by the OS menu, not the page, and CDP key events do not reach it.
+ *
+ * Shift changes only a letter's case. For a shifted symbol, pass the symbol
+ * itself (`"?"`, `"!"`), not `Shift+/` or `Shift+1`: the helper does not know
+ * the keyboard layout. A multi-character name it does not know (for example
+ * `PrintScreen`) throws rather than typing its first letter.
  */
 export function keyEventsForAgentInput(input: string): {
   down: Record<string, unknown>;
@@ -122,20 +136,23 @@ export function keyEventsForAgentInput(input: string): {
     if (bit === undefined) throw new Error(`Unknown modifier "${part}" in key "${input}". Use Alt, Control, Meta or Shift.`);
     modifiers |= bit;
   }
-  const shift = (modifiers & 8) !== 0;
-  const typesText = (modifiers & ~8) === 0;
+  const shift = (modifiers & SHIFT_MODIFIER_BIT) !== 0;
+  const typesText = (modifiers & ~SHIFT_MODIFIER_BIT) === 0;
 
   let base: NamedKey;
   const named = keyPart === " " ? NAMED_KEYS.space : keyPart.length > 1 ? NAMED_KEYS[keyPart.toLowerCase()] : undefined;
   if (named) {
     base = named;
+  } else if (keyPart.length > 1) {
+    throw new Error(`Unknown key "${keyPart}" in "${input}". Use a single character or a key name such as Enter, Tab, Escape, ArrowUp or F5.`);
   } else {
     const char = keyPart.slice(0, 1);
     const upper = char.toUpperCase();
     const typed = shift && /^[a-z]$/.test(char) ? upper : char;
     base = {
       key: typed,
-      code: /^[a-z]$/i.test(char) ? `Key${upper}` : /^[0-9]$/.test(char) ? `Digit${char}` : char,
+      // A symbol's physical key depends on the layout, so it gets no `code`.
+      code: /^[a-z]$/i.test(char) ? `Key${upper}` : /^[0-9]$/.test(char) ? `Digit${char}` : "",
       windowsVirtualKeyCode: upper.charCodeAt(0),
       text: typed,
     };

@@ -200,7 +200,8 @@ export type ThreadResumeMismatchInput = {
   };
 };
 
-function sameJson(a: unknown, b: unknown): boolean {
+/** Structural equality by JSON spelling; false when either side is absent or unserializable. */
+export function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   try {

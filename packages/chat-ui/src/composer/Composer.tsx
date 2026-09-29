@@ -57,8 +57,11 @@ export function mergeAttachments(
 }
 
 export type ComposerProps = {
-  /** Start a new turn. */
-  onSend: (input: SendInput) => void | Promise<void>;
+  /**
+   * Start a new turn. Resolve `false` to decline: the composer puts the draft
+   * and the staged attachments back, with no error shown.
+   */
+  onSend: (input: SendInput) => void | false | Promise<void | false>;
   /**
    * Deliver into a running turn. Omit to disable steering entirely.
    *
@@ -218,14 +221,18 @@ export function Composer({
     setDraft("");
     setStaged([]);
     setSubmitError(null);
-    try {
-      if (action.kind === "steer" && onSteer) await onSteer(input);
-      else await onSend(input);
-    } catch (cause: unknown) {
-      // Put the text back rather than losing it to a transport failure, and
-      // the files with it — merged, so nothing staged meanwhile is dropped.
+    // Put the text back, and the files with it — merged, so nothing staged
+    // meanwhile is dropped.
+    const restore = () => {
       setDraft(action.text);
       setStaged(mergeAttachments(staged, stagedRef.current));
+    };
+    try {
+      if (action.kind === "steer" && onSteer) await onSteer(input);
+      else if ((await onSend(input)) === false) restore();
+    } catch (cause: unknown) {
+      // A transport failure must not lose the message.
+      restore();
       setSubmitError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [onSend, onSteer, setDraft, setStaged, staged, state.action]);

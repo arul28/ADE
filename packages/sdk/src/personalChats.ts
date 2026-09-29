@@ -10,6 +10,7 @@ import type {
   PendingInputRequest,
   PendingInputsResult,
 } from "./types.js";
+import type { ThreadRerunResult } from "./thread.js";
 import type { PersonalChatCallResponse } from "./wireTypes.js";
 
 /**
@@ -21,6 +22,30 @@ export function summaryTurnActive(summary: AgentChatSessionSummary | null | unde
   return summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
 }
 
+/** Error codes the runtime names itself, which the SDK passes through as `AdeError` codes. */
+const RUNTIME_ERROR_CODES = ["turn_in_flight", "unsupported"] as const;
+type RuntimeErrorCode = (typeof RUNTIME_ERROR_CODES)[number];
+const RUNTIME_ERROR_PREFIX = new RegExp(`(?:^|: )(${RUNTIME_ERROR_CODES.join("|")}):`);
+
+function isRuntimeErrorCode(value: unknown): value is RuntimeErrorCode {
+  return typeof value === "string" && (RUNTIME_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/**
+ * The SDK code for a runtime refusal that names its own reason, or null.
+ *
+ * The runtime puts the reason in the JSON-RPC `error.data.code`, and also at
+ * the start of the message (`turn_in_flight: …`) for a transport that drops
+ * `data`. `turn_in_flight`: the refusal exists only because a turn is running.
+ * `unsupported`: the provider cannot do what was asked (for example `retry`).
+ */
+function runtimeErrorCode(error: AdeError): RuntimeErrorCode | null {
+  const code = (error.cause as { data?: { code?: unknown } } | undefined)?.data?.code;
+  if (isRuntimeErrorCode(code)) return code;
+  const prefix = RUNTIME_ERROR_PREFIX.exec(error.message)?.[1];
+  return isRuntimeErrorCode(prefix) ? prefix : null;
+}
+
 /**
  * Thin typed wrapper over the machine-scoped chat RPC.
  *
@@ -30,22 +55,6 @@ export function summaryTurnActive(summary: AgentChatSessionSummary | null | unde
  * personalChatScope.ts`). Unwrapping in one place keeps that envelope from
  * leaking into the public API.
  */
-/**
- * The SDK code for a runtime refusal that names its own reason, or null.
- *
- * The runtime puts the reason in the JSON-RPC `error.data.code`, and also at
- * the start of the message (`turn_in_flight: …`) for a transport that drops
- * `data`. `turn_in_flight`: the refusal exists only because a turn is running.
- * `unsupported`: the provider cannot do what was asked (for example `retry`).
- */
-function runtimeErrorCode(error: AdeError): "turn_in_flight" | "unsupported" | null {
-  const data = (error.cause as { data?: { code?: unknown } } | undefined)?.data;
-  const fromData = typeof data?.code === "string" ? data.code : null;
-  if (fromData === "turn_in_flight" || fromData === "unsupported") return fromData;
-  const prefix = /(?:^|: )(turn_in_flight|unsupported):/.exec(error.message);
-  return prefix ? (prefix[1] as "turn_in_flight" | "unsupported") : null;
-}
-
 export class PersonalChatsApi {
   private readonly connectionOf: () => JsonRpcConnection;
 
@@ -205,7 +214,7 @@ export class PersonalChatsApi {
     text?: string;
     displayText?: string;
     attachments?: AgentChatFileRef[];
-  }): Promise<{ retractedFromSequence: number; historyGeneration: number; conversationRollback: string } | null> {
+  }): Promise<ThreadRerunResult | null> {
     return this.call("rerunLastTurn", args, 300_000);
   }
 

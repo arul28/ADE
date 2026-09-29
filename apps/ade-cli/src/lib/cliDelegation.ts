@@ -425,8 +425,20 @@ const VERSION_FLAGS = new Set(["--version", "-v"]);
  * from an ADE terminal), a delegated answer named the ADE app's CLI instead.
  */
 export function cliArgvAsksVersion(argv: readonly string[]): boolean {
-  if (VERSION_FLAGS.has(argv[0] ?? "")) return true;
-  return cliCommandWord(argv) === "version";
+  // The same walk as `cliCommandWord`, which skips a version flag like any
+  // other flag: `ade --socket /tmp/x.sock --version` asks for the version too.
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index]!;
+    if (token === "--") return false;
+    if (VERSION_FLAGS.has(token)) return true;
+    if (!token.startsWith("-")) return token === "version";
+    if (isCliGlobalValueFlag(token)) {
+      index += 1;
+    } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
+      index += 1;
+    }
+  }
+  return false;
 }
 
 /**

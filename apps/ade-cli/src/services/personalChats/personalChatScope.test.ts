@@ -9,7 +9,8 @@ import {
   isPersonalChatActionQueueable,
   isPersonalChatActionViewerAllowed,
 } from "../../../../desktop/src/shared/types/personalChats";
-import { PersonalChatScope, validatePersonalHostCwd } from "./personalChatScope";
+import { PersonalChatScope } from "./personalChatScope";
+import { validatePersonalHostCwd } from "../../../../desktop/src/main/services/chat/personalHostPaths";
 
 describe("PersonalChatScope", () => {
   let adeHome: string;

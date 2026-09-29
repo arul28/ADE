@@ -2641,7 +2641,22 @@ export type HostSessionConfigFields = {
   permissionCapability?: AgentChatPermissionCapability;
 };
 
-export type AgentChatSession = {
+/**
+ * The attachment roots of a personal (SDK) chat, shared by the session, its
+ * summary and the create arguments.
+ */
+export type PersonalAttachmentRootsField = {
+  /**
+   * Personal (SDK) chats only: extra directories an absolute attachment path
+   * may point into, besides the runtime's attachment store and the chat's
+   * working directory. The chat service validates and canonicalizes them when
+   * they are set (`validatePersonalAttachmentRoots`) and refuses them on any
+   * other chat.
+   */
+  attachmentRoots?: string[];
+};
+
+export type AgentChatSession = PersonalAttachmentRootsField & {
   id: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -2772,12 +2787,6 @@ export type AgentChatSession = {
   importedFrom?: AgentChatImportedFrom;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
-  /**
-   * Personal (SDK) chats only: extra directories an absolute attachment path
-   * may point into, besides the runtime's attachment store and the chat's
-   * working directory. Validated and canonicalized by the personal-chat scope.
-   */
-  attachmentRoots?: string[];
   createdAt: string;
   lastActivityAt: string;
 } & HostSessionConfigFields & SpawnLineageSessionFields;
@@ -2833,7 +2842,7 @@ export type AgentChatUsageLimitResume = {
   alternateAccount?: AgentChatUsageLimitAlternateAccount | null;
 };
 
-export type AgentChatSessionSummary = {
+export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   sessionId: string;
   laneId: string;
   provider: AgentChatProvider;
@@ -3005,12 +3014,6 @@ export type AgentChatSessionSummary = {
   recoveredFromSessionId?: string;
   importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
-  /**
-   * Personal (SDK) chats only: extra directories an absolute attachment path
-   * may point into, besides the runtime's attachment store and the chat's
-   * working directory. Validated and canonicalized by the personal-chat scope.
-   */
-  attachmentRoots?: string[];
   /**
    * Linear issues attached to this session (chat or CLI), independent of any
    * lane link. Populated from `session_linear_issues`; empty/omitted when the
@@ -3647,7 +3650,7 @@ export type AgentChatPermissionPolicy = {
   fallback: "ask" | "deny";
 };
 
-export type AgentChatCreateArgs = {
+export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
@@ -3700,12 +3703,6 @@ export type AgentChatCreateArgs = {
   automationRunId?: string | null;
   openInUi?: boolean;
   requestedCwd?: string;
-  /**
-   * Personal (SDK) chats only: extra directories an absolute attachment path
-   * may point into, besides the runtime's attachment store and the chat's
-   * working directory. Validated and canonicalized by the personal-chat scope.
-   */
-  attachmentRoots?: string[];
   runtimeMode?: AgentChatRuntimeMode;
   goal?: string | null;
   recoveredFromSessionId?: string;

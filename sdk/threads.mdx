@@ -371,7 +371,9 @@ const thread = await ade.threads.open("main", {
   attachmentRoots: [app.getPath("downloads"), musicLibraryDir],
 });
 
-// Later, a new folder: replace the roots on the live thread.
+// Later, a new folder: replace the roots. This works on a thread the client
+// already holds open, and on a resume. A refused root fails the open and
+// changes nothing.
 await ade.threads.open("main", { refresh: { attachmentRoots: [app.getPath("downloads"), newLibraryDir] } });
 ```
 

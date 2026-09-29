@@ -93,6 +93,15 @@ const APP_CONTROL_RENDER_FLAGS = [
   "--disable-renderer-backgrounding",
 ] as const;
 
+/** The flags a launch passes (or exports as `ADE_APP_CONTROL_DEBUG_FLAGS`) for one CDP port. */
+function appControlDebugFlags(debugPort: number): string[] {
+  return [
+    `--remote-debugging-port=${debugPort}`,
+    "--remote-debugging-address=127.0.0.1",
+    ...APP_CONTROL_RENDER_FLAGS,
+  ];
+}
+
 export function cleanClaimId(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -1907,15 +1916,10 @@ export function createAppControlLaneController(context: AppControlLaneController
 
   const resolveLaunch = (launchArgs: AppControlLaunchArgs, debugPort: number): ResolvedLaunch => {
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
-    const debugFlags = [
-      `--remote-debugging-port=${debugPort}`,
-      "--remote-debugging-address=127.0.0.1",
-      ...APP_CONTROL_RENDER_FLAGS,
-    ];
-    const autoDebugFlags = [
-      `--remote-debugging-port=${debugPort}`,
-      ...APP_CONTROL_RENDER_FLAGS,
-    ];
+    const debugFlags = appControlDebugFlags(debugPort);
+    // The flags ADE inserts into a launch command by itself carry no address
+    // flag, as they did before the render flags were added.
+    const autoDebugFlags = debugFlags.filter((flag) => !flag.startsWith("--remote-debugging-address"));
 
     if (launchArgs.command?.trim()) {
       const cwd = normalizeCwd(launchArgs.cwd, projectRoot);
@@ -2206,11 +2210,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       ADE_APP_CONTROL_CDP_PORT: String(debugPort),
       ADE_APP_CONTROL_REMOTE_DEBUGGING_PORT: String(debugPort),
       ADE_APP_CONTROL_REMOTE_DEBUGGING_ADDRESS: "127.0.0.1",
-      ADE_APP_CONTROL_DEBUG_FLAGS: [
-        `--remote-debugging-port=${debugPort}`,
-        "--remote-debugging-address=127.0.0.1",
-        ...APP_CONTROL_RENDER_FLAGS,
-      ].join(" "),
+      ADE_APP_CONTROL_DEBUG_FLAGS: appControlDebugFlags(debugPort).join(" "),
     };
     args.logger.info("app_control.launch", {
       cwd: resolved.cwd,

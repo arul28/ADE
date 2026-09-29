@@ -312,14 +312,19 @@ export function useAdeThread(
   const [usage, setUsage] = useState<ThreadUsage | null>(null);
   const [error, setError] = useState<Error | null>(null);
   /**
-   * Bumped after the client reports a successful runtime restart, to re-run
-   * the open effect: the runtime may have recreated the session, and events
-   * that were emitted while the old one died never reached this view. The ref
-   * tells that re-run to keep the old rows on screen until the fresh history
-   * replaces them, rather than flashing an empty transcript.
+   * Bumped to re-run the open effect for the SAME key: after a successful
+   * runtime restart (the runtime may have recreated the session, and events
+   * emitted while the old one died never reached this view), and after the
+   * runtime rewrote the history (a retry or edit removed the last turn). The
+   * ref tells that re-run to keep the old rows on screen until the fresh
+   * history replaces them, rather than flashing an empty transcript.
    */
-  const [restartEpoch, setRestartEpoch] = useState(0);
-  const reopenAfterRestartRef = useRef(false);
+  const [reopenEpoch, setReopenEpoch] = useState(0);
+  const keepRowsOnReopenRef = useRef(false);
+  const reopenKeepingRows = useCallback(() => {
+    keepRowsOnReopenRef.current = true;
+    setReopenEpoch((value) => value + 1);
+  }, []);
 
   const modelId = options?.modelId;
   const providerId = options?.providerId;
@@ -363,18 +368,16 @@ export function useAdeThread(
   useEffect(() => {
     if (typeof client.on !== "function") return;
     return client.on("restart", (payload) => {
-      if (!payload.ok) return;
-      reopenAfterRestartRef.current = true;
-      setRestartEpoch((value) => value + 1);
+      if (payload.ok) reopenKeepingRows();
     });
-  }, [client]);
+  }, [client, reopenKeepingRows]);
 
   useEffect(() => {
     let cancelled = false;
     const disposers: Array<() => void> = [];
     const epoch = ++openEpochRef.current;
-    const keepRows = reopenAfterRestartRef.current;
-    reopenAfterRestartRef.current = false;
+    const keepRows = keepRowsOnReopenRef.current;
+    keepRowsOnReopenRef.current = false;
 
     setThread(null);
     if (!keepRows) {
@@ -426,8 +429,7 @@ export function useAdeThread(
             // the last turn). The rows held here still show the removed turn,
             // so re-open and re-read, keeping the rows on screen meanwhile.
             if (isHistoryInvalidation(envelope)) {
-              reopenAfterRestartRef.current = true;
-              setRestartEpoch((value) => value + 1);
+              reopenKeepingRows();
               return;
             }
             if (!historyApplied) {
@@ -500,7 +502,7 @@ export function useAdeThread(
       for (const dispose of disposers) dispose();
     };
     // `modelId` is intentionally absent: see requestedModelIdRef above.
-  }, [client, key, providerId, resume, enabled, rebuildRows, restartEpoch]);
+  }, [client, key, providerId, resume, enabled, rebuildRows, reopenEpoch, reopenKeepingRows]);
 
   const threadRef = useRef<AdeThread | null>(null);
   threadRef.current = thread;
@@ -545,9 +547,7 @@ export function useAdeThread(
     // A reasoning change can move the runtime to a different resolved model
     // entry; read the thread's live property, then what `update` returned.
     if (threadRef.current === target) {
-      const next = target.model ?? readThreadModelSelection(
-        (updated as { model?: unknown } | null | undefined)?.model,
-      );
+      const next = target.model ?? readThreadModelSelection(updated?.model);
       if (next) setModelInfo(next);
     }
   }, []);

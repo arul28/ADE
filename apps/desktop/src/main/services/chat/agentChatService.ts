@@ -144,7 +144,14 @@ import {
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
-import { truncateTranscriptFromSequenceSync } from "./chatTranscriptTruncate";
+import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
+import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
+import {
+  findClaudePromptIndex,
+  findLastTurnUserMessage,
+  transcriptHoldsSequenceSync,
+  truncateTranscriptFromSequenceSync,
+} from "./chatRerunLastTurn";
 import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
@@ -1221,6 +1228,7 @@ import {
   evaluatePermissionPolicy,
   normalizePermissionPolicy,
   policyAllowedMcpServers,
+  policyRefusesMcpServer,
   policyToClaudeToolLists,
 } from "../../../shared/permissionPolicy";
 import {
@@ -4131,6 +4139,15 @@ type ManagedChatSession = {
   sessionMetadataTitleRevision: number;
   runtimeTitleAdopted: boolean;
   manuallyNamed: boolean;
+  /**
+   * Held by `rerunLastTurn` while it rolls the last turn back and sends it
+   * again. Every turn start, steer and provider reconfigure is refused with
+   * `turn_in_flight` meanwhile (`assertNoRerunInFlight`), so nothing lands
+   * between the cut and the resend. Only the rerun's own resend presents it.
+   */
+  rerunToken?: symbol | null;
+  /** The `sequence` of the last `user_message` committed to the transcript. */
+  lastUserMessageSequence?: number;
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
@@ -6333,28 +6350,46 @@ function parseAutoLaneIdentity(raw: unknown): { laneTitle: string | null; branch
  * on the message), so a caller can tell "wait and call again" from a real
  * failure without matching text. The message itself is unchanged.
  */
-export const TURN_IN_FLIGHT_ERROR_CODE = "turn_in_flight";
+const TURN_IN_FLIGHT_ERROR_CODE = "turn_in_flight";
 
 function turnInFlightError(message: string): Error & { code: typeof TURN_IN_FLIGHT_ERROR_CODE } {
   return codedError(message, TURN_IN_FLIGHT_ERROR_CODE);
 }
 
 /**
- * The stored shape of `attachmentRoots`: trimmed, absolute, de-duplicated
- * strings, at most 32. The personal-chat scope has already validated and
- * canonicalized them; this only guards what comes back from disk.
+ * Refuse while `rerunLastTurn` holds the session, unless the caller presents
+ * the rerun's own token (its resend).
  */
-function normalizeStoredAttachmentRoots(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
+function assertNoRerunInFlight(managed: { rerunToken?: symbol | null } | undefined, token?: symbol): void {
+  if (!managed?.rerunToken || managed.rerunToken === token) return;
+  throw turnInFlightError("The last turn is being run again. Wait for it to start, then try again.");
+}
+
+/** The code on a refusal the chat's provider cannot do at all, such as a retry on Cursor. */
+const UNSUPPORTED_ERROR_CODE = "unsupported";
+
+function unsupportedError(message: string): Error & { code: typeof UNSUPPORTED_ERROR_CODE } {
+  return codedError(message, UNSUPPORTED_ERROR_CODE);
+}
+
+/**
+ * `{ attachmentRoots }` when `value` holds roots, else `{}`: the one reader for
+ * every site that stores, loads, rehydrates or reports them. The entries were
+ * validated and canonicalized when they were set (`validatePersonalAttachmentRoots`);
+ * this only keeps absolute, distinct strings, at most the cap, from what comes
+ * back from disk. Only personal chats ever write the field.
+ */
+function attachmentRootsField(value: unknown): { attachmentRoots?: string[] } {
+  if (!Array.isArray(value)) return {};
+  const roots: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") continue;
     const trimmed = entry.trim();
-    if (!trimmed || !path.isAbsolute(trimmed) || out.includes(trimmed)) continue;
-    out.push(trimmed);
-    if (out.length >= 32) break;
+    if (!trimmed || !path.isAbsolute(trimmed) || roots.includes(trimmed)) continue;
+    roots.push(trimmed);
+    if (roots.length >= MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS) break;
   }
-  return out;
+  return roots.length ? { attachmentRoots: roots } : {};
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
@@ -9750,14 +9785,10 @@ export function createAgentChatService(args: {
   ): Promise<{ config?: Record<string, unknown> }> => {
     const callerServers = callerMcpServersForLaunch(managed);
     const callerStrict = managed.session.strictMcpConfig === true;
-    // A host policy that refuses Computer Use and names none of its tools gets
-    // no Computer Use server at all: starting it only adds tools the gate then
-    // denies. A policy that allows one of its tools keeps the server, and the
-    // gate decides each call.
+    // A host policy that refuses the whole Computer Use server gets no such
+    // server: starting it would only add tools the gate then denies.
     const policy = managed.session.permissionPolicy ?? null;
-    const policyRefusesComputerUse = policy != null
-      && evaluatePermissionPolicy(policy, { toolName: "mcp:computer_use:*", provider: "codex" }) === "deny"
-      && !policyAllowedMcpServers(policy).some((server) => server.toLowerCase() === "computer_use");
+    const policyRefusesComputerUse = policy != null && policyRefusesMcpServer(policy, "computer_use", "codex");
     return codexThreadConfigArgs({
       reasoningEffort,
       computerUse: policyRefusesComputerUse ? null : await resolveCodexComputerUseMcp(),
@@ -16718,7 +16749,7 @@ export function createAgentChatService(args: {
       ...(managed.session.requestedCwd != null && String(managed.session.requestedCwd).trim().length
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
-      ...(managed.session.attachmentRoots?.length ? { attachmentRoots: [...managed.session.attachmentRoots] } : {}),
+      ...attachmentRootsField(managed.session.attachmentRoots),
       ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
@@ -17285,10 +17316,7 @@ export function createAgentChatService(args: {
         ...(typeof record.requestedCwd === "string" && record.requestedCwd.trim().length
           ? { requestedCwd: record.requestedCwd.trim() }
           : {}),
-        ...((): { attachmentRoots?: string[] } => {
-          const roots = normalizeStoredAttachmentRoots(record.attachmentRoots);
-          return roots.length ? { attachmentRoots: roots } : {};
-        })(),
+        ...attachmentRootsField(record.attachmentRoots),
         ...(typeof record.idleSinceAt === "string"
           ? { idleSinceAt: record.idleSinceAt.trim() || null }
           : record.idleSinceAt === null
@@ -18743,6 +18771,7 @@ export function createAgentChatService(args: {
 
     const timestamp = nowIso();
     const sequence = ++managed.eventSequence;
+    if (storedEvent.type === "user_message") managed.lastUserMessageSequence = sequence;
     const storedEnvelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
       timestamp,
@@ -21685,10 +21714,9 @@ export function createAgentChatService(args: {
     const status = rawStatus.message
       ? { ...rawStatus, message: redactCallerMcpText(rawStatus.message, managed.session.mcpServers) }
       : rawStatus;
-    // A server that started is not a tool call. It used to be emitted as a
-    // `computer_use` tool_call with no tool_result, which an embedder draws as
-    // a spinner that never stops. A failed start still reaches the transcript
-    // below, as `turn_diagnostics.optionalIntegrationFailures`.
+    // A server that started emits nothing to the transcript: it is not a tool
+    // call. A failed start reaches it below, as
+    // `turn_diagnostics.optionalIntegrationFailures`.
     if (!status.failed) {
       logger.debug("agent_chat.codex_mcp_startup_status", {
         sessionId: managed.session.id,
@@ -23063,9 +23091,7 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
-        ...(persisted?.attachmentRoots?.length && persisted.surface === "personal"
-          ? { attachmentRoots: [...persisted.attachmentRoots] }
-          : {}),
+        ...attachmentRootsField(persisted?.attachmentRoots),
         // Carried onto the rehydrated session, not just left in the file: this
         // object is what the next `persistChatState` writes back, so a field
         // missing here is a field the first update after a restart deletes.
@@ -37539,6 +37565,32 @@ export function createAgentChatService(args: {
     return next;
   };
 
+  /** Both files that hold a chat's durable transcript: the dedicated one and the legacy session one. */
+  const sessionTranscriptPaths = (managed: ManagedChatSession): string[] => [...new Set([
+    path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`),
+    managed.transcriptPath,
+  ].filter((candidate) => candidate.trim().length > 0))];
+
+  /**
+   * After an in-place transcript rewrite: drop the cached history, give the
+   * history a new generation (persisted and fsynced, so a durable resume never
+   * pairs the rewritten file with the old one), and tell every client to
+   * reload. Returns the new generation.
+   */
+  const invalidateSessionHistory = (managed: ManagedChatSession): number => {
+    const sessionId = managed.session.id;
+    eventHistoryBySession.delete(sessionId);
+    transcriptHistoryCacheBySession.delete(sessionId);
+    resolvedTranscriptPathBySession.delete(sessionId);
+    const historyGeneration = bumpHistoryGeneration(managed);
+    emitTransientChatEnvelope(sessionId, {
+      type: "session_meta_updated",
+      historyInvalidated: true,
+      historyGeneration,
+    });
+    return historyGeneration;
+  };
+
   const repairClaudeEnvelopeSplicesBeforeResume = async (
     managed: ManagedChatSession,
     sdkSessionId: string,
@@ -37566,10 +37618,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const transcriptPaths = [...new Set([
-      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
-      managed.transcriptPath,
-    ].filter((candidate) => candidate.trim().length > 0))];
+    const transcriptPaths = sessionTranscriptPaths(managed);
     let repairedTurns = 0;
     let filesChanged = 0;
     for (const transcriptPath of transcriptPaths) {
@@ -37597,24 +37646,14 @@ export function createAgentChatService(args: {
       logger.debug("agent_chat.envelope_splice_repair_not_needed", { sessionId, sdkSessionId });
       return;
     }
-    eventHistoryBySession.delete(sessionId);
-    transcriptHistoryCacheBySession.delete(sessionId);
-    resolvedTranscriptPathBySession.delete(sessionId);
     // The repair renumbered sequences in place: anything a client cached under
-    // the old numbering is now wrong, so the history gets a new generation.
-    // Persisted (fsynced) straight away — a durable resume must never pair the
-    // rewritten file with the old generation.
-    const historyGeneration = bumpHistoryGeneration(managed);
+    // the old numbering is now wrong.
+    const historyGeneration = invalidateSessionHistory(managed);
     logger.info("agent_chat.envelope_splice_repaired", {
       sessionId,
       sdkSessionId,
       repairedTurns,
       filesChanged,
-      historyGeneration,
-    });
-    emitTransientChatEnvelope(sessionId, {
-      type: "session_meta_updated",
-      historyInvalidated: true,
       historyGeneration,
     });
   };
@@ -38175,8 +38214,8 @@ export function createAgentChatService(args: {
    * a host point at a file in the folder it gave the agent without staging a
    * copy first; the agent could open that file with its own tools anyway, so
    * it widens nothing. A personal chat may add more roots for absolute paths
-   * with `attachmentRoots`, which the host names and the personal-chat scope
-   * validates. `null` means no root contains it.
+   * with `attachmentRoots`, which the host names and this service validates
+   * when they are set. `null` means no root contains it.
    *
    * Containment is `resolvePathWithinRoot`: the root and every existing
    * segment of the path are resolved through symlinks first, so a link inside
@@ -38199,6 +38238,53 @@ export function createAgentChatService(args: {
       }
     }
     return null;
+  };
+
+  /**
+   * One attachment of a send, checked and located: an http(s) image URL, or a
+   * local path inside a root `resolveLocalAttachmentPath` allows. Throws the
+   * refusal a send reports.
+   */
+  const resolveSendAttachment = (
+    managed: ManagedChatSession,
+    attachment: AgentChatFileRef,
+  ): ResolvedAgentChatFileRef => {
+    const rawPath = attachment.path;
+    if (!rawPath.length) {
+      throw new Error("Attachment path is required.");
+    }
+    if (attachment.type === "image-url") {
+      try {
+        const parsed = new URL((attachment.url || rawPath).trim());
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("unsupported protocol");
+        }
+        return {
+          ...attachment,
+          path: rawPath,
+          url: parsed.toString(),
+          _resolvedPath: parsed.toString(),
+          _rootPath: projectRoot,
+        };
+      } catch {
+        throw new Error(`Image URL attachment must be an http(s) URL: ${rawPath}`);
+      }
+    }
+    const isAbsolute = path.isAbsolute(rawPath);
+    const located = resolveLocalAttachmentPath(managed, rawPath);
+    if (!located) {
+      throw new Error(
+        isAbsolute
+          ? `Attachment path must stay within the project root or the chat's working directory: ${rawPath}`
+          : `Attachment path must stay within the active lane: ${rawPath}`,
+      );
+    }
+    return {
+      ...attachment,
+      path: rawPath,
+      _resolvedPath: located.resolvedPath,
+      _rootPath: located.rootPath,
+    };
   };
 
   const hydratePersistedPendingSteers = (
@@ -39527,6 +39613,10 @@ export function createAgentChatService(args: {
     if (!normalizedParentSessionId && requestedSpawnKind) {
       throw new Error("spawnKind requires orchestrationParentSessionId.");
     }
+    const createAttachmentRoots = validatePersonalAttachmentRoots(requestedAttachmentRoots, personalHostPathContext());
+    if (createAttachmentRoots?.length && surface !== "personal") {
+      throw new Error("invalid_argument: attachmentRoots is only accepted on a personal chat.");
+    }
     // A personal chat's host cwd REPLACES the synthetic lane root (see
     // `resolvePersonalHostCwd`), so it must not be resolved INSIDE that root:
     // `resolveLaneLaunchContext` contains every requested cwd within the lane
@@ -40032,9 +40122,7 @@ export function createAgentChatService(args: {
         ...(typeof requestedCwd === "string" && requestedCwd.trim().length
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
-        ...(surface === "personal" && normalizeStoredAttachmentRoots(requestedAttachmentRoots).length
-          ? { attachmentRoots: normalizeStoredAttachmentRoots(requestedAttachmentRoots) }
-          : {}),
+        ...attachmentRootsField(createAttachmentRoots),
         ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
         ...collectSpawnLineageFields({
           orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -43206,12 +43294,18 @@ export function createAgentChatService(args: {
     allowActiveSession = false,
     allowContinuityRecovery = false,
     allowPendingInput = false,
+    rerunToken,
   }: AgentChatSendArgs & {
     allowActiveSession?: boolean;
     allowContinuityRecovery?: boolean;
     allowPendingInput?: boolean;
+    /** `rerunLastTurn`'s own resend presents the token it holds. */
+    rerunToken?: symbol;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    // Every turn start comes through here: a send, a steer, a scheduled wake,
+    // the Codex goal follow-up, `runSessionTurn`.
+    assertNoRerunInFlight(managed, rerunToken);
     // Second heal point (the first is hydration): a chat that was already
     // resident when the scheduler finished loading, or one whose stale card was
     // only discovered by a later transcript scan, clears here on its next turn.
@@ -43249,44 +43343,7 @@ export function createAgentChatService(args: {
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
     const publicAttachments = attachments.map(normalizeInboundFileRef);
-    const resolvedAttachments = publicAttachments.map((attachment): ResolvedAgentChatFileRef => {
-      const rawPath = attachment.path;
-      if (!rawPath.length) {
-        throw new Error("Attachment path is required.");
-      }
-      if (attachment.type === "image-url") {
-        try {
-          const parsed = new URL((attachment.url || rawPath).trim());
-          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-            throw new Error("unsupported protocol");
-          }
-          return {
-            ...attachment,
-            path: rawPath,
-            url: parsed.toString(),
-            _resolvedPath: parsed.toString(),
-            _rootPath: projectRoot,
-          };
-        } catch {
-          throw new Error(`Image URL attachment must be an http(s) URL: ${rawPath}`);
-        }
-      }
-      const isAbsolute = path.isAbsolute(rawPath);
-      const located = resolveLocalAttachmentPath(managed, rawPath);
-      if (!located) {
-        throw new Error(
-          isAbsolute
-            ? `Attachment path must stay within the project root or the chat's working directory: ${rawPath}`
-            : `Attachment path must stay within the active lane: ${rawPath}`,
-        );
-      }
-      return {
-        ...attachment,
-        path: rawPath,
-        _resolvedPath: located.resolvedPath,
-        _rootPath: located.rootPath,
-      };
-    });
+    const resolvedAttachments = publicAttachments.map((attachment) => resolveSendAttachment(managed, attachment));
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
     }
@@ -49419,6 +49476,9 @@ export function createAgentChatService(args: {
     // (public steer(), steerUserMessage, messageSession, and the daemon action
     // route) funnels through here, so expanding anywhere else would leave one
     // of them shipping raw chips. Idempotent via the expansion marker.
+    // A steer can be queued without starting a turn, so it is refused here as
+    // well as in `prepareSendMessage`.
+    assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
       sessionId,
@@ -53051,9 +53111,7 @@ export function createAgentChatService(args: {
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {}),
-      ...((liveSession ?? persisted)?.attachmentRoots?.length
-        ? { attachmentRoots: [...(liveSession ?? persisted)!.attachmentRoots!] }
-        : {}),
+      ...attachmentRootsField(liveSession?.attachmentRoots ?? persisted?.attachmentRoots),
       ...collectSpawnLineageFields(liveSession, persisted),
       ...(() => {
         const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
@@ -56493,8 +56551,9 @@ export function createAgentChatService(args: {
       throw new Error("invalid_argument: mcpServers can only be updated on a personal chat.");
     }
     if (managed.session.status === "active" || runtimeMidTurn(managed)) {
-      // The `invalid_argument:` prefix stays for SDK 0.3, which maps it to
-      // `invalid_option`; a newer SDK reads the `turn_in_flight` code first.
+      // SDK 0.4+ reads the `turn_in_flight` code. The `invalid_argument:`
+      // prefix is only for SDK 0.3, which maps it to `invalid_option`; drop it
+      // when SDK 0.3 support ends.
       throw turnInFlightError(
         "invalid_argument: cannot replace mcpServers with a turn in flight. "
         + "Await the turn or interrupt it, then update.",
@@ -56598,11 +56657,18 @@ export function createAgentChatService(args: {
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
       throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
     }
+    // A reconfigure can restart the provider under the rerun's rollback.
+    if (
+      modelId !== undefined
+      || reasoningEffort !== undefined
+      || fastMode !== undefined
+      || requestedMcpServers !== undefined
+    ) {
+      assertNoRerunInFlight(managed);
+    }
     // Checked before anything else changes, so a refusal leaves the chat as
     // it was. Roots are read per send, so a change mid-turn is safe.
-    const nextAttachmentRoots = requestedAttachmentRoots === undefined
-      ? undefined
-      : normalizeStoredAttachmentRoots(requestedAttachmentRoots ?? []);
+    const nextAttachmentRoots = validatePersonalAttachmentRoots(requestedAttachmentRoots, personalHostPathContext());
     if (nextAttachmentRoots !== undefined && !isPersonalSession(managed.session)) {
       throw new Error("invalid_argument: attachmentRoots can only be updated on a personal chat.");
     }
@@ -59036,6 +59102,7 @@ export function createAgentChatService(args: {
 
   const rewindFiles = async ({ sessionId, userMessageId, dryRun = false }: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
     const managed = ensureManagedSession(sessionId);
+    assertNoRerunInFlight(managed);
     const messageId = userMessageId.trim();
     if (!messageId.length) {
       throw new Error("A user message id is required to rewind files.");
@@ -59139,28 +59206,11 @@ export function createAgentChatService(args: {
     return result;
   };
 
-  /** The text of a Claude SDK user entry, or null for a tool result or an empty one. */
-  const claudeSdkUserPromptText = (message: ClaudeSdkSessionMessage): string | null => {
-    if (message.type !== "user" || message.parent_tool_use_id) return null;
-    const content = (message.message as { content?: unknown } | null)?.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return null;
-    const parts = content
-      .filter((block): block is { type: "text"; text: string } =>
-        Boolean(block) && typeof block === "object"
-        && (block as { type?: unknown }).type === "text"
-        && typeof (block as { text?: unknown }).text === "string")
-      .map((block) => block.text);
-    return parts.length ? parts.join("\n") : null;
-  };
-
   /**
    * Point a Claude chat at a copy of its SDK session cut to just before the
-   * user prompt that carried `promptText`.
-   *
-   * The prompt ADE sends wraps the user's text in context, so the match is on
-   * the start of the user's own text. When no user entry carries it, the turn
-   * never reached Claude, and the session stays as it is.
+   * user prompt that carried `promptText` (the text ADE sent, never the
+   * displayed text). When no user entry carries it, the turn never reached
+   * Claude, and the session stays as it is.
    */
   const rollbackClaudeSessionBeforePrompt = async (
     managed: ManagedChatSession,
@@ -59169,23 +59219,14 @@ export function createAgentChatService(args: {
   ): Promise<"claude_fork" | "claude_new_session" | "not_delivered"> => {
     const sdkSessionId = runtime.sdkSessionId?.trim();
     if (!sdkSessionId) return "not_delivered";
-    const needle = promptText.replace(/\s+/g, " ").trim().slice(0, 200);
     const messages = await getClaudeSdkSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
-    let promptIndex = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const text = claudeSdkUserPromptText(messages[index]!);
-      if (text != null && (!needle || text.replace(/\s+/g, " ").includes(needle))) {
-        promptIndex = index;
-        break;
-      }
-    }
+    const promptIndex = findClaudePromptIndex(messages, promptText);
     if (promptIndex < 0) return "not_delivered";
     await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: promptIndex === 0 });
     if (promptIndex === 0) return "claude_new_session";
-    const keepThrough = messages[promptIndex - 1]!.uuid;
     const forked = await forkClaudeSdkSession(sdkSessionId, {
       dir: managed.laneWorktreePath,
-      upToMessageId: keepThrough,
+      upToMessageId: messages[promptIndex - 1]!.uuid,
     });
     await quarantineClaudeScheduledWorkForProviderSessionChange(managed, sdkSessionId, forked.sessionId);
     runtime.sdkSessionId = forked.sessionId;
@@ -59203,12 +59244,14 @@ export function createAgentChatService(args: {
    * Retry, or edit and rerun, the chat's last user turn. See
    * `AgentChatRerunLastTurnArgs`.
    *
-   * The order keeps a failure harmless: every check runs before anything
-   * changes, the provider conversation goes back next, and only then is the
+   * The order keeps a failure harmless. Every check runs before anything
+   * changes: the provider, the idle state, a transcript that holds the turn
+   * (a compressed one is reinflated first), the resend's attachments, and disk
+   * space. The provider conversation goes back next, and only then is the
    * transcript cut and the message sent again. The cut is an in-place rewrite,
-   * so it bumps the history generation and tells every client to reload
-   * (`session_meta_updated` with `historyInvalidated`), exactly as the splice
-   * repair does. A reload then shows only the new attempt.
+   * so it invalidates the history (`invalidateSessionHistory`). A resend that
+   * still fails leaves the message and an error in the history, as a failed
+   * send does. `rerunToken` refuses every other turn start meanwhile.
    */
   const rerunLastTurn = async (
     args: AgentChatRerunLastTurnArgs,
@@ -59216,56 +59259,84 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     const provider = managed.session.provider;
     if (provider !== "claude" && provider !== "codex") {
-      throw codedError(
+      throw unsupportedError(
         `Retry and edit are available for Claude and Codex chats. This chat runs on '${provider}'.`,
-        "unsupported",
       );
     }
-    if (managed.session.status === "active" || runtimeMidTurn(managed) || hasLivePendingInput(managed)) {
+    if (
+      managed.rerunToken
+      || managed.session.status === "active"
+      || runtimeMidTurn(managed)
+      || hasLivePendingInput(managed)
+    ) {
       throw turnInFlightError("A turn is running. Wait for it to finish, or interrupt it, then retry.");
     }
+    const token = Symbol("rerunLastTurn");
+    managed.rerunToken = token;
+    try {
+      return await rerunIdleLastTurn(managed, args, token);
+    } finally {
+      managed.rerunToken = null;
+    }
+  };
+
+  const rerunIdleLastTurn = async (
+    managed: ManagedChatSession,
+    args: AgentChatRerunLastTurnArgs,
+    token: symbol,
+  ): Promise<AgentChatRerunLastTurnResult> => {
+    const provider = managed.session.provider;
+    const sessionId = managed.session.id;
     if (args.text !== undefined && typeof args.text !== "string") {
       throw new Error("invalid_argument: text must be a string.");
     }
-    const replacementText = args.text?.trim() ? args.text : null;
-    if (args.text !== undefined && !replacementText && !(args.attachments?.length)) {
+    const edited = args.text !== undefined;
+    if (edited && !args.text?.trim() && !(args.attachments?.length)) {
       throw new Error("invalid_argument: an edited message needs text or at least one attachment.");
     }
 
-    const sessionId = managed.session.id;
-    const transcriptPaths = [...new Set([
-      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
-      managed.transcriptPath,
-    ].filter((candidate) => candidate.trim().length > 0))];
-    for (const transcriptPath of transcriptPaths) await flushQueuedTranscriptWrite(transcriptPath);
+    const transcriptPaths = sessionTranscriptPaths(managed);
+    for (const transcriptPath of transcriptPaths) {
+      await flushQueuedTranscriptWrite(transcriptPath);
+      // A chat idle long enough has only a `.gz`; the cut needs the plain file.
+      await reinflateHistoryFile(transcriptPath);
+    }
+    const last = findLastTurnUserMessage(readFullTranscriptEnvelopesForSessionId(sessionId));
+    if (!last) throw new Error("This chat has no user message to run again.");
+    const retractedFromSequence = last.envelope.sequence;
+    if (!transcriptPaths.some((transcriptPath) => transcriptHoldsSequenceSync(transcriptPath, retractedFromSequence))) {
+      throw new Error("ADE could not find the last turn in this chat's transcript file. Nothing was changed.");
+    }
 
-    // The last user message that opened a turn. A steer rides inside its
-    // turn, so it is not a turn of its own.
-    const envelopes = readFullTranscriptEnvelopesForSessionId(sessionId);
-    let targetIndex = -1;
-    for (let index = envelopes.length - 1; index >= 0; index -= 1) {
-      const event = envelopes[index]!.event;
-      if (event.type === "user_message" && !event.steerId) {
-        targetIndex = index;
-        break;
-      }
+    const target = last.event;
+    const resend: AgentChatSendArgs = {
+      sessionId,
+      text: edited ? args.text ?? "" : target.text,
+      ...(edited
+        ? (args.displayText?.trim() ? { displayText: args.displayText } : {})
+        : (target.displayText ? { displayText: target.displayText } : {})),
+      attachments: args.attachments ?? target.attachments ?? [],
+      ...(!edited && target.contextAttachments?.length ? { contextAttachments: target.contextAttachments } : {}),
+      ...(target.metadata ? { metadata: target.metadata } : {}),
+    };
+    // The resend's own refusals, checked while the old turn is still intact.
+    for (const attachment of resend.attachments ?? []) {
+      resolveSendAttachment(managed, normalizeInboundFileRef(attachment));
     }
-    const target = targetIndex >= 0 ? envelopes[targetIndex]! : null;
-    const targetEvent = target?.event.type === "user_message" ? target.event : null;
-    if (!target || !targetEvent || typeof target.sequence !== "number") {
-      throw new Error("This chat has no user message to run again.");
-    }
-    let targetTurnId = targetEvent.turnId?.trim() || null;
-    for (let index = targetIndex + 1; !targetTurnId && index < envelopes.length; index += 1) {
-      const turnId = (envelopes[index]!.event as { turnId?: unknown }).turnId;
-      if (typeof turnId === "string" && turnId.trim()) targetTurnId = turnId.trim();
-    }
+    const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+    if (diskDecision && !diskDecision.allowed) throw new Error(diskDecision.message);
+    assertContinuityDispatchAllowed(managed);
 
     let conversationRollback: AgentChatRerunLastTurnResult["conversationRollback"] = "not_delivered";
     if (provider === "codex") {
+      // Any turn Codex ran is rolled back, with or without its id: without
+      // one, the helper falls back to rolling back the latest turn, or throws
+      // (before anything changes) when the server cannot. A turn Codex never
+      // took is left alone, because rolling back "the latest turn" would then
+      // remove the one before it.
       const hasThread = Boolean(managed.session.threadId?.trim() || readPersistedState(sessionId)?.threadId?.trim());
-      if (hasThread && targetTurnId) {
-        await rollbackCodexThreadBeforeTurn(managed, targetTurnId);
+      if (hasThread && last.delivered) {
+        await rollbackCodexThreadBeforeTurn(managed, last.turnId);
         conversationRollback = "codex_thread";
       }
     } else {
@@ -59274,47 +59345,58 @@ export function createAgentChatService(args: {
       conversationRollback = await rollbackClaudeSessionBeforePrompt(
         managed,
         ensureClaudeSessionRuntime(managed),
-        targetEvent.displayText ?? targetEvent.text,
+        target.text,
       );
     }
 
-    const retractedFromSequence = target.sequence;
-    for (const transcriptPath of transcriptPaths) {
-      truncateTranscriptFromSequenceSync(transcriptPath, retractedFromSequence);
+    // When one file was cut and the other then failed, the history already
+    // changed: clients are told to reload before the error goes back.
+    let cutAny = false;
+    try {
+      for (const transcriptPath of transcriptPaths) {
+        await flushQueuedTranscriptWrite(transcriptPath);
+        if (truncateTranscriptFromSequenceSync(transcriptPath, retractedFromSequence) != null) cutAny = true;
+      }
+    } catch (error) {
+      if (cutAny) invalidateSessionHistory(managed);
+      throw error;
     }
-    eventHistoryBySession.delete(sessionId);
-    transcriptHistoryCacheBySession.delete(sessionId);
-    resolvedTranscriptPathBySession.delete(sessionId);
     const lastUserEntry = managed.recentConversationEntries.map((entry) => entry.role).lastIndexOf("user");
     if (lastUserEntry >= 0) managed.recentConversationEntries.splice(lastUserEntry);
-    const historyGeneration = bumpHistoryGeneration(managed);
+    const historyGeneration = invalidateSessionHistory(managed);
     logger.info("agent_chat.rerun_last_turn", {
       sessionId,
       provider,
-      edited: args.text !== undefined,
+      edited,
       retractedFromSequence,
       conversationRollback,
       historyGeneration,
     });
-    emitTransientChatEnvelope(sessionId, {
-      type: "session_meta_updated",
-      historyInvalidated: true,
-      historyGeneration,
-    });
 
-    const edited = args.text !== undefined;
-    await sendMessage({
-      sessionId,
-      text: edited ? (replacementText ?? "") : targetEvent.text,
-      ...(edited
-        ? (args.displayText?.trim() ? { displayText: args.displayText } : {})
-        : (targetEvent.displayText ? { displayText: targetEvent.displayText } : {})),
-      attachments: args.attachments ?? targetEvent.attachments ?? [],
-      ...(!edited && targetEvent.contextAttachments?.length
-        ? { contextAttachments: targetEvent.contextAttachments }
-        : {}),
-      ...(targetEvent.metadata ? { metadata: targetEvent.metadata } : {}),
-    });
+    const userMessageBeforeResend = managed.lastUserMessageSequence ?? 0;
+    try {
+      // Prepared here, with the token, so the funnel lets this one send
+      // through. The prepared message then goes the normal way.
+      await prepareSessionLaunch(managed);
+      const prepared = prepareSendMessage({ ...resend, rerunToken: token });
+      if (prepared) await sendMessage(resend, { preparedMessage: prepared });
+    } catch (error) {
+      // The old message is already gone from the history. When the resend
+      // failed before it wrote its own message, the text must not be lost:
+      // the history shows the message and the error, as a failed send does.
+      // Once it wrote its message, the send path owns the failure it reports.
+      if (!managed.closed && (managed.lastUserMessageSequence ?? 0) === userMessageBeforeResend) {
+        emitPreparedUserMessage(managed, {
+          text: resend.text,
+          ...(resend.displayText ? { displayText: resend.displayText } : {}),
+          attachments: resend.attachments ?? [],
+          contextAttachments: resend.contextAttachments ?? [],
+          metadata: resend.metadata,
+        });
+        emitManagedSendFailure(managed, error);
+      }
+      throw error;
+    }
     return { retractedFromSequence, historyGeneration, conversationRollback };
   };
 

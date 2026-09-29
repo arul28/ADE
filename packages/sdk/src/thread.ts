@@ -824,12 +824,9 @@ export class Thread implements AdeThread {
         `${action} needs an ADE runtime with the rerunLastTurn action (1.2.82 or later).`,
       );
     }
-    if (await this.turnInFlight(text === undefined ? "retry" : "edit the last message")) {
-      throw new AdeError(
-        "turn_in_flight",
-        `Thread "${this.key}" has a turn in flight. Await the turn or call interrupt() first, then ${action}.`,
-      );
-    }
+    // A running turn is refused by the runtime itself (code `turn_in_flight`),
+    // under its own per-session lock; a pre-check here would add a round trip
+    // and still race.
     const result = await this.chats.rerunLastTurn({
       sessionId: this.id,
       ...(text !== undefined ? { text } : {}),
@@ -839,7 +836,7 @@ export class Thread implements AdeThread {
     if (!result || typeof result.retractedFromSequence !== "number") {
       throw new AdeError("protocol_error", `The runtime answered ${action} without a result.`);
     }
-    return result as ThreadRerunResult;
+    return result;
   }
 
   async updateMcpServers(
