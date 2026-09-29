@@ -790,6 +790,10 @@ ade usage stats --scope account --force --text     # skip the account fan-out ra
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
 ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
 ade usage turns --group-by provider --recent 20 --text  # group by provider (default provider_account_model); add this project's 20 newest turns
+ade router routes --provider codex --limit 20 --text  # rated routes (harness × model × effort) with score, cost, and who bills it
+ade router pick "fix the parser bug" --provider codex --model gpt-6-sol --kind light_edit --text  # dry-run the route the router would pick for one task
+ade router shadow --days 7 --text                     # what the shadow router would have changed for recent subagents (changes no turn)
+ade router refresh --text                             # fetch the newest model registry (signed-in accounts)
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text

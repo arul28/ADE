@@ -1018,6 +1018,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
+    $ ade router routes | pick | shadow | refresh  Model router: rated routes, a dry-run pick, the shadow log
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
                                                     Manage this machine's Claude/Codex logins
@@ -2890,6 +2891,28 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage budget set --from-file budget.json  Save budget guardrail config
     $ ade usage budget check --provider claude --scope global
     $ ade usage budget cumulative --scope global    Cumulative spend for the current week
+`,
+  router: `${ADE_BANNER}
+  Model router
+
+  Rates every route this machine can run (harness × model × effort) from the
+  daily model registry, and picks the cheapest route that keeps the expected
+  quality for a task. Cost counts your live plan limits: a plan route costs a
+  share of the plan, weighted by how fast its window is being used, and a
+  window near its limit blocks the plan. The router runs in shadow mode: it
+  logs the route it would have picked for each subagent and changes nothing.
+  Registry data is based on Artificial Analysis (artificialanalysis.ai).
+
+    $ ade router routes --text                      Every route with score, cost, time, and billing
+    $ ade router routes --provider codex --limit 20 One harness, best first
+    $ ade router pick "summarize how sync works" --provider claude --model opus --effort high --text
+                                                    The route it would pick for one task (dry run)
+    $ ade router pick "fix the flaky test" --provider codex --model gpt-6-sol --kind light_edit
+    $ ade router shadow --days 7 --text             What it would have changed for recent subagents
+    $ ade router refresh --text                     Fetch the newest registry (signed-in accounts)
+
+  Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
+  reads a local registry snapshot instead of the account directory.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -14751,6 +14774,68 @@ function buildOperationsPlan(args: string[]): CliPlan {
   throw new CliUsageError("operations supports status or wait.");
 }
 
+const ROUTER_TASK_KINDS = ["read_only", "review", "test_run", "light_edit", "heavy_edit", "unknown"] as const;
+
+function buildRouterPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "routes";
+  if (sub === "routes" || sub === "list") {
+    const provider = readValue(args, ["--provider"]);
+    const limit = readValue(args, ["--limit"]);
+    if (limit != null && !(Number(limit) >= 1)) throw new CliUsageError("router routes --limit must be a positive number.");
+    return {
+      kind: "execute",
+      label: "router routes",
+      steps: [actionStep("result", "usage", "getModelRoutes", {
+        ...(provider ? { provider } : {}),
+        ...(limit != null ? { limit: Number(limit) } : {}),
+      })],
+    };
+  }
+  if (sub === "pick" || sub === "preview") {
+    const provider = readValue(args, ["--provider"]);
+    const model = readValue(args, ["--model"]);
+    const effort = readValue(args, ["--effort", "--reasoning-effort"]);
+    const agentType = readValue(args, ["--agent-type"]);
+    const kind = readValue(args, ["--kind"]);
+    const description = firstPositional(args);
+    if (!description || !provider || !model) {
+      throw new CliUsageError('router pick needs a task and --provider and --model, e.g. ade router pick "summarize the sync code" --provider claude --model opus');
+    }
+    if (kind != null && !(ROUTER_TASK_KINDS as readonly string[]).includes(kind)) {
+      throw new CliUsageError(`router pick --kind must be one of ${ROUTER_TASK_KINDS.join(", ")}.`);
+    }
+    return {
+      kind: "execute",
+      label: "router pick",
+      steps: [actionStep("result", "usage", "previewModelRoute", {
+        description,
+        provider,
+        model,
+        ...(effort ? { reasoningEffort: effort } : {}),
+        ...(agentType ? { agentType } : {}),
+        ...(kind ? { kind } : {}),
+      })],
+    };
+  }
+  if (sub === "shadow") {
+    const days = readValue(args, ["--days"]);
+    if (days != null && !(Number(days) >= 1 && Number(days) <= 90)) throw new CliUsageError("router shadow --days must be a number from 1 to 90.");
+    return {
+      kind: "execute",
+      label: "router shadow",
+      steps: [actionStep("result", "usage", "getRouterShadowSummary", days != null ? { days: Number(days) } : {})],
+    };
+  }
+  if (sub === "refresh") {
+    return {
+      kind: "execute",
+      label: "router refresh",
+      steps: [actionStep("result", "usage", "refreshModelRegistry", { force: true })],
+    };
+  }
+  throw new CliUsageError(`Unknown router command '${sub}'. Use routes, pick, shadow, or refresh.`);
+}
+
 function buildUsagePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "snapshot";
   if (sub === "actions")
@@ -16996,6 +17081,7 @@ function buildCliPlan(
   if (primary === "ui") return buildUiPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
+  if (primary === "router") return buildRouterPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
   if (primary === "secrets" || primary === "secret")

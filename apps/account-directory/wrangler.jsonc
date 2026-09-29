@@ -50,7 +50,13 @@
     // Unset or unparseable falls back to the same values.
     "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT": "20000",
     "USAGE_RESEARCH_RETENTION_DAYS": "180",
-    "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096"
+    "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096",
+    // Model registry refresh (`GET /router/registry`, README, "Model
+    // registry"). The cron fetches two Artificial Analysis pages and models.dev
+    // once a day. Artificial Analysis terms restrict automated collection; the
+    // owner accepted that risk for the router. `0` stops every fetch at once,
+    // and the stored snapshots keep serving. Unset means on.
+    "MODEL_REGISTRY_REFRESH": "1"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -92,7 +98,9 @@
         // Usage research bounds, restated for the same reason.
         "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT": "20000",
         "USAGE_RESEARCH_RETENTION_DAYS": "180",
-        "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096"
+        "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096",
+        // Model registry refresh switch, restated for the same reason.
+        "MODEL_REGISTRY_REFRESH": "1"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

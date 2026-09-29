@@ -1361,6 +1361,13 @@ Renderer — settings:
   `<adeHome>/usage/`. `usage.getTurnUsageSummary` reads it asynchronously.
 - `apps/desktop/src/main/services/usage/quotaBurnRate.ts` — what one percent
   of a subscription window costs, from the ledger's quota readings and rows.
+- `apps/desktop/src/main/services/router/` — the model router in shadow mode.
+  `routeCatalog` rates every route (harness × model × effort) from the daily
+  model registry; `routerCore` classifies the task and picks the cheapest route
+  that keeps quality; `modelRegistryStore` caches the registry at
+  `<adeHome>/router/registry.json`; `modelRouterService` logs decisions and
+  outcomes to `<adeHome>/usage/router-shadow-*.jsonl` and changes no turn. The
+  wire contract is `apps/desktop/src/shared/routerRegistry.ts`.
 - `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
   ledger row after the turn, from Cursor's dashboard events and Factory
   session credits.

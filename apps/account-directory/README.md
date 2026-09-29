@@ -516,6 +516,101 @@ branch):
    fresh table. (A malformed request is refused before D1 is touched, so a
    `400` from the route proves nothing about the migration.)
 
+## Model registry
+
+`GET /router/registry` serves one snapshot of public model data to signed-in
+ADE machines. ADE's model router reads it to rate every route (harness × model
+× effort) it can run. The Worker builds a new snapshot once a day.
+
+**Contract** (`src/modelRegistryContract.ts`; the desktop copy is
+`apps/desktop/src/shared/routerRegistry.ts`, and
+`test/modelRegistryContract.test.ts` fails when the two disagree)
+
+| | |
+|---|---|
+| Method | `GET` or `HEAD`. Anything else is `405` with `allow: GET, HEAD`. No CORS headers and no preflight: only the ADE brain calls it, never a browser |
+| Auth | An account bearer, verified exactly like `/account/machines`. `401 {"error":"<reason>"}` without a valid one; `503` when this Worker has no Clerk configuration |
+| Success | `200` with the newest snapshot (`ModelRegistrySnapshot`), an `ETag`, and `Cache-Control: private, max-age=3600` |
+| Revalidation | `If-None-Match` naming the current ETag (weak or strong) is `304` with no body. A 304 reads only the stored ETag, never the snapshot |
+| Unavailable | `503 {"error":"model_registry_unavailable"}` before the first snapshot exists, with no `DB` binding, or when D1 refuses the read |
+
+**What a snapshot holds**
+
+- `models`: every Artificial Analysis model variant (684 on 2026-09-29), one
+  per effort level: Intelligence Index and its main evals, cost and seconds per
+  index task, output tokens per second, time to first token, list prices.
+  `timeToFirstTokenSeconds` is Artificial Analysis's median time to the first
+  streamed chunk on its long-prompt workload, in seconds. For a reasoning model
+  that does not stream its thinking it includes the hidden reasoning, so it
+  reads as "seconds until the user sees output" (Claude Opus 5.5 at max effort
+  is about 692 s; Sonnet 5.5 at low is about 1 s).
+- `agents`: every Coding Agent Index row (harness × model), with its score,
+  per-eval scores, cost, minutes, steps, cache hit rate and tokens per task.
+  `modelSlug` names the variant the row ran only when the names match exactly
+  (after dropping `(with fallback)` and the `{'reasoning_effort': ...}` suffix)
+  or the row's own `hostModelSlug` is a variant's slug. Pairs (Devin Fusion's
+  lead + sidekick) and unknown names are `null`, never guessed.
+- `prices`: models.dev per-token prices for each channel in
+  `MODEL_REGISTRY_PRICE_CHANNELS`, keyed by the channel's own model id, with
+  context tiers where models.dev lists them.
+- `sources`: for each source, when its data was last read and whether the last
+  read worked.
+
+**Sources and attribution.** Artificial Analysis
+(`https://artificialanalysis.ai`) has no API for this data. Every
+`/models/<slug>` page embeds all model records in its React Server Components
+payload, so the refresh reads one model page and `/agents/coding-agents`: two
+page fetches on a successful refresh, retried with a bounded backoff only
+after a failure, with the user agent `ADE model registry
+(+https://ade-app.dev)`. Anything that shows the data carries
+`MODEL_REGISTRY_AA_ATTRIBUTION` ("Source: Artificial Analysis
+(artificialanalysis.ai)"). Prices come from `https://models.dev/api.json`.
+
+**Terms.** Artificial Analysis terms restrict automated collection; the owner
+accepted this risk for the router; set `MODEL_REGISTRY_REFRESH=0` to stop
+collection at once. Serving keeps working from the stored snapshots.
+
+**Refresh cadence.** The minute cron checks the newest snapshot's age (one
+indexed read) and refreshes when it is 24 hours old. A one-row claim
+(`model_registry_refresh_claim`) makes sure two ticks never refresh at once:
+the upsert that takes it only overwrites a claim that has run out (15
+minutes). A refresh that stores nothing keeps the claim for a growing retry
+wait — ten minutes, doubling with each consecutive failure up to the 24-hour
+interval — so a source that refuses the Worker is not refetched every ten
+minutes for as long as the failure lasts. A refresh that stores a snapshot
+releases the claim and resets the failure count (`failures`).
+
+**Failure isolation.** A source that fails (an HTTP error, a model page that
+parses fewer than 100 records, no agent rows, JSON that does not parse, no
+listed channel) keeps the previous snapshot's data for that source, and the
+snapshot says `ok: false` with the reason. When only the agents page fails,
+the new models are kept with the previous agent rows. Nothing is stored when
+both sources fail, or when there would be no models at all. Every refresh
+logs one `model_registry_refresh` line; a site redesign that breaks the parser
+shows up there as `artificialAnalysisError`, while the route keeps serving the
+previous data. A partly failed refresh still counts as the day's refresh, so
+the failed source is next retried a day later.
+
+**Size and CPU.** Measured on the live pages of 2026-09-29: the model page is
+3.9 MB of HTML (606 KB on the wire), the agents page 0.7 MB, models.dev 5.2 MB.
+The stored snapshot is 522,807 bytes of compact JSON (models 480 KB, agents
+16 KB, prices 27 KB), under D1's 2 MB row cap; the Worker refuses to store one
+over 1.9 MB. Seven are kept, about 3.7 MB. Parsing all three takes about
+65 ms of CPU under Node on an Apple Silicon Mac (payload decode 12 ms, model
+records 30 ms, agent rows 4 ms, models.dev 18 ms), far inside the Workers Paid
+default of 30 s CPU per invocation, so `limits.cpu_ms` stays unset.
+
+**Deploying it.** `migrations/0013_model_registry.sql` creates both tables;
+apply it before the deploy, the same way as the usage research migration
+above. Until the first refresh lands (at most a minute after a deploy with
+`MODEL_REGISTRY_REFRESH` on), the route answers `503`. To look at what is
+stored:
+
+```sh
+npx wrangler d1 execute DB --remote --env production --command \
+  "SELECT id, generated_at, bytes, etag FROM model_registry_snapshots ORDER BY id DESC"
+```
+
 ## Local checks
 
 ```sh

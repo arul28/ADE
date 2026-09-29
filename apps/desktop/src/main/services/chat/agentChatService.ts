@@ -1116,6 +1116,7 @@ import {
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import type { TurnUsageLedger } from "../usage/turnUsageLedger";
+import type { ModelRouterService } from "../router/modelRouterService";
 import { scheduleTurnUsageFollowUps } from "../usage/turnUsageReconcilers";
 import { usageAccountId } from "../usage/usageAccountId";
 import {
@@ -9587,6 +9588,12 @@ export function createAgentChatService(args: {
    */
   turnUsageLedger?: TurnUsageLedger | null;
   /**
+   * The model router in shadow mode. It watches subagent starts and results
+   * and logs the route it would have picked; it never changes a turn. Absent
+   * in tests and in hosts that do not keep one.
+   */
+  modelRouter?: Pick<ModelRouterService, "observe"> | null;
+  /**
    * Content-free hook fired when this client's Claude hooks were ignored
    * because another client already configured the joined session.
    */
@@ -9698,6 +9705,7 @@ export function createAgentChatService(args: {
     onEvent,
     onTurnSettled,
     turnUsageLedger,
+    modelRouter,
     onClaudeHooksIgnored,
     onClaudePluginsIgnored,
     onChatMentionsExpanded,
@@ -19263,6 +19271,7 @@ export function createAgentChatService(args: {
       }
     })();
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
+    modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
