@@ -235,6 +235,9 @@ beforeEach(() => {
   mockState.spawnSync.mockReset();
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
+  // Per-account rate-limit memory outlives a poll by design; a test that
+  // exercises a 429 must not hand its cooldown to the next one.
+  _testing.resetAccountRateLimitsForTest();
   // Cost figures price from a real models.dev extract, as they do in the app.
   _pricingTesting.installModelsDevPricingForTest(MODELS_DEV_FIXTURE);
 });
@@ -7450,6 +7453,123 @@ describe("per-account quota attribution", () => {
       if (originalFactoryDir === undefined) delete process.env.FACTORY_DIR;
       else process.env.FACTORY_DIR = originalFactoryDir;
     }
+  });
+
+  it("backs a rate-limited account off without silencing its sibling", async () => {
+    // Dedicated account ids: the cooldown is keyed by account id and outlives
+    // one poll, so reusing "claude"/"work" here would leak it into the tests
+    // around this one.
+    const throttledHome = path.join(tempHome, "provider-homes", "claude", "rx-a");
+    const healthyHome = path.join(tempHome, "provider-homes", "claude", "rx-b");
+    fs.mkdirSync(throttledHome, { recursive: true });
+    fs.mkdirSync(healthyHome, { recursive: true });
+    writeClaudeCredentials(throttledHome, "rx-a-token");
+    writeClaudeCredentials(healthyHome, "rx-b-token");
+    const throttled = { id: "rx-a", label: "A", configHome: throttledHome, isDefault: true };
+    const healthy = { id: "rx-b", label: "B", configHome: healthyHome, isDefault: false };
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      if (token === "rx-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(60),
+      };
+    }));
+
+    const first = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [throttled, healthy],
+    );
+    expect(first.errors).toContain("claude: API returned 429");
+    expect(first.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
+    expect((first as { freshWindowCount?: number }).freshWindowCount).toBe(2);
+
+    // The next pass asks the healthy account again and does not touch the
+    // throttled one until its own retry-after elapses.
+    const second = await _testing.pollClaudeUsage(
+      logger as never,
+      { reason: "automatic" },
+      [throttled, healthy],
+    );
+    expect(seen.filter((token) => token === "rx-a-token")).toHaveLength(1);
+    expect(seen.filter((token) => token === "rx-b-token")).toHaveLength(2);
+    expect(second.errors).toEqual([]);
+    expect(second.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
+    expect((second as { freshWindowCount?: number }).freshWindowCount).toBe(2);
+  });
+
+  it("does not let carried windows clear the provider's backoff", async () => {
+    const accountAHome = path.join(tempHome, "provider-homes", "claude", "rx-c");
+    const accountBHome = path.join(tempHome, "provider-homes", "claude", "rx-d");
+    fs.mkdirSync(accountAHome, { recursive: true });
+    fs.mkdirSync(accountBHome, { recursive: true });
+    writeClaudeCredentials(accountAHome, "rx-c-token");
+    writeClaudeCredentials(accountBHome, "rx-d-token");
+    const accountA = { id: "rx-c", label: "C", configHome: accountAHome, isDefault: true };
+    const accountB = { id: "rx-d", label: "D", configHome: accountBHome, isDefault: false };
+    let failing = false;
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      if (!failing) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => claudeUsageBody(30),
+        };
+      }
+      return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({}) };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [accountA, accountB] : []),
+        scanClaudeLogs: vi.fn(async () => [] as never[]),
+        scanCodexLogs: vi.fn(async () => [] as never[]),
+        scanCursorLogs: vi.fn(async () => [] as never[]),
+        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+        scanOpenClawLogs: vi.fn(async () => [] as never[]),
+        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+        scanDroidLogs: vi.fn(async () => [] as never[]),
+        scanCopilotLogs: vi.fn(async () => [] as never[]),
+        scanGeminiLogs: vi.fn(async () => [] as never[]),
+      },
+    });
+
+    const fresh = await service.poll({ reason: "automatic" });
+    expect(fresh.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+    expect(calls).toBe(2);
+
+    failing = true;
+    const degraded = await service.poll({ reason: "automatic" });
+    // Both accounts answered with an error, so every window on the page is a
+    // carried reading — for the default account too, not just the secondary.
+    expect(degraded.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+    expect(degraded.errors.filter((entry) => entry.includes("500"))).toHaveLength(2);
+    // 500 is retried once per account, so this pass costs four requests.
+    expect(calls).toBe(6);
+
+    // The very next automatic pass must honour the backoff: carried windows are
+    // not evidence that the provider was reached.
+    const skipped = await service.poll({ reason: "automatic" });
+    expect(calls).toBe(6);
+    expect(skipped.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+
+    service.dispose();
   });
 });
 
