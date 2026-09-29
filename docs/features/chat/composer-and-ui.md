@@ -387,10 +387,12 @@ failure amber — never red. Small icon + text actions sit under a hairline: Det
 worktree, template, error), Start now (while the environment stage runs —
 the agent starts and the remaining steps keep going), Cancel while running,
 and on failure Retry, Start anyway (only when the lane exists and the
-environment stage failed) and Delete. Cancel and Delete confirm first,
-then delete the lane the launch made (worktree, local and remote branch)
-and the chat, close the tab, return Work to the draft, and put the prompt
-back into the composer (merged with anything already typed). The confirm
+environment stage failed) and Delete. Cancel and Delete confirm first.
+Once a lane exists they delete it (worktree, local and remote branch) and
+the chat. Before a lane exists, Cancel only stops setup. Either way the
+tab closes, Work returns to the draft, and the prompt goes back into the
+composer immediately (merged with anything already typed), without waiting
+for an in-flight fetch to finish. The confirm
 re-reads the launch when the user confirms and never cancels one whose
 agent already started or that completed; if that happens while the dialog
 is up, the dialog closes with "Setup finished — nothing to cancel" (a
@@ -414,18 +416,27 @@ until the chat exists or while the launch still owns it
 project on another machine (a binding among the retained cross-machine
 slices) — never another project's launches.
 
-**Background chats and CLI launches.** The composer clears and the draft
-shows no banner. The Launches slide-out in the app shell's bottom-right
-stack lists this window's launches (`originClientId`) that are background
-chats or CLI launches of either mode — never a foreground chat, whose
-thread carries the card. It has a summary header ("Setting up 2 lanes…",
-"2 ready · 1 failed") with a dismiss X, and one row per launch: prompt
-kind tile (chat or CLI, with a status badge), prompt title, a Chat/CLI
-chip, lane name, status line, elapsed time and the same `LaunchProgressRail`
-the thread card uses. A row expands to the compact card
-with its actions and Open once the chat or CLI session exists. The
-slide-out leaves by itself three seconds after everything it shows has
-started; a failed launch stays until it is handled or dismissed.
+**Background chats and CLI launches.** A background chat clears the
+composer. A CLI launch keeps the prompt in the composer until the CLI
+session is actually starting, because until then the slide-out is the only
+place the launch is visible. The draft shows no banner. The Launches
+slide-out in the app shell's bottom-right stack lists this window's
+launches (`originClientId`) that are background chats or CLI launches of
+either mode — never a foreground chat, whose thread carries the card. It
+has a summary header ("Setting up 2 lanes…", "2 ready · 1 failed") with a
+dismiss X, and one row per launch: prompt kind tile (chat or CLI, with a
+status badge), the prompt title on up to two lines, the status line on its
+own line (a stale fetch says "Fetching latest main (last fetched 2 days
+ago)", not just "Fetching base branch"), the lane name under that, elapsed
+time, and the same `LaunchProgressRail` the thread card uses. A row expands
+to the compact card with its actions and Open once the chat or CLI session
+exists. In that compact card a stage's detail sits under its label, so the
+fetch explanation is not clipped beside it. The slide-out leaves by itself
+three seconds after everything it shows has started; a failed launch stays
+until it is handled or dismissed. Dismissing the slide-out while a CLI
+launch is still fetching cancels that launch (no lane exists yet). Cancel
+puts the prompt back into the composer immediately, without waiting for
+the in-flight fetch to finish, and the fetch itself is aborted.
 
 **Render cost.** The brain emits up to ~8 snapshots a second during
 checkout, so every surface is built to take them cheaply.

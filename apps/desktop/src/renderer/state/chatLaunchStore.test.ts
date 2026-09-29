@@ -274,6 +274,26 @@ describe("chat launch render isolation", () => {
     expect(getChatLaunchEntry("launch-1")!.snapshot.stages).toBe(after.stages);
   });
 
+  it("shows a running fetch's explanation instead of the generic label", () => {
+    const snapshot = optimistic("launch-fetch");
+    snapshot.stages = snapshot.stages.map((stage) => (
+      stage.id === "fetch"
+        ? { ...stage, status: "running" as const, detail: "Fetching latest main (last fetched 2 days ago)" }
+        : stage
+    ));
+    applyChatLaunchSnapshot(BINDING_A, snapshot);
+    const status = renderHook(() => useChatLaunchStatusLine("launch-fetch"));
+    expect(status.result.current).toBe("Fetching latest main (last fetched 2 days ago)");
+
+    const blank = optimistic("launch-blank");
+    blank.stages = blank.stages.map((stage) => (
+      stage.id === "fetch" ? { ...stage, status: "running" as const, detail: "  " } : stage
+    ));
+    applyChatLaunchSnapshot(BINDING_A, blank);
+    const generic = renderHook(() => useChatLaunchStatusLine("launch-blank"));
+    expect(generic.result.current).toBe("Fetching base branch");
+  });
+
   it("does not re-render the Work roster, the sidebar row or the chat pane on a checkout tick", () => {
     applyChatLaunchSnapshot(BINDING_A, checkoutAt("launch-1", 10, 1));
     applyChatLaunchSnapshot(BINDING_A, checkoutAt("launch-2", 50, 1));

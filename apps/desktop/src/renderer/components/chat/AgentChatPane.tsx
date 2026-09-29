@@ -358,9 +358,12 @@ import {
 import { getProjectConfigCached, peekProjectConfigCached } from "../../lib/projectConfigCache";
 import {
   buildOptimisticChatLaunchSnapshot,
+  chatLaunchStore,
+  getChatLaunchLocalRecord,
   getChatLaunchOriginClientId,
   insertOptimisticChatLaunch,
   registerChatLaunchLocalRecord,
+  useChatLaunchSelector,
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
@@ -10276,6 +10279,35 @@ export function AgentChatPane({
     setBuiltInBrowserContextItems((current) => removeSubmittedDraftItems(current, snapshot.builtInBrowserContextItems, sameStoredDraftItem));
   }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls, setAttachments, updateSubmittedDraftTextEdit]);
 
+  // A CLI launch has no thread until the session exists. The prompt stays in
+  // the composer through fetch and checkout, and leaves once the session is
+  // actually starting. Cancel and dismissing the slide-out during fetch then
+  // cannot drop the text on the floor.
+  const clearedCliLaunchIdsRef = useRef(new Set<string>());
+  const cliLaunchReadyToClear = useChatLaunchSelector(
+    (state) => Object.values(state.entries)
+      .filter((entry) => {
+        const snapshot = entry.snapshot;
+        return snapshot.kind === "cli"
+          && snapshot.originClientId === getChatLaunchOriginClientId()
+          && (snapshot.phase === "awaiting-client" || snapshot.agentStarted || Boolean(snapshot.sessionId));
+      })
+      .map((entry) => entry.launchId)
+      .sort()
+      .join("\n"),
+    (left, right) => left === right,
+  );
+  useEffect(() => {
+    if (!isWorkDraftComposer || !cliLaunchReadyToClear) return;
+    for (const launchId of cliLaunchReadyToClear.split("\n")) {
+      if (!launchId || clearedCliLaunchIdsRef.current.has(launchId)) continue;
+      const draftSnapshot = getChatLaunchLocalRecord(launchId)?.draftSnapshot ?? null;
+      if (!draftSnapshot) continue;
+      clearedCliLaunchIdsRef.current.add(launchId);
+      clearDraftLaunchComposer(draftSnapshot);
+    }
+  }, [clearDraftLaunchComposer, cliLaunchReadyToClear, isWorkDraftComposer]);
+
   useEffect(() => {
     if (!forceDraft) return;
     // A ready launch can outlive the pane that started it. Wait for this
@@ -10896,7 +10928,9 @@ export function AgentChatPane({
         departingScope: draftDepartingScope(shellRef.current),
       });
     }
-    clearDraftLaunchComposer(snapshot);
+    // CLI keeps the prompt until the session exists (see the effect above).
+    // A chat opens its thread now, so the composer can clear with it.
+    if (kind !== "cli") clearDraftLaunchComposer(snapshot);
     if (opensNow) {
       openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
     }
@@ -10948,6 +10982,22 @@ export function AgentChatPane({
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
+    if (kind === "cli" && draftLaunchTargetIsAutoCreate) {
+      const originClientId = getChatLaunchOriginClientId();
+      const cliLaunchInFlight = Object.values(chatLaunchStore.getState().entries).some((entry) => {
+        const snapshot = entry.snapshot;
+        return snapshot.kind === "cli"
+          && snapshot.originClientId === originClientId
+          && snapshot.phase !== "failed"
+          && snapshot.phase !== "cancelled"
+          && snapshot.phase !== "completed"
+          && !snapshot.agentStarted;
+      });
+      if (cliLaunchInFlight) {
+        setError("A CLI lane is already being set up.");
+        return;
+      }
+    }
     if (kind === "chat" && mode === "foreground") {
       const scopedJobs = rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
         ?? EMPTY_DRAFT_LAUNCH_JOBS;

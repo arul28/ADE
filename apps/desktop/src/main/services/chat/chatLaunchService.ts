@@ -122,6 +122,8 @@ export type ChatLaunchBaseResolution = {
 
 /** Progress the base resolution reports while the fetch stage runs. */
 export type ChatLaunchBaseProgress = {
+  /** Cancel aborts the in-flight `git fetch` instead of leaving it to finish. */
+  signal?: AbortSignal;
   /** The base looks stale, so the launch waits for the whole fetch instead of a few seconds. */
   onWaitingForStaleFetch?: (info: { remoteRef: string; lastFetchedAtMs: number | null }) => void;
 };
@@ -455,6 +457,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setStage(record, "fetch", "running");
     publish(record, { persist: false });
     const resolution = await deps.resolveBase({
+      signal: runtimeFor(record.snapshot.launchId).abort.signal,
       onWaitingForStaleFetch: ({ remoteRef, lastFetchedAtMs }) => {
         if (disposed || record.snapshot.phase === "cancelled") return;
         const current = stageOf(record, "fetch");

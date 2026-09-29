@@ -1398,13 +1398,17 @@ export function createGitOperationsService({
       return action;
     },
 
-    async fetch(args: { laneId: string }): Promise<GitActionResult> {
+    async fetch(args: { laneId: string; signal?: AbortSignal }): Promise<GitActionResult> {
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
+          await runGitOrThrow(["fetch", "--prune"], {
+            cwd: lane.worktreePath,
+            timeoutMs: GIT_FETCH_TIMEOUT_MS,
+            signal: args.signal,
+          });
         }
       });
       return action;
