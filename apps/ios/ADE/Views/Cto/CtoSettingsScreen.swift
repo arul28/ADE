@@ -169,13 +169,24 @@ struct CtoSettingsScreen: View {
         }
         .padding(.vertical, 8)
       }
-      .disabled(homeMachineSaving || !syncService.supportsRemoteAction("cto.setHomeMachine"))
+      .disabled(homeMachineSaving || !canChooseHomeMachine)
+      if !canChooseHomeMachine {
+        // A brain without the command cannot store the choice for the account.
+        Text("Update ADE on \(options.first?.name ?? "the primary machine") to choose the CTO's home machine from the phone.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if let homeMachineError {
         Text(homeMachineError)
           .font(.caption)
           .foregroundStyle(ADEColor.danger)
       }
     }
+  }
+
+  private var canChooseHomeMachine: Bool {
+    syncService.supportsRemoteAction("cto.setHomeMachine")
   }
 
   @MainActor
