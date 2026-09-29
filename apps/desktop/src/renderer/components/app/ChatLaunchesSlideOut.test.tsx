@@ -121,6 +121,27 @@ describe("ChatLaunchesSlideOut", () => {
     expect(screen.queryByTestId("chat-launches-slide-out")).toBeNull();
   });
 
+  it("cancels a CLI launch still fetching when the slide-out is dismissed, and leaves one past fetch alone", () => {
+    const cancel = vi.fn(async (args: { launchId: string }) => launch(args.launchId, "cli", "background", { phase: "cancelled" }));
+    (window as unknown as { ade: { chatLaunch: { cancel: typeof cancel } } }).ade.chatLaunch.cancel = cancel;
+    applyChatLaunchSnapshot(BINDING, launch("fetching", "cli", "background", {
+      phase: "running",
+      laneCreated: false,
+      sessionId: null,
+      stages: [stage("fetch", "running"), stage("checkout", "pending"), stage("agent", "pending")],
+    }));
+    applyChatLaunchSnapshot(BINDING, launch("checking-out", "cli", "background", {
+      phase: "running",
+      laneCreated: true,
+      sessionId: null,
+      stages: [stage("fetch", "done"), stage("checkout", "running"), stage("agent", "pending")],
+    }));
+    render(<ChatLaunchesSlideOut />);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss launches" }));
+    expect(cancel.mock.calls.map((call) => call[0])).toEqual([{ launchId: "fetching" }]);
+    expect(screen.queryByTestId("chat-launches-slide-out")).toBeNull();
+  });
+
   it("summarises the set in its headline", () => {
     expect(slideOutHeadline([launch("a", "cli", "background")])).toBe("Setting up 1 lane…");
     expect(slideOutHeadline([

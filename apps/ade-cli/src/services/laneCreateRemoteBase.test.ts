@@ -93,6 +93,70 @@ describe("resolveLaneCreateRemoteBase", () => {
     expect(freshness.lastFetchedAtMs).toBeGreaterThan(Date.now() - 120_000);
   });
 
+  it("branches from the snapshot taken before a fresh fetch times out", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    let fetchStarted = false;
+    const gitAfterFetch: string[] = [];
+    gitService.listBranches.mockImplementation(async () => {
+      if (fetchStarted) gitAfterFetch.push("listBranches");
+      return [{ name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" }];
+    });
+    const refResolves = vi.fn(async () => {
+      if (fetchStarted) gitAfterFetch.push("refResolves");
+      return true;
+    });
+    const readFreshness = vi.fn(async () => {
+      if (fetchStarted) gitAfterFetch.push("readFreshness");
+      return { lastFetchedAtMs: Date.now(), committedAtMs: Date.now(), behindLocal: 0 };
+    });
+    gitService.fetch.mockImplementation(() => {
+      fetchStarted = true;
+      return new Promise(() => {});
+    });
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      fetchTimeoutMs: 0,
+      readFreshness,
+      refResolves,
+    })).resolves.toMatchObject({
+      baseRef: "origin/main",
+      fetchSucceeded: false,
+      fetchOutcome: "timeout",
+    });
+    expect(gitAfterFetch).toEqual([]);
+  });
+
+  it("returns no base when the fetch is cancelled, without another branch listing", async () => {
+    const { deps } = setup(true);
+    const gitService = deps.gitService as unknown as {
+      fetch: ReturnType<typeof vi.fn>;
+      listBranches: ReturnType<typeof vi.fn>;
+    };
+    const controller = new AbortController();
+    const fetchArgs: Array<{ signal?: AbortSignal }> = [];
+    gitService.fetch.mockImplementation(async (args: { signal?: AbortSignal }) => {
+      fetchArgs.push(args);
+      controller.abort();
+      throw new Error("git was cancelled");
+    });
+    await expect(resolveLaneCreateRemoteBaseDetailed({
+      ...deps,
+      signal: controller.signal,
+      refResolves: async () => true,
+    })).resolves.toMatchObject({
+      baseRef: null,
+      fetchSucceeded: false,
+      fetchOutcome: "failed",
+      fetchError: "cancelled",
+    });
+    expect(fetchArgs.map((args) => args.signal)).toEqual([controller.signal]);
+    expect(gitService.listBranches).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a failed fetch structurally instead of through the warning text", async () => {
     const { deps } = setup(true);
     (deps.gitService as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch.mockRejectedValueOnce(new Error("offline"));

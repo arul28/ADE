@@ -12,7 +12,8 @@ import {
   removeChatLaunch,
   resetChatLaunchStoreForTests,
 } from "../../../state/chatLaunchStore";
-import { isChatLaunchUnsupportedError, queueChatLaunchMessage, startChatLaunch } from "./chatLaunchActions";
+import { cancelChatLaunch, isChatLaunchUnsupportedError, queueChatLaunchMessage, startChatLaunch } from "./chatLaunchActions";
+import { subscribeChatLaunchClosed, type ChatLaunchClosedNotice } from "./chatLaunchDraftRestore";
 import { selectKnownLaunchSessionIds } from "./chatLaunchSynthetic";
 
 describe("isChatLaunchUnsupportedError", () => {
@@ -165,5 +166,50 @@ describe("selectKnownLaunchSessionIds", () => {
     expect(ids.has(mine.snapshot.sessionId!)).toBe(true);
     expect(ids.has(sameProject.snapshot.sessionId!)).toBe(true);
     expect(ids.has(other.snapshot.sessionId!)).toBe(false);
+  });
+});
+
+describe("cancelChatLaunch", () => {
+  const BINDING: OpenProjectBinding = { kind: "local", key: "local:/p", rootPath: "/p", displayName: "p" };
+
+  afterEach(() => {
+    resetChatLaunchStoreForTests();
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  it("hands the prompt back before the host cancel finishes", async () => {
+    let releaseCancel: (snapshot: ChatLaunchSnapshot) => void = () => {};
+    const cancel = vi.fn(() => new Promise<ChatLaunchSnapshot>((resolve) => {
+      releaseCancel = resolve;
+    }));
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { cancel } };
+    const snapshot = buildOptimisticChatLaunchSnapshot({
+      launch: {
+        kind: "cli",
+        mode: "background",
+        launchId: "launch-cancel",
+        laneId: "lane-cancel",
+        laneName: "Schedule Wakeup",
+        prompt: "Please schedule a wakeup",
+      },
+      includeFetch: true,
+    });
+    applyChatLaunchSnapshot(BINDING, snapshot);
+    const notices: ChatLaunchClosedNotice[] = [];
+    const unsubscribe = subscribeChatLaunchClosed((notice) => notices.push(notice));
+    try {
+      const pending = cancelChatLaunch("launch-cancel");
+      expect(notices).toEqual([{
+        launchId: "launch-cancel",
+        sessionId: null,
+        kind: "cli",
+        restoresPrompt: true,
+      }]);
+      expect(cancel).toHaveBeenCalledWith({ launchId: "launch-cancel" }, BINDING);
+      releaseCancel({ ...snapshot, phase: "cancelled", sequence: snapshot.sequence + 1 });
+      await pending;
+    } finally {
+      unsubscribe();
+    }
   });
 });

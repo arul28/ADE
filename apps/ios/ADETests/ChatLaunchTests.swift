@@ -184,6 +184,12 @@ final class ChatLaunchTests: XCTestCase {
     XCTAssertEqual(chatLaunchStatusLine(launch(phase: .completed, stages: [])), "Agent started")
     XCTAssertEqual(chatLaunchStatusLine(launch(kind: .cli, phase: .completed, stages: [])), "CLI session started")
     XCTAssertEqual(chatLaunchStatusLine(launch(phase: .cancelled, stages: [stage(.fetch, .running)])), "Cancelled")
+    XCTAssertEqual(chatLaunchStatusLine(launch(stages: [
+      ChatLaunchStage(id: .fetch, status: .running, detail: "Fetching latest main (last fetched 2 days ago)"),
+    ])), "Fetching latest main (last fetched 2 days ago)")
+    XCTAssertEqual(chatLaunchStatusLine(launch(stages: [
+      ChatLaunchStage(id: .fetch, status: .running, detail: "  "),
+    ])), "Fetching base branch")
     XCTAssertEqual(chatLaunchStatusLine(launch(kind: .cli, phase: .awaitingClient, stages: [
       stage(.checkout, .done), stage(.agent, .running),
     ])), "Starting CLI session")

@@ -135,7 +135,7 @@ describe("LaneSetupCard", () => {
       render(<LaneSetupCard snapshot={snapshot()} />);
       fireEvent.click(screen.getByTestId("lane-setup-cancel"));
       expect(chatLaunchApi.cancel).not.toHaveBeenCalled();
-      fireEvent.click(await screen.findByRole("button", { name: "Delete lane and chat" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Stop setup" }));
       await waitFor(() => {
         expect(chatLaunchApi.cancel).toHaveBeenCalledWith({ launchId: "launch-1" }, BINDING);
       });
@@ -157,7 +157,7 @@ describe("LaneSetupCard", () => {
     render(<LaneSetupCard snapshot={snapshot()} />);
     fireEvent.click(screen.getByTestId("lane-setup-cancel"));
     applyChatLaunchSnapshot(BINDING, snapshot({ agentStarted: true, sessionCreated: true, sequence: 4 }));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete lane and chat" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop setup" }));
     expect(await screen.findByText("Setup finished — nothing to cancel")).toBeTruthy();
     expect(chatLaunchApi.cancel).not.toHaveBeenCalled();
   });
@@ -170,11 +170,11 @@ describe("LaneSetupCard", () => {
     }
     render(<Live />);
     fireEvent.click(screen.getByTestId("lane-setup-cancel"));
-    expect(await screen.findByRole("button", { name: "Delete lane and chat" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Stop setup" })).toBeTruthy();
     act(() => {
       applyChatLaunchSnapshot(BINDING, snapshot({ agentStarted: true, sessionCreated: true, sequence: 4 }));
     });
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Delete lane and chat" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop setup" })).toBeNull());
     expect(screen.getByTestId("lane-setup-notice").textContent).toBe("Setup finished — nothing to cancel");
     expect(chatLaunchApi.cancel).not.toHaveBeenCalled();
   });
@@ -183,7 +183,7 @@ describe("LaneSetupCard", () => {
     applyChatLaunchSnapshot(BINDING, snapshot());
     render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(snapshot())} />);
     fireEvent.click(screen.getByTestId("lane-setup-cancel"));
-    expect(await screen.findByRole("button", { name: "Delete lane and chat" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Stop setup" })).toBeTruthy();
     act(() => {
       applyChatLaunchSnapshot(BINDING, snapshot({
         phase: "completed",
@@ -205,7 +205,7 @@ describe("LaneSetupCard", () => {
     applyChatLaunchSnapshot(BINDING, snapshot());
     render(<LaneSetupCard snapshot={snapshot()} />);
     fireEvent.click(screen.getByTestId("lane-setup-cancel"));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete lane and chat" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop setup" }));
     expect(await screen.findByText(/This chat already started/)).toBeTruthy();
   });
 
