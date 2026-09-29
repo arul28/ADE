@@ -7659,9 +7659,12 @@ describe("per-account quota attribution", () => {
     const accountA = { id: "rx-c", label: "C", configHome: accountAHome, isDefault: true };
     const accountB = { id: "rx-d", label: "D", configHome: accountBHome, isDefault: false };
     let failing = false;
-    let calls = 0;
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      calls += 1;
+    // Count only the quota reads: the reset-credit probe hits the same route
+    // with query params, and it runs on Linux (gated off on macOS), so counting
+    // every fetch made this test platform-dependent.
+    const usageCalls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/oauth/usage")) usageCalls.push(String(url));
       if (!failing) {
         return {
           ok: true,
@@ -7683,7 +7686,7 @@ describe("per-account quota attribution", () => {
 
     const fresh = await service.poll({ reason: "automatic" });
     expect(fresh.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
-    expect(calls).toBe(2);
+    expect(usageCalls).toHaveLength(2);
 
     failing = true;
     const degraded = await service.poll({ reason: "automatic" });
@@ -7696,12 +7699,12 @@ describe("per-account quota attribution", () => {
     expect(degraded.providerStatus?.claude?.state).toBe("stale");
     expect(degraded.providerStatus?.claude?.message).toContain("Couldn't refresh Claude");
     // 500 is retried once per account, so this pass costs four requests.
-    expect(calls).toBe(6);
+    expect(usageCalls).toHaveLength(6);
 
     // The very next automatic pass must honour the backoff: carried windows are
     // not evidence that the provider was reached.
     const skipped = await service.poll({ reason: "automatic" });
-    expect(calls).toBe(6);
+    expect(usageCalls).toHaveLength(6);
     expect(skipped.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
 
     service.dispose();
