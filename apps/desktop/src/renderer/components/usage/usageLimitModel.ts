@@ -23,7 +23,7 @@ import {
   type UsageWindow,
 } from "../../../shared/types";
 import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
-import { displayPercent, windowLabel } from "./usageWindowFormat";
+import { displayPercent, formatCountdown, windowLabel } from "./usageWindowFormat";
 
 export type UsageAccountView = {
   id: string;
@@ -37,7 +37,7 @@ export type UsageAccountView = {
   /** Banked reset credits, when the host tracks them. */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
   /** Why this account has no fresh numbers, when the host knows. */
-  notice?: { message: string; nextRetryAt?: string };
+  notice?: NonNullable<UsageAccount["notice"]>;
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
@@ -245,6 +245,25 @@ export function orderLimitCards<T extends { label: string }>(cards: T[]): T[] {
 
 /** One window of one account: the card it belongs to, and this account's slice. */
 export type AccountWindowCell = { card: LimitCard; segment: LimitSegment };
+
+/**
+ * The line an account row shows when the host knows why it has no numbers.
+ *
+ * The host sends the state ("Rate-limited"); the retry phrase and its countdown
+ * are the client's, because only the client knows "now" — a host-rendered clock
+ * would be stale between polls. One helper so the settings row and the limits
+ * popover can never phrase the same throttle two ways, and a wait that has
+ * already elapsed reads as "retrying", never "retrying in now".
+ */
+export function accountNoticeLine(
+  notice: NonNullable<UsageAccount["notice"]>,
+  nowMs?: number,
+): string {
+  const retryAtMs = notice.nextRetryAt ? Date.parse(notice.nextRetryAt) : Number.NaN;
+  const remainingMs = nowMs != null && Number.isFinite(retryAtMs) ? retryAtMs - nowMs : Number.NaN;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return `${notice.message} — retrying`;
+  return `${notice.message} — retrying in ${formatCountdown(remainingMs)}`;
+}
 
 export type AccountLimitRow = {
   /** Stable per account, so React keys and open/close state agree. */

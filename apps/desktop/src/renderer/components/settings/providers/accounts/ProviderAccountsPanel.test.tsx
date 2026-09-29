@@ -226,7 +226,7 @@ describe("ProviderAccountsPanel", () => {
         provider: "claude",
         instanceId: "claude",
         machines: [],
-        notice: { message: "Rate-limited — retrying", nextRetryAt: "2026-09-18T10:05:00.000Z" },
+        notice: { message: "Rate-limited", nextRetryAt: "2026-09-18T10:05:00.000Z" },
       },
       { id: "claude:claude-work", provider: "claude", instanceId: "claude-work", machines: [] },
     ];

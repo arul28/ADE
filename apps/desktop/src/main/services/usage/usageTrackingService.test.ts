@@ -266,6 +266,39 @@ describe("claudeCliFallbackFitsStatus", () => {
   });
 });
 
+describe("per-account rate-limit ladder", () => {
+  it("doubles the wait on each failure, honours Retry-After, and resets on success", () => {
+    // The ladder is what stops an account throttled twice from being re-asked
+    // at the base cadence forever: an elapsed wait is not itself a reset, only
+    // a successful read clears the record.
+    const rateLimited = {
+      windows: [] as never[],
+      errors: ["claude: API returned 429"],
+      errorKind: "rate_limited" as const,
+    };
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(120_000);
+    // The gate runs first on every poll, and it runs while the wait has just
+    // elapsed. Reading an elapsed wait as free must not reset the ladder step
+    // before the next failure lands — that would pin every wait at the base.
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 120_001)).toBe(0);
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 120_001);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 120_002)).toBe(360_001);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 360_002)).toBe(0);
+    _testing.noteAccountPollOutcome("claude:ladder", rateLimited, 360_002);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 360_003)).toBe(840_002);
+    // A provider Retry-After longer than the ladder's ceiling wins.
+    _testing.noteAccountPollOutcome("claude:ladder", { ...rateLimited, retryAfterMs: 1_200_000 }, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(1_200_000);
+    // A read that produced windows clears the account's record and ladder step.
+    _testing.noteAccountPollOutcome("claude:ladder", {
+      windows: [{ provider: "claude", windowType: "five_hour", percentUsed: 10, resetsAt: "t", resetsInMs: 1 }] as never[],
+      errors: [],
+    }, 0);
+    expect(_testing.accountRateLimitNextAttemptAtMs("claude:ladder", 1)).toBe(0);
+  });
+});
+
 // ── calculatePacing ──────────────────────────────────────────────
 
 describe("calculatePacing", () => {
@@ -5101,7 +5134,7 @@ describe("buildProviderWindows", () => {
       [],
       null,
       "2026-06-07T00:00:00Z",
-      "oauth",
+      { source: "oauth" },
     );
     expect(result.status.state).toBe("ok");
     expect(result.status.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
@@ -5205,8 +5238,7 @@ describe("buildProviderWindows", () => {
       [],
       null,
       "t",
-      "oauth",
-      "forbidden",
+      { source: "oauth", errorKind: "forbidden" },
     );
     expect(result.status.state).toBe("unauthed");
     expect(result.status.errorKind).toBe("forbidden");
@@ -6650,6 +6682,26 @@ describe("per-account quota attribution", () => {
     });
   }
 
+  /**
+   * The ledger-scanner stubs every service in this block needs.
+   *
+   * One factory instead of the nine-entry bag inlined per test: a scanner added
+   * to the service should not require remembering which tests forgot it.
+   */
+  function scannerStubs() {
+    return {
+      scanClaudeLogs: vi.fn(async () => [] as never[]),
+      scanCodexLogs: vi.fn(async () => [] as never[]),
+      scanCursorLogs: vi.fn(async () => [] as never[]),
+      scanCursorAgentLogs: vi.fn(async () => [] as never[]),
+      scanOpenClawLogs: vi.fn(async () => [] as never[]),
+      scanOpenCodeLogs: vi.fn(async () => [] as never[]),
+      scanDroidLogs: vi.fn(async () => [] as never[]),
+      scanCopilotLogs: vi.fn(async () => [] as never[]),
+      scanGeminiLogs: vi.fn(async () => [] as never[]),
+    };
+  }
+
   function claudeUsageBody(fiveHourPercent: number) {
     return {
       five_hour: { utilization: fiveHourPercent, resets_at: "2099-03-14T02:00:00+00:00" },
@@ -7118,15 +7170,7 @@ describe("per-account quota attribution", () => {
         pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
         listProviderInstances: (provider) => provider === "codex" ? instances : [],
-        scanClaudeLogs: vi.fn(async () => []),
-        scanCodexLogs: vi.fn(async () => []),
-        scanCursorLogs: vi.fn(async () => []),
-        scanCursorAgentLogs: vi.fn(async () => []),
-        scanOpenClawLogs: vi.fn(async () => []),
-        scanOpenCodeLogs: vi.fn(async () => []),
-        scanDroidLogs: vi.fn(async () => []),
-        scanCopilotLogs: vi.fn(async () => []),
-        scanGeminiLogs: vi.fn(async () => []),
+        ...scannerStubs(),
       },
     });
     return { service, workCodexHome, launches, analyticsEvents };
@@ -7199,15 +7243,7 @@ describe("per-account quota attribution", () => {
           listProviderInstances: (provider) => provider === "claude"
             ? [{ id: "work", label: "Work", configHome: workHome, isDefault: true }]
             : [],
-          scanClaudeLogs: vi.fn(async () => []),
-          scanCodexLogs: vi.fn(async () => []),
-          scanCursorLogs: vi.fn(async () => []),
-          scanCursorAgentLogs: vi.fn(async () => []),
-          scanOpenClawLogs: vi.fn(async () => []),
-          scanOpenCodeLogs: vi.fn(async () => []),
-          scanDroidLogs: vi.fn(async () => []),
-          scanCopilotLogs: vi.fn(async () => []),
-          scanGeminiLogs: vi.fn(async () => []),
+          ...scannerStubs(),
         },
       });
 
@@ -7368,15 +7404,7 @@ describe("per-account quota attribution", () => {
         listProviderInstances: (provider) => (provider === "claude"
           ? [defaultInstance(), workInstance()]
           : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
@@ -7422,15 +7450,7 @@ describe("per-account quota attribution", () => {
         })),
         pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
         listProviderInstances: (provider) => (provider === "claude" ? [defaultInstance()] : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
@@ -7509,7 +7529,7 @@ describe("per-account quota attribution", () => {
     );
     expect(first.errors).toContain("claude: API returned 429");
     expect(first.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
-    expect((first as { freshWindowCount?: number }).freshWindowCount).toBe(2);
+    expect(first).toMatchObject({ freshWindowCount: 2 });
 
     // The next pass asks the healthy account again and does not touch the
     // throttled one until its own retry-after elapses.
@@ -7522,7 +7542,7 @@ describe("per-account quota attribution", () => {
     expect(seen.filter((token) => token === "rx-b-token")).toHaveLength(2);
     expect(second.errors).toEqual([]);
     expect(second.windows.every((window) => window.accountId === "claude:rx-b")).toBe(true);
-    expect((second as { freshWindowCount?: number }).freshWindowCount).toBe(2);
+    expect(second).toMatchObject({ freshWindowCount: 2 });
   });
 
   it("names the throttle on the throttled account instead of a bare No usage yet", async () => {
@@ -7556,26 +7576,75 @@ describe("per-account quota attribution", () => {
       logger,
       dependencies: {
         listProviderInstances: (provider) => (provider === "claude" ? [throttled, healthy] : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
     const snapshot = await service.poll({ reason: "automatic" });
     const byId = new Map((snapshot.accounts ?? []).map((account) => [account.id, account]));
     const throttledAccount = byId.get("claude:rx-note-a");
-    expect(throttledAccount?.notice?.message).toBe("Rate-limited — retrying");
+    expect(throttledAccount?.notice?.message).toBe("Rate-limited");
     expect(Date.parse(throttledAccount?.notice?.nextRetryAt ?? "")).toBeGreaterThan(Date.now());
     // The account with numbers carries no note: a notice means "nothing to
     // show", not "the provider was mentioned once".
     expect(byId.get("claude:rx-note-b")?.notice).toBeUndefined();
+
+    service.dispose();
+  });
+
+  it("keeps a skipped default account's last reading while its sibling reads fresh", async () => {
+    const defaultHome = path.join(tempHome, "provider-homes", "claude", "rx-skip-a");
+    const siblingHome = path.join(tempHome, "provider-homes", "claude", "rx-skip-b");
+    fs.mkdirSync(defaultHome, { recursive: true });
+    fs.mkdirSync(siblingHome, { recursive: true });
+    writeClaudeCredentials(defaultHome, "rx-skip-a-token");
+    writeClaudeCredentials(siblingHome, "rx-skip-b-token");
+    const accountDefault = { id: "rx-skip-a", label: "A", configHome: defaultHome, isDefault: true };
+    const sibling = { id: "rx-skip-b", label: "B", configHome: siblingHome, isDefault: false };
+    let throttled = false;
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      const token = init.headers.Authorization.replace("Bearer ", "");
+      seen.push(token);
+      if (throttled && token === "rx-skip-a-token") {
+        return {
+          ok: false,
+          status: 429,
+          headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? "300" : null) },
+          json: async () => ({}),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => claudeUsageBody(30),
+      };
+    }));
+
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        listProviderInstances: (provider) => (provider === "claude" ? [accountDefault, sibling] : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const clean = await service.poll({ reason: "automatic" });
+    expect(clean.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
+
+    // The default is throttled but keeps its carried reading.
+    throttled = true;
+    const degraded = await service.poll({ reason: "automatic" });
+    expect(degraded.windows.filter((window) => window.accountId === "claude:rx-skip-a")).toHaveLength(2);
+
+    // Next pass: the default is inside its own cooldown and its sibling reads
+    // fresh. The skipped account must carry its previous windows, not vanish —
+    // and with numbers on the row there is no throttle notice.
+    const skipped = await service.poll({ reason: "automatic" });
+    expect(skipped.windows.filter((window) => window.accountId === "claude:rx-skip-a")).toHaveLength(2);
+    expect(skipped.accounts?.find((account) => account.id === "claude:rx-skip-a")?.notice).toBeUndefined();
+    expect(seen.filter((token) => token === "rx-skip-a-token")).toHaveLength(2);
 
     service.dispose();
   });
@@ -7608,15 +7677,7 @@ describe("per-account quota attribution", () => {
       logger,
       dependencies: {
         listProviderInstances: (provider) => (provider === "claude" ? [accountA, accountB] : []),
-        scanClaudeLogs: vi.fn(async () => [] as never[]),
-        scanCodexLogs: vi.fn(async () => [] as never[]),
-        scanCursorLogs: vi.fn(async () => [] as never[]),
-        scanCursorAgentLogs: vi.fn(async () => [] as never[]),
-        scanOpenClawLogs: vi.fn(async () => [] as never[]),
-        scanOpenCodeLogs: vi.fn(async () => [] as never[]),
-        scanDroidLogs: vi.fn(async () => [] as never[]),
-        scanCopilotLogs: vi.fn(async () => [] as never[]),
-        scanGeminiLogs: vi.fn(async () => [] as never[]),
+        ...scannerStubs(),
       },
     });
 
@@ -7630,6 +7691,10 @@ describe("per-account quota attribution", () => {
     // carried reading — for the default account too, not just the secondary.
     expect(degraded.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
     expect(degraded.errors.filter((entry) => entry.includes("500"))).toHaveLength(2);
+    // Nothing was read live, so the provider must not claim "ok" over carried
+    // numbers: the row keeps them with an explicit stale state.
+    expect(degraded.providerStatus?.claude?.state).toBe("stale");
+    expect(degraded.providerStatus?.claude?.message).toContain("Couldn't refresh Claude");
     // 500 is retried once per account, so this pass costs four requests.
     expect(calls).toBe(6);
 

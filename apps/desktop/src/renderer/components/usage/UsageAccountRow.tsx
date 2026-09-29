@@ -36,6 +36,7 @@ import { cn } from "../ui/cn";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
+import { accountNoticeLine } from "./usageLimitModel";
 import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_CLASS,
@@ -275,10 +276,7 @@ export function UsageAccountRow({
         // Better than "No usage yet": the host knows why there is no reading,
         // and a throttle must read as a throttle rather than a broken account.
         <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>
-          {account.notice.message}
-          {account.notice.nextRetryAt
-            ? ` · retrying in ${formatCountdown(Date.parse(account.notice.nextRetryAt) - nowMs)}`
-            : ""}
+          {accountNoticeLine(account.notice, nowMs)}
         </span>
       ) : account ? (
         <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>No usage yet</span>

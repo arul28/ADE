@@ -11,6 +11,7 @@
  */
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
 import type { UsageAccount, UsageSnapshot } from "../../../../../shared/types";
+import { accountNoticeLine } from "../../../usage/usageLimitModel";
 
 /**
  * Eight accents that stay legible on both themes and do not collide with the
@@ -30,7 +31,7 @@ export const ACCOUNT_ACCENT_SWATCHES: readonly string[] = [
 ];
 
 /** The mini usage line's two numbers. Either half can be missing. */
-export type AccountUsagePercents = {
+type AccountUsagePercents = {
   fiveHourPercent: number | null;
   weeklyPercent: number | null;
 };
@@ -67,7 +68,7 @@ function usageAccountFor(
  * how every host before account attribution reported — so it is claimed by the
  * default instance and by nobody else.
  */
-export function accountUsagePercents(
+function accountUsagePercents(
   snapshot: UsageSnapshot | null,
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
@@ -85,7 +86,7 @@ export function accountUsagePercents(
   return { fiveHourPercent: pick("five_hour"), weeklyPercent: pick("weekly") };
 }
 
-export function formatAccountUsage(percents: AccountUsagePercents): string | null {
+function formatAccountUsage(percents: AccountUsagePercents): string | null {
   // Headroom, like the top-bar chip and the usage popup ("19% left"). The
   // snapshot carries consumption, so the row converts once here and every
   // usage surface reads the same way.
@@ -97,18 +98,33 @@ export function formatAccountUsage(percents: AccountUsagePercents): string | nul
 }
 
 /**
- * The host's own reason this account has no numbers, or `null`.
- *
- * Shown in place of "No usage yet": an account the provider just throttled is
- * not an account that has never reported, and the row must not make them look
- * the same. Absent for a host that predates the field.
+ * The host's own reason this account has no numbers, said the client's way, or
+ * `null`. Absent for a host that predates the field.
  */
-export function accountUsageNotice(
+function accountUsageNotice(
   snapshot: UsageSnapshot | null,
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
 ): string | null {
-  return usageAccountFor(snapshot, provider, instance)?.notice?.message ?? null;
+  const notice = usageAccountFor(snapshot, provider, instance)?.notice;
+  return notice ? accountNoticeLine(notice) : null;
+}
+
+/**
+ * What the account row's usage line says: the numbers, or the host's reason
+ * there are none.
+ *
+ * Numbers first: a throttle is only worth mentioning when it left the row with
+ * nothing to show. Composed here — not in the component — so the row renders
+ * one string and the join stays next to the two helpers that own it.
+ */
+export function accountUsageLine(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+): string | null {
+  return formatAccountUsage(accountUsagePercents(snapshot, provider, instance))
+    ?? accountUsageNotice(snapshot, provider, instance);
 }
 
 /**

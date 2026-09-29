@@ -40,10 +40,8 @@ import type {
 import {
   accountAccent,
   accountIdentityLine,
-  accountUsageNotice,
-  accountUsagePercents,
+  accountUsageLine,
   accentTint,
-  formatAccountUsage,
   providerHasFiveHourWindow,
 } from "./accountPresentation";
 import { AccentSwatchRow } from "./AccentSwatchRow";
@@ -407,13 +405,7 @@ export function ProviderAccountsPanel({
   const usageByInstance = useMemo(() => {
     const out = new Map<string, string | null>();
     for (const instance of instances) {
-      // Numbers first; when the host has none, its reason beats "No usage yet"
-      // — a throttled account is not an account that has never reported.
-      out.set(
-        instance.id,
-        formatAccountUsage(accountUsagePercents(snapshot, provider, instance))
-          ?? accountUsageNotice(snapshot, provider, instance),
-      );
+      out.set(instance.id, accountUsageLine(snapshot, provider, instance));
     }
     return out;
   }, [instances, provider, snapshot]);
