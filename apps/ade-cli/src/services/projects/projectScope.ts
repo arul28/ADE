@@ -1,5 +1,5 @@
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
-import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
+import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 
@@ -100,6 +100,18 @@ export class ProjectScopeRegistry {
     },
     releaseStreamConnection: (connectionId: string): void => {
       this.releaseStreamConnection(connectionId);
+    },
+    executeFileRequest: async (
+      projectId: string,
+      payload: SyncFileRequest,
+      context: { isMobile: boolean },
+    ): Promise<unknown> => {
+      const scope = await this.get(projectId);
+      const syncService = scope.runtime.syncService;
+      if (!syncService) {
+        throw new Error(`Phone sync is not available for project ${projectId}.`);
+      }
+      return await syncService.executeRemoteFileRequest(payload, context);
     },
   };
 
@@ -550,6 +562,7 @@ export class ProjectScopeRegistry {
       hostStartupEnabled: isHost ? base.hostStartupEnabled ?? true : false,
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,
+      projectScopes: this,
     };
   }
 

@@ -218,6 +218,7 @@ import {
 } from "./services/attention/attentionNotchRouter";
 import { pathsEqual } from "./services/shared/pathCompare";
 import { deriveProjectId } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -5019,6 +5020,7 @@ app.whenReady().then(async () => {
       mobileSyncHostRoot != null
       && normalizeProjectRoot(projectRoot) === mobileSyncHostRoot;
     const syncHostAutoStart = isMobileSyncHostContext;
+    const rosterOpenedAt = Date.now();
     const syncService = createSyncService({
       db,
       logger,
@@ -5058,6 +5060,30 @@ app.whenReady().then(async () => {
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
       forceHostRole: false,
+      // The brain's roster builder over this window's one project. Without a
+      // roster the host omits `rosterPeer`, and a phone reads that as an old
+      // ADE and asks the user to update a current one.
+      rosterProvider: {
+        buildSnapshot: () =>
+          buildRosterSnapshot({
+            projectRegistry: {
+              list: () => [{
+                projectId,
+                rootPath: projectRoot,
+                displayName: project.displayName,
+                gitOriginUrl: readGitOriginUrl(projectRoot),
+                lastOpenedAt: rosterOpenedAt,
+                catalogVisibility: "recent",
+              }],
+            },
+            scopeRegistry: {
+              getIfBooted: (id) =>
+                id === projectId ? Promise.resolve({ runtime: { agentChatService, ptyService } }) : null,
+            },
+            hostProjectId: projectId,
+            logger,
+          }),
+      },
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,
         prepareProjectConnection: prepareMobileSyncProjectConnection,

@@ -1300,6 +1300,24 @@ enum WorkTimelineRenderPayload: Equatable {
   case entry(WorkTimelineEntry)
   case assistantMarkdownBlock(WorkAssistantMarkdownBlockRenderModel)
   case assistantMonospaced(WorkAssistantMonospacedRenderModel)
+  case userSegment(WorkUserSegmentRenderModel)
+}
+
+/// One piece of a long user message (see `workUserMessageSegments`).
+struct WorkUserBubbleSegment: Equatable {
+  let index: Int
+  let count: Int
+  let text: String
+  var isFirst: Bool { index == 0 }
+  var isLast: Bool { index == count - 1 }
+}
+
+/// A row that draws one piece of a user message bubble. `message` is the whole
+/// message: copy, attachments and delivery state come from it.
+struct WorkUserSegmentRenderModel: Equatable {
+  let entry: WorkTimelineEntry
+  let message: WorkChatMessage
+  let segment: WorkUserBubbleSegment
 }
 
 struct WorkTimelineRenderEntry: Identifiable, Equatable {

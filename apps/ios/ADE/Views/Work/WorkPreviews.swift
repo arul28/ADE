@@ -1327,6 +1327,21 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The Chat Info sheet built from a real transcript file
   /// (`-adeBenchTranscript <path>`). See `WorkChatInfoPreviewHost`.
   case chatInfo = "chat-info"
+  /// The Lanes list across machines. See `LanesAcrossMachinesPreviewHost`.
+  case lanesMachines = "lanes-machines"
+  /// The connected-machines card and MACHINES rows. See
+  /// `SettingsMachinesPreviewHost`.
+  case settingsMachines = "settings-machines"
+  /// One machine's page. See `SettingsMachinesPreviewHost`.
+  case settingsMachinePage = "settings-machine-page"
+  /// The Files workspace sheet. See `FilesWorkspacePickerPreviewHost`.
+  case filesPicker = "files-picker"
+  /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
+  case prsList = "prs-list"
+  case prDetail = "pr-detail"
+  case prFiles = "pr-files"
+  case prDiff = "pr-diff"
+  case prChecks = "pr-checks"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1387,6 +1402,24 @@ struct ADEPreviewScreenHost: View {
         initialArtifactId: "proof-1",
         onLoadArtifact: { _, _ in }
       )
+    case .lanesMachines:
+      LanesAcrossMachinesPreviewHost()
+    case .settingsMachines:
+      SettingsMachinesPreviewHost()
+    case .settingsMachinePage:
+      SettingsMachinesPreviewHost(showsPage: true)
+    case .filesPicker:
+      FilesWorkspacePickerPreviewHost()
+    case .prsList:
+      PrsListPreviewHost()
+    case .prDetail:
+      PrDetailPreviewHost(tab: .overview)
+    case .prFiles:
+      PrDetailPreviewHost(tab: .files)
+    case .prDiff:
+      PrDiffPreviewHost()
+    case .prChecks:
+      PrDetailPreviewHost(tab: .checks, state: "open")
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:

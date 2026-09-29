@@ -15,6 +15,11 @@ struct WorkRemoteMachineRepo: Equatable {
   let rootPath: String?
   let lanes: [RemoteRosterLane]
   let chats: [RemoteRosterChat]
+
+  /// The project id a command for this checkout carries: routed to its machine.
+  var markedProjectId: String {
+    syncFleetMarkedProjectId(machineKey: machineKey, projectId: projectId)
+  }
 }
 
 /// `owner/name`, lowercased, from a git origin URL in any common form:
@@ -72,6 +77,18 @@ private let workRemoteLaneIdPrefix = "fleet|"
 /// Whether a lane id is another machine's namespaced lane id.
 func isWorkRemoteLaneId(_ laneId: String) -> Bool {
   laneId.hasPrefix(workRemoteLaneIdPrefix)
+}
+
+/// The machine and the plain lane id of a namespaced lane id, or nil for a
+/// focused-machine lane id.
+func workParseRemoteLaneId(_ laneId: String) -> (machineKey: String, laneId: String)? {
+  guard laneId.hasPrefix(workRemoteLaneIdPrefix) else { return nil }
+  let rest = laneId.dropFirst(workRemoteLaneIdPrefix.count)
+  guard let bar = rest.firstIndex(of: "|") else { return nil }
+  let machineKey = String(rest[..<bar])
+  let plain = String(rest[rest.index(after: bar)...])
+  guard !machineKey.isEmpty, !plain.isEmpty else { return nil }
+  return (machineKey, plain)
 }
 
 /// The other machines' checkouts of the repository `identity`.

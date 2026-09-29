@@ -33,6 +33,7 @@ struct LaneTreeView: View {
   let onContextMenu: (LaneListSnapshot) -> AnyView
   let onTogglePin: (String) -> Void
   let onSelectLane: (String) -> Void
+  var machineChips: LaneMachineChips = .none
 
   var body: some View {
     VStack(spacing: LaneTreeMetrics.rowSpacing) {
@@ -49,7 +50,11 @@ struct LaneTreeView: View {
           onRefreshRoot: onRefreshRoot,
           onContextMenu: onContextMenu,
           onTogglePin: onTogglePin,
-          onSelectLane: onSelectLane
+          onSelectLane: onSelectLane,
+          machine: machineChips.chip(forLaneId: snapshot.lane.id),
+          // A child sits indented under its parent's row, which names the
+          // machine; repeating it squeezed the branch name.
+          showsMachineChip: laneTreeDisplayDepth(for: snapshot.lane) == 0
         )
       }
     }
@@ -69,6 +74,8 @@ struct LaneTreeRow: View {
   let onContextMenu: (LaneListSnapshot) -> AnyView
   let onTogglePin: (String) -> Void
   let onSelectLane: (String) -> Void
+  var machine: LaneMachineChip? = nil
+  var showsMachineChip = true
 
   private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
 
@@ -85,45 +92,57 @@ struct LaneTreeRow: View {
           .frame(width: LaneTreeMetrics.elbowWidth, height: LaneTreeMetrics.elbowHeight)
           .padding(.top, 18)
       }
-      NavigationLink {
-        LaneDetailScreen(
-          laneId: snapshot.lane.id,
-          initialSnapshot: snapshot,
-          allLaneSnapshots: allLaneSnapshots,
-          transitionNamespace: transitionNamespace,
-          onRefreshRoot: onRefreshRoot
-        )
-      } label: {
-        LaneStackCard(
-          snapshot: snapshot,
-          isPinned: isPinned,
-          isOpen: isOpen,
-          depth: depth,
-          pullRequest: pullRequest,
-          transitionNamespace: transitionNamespace,
-          isSelectedTransitionSource: isSelectedTransitionSource
-        )
-        .equatable()
-      }
-      .simultaneousGesture(TapGesture().onEnded {
-        onSelectLane(snapshot.lane.id)
-      })
-      .buttonStyle(ADEScaleButtonStyle())
-      .contextMenu {
-        onContextMenu(snapshot)
-      } preview: {
-        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
-      }
-      .swipeActions(edge: .leading, allowsFullSwipe: false) {
-        Button {
-          onTogglePin(snapshot.lane.id)
+      if machine?.isLive == false {
+        // The last roster of a machine the phone has no live link to: shown,
+        // dimmed, no actions (the desktop's offline rule).
+        card
+      } else {
+        NavigationLink {
+          LaneDetailScreen(
+            laneId: snapshot.lane.id,
+            initialSnapshot: snapshot,
+            allLaneSnapshots: allLaneSnapshots,
+            transitionNamespace: transitionNamespace,
+            onRefreshRoot: onRefreshRoot
+          )
         } label: {
-          Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
+          card
         }
-        .tint(ADEColor.accent)
+        .simultaneousGesture(TapGesture().onEnded {
+          onSelectLane(snapshot.lane.id)
+        })
+        .buttonStyle(ADEScaleButtonStyle())
+        .contextMenu {
+          onContextMenu(snapshot)
+        } preview: {
+          LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+          Button {
+            onTogglePin(snapshot.lane.id)
+          } label: {
+            Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
+          }
+          .tint(ADEColor.accent)
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var card: some View {
+    LaneStackCard(
+      snapshot: snapshot,
+      isPinned: isPinned,
+      isOpen: isOpen,
+      depth: depth,
+      pullRequest: pullRequest,
+      transitionNamespace: transitionNamespace,
+      isSelectedTransitionSource: isSelectedTransitionSource,
+      machine: machine,
+      showsMachineChip: showsMachineChip
+    )
+    .equatable()
   }
 }
 

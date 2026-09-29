@@ -335,6 +335,7 @@ export type AdeRuntimeSyncOptions = {
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  projectScopes?: Parameters<typeof createSyncService>[0]["projectScopes"];
   getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
   requestAccountMachinePublish?: () => void | Promise<void>;
   /**
@@ -2802,6 +2803,7 @@ export async function createAdeRuntime(args: {
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
         personalChatScope: syncRuntimeOptions.personalChatScope,
         remoteCommandExecutor: syncRuntimeOptions.remoteCommandExecutor,
+        projectScopes: syncRuntimeOptions.projectScopes,
         getModelPickerStore: () => getSharedModelPickerStore(db),
         cloudRelayStore,
         syncTunnelClientService,

@@ -1,531 +1,325 @@
 import SwiftUI
+import UIKit
 
-private let prFilesInitialVisibleCount = 20
+// The Files tab on the flat base: a summary line, then the changed files
+// grouped by folder. A row opens that file's diff with previous / next.
 
-struct PrFilesTab: View {
-  let snapshot: PullRequestSnapshot?
+struct PrFileFolderGroup: Identifiable, Equatable {
+  let id: String
+  /// `(index in the PR's file list, file)`, so the diff page can step through
+  /// every file in order.
+  let files: [PrIndexedFile]
+}
+
+struct PrIndexedFile: Identifiable, Equatable {
+  let index: Int
+  let file: PrFile
+  var id: String { file.filename }
+}
+
+/// Groups files by their folder, folders in order of first appearance.
+func prFileFolderGroups(_ files: [PrFile]) -> [PrFileFolderGroup] {
+  var order: [String] = []
+  var byFolder: [String: [PrIndexedFile]] = [:]
+  for (index, file) in files.enumerated() {
+    let parts = file.filename.split(separator: "/")
+    let folder = parts.count > 1 ? parts.dropLast().joined(separator: "/") : "/"
+    if byFolder[folder] == nil { order.append(folder) }
+    byFolder[folder, default: []].append(PrIndexedFile(index: index, file: file))
+  }
+  return order.map { PrFileFolderGroup(id: $0, files: byFolder[$0] ?? []) }
+}
+
+func prFileName(_ path: String) -> String {
+  path.split(separator: "/").last.map(String.init) ?? path
+}
+
+/// The Files tab, emitted as List sections.
+struct PrFilesSections: View {
+  let files: [PrFile]
+  let isLoading: Bool
   let canOpenFiles: Bool
   let onOpenFile: (PrFile) -> Void
   let onCopyPath: (PrFile) -> Void
 
-  @State private var showAll = false
-
-  private var files: [PrFile] { snapshot?.files ?? [] }
-
-  private var totals: (additions: Int, deletions: Int, renamed: Int) {
-    var additions = 0
-    var deletions = 0
-    var renamed = 0
-    for file in files {
-      additions += file.additions
-      deletions += file.deletions
-      if file.status == "renamed" { renamed += 1 }
-    }
-    return (additions, deletions, renamed)
-  }
-
-  private var visibleFiles: [PrFile] {
-    if showAll || files.count <= prFilesInitialVisibleCount {
-      return files
-    }
-    return Array(files.prefix(prFilesInitialVisibleCount))
-  }
-
   var body: some View {
+    let groups = prFileFolderGroups(files)
     Group {
-      if files.isEmpty {
-        ADEEmptyStateView(
-          symbol: "doc.text.magnifyingglass",
-          title: "No changed files",
-          message: "The machine has not synced any file diff data for this PR yet."
-        )
-      } else {
-        LazyVStack(spacing: 14) {
-          PrFilesSummaryStrip(
-            additions: totals.additions,
-            deletions: totals.deletions,
-            fileCount: files.count,
-            renamed: totals.renamed
-          )
-
-          VStack(spacing: 10) {
-            ForEach(visibleFiles) { file in
-              PrFileDiffCard(
-                file: file,
+      Section {
+        if files.isEmpty {
+          if isLoading {
+            HStack(spacing: 8) {
+              ProgressView().controlSize(.small)
+              Text("Loading changed files…").font(.footnote).foregroundStyle(ADEColor.textSecondary)
+            }
+            .adeFlatRow(separator: .hidden)
+          } else {
+            PrFlatEmptyRow(title: "No changed files", message: "GitHub reported no file changes for this PR.")
+              .adeFlatRow(separator: .hidden)
+          }
+        } else {
+          HStack(spacing: 6) {
+            Text(verbatim: "\(files.count.formatted(.number)) file\(files.count == 1 ? "" : "s")")
+              .font(.adeMono(12, weight: .medium))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("·").foregroundStyle(ADEColor.textMuted)
+            PrDiffStat(
+              additions: files.reduce(0) { $0 + $1.additions },
+              deletions: files.reduce(0) { $0 + $1.deletions },
+              size: 12
+            )
+            Spacer(minLength: 0)
+          }
+          .adeFlatRow(separator: .hidden)
+        }
+      }
+      ForEach(groups) { group in
+        Section {
+          ForEach(group.files) { entry in
+            NavigationLink {
+              PrFileDiffPage(
+                files: files,
+                initialIndex: entry.index,
                 canOpenFiles: canOpenFiles,
                 onOpenFile: onOpenFile,
                 onCopyPath: onCopyPath
               )
+            } label: {
+              PrFileRow(file: entry.file)
             }
-
-            if !showAll && files.count > prFilesInitialVisibleCount {
-              PrShowAllFilesButton(count: files.count) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                  showAll = true
-                }
-              }
-            }
+            .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
           }
+        } header: {
+          // Paths keep their case: the header is the folder, verbatim.
+          HStack(spacing: 6) {
+            Image(systemName: "folder")
+              .font(.system(size: 10, weight: .semibold))
+            Text(verbatim: group.id == "/" ? "/" : group.id)
+              .font(.adeMono(11))
+              .lineLimit(1)
+              .truncationMode(.head)
+            Text(verbatim: "\(group.files.count)")
+              .font(.adeMono(10.5))
+            Spacer(minLength: 0)
+          }
+          .foregroundStyle(ADEColor.textMuted)
+          .textCase(nil)
+          .frame(minHeight: 22)
         }
       }
     }
   }
 }
 
-struct PrFilesSummaryStrip: View {
-  let additions: Int
-  let deletions: Int
-  let fileCount: Int
-  let renamed: Int
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      VStack(alignment: .leading, spacing: 4) {
-        PrEyebrow(text: "Files changed")
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Text("\(fileCount)")
-            .font(.system(size: 22, weight: .heavy, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
-            .tracking(-0.3)
-          Text(fileCount == 1 ? "file" : "files")
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(ADEColor.textMuted)
-          if renamed > 0 {
-            Text("· \(renamed) renamed")
-              .font(.system(size: 10, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-      }
-
-      Spacer(minLength: 8)
-
-      HStack(spacing: 6) {
-        summaryPill(text: "+\(additions)", tint: PrGlassPalette.success)
-        summaryPill(text: "−\(deletions)", tint: PrGlassPalette.danger)
-      }
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 18)
-  }
-
-  private func summaryPill(text: String, tint: Color) -> some View {
-    Text(text)
-      .font(.system(size: 11, design: .monospaced).weight(.bold))
-      .monospacedDigit()
-      .foregroundStyle(tint)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .background(
-        Capsule().fill(tint.opacity(0.14))
-      )
-      .overlay(
-        Capsule().strokeBorder(tint.opacity(0.32), lineWidth: 0.5)
-      )
-  }
-}
-
-// MARK: - Show-all CTA
-
-private struct PrShowAllFilesButton: View {
-  let count: Int
-  let action: () -> Void
-  @State private var pressed = false
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 6) {
-        Image(systemName: "chevron.down.circle.fill")
-          .font(.system(size: 12, weight: .bold))
-        Text("Show all \(count) files")
-          .font(.system(.footnote, design: .monospaced).weight(.semibold))
-      }
-      .foregroundStyle(.white)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 13)
-      .background(
-        PrGlassPalette.accentGradient,
-        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .inset(by: 1)
-          .stroke(Color.white.opacity(0.18), lineWidth: 0.5)
-          .blendMode(.plusLighter)
-      )
-      .shadow(color: PrGlassPalette.purpleDeep.opacity(0.55), radius: 16, y: 6)
-      .scaleEffect(pressed ? 0.97 : 1.0)
-      .animation(.easeOut(duration: 0.12), value: pressed)
-    }
-    .buttonStyle(.plain)
-    .simultaneousGesture(
-      DragGesture(minimumDistance: 0)
-        .onChanged { _ in pressed = true }
-        .onEnded { _ in pressed = false }
-    )
-  }
-}
-
-struct PrFileDiffCard: View {
+struct PrFileRow: View {
   let file: PrFile
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Text(verbatim: fileStatusLabel(file.status))
+        .font(.adeMono(11.5, weight: .bold))
+        .foregroundStyle(fileStatusTint(file.status))
+        .frame(width: 14)
+      Text(prFileName(file.filename))
+        .font(.subheadline)
+        .foregroundStyle(file.status == "removed" ? ADEColor.textSecondary : ADEColor.textPrimary)
+        .strikethrough(file.status == "removed", color: ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 8)
+      PrDiffStat(additions: file.additions, deletions: file.deletions, size: 11)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(file.filename), \(file.status), \(file.additions) added, \(file.deletions) removed")
+  }
+}
+
+/// One file's diff, with previous / next file in a glass bar.
+struct PrFileDiffPage: View {
+  let files: [PrFile]
   let canOpenFiles: Bool
   let onOpenFile: (PrFile) -> Void
   let onCopyPath: (PrFile) -> Void
-  @State private var expanded: Bool
+  @State private var index: Int
 
-  init(
-    file: PrFile,
-    canOpenFiles: Bool,
-    onOpenFile: @escaping (PrFile) -> Void,
-    onCopyPath: @escaping (PrFile) -> Void
-  ) {
-    self.file = file
+  init(files: [PrFile], initialIndex: Int, canOpenFiles: Bool, onOpenFile: @escaping (PrFile) -> Void, onCopyPath: @escaping (PrFile) -> Void) {
+    self.files = files
     self.canOpenFiles = canOpenFiles
     self.onOpenFile = onOpenFile
     self.onCopyPath = onCopyPath
-    _expanded = State(initialValue: prFileDiffShouldExpandByDefault(file))
+    _index = State(initialValue: min(max(initialIndex, 0), max(files.count - 1, 0)))
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
-          expanded.toggle()
-        }
-      } label: {
-        PrFileRowLabel(
-          file: file,
-          expanded: expanded,
-          canOpenFiles: canOpenFiles,
-          onOpenFile: onOpenFile,
-          onCopyPath: onCopyPath
-        )
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(accessibilityLabel)
-      .accessibilityAddTraits(.isButton)
+  private var file: PrFile? { files.indices.contains(index) ? files[index] : nil }
 
-      if expanded {
-        VStack(alignment: .leading, spacing: 10) {
-          if let previousFilename = file.previousFilename, !previousFilename.isEmpty {
-            HStack(spacing: 4) {
-              Image(systemName: "arrow.turn.up.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(PrGlassPalette.warning)
-              Text("Renamed from ")
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
-              +
-              Text(previousFilename)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(ADEColor.textPrimary)
+  var body: some View {
+    Group {
+      if let file {
+        ScrollView(.vertical) {
+          VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+              HStack(spacing: 8) {
+                Text(verbatim: fileStatusLabel(file.status))
+                  .font(.adeMono(12, weight: .bold))
+                  .foregroundStyle(fileStatusTint(file.status))
+                Text(prFileName(file.filename))
+                  .font(.headline)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(2)
+                Spacer(minLength: 8)
+                PrDiffStat(additions: file.additions, deletions: file.deletions, size: 12)
+              }
+              Text(verbatim: file.previousFilename.map { "\($0) → \(file.filename)" } ?? file.filename)
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(2)
+                .truncationMode(.middle)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Rectangle().fill(ADEFlat.hairline).frame(height: 0.5)
+            PrFlatDiffBody(file: file)
           }
-
-          if let patch = file.patch, !patch.isEmpty {
-            PrUnifiedDiffView(file: file, patch: patch)
-          } else {
-            Text("No patch was synced for this file.")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
+          .padding(.bottom, 80)
         }
-        .padding(.top, 12)
-        .padding(.horizontal, 2)
+        .id(file.filename)
+      } else {
+        PrFlatEmptyRow(title: "No file")
       }
     }
-    .padding(14)
-    .prGlassCard(cornerRadius: 18)
-    .adeInspectable(
-      "PR.Detail.FileDiffCard",
-      metadata: [
-        "label": accessibilityLabel,
-        "filename": file.filename,
-        "status": file.status,
-        "additions": String(file.additions),
-        "deletions": String(file.deletions),
-        "role": "row"
-      ]
-    )
-  }
-
-  private var accessibilityLabel: String {
-    "\(file.filename), +\(file.additions) additions, \(file.deletions) deletions"
-  }
-}
-
-private struct PrFileRowLabel: View {
-  let file: PrFile
-  let expanded: Bool
-  let canOpenFiles: Bool
-  let onOpenFile: (PrFile) -> Void
-  let onCopyPath: (PrFile) -> Void
-
-  private var fileIcon: String {
-    let ext = (file.filename as NSString).pathExtension.lowercased()
-    switch ext {
-    case "swift", "kt", "java", "m", "mm", "cpp", "c", "h", "hpp", "rs", "go":
-      return "curlybraces"
-    case "ts", "tsx", "js", "jsx", "mjs", "cjs":
-      return "chevron.left.forwardslash.chevron.right"
-    case "json", "yaml", "yml", "toml", "xml", "plist":
-      return "doc.badge.gearshape"
-    case "md", "markdown", "txt", "rst":
-      return "doc.text"
-    case "png", "jpg", "jpeg", "gif", "svg", "webp", "heic":
-      return "photo"
-    case "css", "scss", "sass", "less":
-      return "paintbrush"
-    case "sh", "bash", "zsh", "fish":
-      return "terminal"
-    case "html", "htm":
-      return "globe"
-    case "py", "rb":
-      return "chevron.left.forwardslash.chevron.right"
-    case "sql":
-      return "cylinder.split.1x2"
-    default:
-      return "doc"
-    }
-  }
-
-  private var iconTint: Color {
-    switch file.status {
-    case "added": return PrGlassPalette.success
-    case "removed": return PrGlassPalette.danger
-    case "renamed": return PrGlassPalette.warning
-    default: return PrGlassPalette.purple
-    }
-  }
-
-  private var railGradient: LinearGradient {
-    LinearGradient(
-      colors: [iconTint.opacity(0.95), iconTint.opacity(0.35)],
-      startPoint: .top,
-      endPoint: .bottom
-    )
-  }
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(railGradient)
-        .frame(width: 4, height: 28)
-        .shadow(color: iconTint.opacity(0.5), radius: 4)
-
-      ZStack {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [iconTint.opacity(0.28), iconTint.opacity(0.12)],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-          )
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(iconTint.opacity(0.4), lineWidth: 0.5)
-        Image(systemName: fileIcon)
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(iconTint)
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .navigationTitle(file.map { prFileName($0.filename) } ?? "")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        if let file {
+          Menu {
+            if canOpenFiles {
+              Button { onOpenFile(file) } label: { Label("Open in Files", systemImage: "folder") }
+            }
+            Button { onCopyPath(file) } label: { Label("Copy path", systemImage: "doc.on.doc") }
+          } label: {
+            Image(systemName: "ellipsis")
+          }
+          .accessibilityLabel("File actions")
+        }
       }
-      .frame(width: 28, height: 28)
-
-      Text(file.filename)
-        .font(.system(size: 11, design: .monospaced))
+    }
+    .safeAreaInset(edge: .bottom) {
+      if files.count > 1 {
+        HStack(spacing: 12) {
+          Button { step(-1) } label: {
+            Label("Previous", systemImage: "chevron.left").labelStyle(.iconOnly)
+              .frame(width: 44, height: 36)
+          }
+          .disabled(index == 0)
+          Text(verbatim: "\(index + 1) of \(files.count)")
+            .font(.adeMono(12, weight: .medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(minWidth: 90)
+          Button { step(1) } label: {
+            Label("Next", systemImage: "chevron.right").labelStyle(.iconOnly)
+              .frame(width: 44, height: 36)
+          }
+          .disabled(index >= files.count - 1)
+        }
+        .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-      HStack(spacing: 4) {
-        countPill(text: "+\(file.additions)", tint: PrGlassPalette.success)
-        countPill(text: "−\(file.deletions)", tint: PrGlassPalette.danger)
+        .padding(.horizontal, 8)
+        .glassEffect(in: Capsule(style: .continuous))
+        .padding(.bottom, 8)
       }
-
-      statusChip(for: file.status)
-
-      HStack(spacing: 4) {
-        prFileInlineAction(symbol: "folder", label: "Open \(file.filename) in Files") {
-          onOpenFile(file)
-        }
-        .disabled(!canOpenFiles)
-
-        prFileInlineAction(symbol: "doc.on.doc", label: "Copy path for \(file.filename)") {
-          onCopyPath(file)
-        }
-      }
-
-      Image(systemName: "chevron.right")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .rotationEffect(.degrees(expanded ? 90 : 0))
-        .animation(.easeInOut(duration: 0.18), value: expanded)
-    }
-    .contentShape(Rectangle())
-  }
-
-  private func countPill(text: String, tint: Color) -> some View {
-    Text(text)
-      .font(.system(size: 10, design: .monospaced).weight(.bold))
-      .monospacedDigit()
-      .foregroundStyle(tint)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 2)
-      .background(Capsule().fill(tint.opacity(0.14)))
-      .overlay(Capsule().strokeBorder(tint.opacity(0.3), lineWidth: 0.5))
-  }
-
-  @ViewBuilder
-  private func statusChip(for status: String) -> some View {
-    switch status {
-    case "added":
-      PrTagChip(label: "new", color: ADEColor.success)
-    case "removed":
-      PrTagChip(label: "del", color: ADEColor.danger)
-    case "renamed":
-      PrTagChip(label: "ren", color: ADEColor.warning)
-    default:
-      EmptyView()
     }
   }
 
-  private func prFileInlineAction(symbol: String, label: String, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      // Visual chip stays compact (24pt circle) but the outer frame expands the tap target
-      // to Apple's HIG-minimum 44pt so these inline actions don't punish thumb taps in the row.
-      ZStack {
-        Circle()
-          .fill(Color.white.opacity(0.06))
-        Circle()
-          .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-        Image(systemName: symbol)
-          .font(.system(size: 10, weight: .bold))
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      .frame(width: 24, height: 24)
-      .frame(width: 44, height: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
+  private func step(_ delta: Int) {
+    let next = index + delta
+    guard files.indices.contains(next) else { return }
+    ADEHaptics.light()
+    index = next
   }
 }
 
-struct PrUnifiedDiffView: View {
+/// A unified diff, edge to edge: line numbers, then the line on a tinted band.
+struct PrFlatDiffBody: View {
   let file: PrFile
-  let patch: String
 
   private var language: FilesLanguage {
     FilesLanguage.detect(languageId: nil, filePath: file.filename)
   }
 
-  private var lines: [PrDiffDisplayLine] {
-    PrDiffRenderingCache.shared.lines(for: patch)
-  }
-
   var body: some View {
-    if let limit = prPatchPreviewLimit(for: patch) {
-      PrDiffPreviewLimitNotice(limit: limit)
-    } else {
-      ScrollView([.horizontal, .vertical], showsIndicators: true) {
-        LazyVStack(alignment: .leading, spacing: 2) {
-          ForEach(lines) { line in
-            HStack(alignment: .top, spacing: 8) {
-              Text(line.oldLineNumber.map(String.init) ?? "")
-                .frame(width: 34, alignment: .trailing)
-                .foregroundStyle(ADEColor.textMuted)
-              Text(line.newLineNumber.map(String.init) ?? "")
-                .frame(width: 34, alignment: .trailing)
-                .foregroundStyle(ADEColor.textMuted)
-
-              if line.kind == .hunk || line.kind == .note {
-                Text(line.text)
-                  .font(.system(.caption, design: .monospaced))
-                  .foregroundStyle(line.kind == .hunk ? PrGlassPalette.purple : ADEColor.textSecondary)
-              } else {
-                HStack(spacing: 0) {
-                  Text(verbatim: line.prefix)
-                    .font(.system(.caption, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(diffPrefixTint(line.kind))
-                  Text(SyntaxHighlighter.highlightedAttributedString(line.text.isEmpty ? " " : line.text, as: language))
-                    .font(.system(.caption, design: .monospaced))
-                }
-              }
-              Spacer(minLength: 0)
+    if let patch = file.patch, !patch.isEmpty {
+      if let limit = prPatchPreviewLimit(for: patch) {
+        ADEFlatInlineNotice(message: "\(limit.title). \(limit.message)", tint: ADEColor.textMuted)
+          .padding(16)
+      } else {
+        ScrollView(.horizontal, showsIndicators: false) {
+          LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(PrDiffRenderingCache.shared.lines(for: patch)) { line in
+              diffLine(line)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(diffBackground(line.kind), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
           }
+          .padding(.vertical, 6)
         }
-        .padding(10)
       }
-      .frame(maxHeight: 420)
-      .background(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(PrGlassPalette.ink.opacity(0.55))
+    } else {
+      ADEFlatInlineNotice(
+        message: file.status == "renamed" ? "Renamed with no content changes." : "GitHub sent no diff for this file (binary or too large).",
+        tint: ADEColor.textMuted
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
-      )
+      .padding(16)
     }
   }
-}
 
-struct PrDiffPreviewLimitNotice: View {
-  let limit: PrPatchPreviewLimit
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "doc.text.magnifyingglass")
-        .font(.system(size: 16, weight: .semibold))
-        .foregroundStyle(ADEColor.warning)
-      VStack(alignment: .leading, spacing: 4) {
-        Text(limit.title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(limit.message)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+  @ViewBuilder
+  private func diffLine(_ line: PrDiffDisplayLine) -> some View {
+    HStack(alignment: .top, spacing: 6) {
+      Text(line.oldLineNumber.map(String.init) ?? "")
+        .frame(width: 30, alignment: .trailing)
+      Text(line.newLineNumber.map(String.init) ?? "")
+        .frame(width: 30, alignment: .trailing)
+      if line.kind == .hunk || line.kind == .note {
+        Text(line.text)
+          .foregroundStyle(ADEColor.accent)
+          .padding(.leading, 4)
+      } else {
+        Text(verbatim: line.prefix)
+          .foregroundStyle(tint(line.kind))
+          .frame(width: 10)
+        Text(highlighted(line.text))
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .adeInsetField(cornerRadius: 14, padding: 12)
+    .font(.adeMono(11.5))
+    .foregroundStyle(ADEColor.textMuted)
+    .fixedSize(horizontal: true, vertical: false)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 1.5)
+    .frame(minWidth: UIScreen.main.bounds.width, alignment: .leading)
+    .background(background(line.kind))
   }
-}
 
-extension PrUnifiedDiffView {
-  private func diffBackground(_ kind: PrDiffDisplayLineKind) -> Color {
+  /// The highlighter sets its own font; the diff keeps one size.
+  private func highlighted(_ text: String) -> AttributedString {
+    var attributed = SyntaxHighlighter.highlightedAttributedString(text.isEmpty ? " " : text, as: language)
+    attributed.font = .adeMono(11.5)
+    return attributed
+  }
+
+  private func background(_ kind: PrDiffDisplayLineKind) -> Color {
     switch kind {
-    case .added:
-      return PrGlassPalette.success.opacity(0.14)
-    case .removed:
-      return PrGlassPalette.danger.opacity(0.14)
-    case .hunk:
-      return PrGlassPalette.purple.opacity(0.10)
-    case .context, .note:
-      return Color.clear
+    case .added: return prDiffAddColor().opacity(0.12)
+    case .removed: return prDiffDeleteColor().opacity(0.12)
+    case .hunk: return ADEColor.accent.opacity(0.08)
+    case .context, .note: return .clear
     }
   }
 
-  private func diffPrefixTint(_ kind: PrDiffDisplayLineKind) -> Color {
+  private func tint(_ kind: PrDiffDisplayLineKind) -> Color {
     switch kind {
-    case .added:
-      return PrGlassPalette.success
-    case .removed:
-      return PrGlassPalette.danger
-    case .hunk:
-      return PrGlassPalette.purple
-    case .context, .note:
-      return ADEColor.textSecondary
+    case .added: return prDiffAddColor()
+    case .removed: return prDiffDeleteColor()
+    default: return ADEColor.textMuted
     }
   }
 }

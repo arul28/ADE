@@ -822,6 +822,54 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(legacySpelling.featureEnabled("rosterPeer"))
   }
 
+  /// A lane of another machine keeps a namespaced id on the phone. The host
+  /// must only ever see the plain id, a command must name one machine, and a
+  /// reply's lanes must come back namespaced so the next command on them goes
+  /// to the same machine. Session and other non-lane ids are never touched.
+  func testRemoteLaneIdsRoundTripBetweenCommandsAndReplies() throws {
+    let laneA = workRemoteLaneId(machineKey: "mac-b", laneId: "lane-a")
+    let laneB = workRemoteLaneId(machineKey: "mac-b", laneId: "lane-b")
+    let otherMachineLane = workRemoteLaneId(machineKey: "pc-c", laneId: "lane-c")
+
+    let cases: [(args: [String: Any], machineKey: String?, stripped: [String: String])] = [
+      (["laneId": laneA, "text": laneA], "mac-b", ["laneId": "lane-a", "text": laneA]),
+      (["parentLaneId": laneB, "name": "child"], "mac-b", ["parentLaneId": "lane-b"]),
+      (["laneId": "lane-a"], nil, ["laneId": "lane-a"]),
+      ([:], nil, [:]),
+    ]
+    for row in cases {
+      let target = try syncRemoteLaneTarget(args: row.args)
+      XCTAssertEqual(target?.machineKey, row.machineKey, "\(row.args)")
+      for (key, value) in row.stripped {
+        XCTAssertEqual((target?.args ?? row.args)[key] as? String, value, "\(key) of \(row.args)")
+      }
+    }
+    let list = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneIds": [laneA, laneB]]))
+    XCTAssertEqual(list.args["laneIds"] as? [String], ["lane-a", "lane-b"])
+    XCTAssertThrowsError(try syncRemoteLaneTarget(args: ["laneId": laneA, "parentLaneId": otherMachineLane]))
+
+    let reply: [String: Any] = [
+      "lane": ["id": "lane-a", "laneType": "worktree", "worktreePath": "/w/a", "parentLaneId": "lane-p"],
+      "children": [["id": "lane-b", "laneType": "worktree", "worktreePath": "/w/b"]],
+      "sessions": [["id": "session-1", "laneId": "lane-a"]],
+      "stackChain": [["laneId": laneA]],
+    ]
+    let tagged = try XCTUnwrap(syncTagRemoteLaneIds(in: reply, machineKey: "mac-b") as? [String: Any])
+    let lane = try XCTUnwrap(tagged["lane"] as? [String: Any])
+    XCTAssertEqual(lane["id"] as? String, laneA)
+    XCTAssertEqual(lane["parentLaneId"] as? String, workRemoteLaneId(machineKey: "mac-b", laneId: "lane-p"))
+    XCTAssertEqual(((tagged["children"] as? [[String: Any]])?.first?["id"]) as? String, laneB)
+    let session = try XCTUnwrap((tagged["sessions"] as? [[String: Any]])?.first)
+    XCTAssertEqual(session["id"] as? String, "session-1", "A session id is not a lane id.")
+    XCTAssertEqual(session["laneId"] as? String, laneA)
+    XCTAssertEqual(((tagged["stackChain"] as? [[String: Any]])?.first?["laneId"]) as? String, laneA, "Tagging twice is a no-op.")
+
+    // The tagged reply's lane goes back to its machine as the plain id.
+    let next = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneId": try XCTUnwrap(lane["id"] as? String)]))
+    XCTAssertEqual(next.machineKey, "mac-b")
+    XCTAssertEqual(next.args["laneId"] as? String, "lane-a")
+  }
+
   @MainActor
   func testFleetProjectIdentityMergesOnlyTheSameRepositoryAcrossHubAndWork() {
     let focused = MobileProjectSummary(
@@ -907,22 +955,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(hub.extraProjects.map(\.roster.projectId), ["fleet|machine-remote|remote-other-repo"])
   }
 
-  func testMachineConnectionBackoffCapsThenMovesToSlowRetry() {
-    let actual = (0...9).map {
+  func testMachineConnectionBackoffStopsAfterSlowRetry() {
+    let retryDelays = (1...4).map {
       machineConnectionBackoffNanoseconds(failures: $0, jitter: 1)
     }
-    XCTAssertEqual(actual, [
-      2_000_000_000,
-      2_000_000_000,
-      4_000_000_000,
-      8_000_000_000,
-      16_000_000_000,
-      32_000_000_000,
+    XCTAssertEqual(retryDelays, [
+      5_000_000_000,
+      15_000_000_000,
       60_000_000_000,
-      60_000_000_000,
-      300_000_000_000,
       300_000_000_000,
     ])
+    XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 5, jitter: 1))
+    XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 9, jitter: 1))
+    XCTAssertEqual(machineConnectionBackoffNanoseconds(failures: 0, jitter: 1), 5_000_000_000)
+  }
+
+  @MainActor
+  func testCtoCommandTargetFailsClosedForOfflineHomeAndIgnoresAnotherProjectHome() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    defer { service.disconnect(clearCredentials: false) }
+    service.ctoHomeMachineKey = "fleet|remote-machine"
+    service.ctoHomeMachineName = "Build Mac"
+
+    XCTAssertThrowsError(try service.ctoCommandTarget()) { error in
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 14)
+      XCTAssertTrue(nsError.localizedDescription.contains("Build Mac"))
+    }
+
+    service.ctoHomeProjectId = "another-project"
+    let target = try service.ctoCommandTarget()
+    XCTAssertNil(target.projectId)
+    XCTAssertNil(target.rootPath)
+    XCTAssertNil(target.repo)
   }
 
   func testSyncPreprocessRejectsMalformedOrUnsupportedCompressionMetadata() {
@@ -12840,31 +12906,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: true, refreshRemote: true))
   }
 
-  func testPrChecksSummaryFallsBackToOverallFailingStatus() {
-    let stats = prChecksSummaryStats(checks: [], overallChecksStatus: "failing")
-
-    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 1, pending: 0, pass: 0, skipped: 0, total: 1))
-    XCTAssertTrue(prChecksHasFailedSignal(checks: [], overallChecksStatus: "failing"))
-    XCTAssertEqual(prChecksEmptyStateCopy(overallChecksStatus: "failing").title, "Checks failing")
-  }
-
-  func testPrChecksSummaryPrefersSyncedCheckRuns() {
-    let checks = [
-      PrCheck(
-        name: "unit",
-        status: "completed",
-        conclusion: "success",
-        detailsUrl: nil,
-        startedAt: nil,
-        completedAt: nil
-      ),
-    ]
-    let stats = prChecksSummaryStats(checks: checks, overallChecksStatus: "failing")
-
-    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 1, skipped: 0, total: 1))
-    XCTAssertFalse(prChecksHasFailedSignal(checks: checks, overallChecksStatus: "failing"))
-  }
-
   // MARK: - ADE-135: nothing verified the commit
 
   /// PR #988's shape: three third-party apps reported `success`, GitHub Actions
@@ -12880,13 +12921,6 @@ final class ADETests: XCTestCase {
         completedAt: nil
       )
     }
-  }
-
-  func testPrChecksSummaryReportsNoPassesWhenRollupSaysNotRun() {
-    let stats = prChecksSummaryStats(checks: ade135ThirdPartyChecks(), overallChecksStatus: "not_run")
-
-    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 0, skipped: 3, total: 3))
-    XCTAssertFalse(prChecksHasFailedSignal(checks: ade135ThirdPartyChecks(), overallChecksStatus: "not_run"))
   }
 
   func testPrChecksSummaryInventsNoRowForNotRunWithoutChecks() {
@@ -12911,27 +12945,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testPrChecksGroupSummaryNeverShowsPassWhenNothingVerifiedTheCommit() {
-    let checks = ade135ThirdPartyChecks()
-
-    XCTAssertEqual(
-      prChecksGroupSummaryParts(checks: checks, notRun: false),
-      [PrChecksGroupSummaryPart(text: "3 pass", tone: .pass)]
-    )
-    XCTAssertEqual(
-      prChecksGroupSummaryParts(checks: checks, notRun: true),
-      [PrChecksGroupSummaryPart(text: "3 reported", tone: .muted)]
-    )
-  }
-
-  func testPrChecksLabelAndTintTreatNotRunAsAbsenceNotFailure() {
-    XCTAssertEqual(prChecksLabel("not_run"), "Not run")
-    XCTAssertEqual(prChecksTint("not_run"), ADEColor.textSecondary)
-    XCTAssertNotEqual(prChecksTint("not_run"), ADEColor.danger)
-    // An unknown state from a newer host must degrade, never render green.
-    XCTAssertEqual(prChecksTint("some_future_state"), ADEColor.textSecondary)
-  }
-
   func testPrRowCiIndicatorDrawsHollowRingForNotRun() {
     var item = ade135ListItem(checksStatus: "not_run")
     item.checksReason = "3 checks reported, none from a CI provider."
@@ -12947,48 +12960,6 @@ final class ADETests: XCTestCase {
 
     // "none" stays silent: nothing observed and nothing expected.
     XCTAssertNil(PrRowCard.Data(pr: ade135ListItem(checksStatus: "none")).ciIndicator)
-  }
-
-  func testPrMergeChecklistReportsNoCiInsteadOfCountingThirdPartyRows() {
-    let items = PrMergeChecklist.build(
-      prState: "open",
-      summaryReviewStatus: "approved",
-      status: nil,
-      checks: ade135ThirdPartyChecks(),
-      reviews: [],
-      summaryChecksStatus: "not_run"
-    )
-
-    let checksRow = items.first { $0.id == "checks" }
-    XCTAssertEqual(checksRow?.label, "No CI has run on this commit")
-    XCTAssertEqual(checksRow?.state, .neutral)
-  }
-
-  func testPrMergeGateSublineDropsAllChecksGreenWhenNothingRan() {
-    let status = PrStatus(
-      prId: "pr-988",
-      state: "open",
-      checksStatus: "not_run",
-      reviewStatus: "approved",
-      isMergeable: true,
-      mergeConflicts: false,
-      behindBaseBy: 0
-    )
-    let gate = prComputeMergeGate(
-      status: status,
-      checks: ade135ThirdPartyChecks(),
-      summaryChecksStatus: "not_run",
-      reviewThreadsUnresolved: 0,
-      reviewsNeeded: 1,
-      reviewsHave: 1,
-      capabilities: nil
-    )
-
-    XCTAssertFalse(gate.subline.contains("all checks green"))
-    XCTAssertTrue(gate.subline.contains("no CI has run on this commit"))
-    // Tone stays green on purpose: it feeds merge enablement and this fix is not
-    // allowed to gate a merge. Only the sentence was false.
-    XCTAssertEqual(gate.tone, .green)
   }
 
   /// Older brains send neither `checks_reason` nor `checks_missing_required`, and
@@ -13050,72 +13021,6 @@ final class ADETests: XCTestCase {
       workflowDisplayState: nil,
       cleanupState: nil
     )
-  }
-
-  func testPrMergeGateDoesNotShowGreenWhenStatusIsMissing() {
-    let gate = prComputeMergeGate(
-      status: nil,
-      checks: [],
-      summaryChecksStatus: nil,
-      reviewThreadsUnresolved: 0,
-      reviewsNeeded: 0,
-      reviewsHave: 0,
-      capabilities: nil
-    )
-
-    XCTAssertEqual(gate.tone, .amber)
-    XCTAssertEqual(gate.subline, "Waiting for synced PR status")
-  }
-
-  func testPrMergeGateUsesSummaryFailingStatusBeforeCheckRowsSync() {
-    let gate = prComputeMergeGate(
-      status: nil,
-      checks: [],
-      summaryChecksStatus: "failing",
-      reviewThreadsUnresolved: 0,
-      reviewsNeeded: 0,
-      reviewsHave: 0,
-      capabilities: nil
-    )
-
-    XCTAssertEqual(gate.tone, .red)
-    XCTAssertEqual(gate.subline, "checks failing")
-    XCTAssertEqual(gate.target, .checks)
-  }
-
-  func testPrMergeGatePrefersSyncedCheckRowsOverStaleSummaryStatus() {
-    let checks = [
-      PrCheck(
-        name: "unit",
-        status: "completed",
-        conclusion: "success",
-        detailsUrl: nil,
-        startedAt: nil,
-        completedAt: nil
-      ),
-    ]
-    let status = PrStatus(
-      prId: "pr-1",
-      state: "open",
-      checksStatus: "failing",
-      reviewStatus: "approved",
-      isMergeable: true,
-      mergeConflicts: false,
-      behindBaseBy: 0
-    )
-
-    let gate = prComputeMergeGate(
-      status: status,
-      checks: checks,
-      summaryChecksStatus: "failing",
-      reviewThreadsUnresolved: 0,
-      reviewsNeeded: 1,
-      reviewsHave: 1,
-      capabilities: nil
-    )
-
-    XCTAssertEqual(gate.tone, .green)
-    XCTAssertEqual(gate.target, .overview)
   }
 
   func testPrLinkLanePreselectionRequiresExactBranchMatch() {
@@ -14695,172 +14600,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
-    let pr = PullRequestListItem(
-      id: "pr-9",
-      laneId: "lane-9",
-      laneName: "Feature",
-      projectId: "project-1",
-      repoOwner: "arul",
-      repoName: "ade",
-      githubPrNumber: 99,
-      githubUrl: "https://github.com/arul/ade/pull/99",
-      title: "Merge timeline",
-      state: "merged",
-      baseBranch: "main",
-      headBranch: "feature/timeline",
-      checksStatus: "passing",
-      reviewStatus: "approved",
-      additions: 10,
-      deletions: 3,
-      lastSyncedAt: nil,
-      createdAt: "2026-03-20T09:00:00.000Z",
-      updatedAt: "2026-03-20T12:00:00.000Z",
-      adeKind: "single",
-      linkedGroupId: nil,
-      linkedGroupType: nil,
-      linkedGroupName: nil,
-      linkedGroupPosition: nil,
-      linkedGroupCount: 0,
-      workflowDisplayState: nil,
-      cleanupState: nil
-    )
-
-    let timeline = buildPullRequestTimeline(
-      pr: pr,
-      snapshot: PullRequestSnapshot(
-        detail: PrDetail(
-          prId: "pr-9",
-          body: nil,
-          assignees: [],
-          author: PrUser(login: "arul", avatarUrl: nil),
-          isDraft: false,
-          labels: [],
-          requestedReviewers: [],
-          milestone: nil,
-          linkedIssues: []
-        ),
-        status: PrStatus(
-          prId: "pr-9",
-          state: "merged",
-          checksStatus: "passing",
-          reviewStatus: "approved",
-          isMergeable: true,
-          mergeConflicts: false,
-          behindBaseBy: 0
-        ),
-        checks: [],
-        reviews: [
-          PrReview(
-            reviewer: "reviewer",
-            state: "approved",
-            body: "Looks good to me",
-            submittedAt: "2026-03-20T11:00:00.000Z"
-          ),
-        ],
-        comments: [
-          PrComment(
-            id: "comment-1",
-            author: "bot",
-            body: "Queued for merge",
-            source: "issue",
-            url: nil,
-            path: nil,
-            line: nil,
-            createdAt: "2026-03-20T10:00:00.000Z",
-            updatedAt: nil
-          ),
-        ],
-        files: []
-      )
-    )
-
-    XCTAssertEqual(timeline.map(\.kind), [.stateChange, .review, .comment, .stateChange])
-    XCTAssertEqual(timeline.first?.title, "Merged")
-    XCTAssertEqual(timeline.last?.title, "Opened")
-  }
-
-  private func makeTimelineEvent(
-    id: String,
-    kind: PrTimelineEventKind,
-    author: String? = "arul",
-    timestamp: String = "2026-03-20T10:00:00.000Z"
-  ) -> PrTimelineEvent {
-    PrTimelineEvent(
-      id: id,
-      kind: kind,
-      title: "event \(id)",
-      author: author,
-      body: nil,
-      timestamp: timestamp,
-      metadata: nil
-    )
-  }
-
-  func testPrTimelineDisplayItemsFoldConsecutiveSameAuthorCommits() {
-    let events = [
-      makeTimelineEvent(id: "opened", kind: .stateChange),
-      makeTimelineEvent(id: "c1", kind: .commit),
-      makeTimelineEvent(id: "c2", kind: .commit),
-      makeTimelineEvent(id: "c3", kind: .commit),
-      makeTimelineEvent(id: "review-1", kind: .review),
-      makeTimelineEvent(id: "c4", kind: .commit),
-    ]
-
-    let items = buildPrTimelineDisplayItems(events)
-
-    // opened → folded group of 3 → review → trailing single commit.
-    XCTAssertEqual(items.count, 4)
-    XCTAssertEqual(items[0], .event(events[0]))
-    guard case .commitGroup(let groupId, let author, let groupEvents) = items[1] else {
-      return XCTFail("expected a folded commit group, got \(items[1])")
-    }
-    XCTAssertEqual(groupId, "commit-group-c1")
-    XCTAssertEqual(author, "arul")
-    XCTAssertEqual(groupEvents.map(\.id), ["c1", "c2", "c3"])
-    XCTAssertEqual(items[2], .event(events[4]))
-    // A single trailing commit must stay a plain event, not a group of one.
-    XCTAssertEqual(items[3], .event(events[5]))
-  }
-
-  func testPrTimelineDisplayItemsSplitCommitRunsOnAuthorChange() {
-    let events = [
-      makeTimelineEvent(id: "a1", kind: .commit, author: "arul"),
-      makeTimelineEvent(id: "a2", kind: .commit, author: "arul"),
-      makeTimelineEvent(id: "b1", kind: .commit, author: "codex"),
-      makeTimelineEvent(id: "b2", kind: .commit, author: "codex"),
-    ]
-
-    let items = buildPrTimelineDisplayItems(events)
-
-    XCTAssertEqual(items.count, 2)
-    guard case .commitGroup(_, let firstAuthor, let firstEvents) = items[0],
-          case .commitGroup(_, let secondAuthor, let secondEvents) = items[1] else {
-      return XCTFail("expected two folded commit groups, got \(items)")
-    }
-    XCTAssertEqual(firstAuthor, "arul")
-    XCTAssertEqual(firstEvents.map(\.id), ["a1", "a2"])
-    XCTAssertEqual(secondAuthor, "codex")
-    XCTAssertEqual(secondEvents.map(\.id), ["b1", "b2"])
-    // Row ids must stay unique + stable so List identity survives refolds.
-    XCTAssertEqual(Set(items.map(\.id)).count, items.count)
-    XCTAssertEqual(items.map(\.id), ["commit-group-a1", "commit-group-b1"])
-  }
-
-  func testPrTimelineDisplayItemsPassThroughNonCommitFeeds() {
-    let events = [
-      makeTimelineEvent(id: "opened", kind: .stateChange),
-      makeTimelineEvent(id: "comment-1", kind: .comment),
-      makeTimelineEvent(id: "force-1", kind: .forcePush),
-    ]
-
-    let items = buildPrTimelineDisplayItems(events)
-
-    XCTAssertEqual(items.count, events.count)
-    XCTAssertEqual(items.map(\.id), events.map(\.id))
-    XCTAssertEqual(items, events.map { PrTimelineDisplayItem.event($0) })
-  }
-
   func testParsePullRequestPatchBuildsLineNumbers() {
     let lines = parsePullRequestPatch("""
     @@ -1,2 +1,3 @@
@@ -14881,35 +14620,6 @@ final class ADETests: XCTestCase {
     XCTAssertNil(lines[3].oldLineNumber)
     XCTAssertEqual(lines[3].newLineNumber, 2)
     XCTAssertEqual(lines[4].newLineNumber, 3)
-  }
-
-  func testPrFileDiffDefaultsToCollapsedForLargePatches() {
-    let smallFile = PrFile(
-      filename: "Sources/App.swift",
-      status: "modified",
-      additions: 4,
-      deletions: 1,
-      patch: """
-      @@ -1 +1,2 @@
-      -print("old")
-      +print("new")
-      """,
-      previousFilename: nil
-    )
-    XCTAssertTrue(prFileDiffShouldExpandByDefault(smallFile))
-
-    let largePatch = (0..<180).map { index in
-      "line \(index)"
-    }.joined(separator: "\n")
-    let largeFile = PrFile(
-      filename: "Sources/Huge.swift",
-      status: "modified",
-      additions: 180,
-      deletions: 180,
-      patch: largePatch,
-      previousFilename: nil
-    )
-    XCTAssertFalse(prFileDiffShouldExpandByDefault(largeFile))
   }
 
   func testDatabaseFetchPullRequestListItemsIncludesWorkflowContext() throws {

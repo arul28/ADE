@@ -24,6 +24,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // it must ask. Optional so a phone on a newer build simply never lights the
   // dot against an older brain.
   "cto.getAttention",
+  // The project's CTO home machine (account setting `cto.homeMachine`), so a
+  // phone reaches the one CTO wherever it lives. Optional: an older brain
+  // leaves the phone on its primary machine's CTO.
+  "cto.getHomeMachine",
+  "cto.setHomeMachine",
   // Session lifecycle. The phone gates its settle/snooze affordances on these
   // appearing in hello_ok.features.commandRouting.actions, so they must be
   // advertised — but they stay OPTIONAL: shipped builds predating the feature

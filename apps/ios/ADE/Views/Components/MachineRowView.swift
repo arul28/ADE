@@ -69,22 +69,26 @@ struct MachineRowView: View {
       iconTile
 
       VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
-          Text(title)
-            .font(.body.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-            // The end of an account row names the install ("· ADE Alpha"),
-            // which is what tells two installs on one Mac apart.
-            .truncationMode(.middle)
-          if let statusPill {
-            ADEStatusPill(text: statusPill.text, tint: statusPill.tint)
-          }
-        }
-        Text(routeHint)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
+        // The name gets the whole line: a status pill beside it cut long
+        // names down to "MacBo…7) · ADE".
+        Text(title)
+          .font(.body.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+          // The end of an account row names the install ("· ADE Alpha"),
+          // which is what tells two installs on one Mac apart.
+          .truncationMode(.middle)
+        HStack(spacing: 6) {
+          if let statusPill {
+            Circle()
+              .fill(statusPill.tint)
+              .frame(width: 7, height: 7)
+          }
+          Text(routeHint)
+            .font(.caption)
+            .foregroundStyle(statusPill?.tint ?? ADEColor.textSecondary)
+            .lineLimit(1)
+        }
       }
 
       Spacer(minLength: 8)
@@ -197,6 +201,23 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
   case let value where value.contains("mac") || value.contains("desktop"): return "desktopcomputer"
   default: return "laptopcomputer"
   }
+}
+
+/// The SF Symbol for a machine known by fleet key and name: the account's
+/// device type when the account lists the machine, else a guess from the name
+/// (a laptop for a name like one, a desktop otherwise).
+@MainActor
+func machineSymbol(machineKey: String?, name: String) -> String {
+  if let identity = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:)),
+     let machine = AccountService.shared.machines.first(where: {
+       $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
+     }),
+     machine.deviceType != nil || machine.platform != nil {
+    return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
+  }
+  let lower = name.lowercased()
+  if lower.contains("macbook") || lower.contains("laptop") { return "laptopcomputer" }
+  return "desktopcomputer"
 }
 
 /// The unified status hint for a saved machine. Directory presence is only a

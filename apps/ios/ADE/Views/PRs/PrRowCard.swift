@@ -1,96 +1,235 @@
 import SwiftUI
+import UIKit
 
-struct PrRowCard: View {
-  let data: Data
-  let transitionNamespace: Namespace.ID?
-  let isSelectedTransitionSource: Bool
-  let onShowStack: (String, String?) -> Void
+// The PR list row, the desktop `GitHubTabPrRow` on the flat base: the number
+// and title (two lines at most) with the author on the right, then one detail
+// line with where it merges, its lane, and its diff stat. Nothing else: no
+// @author text, no comment count, no card.
 
-  init(
-    pr: PullRequestListItem,
-    transitionNamespace: Namespace.ID? = nil,
-    isSelectedTransitionSource: Bool = false,
-    onShowStack: @escaping (String, String?) -> Void = { _, _ in }
-  ) {
-    self.data = Data(pr: pr)
-    self.transitionNamespace = transitionNamespace
-    self.isSelectedTransitionSource = isSelectedTransitionSource
-    self.onShowStack = onShowStack
+// MARK: - Shared bits
+
+private func prAdaptiveColor(light: UInt32, dark: UInt32) -> Color {
+  func ui(_ value: UInt32) -> UIColor {
+    UIColor(
+      red: CGFloat((value >> 16) & 0xff) / 255,
+      green: CGFloat((value >> 8) & 0xff) / 255,
+      blue: CGFloat(value & 0xff) / 255,
+      alpha: 1
+    )
+  }
+  return Color(UIColor { $0.userInterfaceStyle == .dark ? ui(dark) : ui(light) })
+}
+
+/// The desktop state colors (open blue, draft amber, merged green, closed
+/// gray), darkened for the light theme.
+func prStateColor(_ state: String) -> Color {
+  switch state {
+  case "open": return prAdaptiveColor(light: 0x2563EB, dark: 0x60A5FA)
+  case "draft": return prAdaptiveColor(light: 0xB45309, dark: 0xFBBF24)
+  case "merged": return prAdaptiveColor(light: 0x15803D, dark: 0x4ADE80)
+  default: return ADEColor.textMuted
+  }
+}
+
+func prDiffAddColor() -> Color { prAdaptiveColor(light: 0x15803D, dark: 0x4ADE80) }
+func prDiffDeleteColor() -> Color { prAdaptiveColor(light: 0xB91C1C, dark: 0xF87171) }
+
+/// `+1,204 −380` in mono green / red.
+struct PrDiffStat: View {
+  let additions: Int
+  let deletions: Int
+  var abbreviated = false
+  var size: CGFloat = 11
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Text(verbatim: "+\(format(additions))").foregroundStyle(prDiffAddColor())
+      Text(verbatim: "−\(format(deletions))").foregroundStyle(prDiffDeleteColor())
+    }
+    .font(.adeMono(size))
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(additions) added, \(deletions) removed")
   }
 
-  init(
-    item: GitHubPrListItem,
-    linkedPr: PullRequestListItem? = nil,
-    transitionNamespace: Namespace.ID? = nil,
-    isSelectedTransitionSource: Bool = false
-  ) {
-    self.data = Data(item: item, linkedPr: linkedPr)
-    self.transitionNamespace = transitionNamespace
-    self.isSelectedTransitionSource = isSelectedTransitionSource
-    self.onShowStack = { _, _ in }
+  private func format(_ value: Int) -> String {
+    abbreviated ? prAbbreviatedCount(value) : value.formatted(.number)
+  }
+}
+
+/// An author's avatar: a known bot in its brand color with its initial, a
+/// person's GitHub picture (initials while it loads or when it fails).
+struct PrAvatar: View {
+  let login: String?
+  var isBot: Bool? = nil
+  var avatarUrl: String? = nil
+  var size: CGFloat = 20
+
+  private var identity: PrAuthorIdentity {
+    PrAuthorIdentity.classify(login, accountIsBot: isBot)
+  }
+
+  private var imageURL: URL? {
+    if let avatarUrl, let url = URL(string: avatarUrl) { return url }
+    guard let login, !login.isEmpty, !identity.isBot else { return nil }
+    let px = Int(size * 2)
+    return URL(string: "https://avatars.githubusercontent.com/\(login)?size=\(px)")
   }
 
   var body: some View {
-    let stateColors = PrRowDesktopPalette.stateColors(data.state)
-
-    HStack(alignment: .top, spacing: 11) {
-      Image(systemName: stateSymbol)
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(stateColors.text)
-        .frame(width: 20, height: 22)
-
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-          Text(data.title)
-            .font(.body.weight(.semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-            .lineLimit(2)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .adeMatchedGeometry(id: isSelectedTransitionSource ? "pr-title-\(data.id)" : nil, in: transitionNamespace)
-
-          if !data.timeAgo.isEmpty {
-            Text(data.timeAgo)
-              .font(.caption)
-              .foregroundStyle(PrsGlass.textMuted)
-              .lineLimit(1)
-              .fixedSize(horizontal: true, vertical: false)
+    Group {
+      if let url = imageURL {
+        AsyncImage(url: url) { phase in
+          if let image = phase.image {
+            image.resizable().scaledToFill()
+          } else {
+            initials
           }
         }
+      } else {
+        initials
+      }
+    }
+    .frame(width: size, height: size)
+    .clipShape(Circle())
+    .overlay(Circle().stroke(ADEFlat.hairline, lineWidth: 0.5))
+    .accessibilityHidden(true)
+  }
 
-        metadataRow
-        branchAndSignalsRow
+  private var tint: Color {
+    if let hex = identity.brandColorHex, let value = UInt32(hex.dropFirst(), radix: 16) {
+      return Color(
+        red: Double((value >> 16) & 0xff) / 255,
+        green: Double((value >> 8) & 0xff) / 255,
+        blue: Double(value & 0xff) / 255
+      )
+    }
+    return ADEColor.textMuted
+  }
 
-        if !data.isUnmapped, let warnMessage = data.warnMessage {
-          PrWarnBanner(text: warnMessage)
+  private var initials: some View {
+    let name = identity.isBot ? identity.displayName : (login ?? "")
+    return ZStack {
+      Circle().fill(tint.opacity(identity.isBot ? 0.22 : 0.16))
+      Text(String(name.prefix(1)).uppercased())
+        .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
+        .foregroundStyle(identity.isBot ? tint : ADEColor.textSecondary)
+    }
+  }
+}
+
+/// A PR's lane on a detail line: the lane chip, `was: <lane>` for a lane that
+/// is gone, and the lane's machine icon only when it is not the primary machine.
+struct PrLaneChip: View {
+  let laneName: String?
+  var ghostLaneName: String? = nil
+  /// Set only for a lane on a machine other than the primary one.
+  var machineName: String? = nil
+
+  var body: some View {
+    if let laneName, !laneName.isEmpty {
+      ADEFlatChip(
+        symbol: machineName == nil ? "arrow.triangle.branch" : "desktopcomputer",
+        text: laneName,
+        tint: ADEColor.textSecondary
+      )
+      .accessibilityLabel(machineName.map { "Lane \(laneName) on \($0)" } ?? "Lane \(laneName)")
+    } else if let ghostLaneName, !ghostLaneName.isEmpty {
+      ADEFlatChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
+        .accessibilityLabel("Built in lane \(ghostLaneName), now deleted")
+    }
+  }
+}
+
+/// An empty state as one quiet flat row.
+struct PrFlatEmptyRow: View {
+  let title: String
+  var message: String? = nil
+
+  var body: some View {
+    VStack(spacing: 4) {
+      Text(title)
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+      if let message {
+        Text(message)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .multilineTextAlignment(.center)
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 20)
+    .accessibilityElement(children: .combine)
+  }
+}
+
+// MARK: - Row
+
+struct PrRowCard: View {
+  let data: Data
+
+  init(pr: PullRequestListItem) {
+    self.data = Data(pr: pr)
+  }
+
+  init(item: GitHubPrListItem, linkedPr: PullRequestListItem? = nil, laneMachineName: String? = nil) {
+    var data = Data(item: item, linkedPr: linkedPr)
+    data.laneMachineName = laneMachineName
+    self.data = data
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      VStack(alignment: .leading, spacing: 5) {
+        Text("\(Text(verbatim: "#\(data.prNumber)").font(.adeMono(13, weight: .medium)).foregroundStyle(prStateColor(data.state))) \(data.title)")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 6) {
+          if let branch = data.branchLine {
+            Text(verbatim: branch)
+              .font(.adeMono(11))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          PrLaneChip(
+            laneName: data.laneLabel,
+            ghostLaneName: data.detached?.laneName,
+            machineName: data.laneMachineName
+          )
+          .frame(maxWidth: 150, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
+          if data.isExternal {
+            Text(verbatim: "\(data.repoOwner)/\(data.repoName)")
+              .font(.adeMono(10.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+          Spacer(minLength: 4)
+          if data.needsBranchCleanup {
+            Image(systemName: "arrow.triangle.branch")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(ADEColor.warning)
+              .accessibilityLabel("Remote branch still exists")
+          }
+          if let additions = data.additions, let deletions = data.deletions, additions + deletions > 0 {
+            PrDiffStat(additions: additions, deletions: deletions, abbreviated: true, size: 10.5)
+          }
+          if !data.isTerminal, let ci = data.ciIndicator {
+            PrRowCiGlyph(indicator: ci)
+              .font(.system(size: 11))
+          }
         }
       }
+      PrAvatar(login: data.authorLogin, isBot: data.isBot ? true : nil, size: 20)
+        .padding(.top, 1)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background {
-      if isSelectedTransitionSource {
-        LinearGradient(
-          colors: [stateColors.background, Color.white.opacity(0.015)],
-          startPoint: .leading,
-          endPoint: .trailing
-        )
-      } else {
-        Color.clear
-      }
-    }
-    .overlay(alignment: .leading) {
-      Rectangle()
-        .fill(isSelectedTransitionSource ? stateColors.text : .clear)
-        .frame(width: 3)
-    }
-    .overlay(alignment: .bottom) {
-      Rectangle()
-        .fill(Color.white.opacity(0.055))
-        .frame(height: 1)
-        .padding(.leading, 50)
-    }
+    .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilitySummary)
     .adeInspectable(
@@ -106,154 +245,25 @@ struct PrRowCard: View {
     )
   }
 
-  private var stateSymbol: String {
-    switch data.state {
-    case "merged": return "arrow.triangle.merge"
-    case "closed": return "xmark.circle"
-    case "draft": return "circle.dashed"
-    default: return "arrow.triangle.pull"
-    }
-  }
-
   private var accessibilitySummary: String {
-    var parts = ["Pull request \(data.prNumber)", data.title, "State \(data.state)"]
-    if let author = data.authorLogin, !author.isEmpty { parts.append("Author \(author)") }
-    if let stack = data.githubStack {
-      parts.append("GitHub Stack \(stack.position) of \(stack.size)")
+    var parts = ["Pull request \(data.prNumber)", data.title, data.state]
+    if let author = data.authorLogin, !author.isEmpty { parts.append("by \(author)") }
+    if let branch = data.branchLine { parts.append(branch.replacingOccurrences(of: "→", with: "into")) }
+    if let lane = data.laneLabel {
+      parts.append("lane \(lane)")
+      if let machine = data.laneMachineName { parts.append("on \(machine)") }
+    } else if let ghost = data.detached?.laneName {
+      parts.append("was lane \(ghost)")
     }
-    if let head = data.headBranch, let base = data.baseBranch { parts.append("\(head) into \(base)") }
-    if let ci = data.ciIndicator { parts.append(ci.title) }
-    if let review = data.reviewIndicator { parts.append(review.label) }
-    if data.commentCount > 0 { parts.append("\(data.commentCount) comments") }
-    if let provenance = data.provenanceLabel {
-      parts.append(provenance)
-    } else if let lane = data.laneLabel {
-      parts.append("Lane \(lane)")
-    }
-    if let facts = data.mergeFacts { parts.append("Merged \(facts)") }
-    if data.needsBranchCleanup { parts.append("Remote branch still exists") }
-    if !data.timeAgo.isEmpty { parts.append("Updated \(data.timeAgo)") }
+    if let additions = data.additions, let deletions = data.deletions { parts.append("\(additions) added, \(deletions) removed") }
+    if !data.isTerminal, let ci = data.ciIndicator { parts.append(ci.title) }
     return parts.joined(separator: ", ")
-  }
-
-  private var metadataRow: some View {
-    HStack(spacing: 5) {
-      Text("#\(data.prNumber)")
-        .foregroundStyle(PrRowDesktopPalette.stateColors(data.state).text)
-      if let stack = data.githubStack {
-        GitHubStackPositionBadge(stack: stack, compact: true)
-      }
-      if let author = data.authorLogin, !author.isEmpty {
-        Text("·")
-        Text("@\(author)")
-      }
-      if data.isBot {
-        Text("bot")
-          .fontWeight(.semibold)
-      }
-      if data.isExternal {
-        Text("·")
-        Text("\(data.repoOwner)/\(data.repoName)")
-          .lineLimit(1)
-      }
-      // A lane chip when a lane exists, and nothing when one does not: the
-      // absence of the chip already says there is no lane, and every action on
-      // the row works either way.
-      if let provenance = data.provenanceLabel {
-        // The lane is gone, but what happened in it is not.
-        Label(provenance, systemImage: "clock.arrow.circlepath")
-          .font(.caption2)
-          .foregroundStyle(PrsGlass.textMuted)
-          .lineLimit(1)
-      } else if let laneLabel = data.laneLabel, !laneLabel.isEmpty {
-        Label(laneLabel, systemImage: "rectangle.stack")
-          .font(.caption2.weight(.medium))
-          .foregroundStyle(PrsGlass.textSecondary)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 0)
-    }
-    .font(.caption)
-    .foregroundStyle(PrsGlass.textMuted)
-  }
-
-  @ViewBuilder
-  private var branchAndSignalsRow: some View {
-    HStack(spacing: 10) {
-      if data.isTerminal {
-        // A merged PR is a record: how it shipped replaces the branch pair, and CI /
-        // review outcomes are all answered by the fact that it merged.
-        if let facts = data.mergeFacts {
-          Text(facts)
-            .font(.caption2)
-            .foregroundStyle(PrsGlass.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .layoutPriority(1)
-        }
-      } else if let head = data.headBranch, let base = data.baseBranch {
-        Text("\(head) → \(base)")
-          .font(.caption2.monospaced())
-          .foregroundStyle(PrsGlass.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .layoutPriority(1)
-      }
-
-      Spacer(minLength: 0)
-
-      HStack(spacing: 9) {
-        if data.needsBranchCleanup {
-          Label("branch", systemImage: "arrow.triangle.branch")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(PrsGlass.draftTop)
-            .accessibilityLabel("Remote branch still exists")
-        }
-
-        if !data.isTerminal, let ci = data.ciIndicator {
-          PrRowCiGlyph(indicator: ci)
-        }
-
-        if !data.isTerminal, let review = data.reviewIndicator {
-          Image(systemName: reviewSymbol)
-            .foregroundStyle(review.color)
-            .accessibilityLabel(review.label)
-        }
-
-        if data.commentCount > 0 {
-          Label("\(data.commentCount)", systemImage: "text.bubble")
-            .labelStyle(.titleAndIcon)
-        }
-
-        if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
-          Button {
-            onShowStack(groupId, data.stackGroupName)
-          } label: {
-            Label("\(groupCount)", systemImage: "list.number")
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel("Open stack of \(groupCount) pull requests")
-        }
-      }
-      .fixedSize(horizontal: true, vertical: false)
-    }
-    .font(.caption2.weight(.medium))
-    .foregroundStyle(PrsGlass.textMuted)
-  }
-
-  private var reviewSymbol: String {
-    switch data.reviewStatus {
-    case "approved": return "checkmark.bubble"
-    case "changes_requested": return "exclamationmark.bubble"
-    default: return "bubble.left.and.exclamationmark.bubble.right"
-    }
   }
 }
 
-/// Renders the row's CI signal. Symbol states track the ambient caption font so
-/// they stay aligned with the review glyph beside them; the `not_run` ring is
-/// drawn at a fixed 13pt, which matches a filled `.caption2` symbol optically.
-private struct PrRowCiGlyph: View {
+/// The row's CI signal. `not_run` is a hollow dashed ring: an empty slot where
+/// a result should be, never the failure red.
+struct PrRowCiGlyph: View {
   let indicator: PrRowCard.Data.CIIndicator
 
   var body: some View {
@@ -264,13 +274,8 @@ private struct PrRowCiGlyph: View {
         .accessibilityLabel(indicator.title)
     case .hollowRing:
       Circle()
-        .strokeBorder(
-          indicator.color,
-          style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6])
-        )
-        .frame(width: 13, height: 13)
-        // Shapes are not accessibility elements by default, so the ring has to be
-        // promoted to one or the finding is invisible to VoiceOver.
+        .strokeBorder(indicator.color, style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6]))
+        .frame(width: 12, height: 12)
         .accessibilityElement()
         .accessibilityLabel(indicator.title)
     }
@@ -279,63 +284,110 @@ private struct PrRowCiGlyph: View {
 
 struct PrRowCardSkeleton: View {
   var body: some View {
-    HStack(alignment: .top, spacing: 11) {
-      ADESkeletonView(width: 20, height: 20, cornerRadius: 10)
-
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(spacing: 10) {
-          ADESkeletonView(height: 16, cornerRadius: 5)
-          ADESkeletonView(width: 52, height: 12, cornerRadius: 4)
-        }
+    HStack(alignment: .top, spacing: 10) {
+      VStack(alignment: .leading, spacing: 8) {
+        ADESkeletonView(height: 14, cornerRadius: 4)
+        ADESkeletonView(width: 200, height: 14, cornerRadius: 4)
         HStack(spacing: 8) {
-          ADESkeletonView(width: 42, height: 11, cornerRadius: 4)
-          ADESkeletonView(width: 86, height: 11, cornerRadius: 4)
-          ADESkeletonView(width: 58, height: 16, cornerRadius: 8)
-        }
-        HStack(spacing: 10) {
-          ADESkeletonView(width: 180, height: 10, cornerRadius: 4)
+          ADESkeletonView(width: 70, height: 10, cornerRadius: 3)
+          ADESkeletonView(width: 90, height: 12, cornerRadius: 4)
           Spacer(minLength: 0)
-          ADESkeletonView(width: 42, height: 10, cornerRadius: 4)
+          ADESkeletonView(width: 56, height: 10, cornerRadius: 3)
         }
       }
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-}
-
-private enum PrRowDesktopPalette {
-  struct StateColors {
-    let background: Color
-    let text: Color
-  }
-
-  static func stateColors(_ state: String) -> StateColors {
-    switch state {
-    case "open":
-      return StateColors(
-        background: Color(red: 0x3B / 255, green: 0x82 / 255, blue: 0xF6 / 255, opacity: 0.10),
-        text: Color(red: 0x60 / 255, green: 0xA5 / 255, blue: 0xFA / 255)
-      )
-    case "draft":
-      return StateColors(
-        background: Color(red: 0xF5 / 255, green: 0x9E / 255, blue: 0x0B / 255, opacity: 0.10),
-        text: Color(red: 0xFB / 255, green: 0xBF / 255, blue: 0x24 / 255)
-      )
-    case "merged":
-      return StateColors(
-        background: Color(red: 0x22 / 255, green: 0xC5 / 255, blue: 0x5E / 255, opacity: 0.10),
-        text: Color(red: 0x4A / 255, green: 0xDE / 255, blue: 0x80 / 255)
-      )
-    default:
-      return StateColors(
-        background: Color(red: 0xA1 / 255, green: 0xA1 / 255, blue: 0xAA / 255, opacity: 0.08),
-        text: Color(red: 0xA1 / 255, green: 0xA1 / 255, blue: 0xAA / 255)
-      )
+      ADESkeletonView(width: 20, height: 20, cornerRadius: 10)
     }
   }
 }
+
+/// "TODAY · 11 merged · +20k −6.7k", with a spinner while more history loads.
+struct PrListGroupHeader: View {
+  let group: PrListPeriodGroup
+  var isLoading = false
+
+  var body: some View {
+    let detail = ["\(group.count) \(group.outcome)", group.diffSummary].compactMap { $0 }.joined(separator: " · ")
+    ADEFlatSectionHeader(group.label, detail: detail) {
+      if isLoading {
+        ProgressView().controlSize(.mini)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// The long-press preview of a row: the start of the description, the checks,
+/// and the lane. Reads the cached snapshot, so it never waits on the network.
+struct PrRowContextPreview: View {
+  let data: PrRowCard.Data
+  let syncService: SyncService
+  let snapshotPrId: String?
+  let warmKey: String
+
+  @State private var snapshot: PullRequestSnapshot?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(verbatim: "#\(data.prNumber)")
+          .font(.adeMono(13, weight: .semibold))
+          .foregroundStyle(prStateColor(data.state))
+        ADEFlatBadge(text: data.state, tint: prStateColor(data.state))
+        Spacer(minLength: 0)
+        PrAvatar(login: data.authorLogin, isBot: data.isBot ? true : nil, size: 22)
+      }
+      Text(data.title)
+        .font(.headline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+      if let branch = data.branchLine {
+        Text(verbatim: branch).font(.adeMono(11)).foregroundStyle(ADEColor.textMuted).lineLimit(1)
+      }
+      Divider().overlay(ADEFlat.hairline)
+      let description = prCleanBody(snapshot?.detail?.body).body
+      Text(description.isEmpty ? "No description." : prDigestPreview(description, max: 420))
+        .font(.footnote)
+        .foregroundStyle(description.isEmpty ? ADEColor.textMuted : ADEColor.textSecondary)
+        .lineLimit(7)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        if let checks = checksLine {
+          Label(checks.text, systemImage: checks.symbol)
+            .font(.caption)
+            .foregroundStyle(checks.tint)
+        }
+        Spacer(minLength: 0)
+        PrLaneChip(laneName: data.laneLabel, ghostLaneName: data.detached?.laneName, machineName: data.laneMachineName)
+      }
+    }
+    .padding(16)
+    .frame(width: 340, alignment: .leading)
+    .background(ADEColor.pageBackground)
+    .task {
+      if let entry = syncService.prDetailWarmEntry(for: warmKey), let cached = entry.snapshot {
+        snapshot = cached
+      }
+      if snapshot == nil, let snapshotPrId {
+        snapshot = try? await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
+      }
+    }
+  }
+
+  private var checksLine: (text: String, symbol: String, tint: Color)? {
+    if let checks = snapshot?.checks, !checks.isEmpty {
+      let overall = snapshot?.status?.checksStatus
+      let summary = prChecksHeadline(checks: checks, overallChecksStatus: overall)
+      let notRun = overall?.lowercased() == "not_run"
+      return (summary.text, summary.failing > 0 ? "xmark.circle.fill" : summary.running > 0 ? "clock" : "checkmark.circle.fill",
+              summary.failing > 0 ? ADEColor.danger : summary.running > 0 ? ADEColor.warning : (notRun ? ADEColor.textMuted : ADEColor.success))
+    }
+    if let ci = data.ciIndicator { return (ci.title, "checklist", ci.color) }
+    return nil
+  }
+}
+
+// MARK: - Model
 
 extension PrRowCard {
   struct Data {
@@ -348,62 +400,38 @@ extension PrRowCard {
     let baseBranch: String?
     let authorLogin: String?
     let isBot: Bool
-    let commentCount: Int
     let repoOwner: String
     let repoName: String
     let isExternal: Bool
     let isUnmapped: Bool
+    let laneId: String?
     let laneLabel: String?
     let checksStatus: String?
-    /// Host-supplied explanation for a non-obvious rollup. Surfaced verbatim on
-    /// the CI indicator's accessibility label so the "why" travels with the glyph.
+    /// Host-supplied explanation for a non-obvious rollup, carried on the CI
+    /// glyph's accessibility label.
     let checksReason: String?
     let reviewStatus: String?
     let warnMessage: String?
-    let stackGroupId: String?
-    let stackGroupName: String?
-    let stackGroupCount: Int?
-    let githubStack: GitHubPrStackMembership?
-    /// True for merged/closed rows, which render as a record rather than a queue item.
+    var additions: Int?
+    var deletions: Int?
+    /// True for merged/closed rows, which read as a record rather than a queue item.
     var isTerminal: Bool = false
     /// Lane provenance frozen when the lane was deleted.
     var detached: PrDetachedLane? = nil
     var mergedAt: String? = nil
-    var mergedByLogin: String? = nil
-    var mergeMethod: String? = nil
     var needsBranchCleanup: Bool = false
+    /// The lane's machine, only when it is not the primary machine.
+    var laneMachineName: String? = nil
 
-    var timeAgo: String {
-      // Open rows are about how long something has waited; merged rows about when it
-      // shipped.
-      prRelativeTime(isTerminal ? (mergedAt ?? updatedAt) : updatedAt)
-    }
-
-    /// `arul · squash · → main` — how a terminal PR shipped. Each part is optional so
-    /// PRs merged before the host recorded this simply show less.
-    var mergeFacts: String? {
-      guard isTerminal else { return nil }
-      var parts: [String] = []
-      if let login = mergedByLogin, !login.isEmpty { parts.append(login) }
-      if let method = mergeMethod, !method.isEmpty { parts.append(method) }
-      if let base = baseBranch, !base.isEmpty { parts.append("→ \(base)") }
-      return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// `was: auto-naming · 3 chats · 2 proof`
-    var provenanceLabel: String? {
-      guard let detached else { return nil }
-      var parts: [String] = []
-      if let name = detached.laneName, !name.isEmpty { parts.append("was: \(name)") }
-      if detached.chats > 0 { parts.append("\(detached.chats) chat\(detached.chats == 1 ? "" : "s")") }
-      if detached.artifacts > 0 { parts.append("\(detached.artifacts) proof") }
-      return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    /// `head → base` for an open PR, `→ base` once it merged or closed.
+    var branchLine: String? {
+      guard let base = baseBranch, !base.isEmpty else { return nil }
+      if !isTerminal, let head = headBranch, !head.isEmpty { return "\(head) → \(base)" }
+      return "→ \(base)"
     }
 
     struct CIIndicator {
-      /// ADE-135. `not_run` has no honest SF Symbol — every circle-with-a-mark
-      /// reads as a verdict, and this state is the absence of one. It draws a
-      /// hollow dashed ring instead: an empty slot where a result should be.
+      /// `not_run` has no honest SF Symbol, so it draws a hollow dashed ring.
       enum Glyph: Equatable {
         case symbol(String)
         case hollowRing
@@ -414,40 +442,16 @@ extension PrRowCard {
       let title: String
     }
 
-    struct ReviewIndicator {
-      let label: String
-      let color: Color
-    }
-
     var ciIndicator: CIIndicator? {
       switch checksStatus {
       case "passing":
-        return CIIndicator(glyph: .symbol("checkmark.circle.fill"), color: PrsGlass.openTop, title: "CI passing")
+        return CIIndicator(glyph: .symbol("checkmark.circle.fill"), color: ADEColor.success, title: "CI passing")
       case "failing":
-        return CIIndicator(glyph: .symbol("xmark.circle.fill"), color: PrsGlass.closedTop, title: "CI failing")
+        return CIIndicator(glyph: .symbol("xmark.circle.fill"), color: ADEColor.danger, title: "CI failing")
       case "pending":
-        return CIIndicator(glyph: .symbol("clock.fill"), color: PrsGlass.draftTop, title: "CI pending")
+        return CIIndicator(glyph: .symbol("clock.fill"), color: ADEColor.warning, title: "CI pending")
       case "not_run":
-        // Checks exist or are required, but nothing verified this commit. Muted,
-        // never the failure red — this is a gap, not a red build.
-        return CIIndicator(
-          glyph: .hollowRing,
-          color: PrsGlass.textMuted,
-          title: checksReason ?? noCIReasonText
-        )
-      default:
-        return nil
-      }
-    }
-
-    var reviewIndicator: ReviewIndicator? {
-      switch reviewStatus {
-      case "approved":
-        return ReviewIndicator(label: "Approved", color: PrsGlass.openTop)
-      case "changes_requested":
-        return ReviewIndicator(label: "Changes", color: PrsGlass.closedTop)
-      case "requested":
-        return ReviewIndicator(label: "Review required", color: PrsGlass.draftTop)
+        return CIIndicator(glyph: .hollowRing, color: ADEColor.textMuted, title: checksReason ?? noCIReasonText)
       default:
         return nil
       }
@@ -463,32 +467,25 @@ extension PrRowCard {
       self.baseBranch = pr.baseBranch
       self.authorLogin = nil
       self.isBot = false
-      self.commentCount = 0
       self.repoOwner = pr.repoOwner
       self.repoName = pr.repoName
       self.isExternal = false
       self.isUnmapped = false
-      self.laneLabel = pr.laneName ?? pr.laneId
-      // Only "none" (nothing observed, nothing expected) is silent. "not_run" is a
-      // finding and must survive to `ciIndicator`.
+      self.laneId = pr.laneId.isEmpty ? nil : pr.laneId
+      self.laneLabel = pr.laneName ?? (pr.laneId.isEmpty ? nil : pr.laneId)
+      // Only "none" (nothing observed, nothing expected) is silent; "not_run" is a finding.
       self.checksStatus = pr.checksStatus == "none" ? nil : pr.checksStatus
       self.checksReason = pr.checksReason
       self.reviewStatus = pr.reviewStatus == "none" ? nil : pr.reviewStatus
-      self.warnMessage = Self.warnMessage(
-        workflowDisplayState: pr.workflowDisplayState,
-        checksStatus: pr.checksStatus,
-        baseBranch: pr.baseBranch
-      )
-      self.stackGroupId = pr.linkedGroupId
-      self.stackGroupName = pr.linkedGroupName
-      self.stackGroupCount = pr.linkedGroupCount > 0 ? pr.linkedGroupCount : nil
-      self.githubStack = pr.stack
+      self.warnMessage = Self.warnMessage(workflowDisplayState: pr.workflowDisplayState, checksStatus: pr.checksStatus, baseBranch: pr.baseBranch)
+      self.additions = pr.additions
+      self.deletions = pr.deletions
+      self.isTerminal = pr.state == "merged" || pr.state == "closed"
+      self.detached = pr.detached
+      self.mergedAt = pr.mergedAt
     }
 
     init(item: GitHubPrListItem, linkedPr: PullRequestListItem?) {
-      // No lane link. Nothing user-facing is drawn from this any more — it only
-      // suppresses the workflow warn banner, which reads ADE-side workflow state
-      // that a PR with no local row cannot have.
       let terminal = item.state == "merged" || item.state == "closed"
       let unmapped = !terminal
         && item.scope != "external"
@@ -504,58 +501,41 @@ extension PrRowCard {
       self.baseBranch = item.baseBranch
       self.authorLogin = item.author
       self.isBot = item.isBot
-      self.commentCount = item.commentCount
       self.repoOwner = item.repoOwner
       self.repoName = item.repoName
       self.isExternal = item.scope == "external"
       self.isUnmapped = unmapped
-      self.laneLabel = item.linkedLaneName ?? item.linkedLaneId ?? linkedPr?.laneName ?? linkedPr?.laneId
+      let laneId = item.linkedLaneId ?? linkedPr?.laneId
+      self.laneId = laneId?.isEmpty == false ? laneId : nil
+      self.laneLabel = item.linkedLaneName ?? item.linkedLaneId ?? linkedPr?.laneName ?? (linkedPr?.laneId.isEmpty == false ? linkedPr?.laneId : nil)
       self.checksStatus = linkedPr?.checksStatus == "none" ? nil : linkedPr?.checksStatus
       self.checksReason = linkedPr?.checksReason
       self.reviewStatus = linkedPr?.reviewStatus == "none" ? nil : linkedPr?.reviewStatus
       self.warnMessage = unmapped
         ? nil
-        : Self.warnMessage(
-          workflowDisplayState: item.workflowDisplayState,
-          checksStatus: linkedPr?.checksStatus,
-          baseBranch: item.baseBranch
-        )
-      self.stackGroupId = item.linkedGroupId
-      self.stackGroupName = nil
-      self.stackGroupCount = nil
-      self.githubStack = item.stack ?? linkedPr?.stack
+        : Self.warnMessage(workflowDisplayState: item.workflowDisplayState, checksStatus: linkedPr?.checksStatus, baseBranch: item.baseBranch)
+      // The live linked row first; the list item's own values keep a detached
+      // PR's stats after its lane is gone.
+      self.additions = linkedPr?.additions ?? item.additions
+      self.deletions = linkedPr?.deletions ?? item.deletions
       self.isTerminal = terminal
       self.detached = item.detached ?? linkedPr?.detached
       self.mergedAt = item.mergedAt ?? linkedPr?.mergedAt
-      self.mergedByLogin = (item.mergedBy ?? linkedPr?.mergedBy)?.login
-      self.mergeMethod = item.mergeMethod ?? linkedPr?.mergeMethod
       // The only actionable thing left on a merged PR: its remote branch still exists.
       self.needsBranchCleanup = terminal && item.cleanupState == "required"
     }
 
-    private static func warnMessage(
-      workflowDisplayState: String?,
-      checksStatus: String?,
-      baseBranch: String?
-    ) -> String? {
+    private static func warnMessage(workflowDisplayState: String?, checksStatus: String?, baseBranch: String?) -> String? {
       if let state = workflowDisplayState {
         switch state {
-        case "rebase-needed":
-          let target = baseBranch ?? "base"
-          return "Rebase against \(target)"
-        case "conflict", "merge-conflict":
-          return "Merge conflict detected"
-        case "queued":
-          return "In queue"
-        default:
-          break
+        case "rebase-needed": return "Rebase against \(baseBranch ?? "base")"
+        case "conflict", "merge-conflict": return "Merge conflict detected"
+        case "queued": return "In queue"
+        default: break
         }
       }
-      if checksStatus == "failing" {
-        return "CI failing"
-      }
-      // "not_run" deliberately produces no warn banner: the hollow ring already
-      // states it, and this row is reserved for things the user must act on.
+      if checksStatus == "failing" { return "CI failing" }
+      // "not_run" is stated by the hollow ring; it is not a warning.
       return nil
     }
   }

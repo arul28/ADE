@@ -32,6 +32,17 @@ extension WorkChatSessionView {
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
+    case .userSegment(let model):
+      WorkChatMessageBubble(
+        message: model.message,
+        maxUserBubbleWidth: maxUserBubbleWidth,
+        userSegment: model.segment,
+        onRunUnprocessed: onRunUnprocessedMessage,
+        onEditUnprocessed: onEditUnprocessedMessage,
+        onDismissUnprocessed: onDismissUnprocessedMessage,
+        onOpenFullOutput: {}
+      )
+      .equatable()
     case .assistantMonospaced(let model):
       WorkAssistantMonospacedRow(
         model: model,

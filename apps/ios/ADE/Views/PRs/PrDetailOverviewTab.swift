@@ -1,400 +1,464 @@
 import SwiftUI
-import UIKit
 
-// MARK: - Overview thread row components (desktop Timeline+Rails parity)
-//
-// The Overview tab used to render ONE monolithic `PrUnifiedOverviewThread`
-// view inside a single List row, which defeated list virtualization and was
-// the primary source of scroll lag on long PRs. It is now a set of standalone
-// row components that `PrDetailScreen.overviewThreadRows` emits as SIBLING
-// List rows:
-//
-//   unmapped banner → description → chronological event feed →
-//   review threads → composer → metadata cards (people / stack / cleanup).
-//
-// The merge bar and requirement chips live in `PrDetailRedesign.swift`.
-//
-// All surfaces use the flat adaptive PR tokens (`PrGlassPalette` /
-// `prGlassCard`) — no materials, no blend modes, no blur.
+// The Overview tab on the flat base: the cleaned description, the open review
+// threads as compact rows, then the history — push dividers, one digest row
+// per bot, people's comments and the lifecycle events.
 
-/// The record of how a PR shipped, and of the lane it outlived.
-struct PrShippedFacts {
-  var mergedByLogin: String?
-  var mergeMethod: String?
-  var mergedAt: String?
-  var createdAt: String?
-  var commitCount: Int?
-  var changedFiles: Int?
-  var detached: PrDetachedLane?
+struct PrOverviewSections: View {
+  let description: String
+  let digest: PrConversationDigest
+  let threadsById: [String: PrReviewThread]
+  let canAct: Bool
+  let onReply: (_ threadId: String, _ body: String) -> Void
+  let onResolve: (_ threadId: String, _ resolved: Bool) -> Void
 
-  /// `by arul · squash · 3 Jan`
-  var attributionLine: String? {
-    var parts: [String] = []
-    var attribution: [String] = []
-    if let login = mergedByLogin, !login.isEmpty { attribution.append(login) }
-    if let method = mergeMethod, !method.isEmpty { attribution.append(method) }
-    if !attribution.isEmpty { parts.append("by \(attribution.joined(separator: " · "))") }
-    if let mergedAt, prParsedDate(mergedAt) != nil { parts.append(prAbsoluteTime(mergedAt)) }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
-  }
-
-  /// `12 commits · 9 files · open 2d 4h`
-  var sizeLine: String? {
-    var parts: [String] = []
-    if let commitCount { parts.append("\(commitCount) commit\(commitCount == 1 ? "" : "s")") }
-    if let changedFiles { parts.append("\(changedFiles) file\(changedFiles == 1 ? "" : "s")") }
-    if let open = openDuration { parts.append("open \(open)") }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
-  }
-
-  /// `was: auto-naming · 3 chats · 2 proof`
-  var provenanceLine: String? {
-    guard let detached, let name = detached.laneName, !name.isEmpty else { return nil }
-    var parts = ["was: \(name)"]
-    if detached.chats > 0 { parts.append("\(detached.chats) chat\(detached.chats == 1 ? "" : "s")") }
-    if detached.artifacts > 0 { parts.append("\(detached.artifacts) proof") }
-    return parts.joined(separator: " · ")
-  }
-
-  /// "2d 4h" / "5h" / "12m" — how long the PR was open before it merged.
-  private var openDuration: String? {
-    guard let start = prParsedDate(createdAt), let end = prParsedDate(mergedAt), end > start else { return nil }
-    let minutes = Int((end.timeIntervalSince(start) / 60).rounded())
-    if minutes < 60 { return "\(minutes)m" }
-    let hours = minutes / 60
-    if hours < 24 { return "\(hours)h" }
-    let days = hours / 24
-    let remainder = hours % 24
-    return remainder > 0 ? "\(days)d \(remainder)h" : "\(days)d"
-  }
-
-  var isEmpty: Bool {
-    attributionLine == nil && sizeLine == nil && provenanceLine == nil
-  }
-}
-
-// MARK: - Metadata cards
-
-/// People card — author, reviewers with state, labels, assignees, and linked
-/// issues (desktop right-rail People + Development cards).
-struct PrOverviewPeopleCard: View {
-  let detail: PrDetail?
-  let reviews: [PrReview]
-  let authorLogin: String?
-
-  private struct ReviewerEntry: Identifiable {
-    let id: String
-    let login: String
-    let stateLabel: String
-    let stateTint: Color
-  }
-
-  private var reviewerEntries: [ReviewerEntry] {
-    // A requested reviewer may already have a submitted review (re-request,
-    // stale request list) — the submitted state must win over "pending".
-    var latestReviewByReviewer: [String: PrReview] = [:]
-    for review in reviews where prBotProvider(from: review.reviewer) == nil {
-      latestReviewByReviewer[review.reviewer] = review
-    }
-
-    func reviewedEntry(_ review: PrReview) -> ReviewerEntry {
-      switch review.state {
-      case "approved":
-        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "approved", stateTint: ADEColor.success)
-      case "changes_requested":
-        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "changes", stateTint: ADEColor.danger)
-      default:
-        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "commented", stateTint: ADEColor.textSecondary)
-      }
-    }
-
-    var seen = Set<String>()
-    var entries: [ReviewerEntry] = []
-    for user in detail?.requestedReviewers ?? [] where seen.insert(user.login).inserted {
-      if let review = latestReviewByReviewer[user.login] {
-        entries.append(reviewedEntry(review))
-      } else {
-        entries.append(ReviewerEntry(id: "req-\(user.login)", login: user.login, stateLabel: "pending", stateTint: ADEColor.warning))
-      }
-    }
-    for review in reviews {
-      // Dict membership doubles as the bot filter — only human reviewers were indexed.
-      guard let latest = latestReviewByReviewer[review.reviewer],
-            seen.insert(review.reviewer).inserted else { continue }
-      entries.append(reviewedEntry(latest))
-    }
-    return entries
-  }
+  @State private var expandedBots: Set<String> = []
+  @State private var expandedEntries: Set<String> = []
 
   var body: some View {
-    let labels = detail?.labels ?? []
-    let assignees = detail?.assignees ?? []
-    let linkedIssues = detail?.linkedIssues ?? []
-    let reviewers = reviewerEntries
-
-    VStack(alignment: .leading, spacing: 0) {
-      PrSectionHdr(title: "People")
-
-      if let authorLogin, !authorLogin.isEmpty {
-        peopleRow(login: authorLogin, roleLabel: "author", roleTint: ADEColor.textSecondary)
-      }
-      ForEach(reviewers) { reviewer in
-        peopleRow(login: reviewer.login, roleLabel: reviewer.stateLabel, roleTint: reviewer.stateTint)
-      }
-      ForEach(assignees) { assignee in
-        peopleRow(login: assignee.login, roleLabel: "assignee", roleTint: ADEColor.info)
+    Group {
+      Section {
+        if description.isEmpty {
+          Text("No description.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+            .adeFlatRow(separator: .hidden)
+        } else {
+          PrFlatDescription(text: description)
+            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16), separator: .hidden)
+        }
       }
 
-      if !labels.isEmpty {
-        Divider().background(PrGlassPalette.cardBorder)
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 6) {
-            ForEach(labels) { label in
-              let tint = prLabelColor(label.color)
-              Text(label.name)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(tint)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Capsule(style: .continuous).fill(tint.opacity(0.14)))
-                .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.35), lineWidth: 0.5))
+      if !digest.openThreads.isEmpty {
+        Section {
+          ForEach(digest.openThreads) { item in
+            threadLink(item.entry) {
+              PrOpenThreadRow(entry: item.entry, identity: item.identity)
             }
           }
-          .padding(.horizontal, 14)
-        }
-        .padding(.vertical, 10)
-      }
-
-      if !linkedIssues.isEmpty {
-        Divider().background(PrGlassPalette.cardBorder)
-        ForEach(linkedIssues) { issue in
-          HStack(spacing: 8) {
-            Image(systemName: issue.state == "closed" ? "checkmark.circle" : "smallcircle.filled.circle")
-              .font(.system(size: 11))
-              .foregroundStyle(issue.state == "closed" ? ADEColor.accent : ADEColor.success)
-            Text("#\(issue.number)")
-              .font(.system(size: 11, weight: .semibold, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-            Text(issue.title)
-              .font(.system(size: 12))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 8)
+        } header: {
+          ADEFlatSectionHeader("Open threads", detail: "\(digest.openThreads.count)")
         }
       }
-    }
-    .padding(.bottom, 6)
-    .prGlassCard(cornerRadius: 16)
-  }
 
-  private func peopleRow(login: String, roleLabel: String, roleTint: Color) -> some View {
-    HStack(spacing: 10) {
-      ZStack {
-        Circle().fill(ADEColor.accent.opacity(0.14))
-        Circle().strokeBorder(ADEColor.accent.opacity(0.3), lineWidth: 0.5)
-        Text(String(login.prefix(1)).uppercased())
-          .font(.system(size: 10, weight: .heavy))
-          .foregroundStyle(ADEColor.accent)
-      }
-      .frame(width: 24, height: 24)
-      Text(login)
-        .font(.system(size: 12.5, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-      Spacer(minLength: 8)
-      PrTagChip(label: roleLabel, color: roleTint)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 7)
-  }
-}
-
-/// Parses a GitHub label hex string (e.g. "d73a4a") into a Color; falls back
-/// to the accent for malformed values.
-func prLabelColor(_ hex: String) -> Color {
-  var value: UInt64 = 0
-  let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-  guard cleaned.count == 6, Scanner(string: cleaned).scanHexInt64(&value) else {
-    return ADEColor.accent
-  }
-  return Color(
-    red: Double((value >> 16) & 0xFF) / 255,
-    green: Double((value >> 8) & 0xFF) / 255,
-    blue: Double(value & 0xFF) / 255
-  )
-}
-
-/// Stack card — sibling PRs in the same lane chain.
-struct PrOverviewStackCard: View {
-  let groupMembers: [PrGroupMemberSummary]
-  let groupId: String
-  let laneName: String?
-  let isLive: Bool
-  let onOpenStack: (String, String?) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      PrSectionHdr(title: "Stack") {
-        Text("\(groupMembers.count) PRs")
-      }
-
-      VStack(alignment: .leading, spacing: 8) {
-        ForEach(groupMembers) { member in
-          HStack(spacing: 10) {
-            Text("\(member.position + 1)")
-              .font(.caption.weight(.bold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(width: 22, height: 22)
-              .background(ADEColor.accent.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-              Text(member.title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              Text("#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
+      if !digest.items.isEmpty {
+        Section {
+          ForEach(digest.items) { item in
+            switch item {
+            case .push(let push):
+              PrPushDividerRow(push: push)
+                .adeFlatRow(insets: EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16), separator: .hidden)
+            case .bot(let group):
+              botRows(group)
+            case .entry(let entry, let identity):
+              entryRow(entry, identity: identity)
+            case .story(let event):
+              PrStoryRow(event: event)
+                .adeFlatRow(insets: EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16), separator: .hidden)
             }
           }
+        } header: {
+          ADEFlatSectionHeader("Activity")
         }
-
-        Button("Open stack") {
-          onOpenStack(groupId, laneName)
-        }
-        .buttonStyle(.glass)
-        .disabled(!isLive)
       }
-      .padding(.horizontal, 14)
-      .padding(.bottom, 12)
     }
-    .prGlassCard(cornerRadius: 16)
   }
-}
 
-struct PrOverviewGitHubStackCard: View {
-  let stack: GitHubPrStackMembership
-  let prNumber: Int
-  let onOpenGitHub: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      PrSectionHdr(title: "GitHub stack") {
-        Text("\(stack.position) of \(stack.size)")
+  @ViewBuilder
+  private func botRows(_ group: PrDigestBotGroup) -> some View {
+    let expanded = expandedBots.contains(group.id)
+    Button {
+      withAnimation(.snappy(duration: 0.2)) {
+        if expanded { expandedBots.remove(group.id) } else { expandedBots.insert(group.id) }
       }
-
-      HStack(alignment: .top, spacing: 12) {
-        VStack(spacing: 3) {
-          ForEach(Array((1...max(stack.size, 1)).reversed()), id: \.self) { position in
-            Circle()
-              .fill(position == stack.position ? ADEColor.tintPRs : ADEColor.textMuted.opacity(0.35))
-              .frame(width: position == stack.position ? 10 : 6, height: position == stack.position ? 10 : 6)
-              .overlay {
-                if position == stack.position {
-                  Circle().stroke(Color.white.opacity(0.45), lineWidth: 1)
-                }
+    } label: {
+      PrBotDigestRow(group: group, expanded: expanded)
+    }
+    .buttonStyle(.plain)
+    .adeFlatRow(insets: EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
+    if expanded {
+      ForEach(group.entries) { entry in
+        if entry.kind == .thread {
+          threadLink(entry) {
+            PrDigestEntryLine(entry: entry)
+          }
+          .listRowInsets(EdgeInsets(top: 5, leading: 46, bottom: 5, trailing: 16))
+        } else {
+          let open = expandedEntries.contains(entry.id)
+          VStack(alignment: .leading, spacing: 6) {
+            Button {
+              withAnimation(.snappy(duration: 0.2)) {
+                if open { expandedEntries.remove(entry.id) } else { expandedEntries.insert(entry.id) }
               }
-            if position > 1 {
-              Rectangle()
-                .fill(ADEColor.tintPRs.opacity(0.25))
-                .frame(width: 2, height: 14)
+            } label: {
+              PrDigestEntryLine(entry: entry)
+            }
+            .buttonStyle(.plain)
+            if open, let body = entry.body {
+              PrMarkdownRenderer(markdown: prCleanBody(body).body)
+                .padding(.leading, 20)
             }
           }
-        }
-        .frame(width: 18)
-
-        VStack(alignment: .leading, spacing: 6) {
-          GitHubStackPositionBadge(stack: stack)
-          Text("PR #\(prNumber) is position \(stack.position) of \(stack.size), based on \(stack.baseBranch).")
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text("GitHub manages stack-wide review, rebase, and merge. Open the pull request to preview or merge the stack.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+          .adeFlatRow(insets: EdgeInsets(top: 5, leading: 46, bottom: 5, trailing: 16), separator: .hidden)
         }
       }
-
-      Button(action: onOpenGitHub) {
-        Label("Review and merge on GitHub", systemImage: "arrow.up.right.square")
-          .frame(maxWidth: .infinity)
-      }
-      .buttonStyle(.glassProminent)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .prGlassCard(cornerRadius: 16)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(
-      "GitHub Stack \(stack.number), pull request \(stack.position) of \(stack.size), base \(stack.baseBranch)"
-    )
+  }
+
+  @ViewBuilder
+  private func entryRow(_ entry: PrDigestEntry, identity: PrAuthorIdentity) -> some View {
+    if entry.kind == .thread {
+      threadLink(entry) {
+        PrOpenThreadRow(entry: entry, identity: identity)
+      }
+    } else {
+      PrHumanEntryRow(entry: entry, identity: identity)
+        .adeFlatRow(insets: EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
+    }
+  }
+
+  @ViewBuilder
+  private func threadLink<Label: View>(_ entry: PrDigestEntry, @ViewBuilder label: () -> Label) -> some View {
+    let threadId = entry.id.hasPrefix("thread:") ? String(entry.id.dropFirst("thread:".count)) : entry.id
+    if let thread = threadsById[threadId] {
+      NavigationLink {
+        PrThreadPage(thread: thread, canAct: canAct, onReply: { onReply(threadId, $0) }, onResolve: { onResolve(threadId, $0) })
+      } label: {
+        label()
+      }
+      .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+    } else {
+      label()
+        .adeFlatRow(insets: EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+    }
   }
 }
 
-// MARK: - Shared helpers retained
-//
-// `PrDetailSectionCard` is shared with `PrDetailChecksTab`; `PrLaneCleanupBanner`
-// is emitted by the Overview thread for merged PRs.
+// MARK: - Rows
 
-struct PrDetailSectionCard<Content: View>: View {
-  let title: String
-  let content: Content
-
-  init(_ title: String, @ViewBuilder content: () -> Content) {
-    self.title = title
-    self.content = content()
-  }
+/// An open review thread: who, where, and the first line of what they said.
+struct PrOpenThreadRow: View {
+  let entry: PrDigestEntry
+  let identity: PrAuthorIdentity
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text(title)
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-      content
+    HStack(alignment: .top, spacing: 10) {
+      PrAvatar(login: entry.author, isBot: entry.authorIsBot, avatarUrl: entry.avatarUrl, size: 20)
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 6) {
+          Text(identity.displayName)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if let location = entry.location {
+            Text(verbatim: location)
+              .font(.adeMono(11))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          Spacer(minLength: 0)
+          if entry.resolved {
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(ADEColor.success)
+          }
+        }
+        let preview = prDigestPreview(entry.body)
+        Text(preview.isEmpty ? "Review comment" : preview)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+      }
     }
-    .adeGlassCard(cornerRadius: 18)
+    .accessibilityElement(children: .combine)
   }
 }
 
-struct PrLaneCleanupBanner: View {
-  let laneName: String?
-  let isLive: Bool
-  let onArchive: () -> Void
-  let onDeleteBranch: () -> Void
+/// `── ⟲ e348c0e feat(providers)… · 3 commits · 11d ──`
+struct PrPushDividerRow: View {
+  let push: PrDigestPush
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: "trash.circle.fill")
-          .foregroundStyle(ADEColor.warning)
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Lane cleanup")
-            .font(.headline)
+    HStack(spacing: 6) {
+      Rectangle().fill(ADEFlat.hairline).frame(width: 10, height: 0.5)
+      Image(systemName: push.forcePushed ? "arrow.triangle.2.circlepath" : "arrow.up.circle")
+        .font(.system(size: 10, weight: .semibold))
+      Text(verbatim: push.shortSha)
+        .font(.adeMono(10.5))
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1)
+        .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+      Text(push.subject)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      if push.commitCount > 1 {
+        Text("· \(push.commitCount) commits").font(.caption).lineLimit(1).fixedSize()
+      }
+      Text("· \(prCompactRelativeTime(push.at))").font(.adeMono(10.5)).fixedSize()
+      Rectangle().fill(ADEFlat.hairline).frame(minWidth: 8, maxWidth: .infinity, maxHeight: 0.5)
+        .layoutPriority(-1)
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(push.forcePushed ? "Force push" : "Push") \(push.shortSha), \(push.subject)")
+  }
+}
+
+/// "Devin · 10 threads · all resolved · 2 comments", amber while a thread is open.
+struct PrBotDigestRow: View {
+  let group: PrDigestBotGroup
+  let expanded: Bool
+
+  private var fromDescription: Bool {
+    !group.entries.isEmpty && group.entries.allSatisfy { $0.id.hasPrefix(prDescriptionBotEventPrefix) }
+  }
+
+  var body: some View {
+    HStack(spacing: 10) {
+      PrAvatar(login: group.identity.login, isBot: true, avatarUrl: group.avatarUrl, size: 20)
+      VStack(alignment: .leading, spacing: 1) {
+        HStack(spacing: 6) {
+          Text(group.identity.displayName)
+            .font(.footnote.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("\(laneName ?? "This lane") merged successfully. Clean it up now to archive it or delete its branch.")
-            .font(.subheadline)
+          if fromDescription {
+            Text("in the description").font(.caption2).foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        Text(prDescribeBotGroup(group))
+          .font(.caption)
+          .foregroundStyle(group.openThreadCount > 0 ? ADEColor.warning : ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+      Spacer(minLength: 6)
+      Text(prCompactRelativeTime(group.latestAt)).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
+      Image(systemName: "chevron.right")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .rotationEffect(.degrees(expanded ? 90 : 0))
+    }
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .combine)
+    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+  }
+}
+
+/// One of a bot's entries: its state, where, and its first line.
+struct PrDigestEntryLine: View {
+  let entry: PrDigestEntry
+
+  private var glyph: (String, Color) {
+    switch entry.kind {
+    case .thread:
+      if entry.outdated { return ("clock", ADEColor.textMuted) }
+      return entry.resolved ? ("checkmark.circle.fill", ADEColor.success) : ("exclamationmark.circle.fill", ADEColor.warning)
+    case .review:
+      switch entry.reviewState {
+      case "approved": return ("checkmark.circle.fill", ADEColor.success)
+      case "changes_requested": return ("exclamationmark.circle.fill", ADEColor.danger)
+      default: return ("eye", ADEColor.textMuted)
+      }
+    case .comment:
+      return ("text.bubble", ADEColor.textMuted)
+    }
+  }
+
+  private var text: String {
+    let preview = prDigestPreview(entry.body)
+    if !preview.isEmpty { return preview }
+    switch entry.kind {
+    case .review: return entry.reviewState == "approved" ? "Approved" : "Reviewed"
+    case .comment: return "Comment"
+    case .thread: return "Review comment"
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Image(systemName: glyph.0).font(.system(size: 11, weight: .semibold)).foregroundStyle(glyph.1).frame(width: 14)
+      if let location = entry.location {
+        Text(verbatim: location).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted).lineLimit(1).fixedSize()
+      }
+      Text(text).font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(1)
+      Spacer(minLength: 0)
+    }
+    .contentShape(Rectangle())
+  }
+}
+
+/// A person's review or comment, in full.
+struct PrHumanEntryRow: View {
+  let entry: PrDigestEntry
+  let identity: PrAuthorIdentity
+
+  private var verb: String {
+    switch entry.kind {
+    case .review:
+      switch entry.reviewState {
+      case "approved": return "approved"
+      case "changes_requested": return "requested changes"
+      case "dismissed": return "review dismissed"
+      default: return "reviewed"
+      }
+    case .comment: return "commented"
+    case .thread: return "commented on a line"
+    }
+  }
+
+  var body: some View {
+    let body = prCleanBody(entry.body).body
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 7) {
+        PrAvatar(login: entry.author, isBot: entry.authorIsBot, avatarUrl: entry.avatarUrl, size: 20)
+        Text(identity.displayName).font(.footnote.weight(.semibold)).foregroundStyle(ADEColor.textPrimary)
+        Text(verb)
+          .font(.footnote)
+          .foregroundStyle(entry.reviewState == "approved" ? ADEColor.success : entry.reviewState == "changes_requested" ? ADEColor.danger : ADEColor.textSecondary)
+        Spacer(minLength: 0)
+        Text(prCompactRelativeTime(entry.at)).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
+      }
+      if !body.isEmpty {
+        PrMarkdownRenderer(markdown: body)
+          .padding(.leading, 27)
+      }
+    }
+  }
+}
+
+/// A lifecycle event as one quiet line.
+struct PrStoryRow: View {
+  let event: PrTimelineEvent
+
+  private var symbol: String {
+    switch event.kind {
+    case .deployment: return "shippingbox"
+    case .label: return "tag"
+    case .reviewRequest: return "person.crop.circle.badge.questionmark"
+    case .stateChange: return event.title.hasPrefix("Merged") ? "arrow.triangle.merge" : "circle.dotted"
+    default: return "circle.fill"
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(event.title.hasPrefix("Merged") ? ADEColor.accent : ADEColor.textMuted)
+        .frame(width: 20)
+      Text(event.title).font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(2)
+      Spacer(minLength: 6)
+      Text(prCompactRelativeTime(event.timestamp)).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+// MARK: - Thread page
+
+/// One review thread: every comment, a reply box, and Resolve.
+struct PrThreadPage: View {
+  let thread: PrReviewThread
+  let canAct: Bool
+  let onReply: (String) -> Void
+  let onResolve: (Bool) -> Void
+
+  @Environment(\.dismiss) private var dismiss
+  @State private var draft = ""
+  @State private var sentCount = 0
+  @FocusState private var composerFocused: Bool
+
+  private var location: String {
+    guard let path = thread.path else { return "Conversation" }
+    let line = thread.line ?? thread.originalLine
+    return line.map { "\(path):\($0)" } ?? path
+  }
+
+  var body: some View {
+    List {
+      Section {
+        HStack(spacing: 8) {
+          Text(verbatim: location)
+            .font(.adeMono(12))
             .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+            .truncationMode(.middle)
+          Spacer(minLength: 6)
+          if thread.isResolved {
+            ADEFlatBadge(text: "resolved", tint: ADEColor.success)
+          } else if thread.isOutdated {
+            ADEFlatBadge(text: "outdated", tint: ADEColor.textMuted)
+          } else {
+            ADEFlatBadge(text: "open", tint: ADEColor.warning)
+          }
+        }
+        .adeFlatRow(separator: .hidden)
+      }
+      Section {
+        ForEach(thread.comments) { comment in
+          VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+              PrAvatar(login: comment.author, isBot: comment.authorIsBot, avatarUrl: comment.authorAvatarUrl, size: 20)
+              Text(PrAuthorIdentity.classify(comment.author, accountIsBot: comment.authorIsBot).displayName)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+              Spacer(minLength: 0)
+              Text(prCompactRelativeTime(comment.createdAt)).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
+            }
+            let body = prCleanBody(comment.body).body
+            if !body.isEmpty {
+              PrMarkdownRenderer(markdown: body)
+            }
+          }
+          .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
         }
       }
-
-      HStack(spacing: 10) {
-        Button("Archive lane") {
-          onArchive()
+    }
+    .adeFlatList()
+    .navigationTitle(thread.path.map(prFileName) ?? "Thread")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        Button(thread.isResolved ? "Reopen" : "Resolve") {
+          ADEHaptics.success()
+          onResolve(!thread.isResolved)
+          dismiss()
         }
-        .buttonStyle(.glass)
-        .disabled(!isLive)
-
-        Button("Delete branch", role: .destructive) {
-          onDeleteBranch()
+        .disabled(!canAct)
+      }
+    }
+    .safeAreaInset(edge: .bottom) {
+      HStack(spacing: 8) {
+        TextField(canAct ? "Reply…" : "Connect to reply", text: $draft, axis: .vertical)
+          .lineLimit(1...5)
+          .font(.subheadline)
+          .focused($composerFocused)
+          .disabled(!canAct)
+        Button {
+          let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+          guard !text.isEmpty else { return }
+          onReply(text)
+          draft = ""
+          composerFocused = false
+          sentCount += 1
+        } label: {
+          Image(systemName: "arrow.up")
+            .font(.system(size: 14, weight: .bold))
+            .frame(width: 30, height: 30)
         }
         .buttonStyle(.glassProminent)
-        .tint(ADEColor.warning)
-        .disabled(!isLive)
+        .buttonBorderShape(.circle)
+        .tint(ADEColor.accent)
+        .disabled(!canAct || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityLabel("Send reply")
       }
+      .padding(.leading, 16)
+      .padding(.trailing, 6)
+      .padding(.vertical, 6)
+      .glassEffect(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+      .padding(.horizontal, 12)
+      .padding(.bottom, 6)
     }
-    .adeGlassCard(cornerRadius: 18)
+    .sensoryFeedback(.success, trigger: sentCount)
   }
 }

@@ -182,6 +182,21 @@ import type { createSessionService } from "../../../../desktop/src/main/services
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import {
+  assertFileRequestWorkspaceVisibleToPeer,
+  fileContentToBlob,
+  inferMimeType,
+  runSyncFileServiceRequest,
+  syncFileRequestWorkspaceId,
+  visibleFileWorkspacesForPeer,
+} from "./syncFileRequests";
+
+export {
+  assertFileRequestWorkspaceVisibleToPeer,
+  runSyncFileServiceRequest,
+  syncFileRequestWorkspaceId,
+  visibleFileWorkspacesForPeer,
+};
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import {
@@ -704,45 +719,6 @@ export function buildSyncProjectCatalogMessages(args: {
     requestId,
   }));
 }
-export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
-  switch (payload.action) {
-    case "listTree":
-    case "listTreeChildren":
-    case "refreshGitDecorations":
-    case "readFile":
-    case "readFileRange":
-    case "gitBlame":
-    case "writeText":
-    case "createFile":
-    case "createDirectory":
-    case "rename":
-    case "deletePath":
-    case "watchChanges":
-    case "stopWatching":
-    case "quickOpen":
-    case "searchText":
-      return toOptionalString(payload.args.workspaceId);
-    case "listWorkspaces":
-    case "readArtifact":
-    case "readArtifactRange":
-      return null;
-    default:
-      return null;
-  }
-}
-
-export function visibleFileWorkspacesForPeer(workspaces: FilesWorkspace[], opts: { isMobile: boolean }): FilesWorkspace[] {
-  return opts.isMobile ? workspaces.filter((workspace) => workspace.kind !== "external") : workspaces;
-}
-
-export function assertFileRequestWorkspaceVisibleToPeer(args: {
-  isMobile: boolean;
-  workspace: FilesWorkspace | null;
-}): void {
-  if (args.isMobile && args.workspace?.kind === "external") {
-    throw new Error("External local files are not available on mobile.");
-  }
-}
 
 /**
  * Concurrency model for the per-peer message queue.
@@ -1241,6 +1217,8 @@ type SyncHostServiceArgs = {
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
+  /** Booted project scopes only; routed file requests must never start a runtime. */
+  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -1276,59 +1254,6 @@ function ensureBootstrapToken(filePath: string): string {
     // ignore chmod failures on platforms that don't support it
   }
   return fs.readFileSync(filePath, "utf8").trim();
-}
-
-function inferMimeType(filePath: string): string | null {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".mp4":
-      return "video/mp4";
-    case ".mov":
-      return "video/quicktime";
-    case ".zip":
-      return "application/zip";
-    case ".json":
-      return "application/json";
-    case ".md":
-      return "text/markdown";
-    case ".txt":
-    case ".log":
-      return "text/plain";
-    case ".yaml":
-    case ".yml":
-      return "application/yaml";
-    default:
-      return null;
-  }
-}
-
-function fileContentToBlob(filePath: string, content: FileContent): SyncFileBlob {
-  return {
-    path: filePath,
-    size: content.size,
-    mimeType: content.mimeType ?? inferMimeType(filePath),
-    encoding: content.encoding,
-    isBinary: content.isBinary,
-    content: content.content,
-    languageId: content.languageId,
-    ...(content.previewKind ? { previewKind: content.previewKind } : {}),
-    ...(content.dataUrl ? { dataUrl: content.dataUrl } : {}),
-    ...(typeof content.contentOmitted === "boolean" ? { contentOmitted: content.contentOmitted } : {}),
-    ...(content.omittedReason ? { omittedReason: content.omittedReason } : {}),
-    // Forwarded so a mobile client can say WHY only part of a large file
-    // arrived. Without these the phone shows a prefix with no explanation.
-    ...(typeof content.isPartial === "boolean" ? { isPartial: content.isPartial } : {}),
-    ...(typeof content.totalSize === "number" ? { totalSize: content.totalSize } : {}),
-  };
 }
 
 function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
@@ -1580,6 +1505,8 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
  */
 export type SyncHostRemoteCommandExecutor = Pick<SyncRemoteCommandService, "execute"> & {
   releaseStreamConnection?(connectionId: string): void;
+  /** Runs a `file_request` in the (open) project it names. */
+  executeFileRequest?(projectId: string, payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown>;
 };
 
 type SyncHostProjectScopeResolution =
@@ -6408,31 +6335,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return peer.metadata?.platform === "iOS" || peer.metadata?.deviceType === "phone";
   }
 
-  function workspaceForId(workspaceId: string | null): FilesWorkspace | null {
-    if (!workspaceId) return null;
-    return args.fileService.listWorkspaces({ includeArchived: true })
-      .find((entry) => entry.id === workspaceId) ?? null;
-  }
-
-  function assertMobileExternalWorkspaceBlocked(peer: PeerState, payload: SyncFileRequest): void {
-    // Only mobile peers can be blocked, and resolving the workspace costs a full
-    // roster sweep (fs.existsSync + statSync per external workspace + two DB
-    // reads). Settle the peer kind first so browser/desktop file requests never
-    // pay for a check that cannot fire.
-    if (!isMobilePeer(peer)) return;
-    assertFileRequestWorkspaceVisibleToPeer({
-      isMobile: true,
-      workspace: workspaceForId(syncFileRequestWorkspaceId(payload)),
-    });
-  }
-
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
       sendRequired(peer, "file_response", response, requestId, { action: `files.${payload.action}` });
     };
 
     try {
-      assertMobileExternalWorkspaceBlocked(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -6448,67 +6356,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | { ok: true } = { ok: true };
 
       switch (payload.action) {
-        case "listWorkspaces":
-          result = visibleFileWorkspacesForPeer(args.fileService.listWorkspaces(payload.args ?? {}), {
-            isMobile: isMobilePeer(peer),
-          });
-          break;
-        case "listTree":
-          result = await args.fileService.listTree(payload.args);
-          break;
-        case "listTreeChildren":
-          result = await args.fileService.listTreeChildren(payload.args);
-          break;
-        case "refreshGitDecorations":
-          result = await args.fileService.refreshGitDecorations(payload.args);
-          break;
-        case "readFile":
-          result = fileContentToBlob(payload.args.path, await args.fileService.readFile(payload.args));
-          break;
-        case "readFileRange":
-          result = await args.fileService.readFileRange(payload.args);
-          break;
-        case "gitBlame":
-          result = await args.fileService.blame(payload.args);
-          break;
-        case "writeText":
-          args.fileService.writeWorkspaceText(payload.args);
-          result = { ok: true };
-          break;
-        case "createFile":
-          args.fileService.createFile(payload.args);
-          result = { ok: true };
-          break;
-        case "createDirectory":
-          args.fileService.createDirectory(payload.args);
-          result = { ok: true };
-          break;
-        case "rename":
-          args.fileService.rename(payload.args);
-          result = { ok: true };
-          break;
-        case "deletePath":
-          args.fileService.deletePath(payload.args);
-          result = { ok: true };
-          break;
         case "watchChanges":
         case "stopWatching":
           throw new Error(`Unsupported file action: ${payload.action}`);
-        case "quickOpen":
-          result = await args.fileService.quickOpen(payload.args);
-          break;
-        case "searchText":
-          result = await args.fileService.searchText(payload.args);
-          break;
-        case "readArtifact": {
+        case "readArtifact":
           result = await readArtifactBlob(payload.args);
           break;
-        }
         case "readArtifactRange":
           result = await readArtifactRange(payload.args);
           break;
         default:
-          throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
+          result = await runSyncFileServiceRequest(args.fileService, payload, { isMobile: isMobilePeer(peer) }) as typeof result;
       }
 
       respond({
@@ -6516,6 +6374,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         action: payload.action,
         result,
       });
+    } catch (error) {
+      respond({
+        ok: false,
+        action: payload.action,
+        error: {
+          code: "file_request_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  /**
+   * A `file_request` for another open project on this machine. The project's
+   * own runner answers it; it rejects the artifact and watch actions, which
+   * belong to this host's project.
+   */
+  async function handleRoutedFileRequest(
+    peer: PeerState,
+    requestId: string | null,
+    projectId: string,
+    payload: SyncFileRequest,
+    executeFileRequest: NonNullable<SyncHostRemoteCommandExecutor["executeFileRequest"]>,
+  ): Promise<void> {
+    const action = toOptionalString(payload?.action) ?? "unknown";
+    const respond = (response: SyncFileResponsePayload) => {
+      sendRequired(peer, "file_response", response, requestId, { action: `files.${action}` });
+    };
+    try {
+      const result = await executeFileRequest(projectId, payload, { isMobile: isMobilePeer(peer) });
+      respond({ ok: true, action: payload.action, result: result as SyncFileResponsePayload["result"] });
     } catch (error) {
       respond({
         ok: false,
@@ -8139,6 +8028,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+    const executeFileRequest = args.remoteCommandExecutor?.executeFileRequest;
+    if (
+      !projectScope.ok
+      && projectScope.code === "project_mismatch"
+      && envelope.type === "file_request"
+      && projectScope.receivedProjectId
+      && executeFileRequest
+    ) {
+      // A phone reading a lane of this machine's other open project.
+      const routedScope = await args.projectScopes?.getIfBooted(projectScope.receivedProjectId);
+      if (routedScope) {
+        await handleRoutedFileRequest(
+          peer,
+          envelope.requestId,
+          projectScope.receivedProjectId,
+          envelope.payload as SyncFileRequest,
+          executeFileRequest,
+        );
+      } else {
+        rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
+      }
+      return;
+    }
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       return;

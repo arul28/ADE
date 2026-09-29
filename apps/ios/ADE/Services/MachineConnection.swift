@@ -26,7 +26,8 @@ final class MachineConnection {
     case idle
     case connecting
     case live
-    /// Could not reach the machine; retrying with backoff.
+    /// Could not reach the machine; retrying with backoff, or waiting for a
+    /// retry trigger once `gaveUp` (see `resumeAfterGivingUp`).
     case offline(message: String?)
     /// The machine runs an ADE version without roster-only peers.
     case needsUpdate
@@ -69,6 +70,9 @@ final class MachineConnection {
   private var heartbeatTask: Task<Void, Never>?
   private var lastInboundUptime: TimeInterval = 0
   private var consecutiveFailures = 0
+  /// The backoff ran out: no more dials until the user retries, the app opens,
+  /// the network changes, or the account shows the machine online.
+  private(set) var gaveUp = false
   /// Chats opened on this machine: session id -> foreign project scope.
   private var chatScopes: [String: (projectId: String, rootPath: String)] = [:]
   private var chatLastSeq: [String: Int] = [:]
@@ -111,7 +115,7 @@ final class MachineConnection {
   // MARK: - Lifecycle
 
   func start() {
-    guard runTask == nil else { return }
+    guard runTask == nil, !gaveUp else { return }
     if case .needsAttention = phase { return }
     generation &+= 1
     let runGeneration = generation
@@ -127,9 +131,22 @@ final class MachineConnection {
     runTask?.cancel()
     runTask = nil
     closeSocket(reason: reason)
-    if clearAttention || !isAttentionPhase {
+    if clearAttention {
+      gaveUp = false
+      consecutiveFailures = 0
+    }
+    if clearAttention || !isAttentionPhase, !gaveUp {
       setPhase(.idle)
     }
+  }
+
+  /// Let a connection that ran out of retries dial again (the caller starts
+  /// it). A no-op for any other connection.
+  func resumeAfterGivingUp() {
+    guard gaveUp else { return }
+    gaveUp = false
+    consecutiveFailures = 0
+    setPhase(.idle)
   }
 
   private var isAttentionPhase: Bool {
@@ -193,7 +210,13 @@ final class MachineConnection {
         setPhase(.offline(message: SyncUserFacingError.message(for: error)))
       }
       consecutiveFailures += 1
-      let delay = machineConnectionBackoffNanoseconds(failures: consecutiveFailures)
+      guard let delay = machineConnectionBackoffNanoseconds(failures: consecutiveFailures) else {
+        machineConnectionLog.notice("fleet gives up machine=\(self.machineKey, privacy: .public) failures=\(self.consecutiveFailures)")
+        gaveUp = true
+        runTask = nil
+        onChange?()
+        return
+      }
       try? await Task.sleep(nanoseconds: delay)
     }
   }
@@ -399,12 +422,12 @@ final class MachineConnection {
   // MARK: - Requests
 
   @discardableResult
-  private func send(type: String, requestId: String?, payload: Any) -> Bool {
+  private func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
     guard let socket else { return false }
     guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
       requestId: requestId,
-      projectId: nil,
+      projectId: projectId,
       payload: payload,
       compressionCodec: compressionCodec ?? .gzip,
       compressionThresholdBytes: compressionThresholdBytes,
@@ -429,6 +452,7 @@ final class MachineConnection {
     type: String,
     payload: [String: Any],
     requestId: String = UUID().uuidString,
+    projectId: String? = nil,
     timeoutNanoseconds: UInt64,
     timeoutMessage: String
   ) async throws -> Any {
@@ -442,7 +466,7 @@ final class MachineConnection {
         self?.resolve(requestId: requestId, result: .failure(SyncRequestTimeout.error(message: timeoutMessage)))
       }
       pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask)
-      if !send(type: type, requestId: requestId, payload: payload) {
+      if !send(type: type, requestId: requestId, payload: payload, projectId: projectId) {
         resolve(requestId: requestId, result: .failure(NSError(
           domain: "ADE",
           code: 14,
@@ -484,11 +508,14 @@ final class MachineConnection {
     return try unwrapSyncCommandResponse(raw)
   }
 
-  /// A `file_request` (artifact reads) on this machine.
-  func fileRequest(action: String, args: [String: Any]) async throws -> Any {
+  /// A `file_request` on this machine. `projectId` names the project whose
+  /// files are read (a lane's checkout); nil reads the machine's sync project
+  /// (artifacts of its chats).
+  func fileRequest(action: String, args: [String: Any], projectId: String? = nil) async throws -> Any {
     let raw = try await request(
       type: "file_request",
       payload: ["action": action, "args": args],
+      projectId: projectId,
       timeoutNanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds,
       timeoutMessage: SyncRequestTimeout.message
     )
@@ -830,22 +857,18 @@ final class MachineConnection {
 
 // MARK: - Pure helpers
 
-/// Failures in a row after which a machine is dialed only every few minutes.
-private let machineConnectionSlowRetryFailures = 8
-private let machineConnectionSlowRetrySeconds = 300.0
-private let machineConnectionMaxBackoffSeconds = 60.0
+/// Waits before each retry of a machine that does not answer.
+private let machineConnectionRetryDelaysSeconds: [Double] = [5, 15, 60, 300]
 
-/// Exponential backoff with jitter: 2 s, 4 s, 8 s … capped at 60 s, then
-/// 5 minutes once a machine has failed 8 times in a row. Without the slow
-/// retry, a machine that is switched off costs a 10 s dial every minute for
-/// as long as the app is open.
-func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.random(in: 0.8...1.2)) -> UInt64 {
-  if failures >= machineConnectionSlowRetryFailures {
-    return UInt64(machineConnectionSlowRetrySeconds * jitter * 1_000_000_000)
-  }
-  let exponent = min(max(failures, 1), 6)
-  let seconds = min(machineConnectionMaxBackoffSeconds, pow(2.0, Double(exponent))) * jitter
-  return UInt64(seconds * 1_000_000_000)
+/// The wait before the next dial after `failures` failures in a row, with
+/// jitter: 5 s, 15 s, 1 min, 5 min. Nil once those run out: the machine then
+/// shows "Offline · Tap to retry" and is not dialed again until a retry
+/// trigger. A switched-off machine used to cost a dial every 5 minutes for as
+/// long as the app was open.
+func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.random(in: 0.8...1.2)) -> UInt64? {
+  let index = max(failures, 1) - 1
+  guard index < machineConnectionRetryDelaysSeconds.count else { return nil }
+  return UInt64(machineConnectionRetryDelaysSeconds[index] * jitter * 1_000_000_000)
 }
 
 func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T? {

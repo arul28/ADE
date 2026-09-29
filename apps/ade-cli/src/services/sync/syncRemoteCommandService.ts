@@ -12,6 +12,12 @@ import {
 } from "../../../../desktop/src/shared/types/chat";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
+import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  CTO_HOME_SETTING_KEY,
+  isCtoHomeMachineRecord,
+  type CtoHomeMachineRecord,
+} from "../../../../desktop/src/shared/ctoHomeMachine";
 import { runWithAbortSignal } from "./abortSignal";
 import {
   buildSyncResultTooLargeError,
@@ -5992,6 +5998,33 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const recentLimit = asOptionalNumber(payload.recentLimit);
     return ctoStateService.getSnapshot(recentLimit ?? 20);
+  });
+  // The project's CTO home machine, the same account setting the desktop reads
+  // (`ctoHomeMachine.ts`): scope `repo:<origin>`, key `cto.homeMachine`.
+  register("cto.getHomeMachine", { viewerAllowed: true }, async (payload) => {
+    const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
+    if (!scope || !args.accountSettingsStore) return { available: false, value: null };
+    const value = args.accountSettingsStore.get(scope, CTO_HOME_SETTING_KEY);
+    return { available: true, value: isCtoHomeMachineRecord(value) ? value : null };
+  });
+  // A phone write like `cto.updateIdentity`: paired devices may call it.
+  register("cto.setHomeMachine", { viewerAllowed: true }, async (payload) => {
+    const scope = accountRepoScopeKey(asTrimmedString(payload.gitOriginUrl));
+    if (!scope) throw new Error("cto.setHomeMachine requires the repository's git origin.");
+    const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
+    const record = payload.record as Record<string, unknown> | null | undefined;
+    const deviceId = asTrimmedString(record?.deviceId);
+    const name = asTrimmedString(record?.name);
+    if (!deviceId || !name) throw new Error("cto.setHomeMachine requires record.deviceId and record.name.");
+    const value: CtoHomeMachineRecord = {
+      version: 1,
+      deviceId,
+      name,
+      hostname: asTrimmedString(record?.hostname) ?? null,
+      chosenAt: new Date().toISOString(),
+    };
+    store.set(scope, CTO_HOME_SETTING_KEY, value);
+    return { ok: true, value };
   });
   register("cto.getAttention", { viewerAllowed: true }, async () => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

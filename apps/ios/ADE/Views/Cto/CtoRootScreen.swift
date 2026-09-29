@@ -31,8 +31,12 @@ struct CtoRootScreen: View {
         .safeAreaInset(edge: .top, spacing: 0) {
           topBar
         }
-        .task(id: isTabActive) {
-          guard isTabActive, snapshot == nil else { return }
+        .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
+          guard isTabActive else { return }
+          // The CTO follows the project's home machine; a change there reloads.
+          let previousHome = syncService.ctoHomeMachineKey
+          await syncService.refreshCtoHomeMachine()
+          guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
           await loadSnapshot()
         }
         .task(id: ctoLiveReloadKey) {

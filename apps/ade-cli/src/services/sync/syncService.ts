@@ -20,6 +20,7 @@ import {
   type SyncTailnetDiscoveryStatus,
   type SyncTransferBlocker,
   type SyncTransferReadiness,
+  type SyncFileRequest,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -64,6 +65,7 @@ import {
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
 } from "./syncHostService";
+import { runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
@@ -221,6 +223,7 @@ type SyncServiceArgs = {
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
+  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop and the TUI; the
@@ -998,6 +1001,7 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
+      projectScopes: args.projectScopes,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,
@@ -1928,6 +1932,11 @@ export function createSyncService(args: SyncServiceArgs) {
       context?: Parameters<SyncRemoteCommandService["execute"]>[1],
     ): Promise<unknown> {
       return await remoteCommandService.execute(payload, context);
+    },
+
+    /** A `file_request` routed here from the brain's sync host. */
+    async executeRemoteFileRequest(payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown> {
+      return await runSyncFileServiceRequest(args.fileService, payload, context);
     },
 
     getDeviceRegistryService() {

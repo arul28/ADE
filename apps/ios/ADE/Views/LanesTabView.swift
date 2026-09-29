@@ -3,6 +3,8 @@ import SwiftUI
 struct LanesTabView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
+  @EnvironmentObject var machineFleet: MachineFleet
+  @StateObject var remoteLanes = LaneRemoteMachinesModel()
   @Namespace private var laneTransitionNamespace
   var isActive = true
 
@@ -26,6 +28,8 @@ struct LanesTabView: View {
   @State var selectedLaneTransitionId: String?
   @State private var lastLanesLocalProjectionReload = Date.distantPast
   @State private var lastHandledLanesProjectionRevision: Int?
+  /// Which machines' lanes the list shows (the filter chips).
+  @State var machineFilter: LaneMachineFilter = .all
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -57,6 +61,14 @@ struct LanesTabView: View {
     return "\(primaryLane?.id ?? "none")-\(canRunLiveActions)"
   }
 
+  /// Re-read the other machines while the tab is visible, for the focused
+  /// project, and again when a machine's live link comes or goes.
+  var remoteLanesPollKey: String? {
+    guard isActive, let projectId = syncService.activeProjectId else { return nil }
+    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+    return "\(projectId)|\(live.joined(separator: ","))"
+  }
+
   var laneNavigationRequestKey: String? {
     guard isActive else { return nil }
     return syncService.requestedLaneNavigation?.id
@@ -66,7 +78,6 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          addLaneActionButton
           if !syncService.connectionState.isHostUnreachable,
             !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
@@ -135,6 +146,9 @@ struct LanesTabView: View {
             ADECardSkeleton(rows: 4)
             ADECardSkeleton(rows: 3)
           }
+          if !remoteLanes.machines.isEmpty {
+            laneMachineFilterChips
+          }
           if !openLaneSnapshots.isEmpty {
             openLanesTray
               .transition(.move(edge: .top).combined(with: .opacity))
@@ -177,6 +191,17 @@ struct LanesTabView: View {
         guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
         lastHandledLanesProjectionRevision = revision
       }
+      .task(id: remoteLanesPollKey) {
+        guard remoteLanesPollKey != nil else { return }
+        while !Task.isCancelled {
+          await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+          try? await Task.sleep(nanoseconds: LaneRemoteMachinesModel.refreshIntervalNanoseconds)
+        }
+      }
+      .onChange(of: syncService.activeProjectId) { _, _ in
+        remoteLanes.reset()
+        machineFilter = .all
+      }
       .task(id: laneNavigationRequestKey) {
         guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
@@ -216,14 +241,17 @@ struct LanesTabView: View {
       }
       .sheet(isPresented: $addLaneSheetPresented) {
         AddLaneSheet(
-          primaryLane: primaryLane,
-          lanes: laneSnapshots.map(\.lane),
+          machines: laneCreateMachines,
           onLaneCreated: { createdLaneId in
             addLaneSheetPresented = false
             if !openLaneIds.contains(createdLaneId) {
               openLaneIds.insert(createdLaneId, at: 0)
             }
-            await reload(refreshRemote: true)
+            if isWorkRemoteLaneId(createdLaneId) {
+              await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+            } else {
+              await reload(refreshRemote: true)
+            }
           }
         )
       }
@@ -248,43 +276,46 @@ struct LanesTabView: View {
     }
   }
 
+  /// The machines a new lane can go to: this project's checkout on the
+  /// focused machine and on every live machine, least busy first.
+  var laneCreateMachines: [LaneCreateMachine] {
+    var machines = [LaneCreateMachine(
+      id: "",
+      name: focusedMachineName,
+      primaryLane: primaryLane,
+      lanes: laneSnapshots.map(\.lane),
+      target: nil,
+      runningCount: laneSnapshots.reduce(0) { $0 + $1.runtime.runningCount }
+    )]
+    for machine in remoteLanes.machines where machine.isLive {
+      machines.append(LaneCreateMachine(
+        id: machine.machineKey,
+        name: machine.name,
+        primaryLane: machine.snapshots.first { $0.lane.laneType == "primary" }?.lane,
+        lanes: machine.snapshots.map(\.lane),
+        target: LaneCreateTarget(projectId: machine.markedProjectId, rootPath: machine.rootPath),
+        runningCount: machine.snapshots.reduce(0) { $0 + $1.runtime.runningCount }
+      ))
+    }
+    return machineChoicesLeastBusyFirst(machines, runningCount: \.runningCount)
+  }
+
   // MARK: - Top bar
 
   @ViewBuilder
   private var topBarActions: some View {
-    EmptyView()
+    addLaneActionButton
   }
 
-  @ViewBuilder
+  /// In the top bar, beside the hub back button and the activity bell.
   var addLaneActionButton: some View {
-    Button {
+    LaneAddButton(enabled: canRunLiveActions) {
       if canRunLiveActions {
         addLaneSheetPresented = true
       } else {
         handleBlockedLiveAction()
       }
-    } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "plus")
-          .font(.system(size: 13, weight: .bold))
-        Text("Add lane")
-          .font(.subheadline.weight(.semibold))
-      }
-      .foregroundStyle(.white)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 11)
-      .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(.white.opacity(0.18), lineWidth: 0.6)
-      )
-      .shadow(color: ADEColor.accent.opacity(0.35), radius: 12, x: 0, y: 4)
     }
-    .buttonStyle(.plain)
-    .opacity(canRunLiveActions ? 1 : 0.55)
-    .accessibilityLabel("Add lane")
-    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
   }
 
   @ViewBuilder
@@ -318,5 +349,33 @@ struct LanesTabView: View {
       }
       .accessibilityLabel("Primary branch")
     }
+  }
+}
+
+/// The Lanes tab's "+ Lane" button, in the root top bar.
+struct LaneAddButton: View {
+  let enabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: "plus")
+          .font(.system(size: 13, weight: .bold))
+        Text("Lane")
+          .font(.subheadline.weight(.semibold))
+      }
+      .foregroundStyle(.white)
+      .padding(.horizontal, 12)
+      .frame(height: 36)
+      .background(ADEColor.accent, in: Capsule(style: .continuous))
+      .glassEffect(in: .capsule)
+      .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.6))
+      .shadow(color: ADEColor.accent.opacity(0.35), radius: 8, x: 0, y: 3)
+    }
+    .buttonStyle(.plain)
+    .opacity(enabled ? 1 : 0.55)
+    .accessibilityLabel("Add lane")
+    .accessibilityHint(enabled ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
   }
 }

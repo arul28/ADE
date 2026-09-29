@@ -655,6 +655,7 @@ enum WorkNewChatHeaderTier: Int, Comparable {
 /// of bouncing back to the sidebar.
 struct WorkNewChatScreen: View {
   @EnvironmentObject var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
 
   let lanes: [LaneSummary]
@@ -674,6 +675,13 @@ struct WorkNewChatScreen: View {
   let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
 
   @State private var selectedLaneId: String = ""
+  /// The machine the chat starts on. Nil = the primary (focused) machine.
+  @State private var selectedMachineKey: String?
+  /// That machine's lanes (namespaced ids), when it is not the primary one.
+  @State private var remoteLanes: [LaneSummary] = []
+  @State private var remoteLanesLoading = false
+  /// Set when the chosen model has no account on the chosen machine.
+  @State private var machineModelHint: String?
   @State private var provider: String = "claude"
   @State private var modelId: String = "claude-sonnet-5"
   @State private var busy: Bool = false
@@ -777,18 +785,35 @@ struct WorkNewChatScreen: View {
     selectedLaneId == workAutoCreateLaneSentinelId
   }
 
+  /// The lanes of the chosen machine.
+  private var visibleLanes: [LaneSummary] {
+    selectedMachineKey == nil ? lanes : remoteLanes
+  }
+
   private var defaultNewSessionLane: LaneSummary? {
-    if let preferredLaneId, let lane = lanes.first(where: { $0.id == preferredLaneId }) {
+    if let preferredLaneId, let lane = visibleLanes.first(where: { $0.id == preferredLaneId }) {
       return lane
     }
-    return lanes.first { $0.laneType == "primary" }
-      ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
-      ?? lanes.first
+    return workNewChatPrimaryLane(visibleLanes)
   }
 
   private var selectedConcreteLane: LaneSummary? {
     guard !isAutoCreateLane else { return nil }
-    return lanes.first(where: { $0.id == selectedLaneId })
+    return visibleLanes.first(where: { $0.id == selectedLaneId })
+  }
+
+  private var machineOptions: [WorkNewChatMachineOption] {
+    workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
+  }
+
+  private var selectedMachineOption: WorkNewChatMachineOption {
+    let options = machineOptions
+    return options.first { $0.machineKey == selectedMachineKey } ?? options[0]
+  }
+
+  /// The chosen machine's checkout of the focused repository (nil = primary).
+  private var selectedRemoteRepo: WorkRemoteMachineRepo? {
+    selectedMachineKey.flatMap { syncService.remoteLaneRepo(machineKey: $0) }
   }
 
   private var attachmentsAvailable: Bool {
@@ -928,6 +953,15 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // A lane of another machine opens the page on that machine.
+      if selectedMachineKey == nil,
+         let preferredLaneId,
+         let remote = workParseRemoteLaneId(preferredLaneId),
+         remote.machineKey != syncService.focusedMachineKey {
+        selectedMachineKey = remote.machineKey
+        selectedLaneId = preferredLaneId
+        Task { await loadRemoteLanes(keepSelection: true) }
+      }
       if selectedLaneId.isEmpty {
         selectedLaneId = defaultNewSessionLane?.id ?? ""
       }
@@ -951,7 +985,7 @@ struct WorkNewChatScreen: View {
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
-        lanes: lanes,
+        lanes: visibleLanes,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
@@ -981,15 +1015,109 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var laneSelector: some View {
-    HStack {
-      Spacer(minLength: 0)
-      WorkLanePickerDropdown(
-        lanes: lanes,
-        selectedLaneId: $selectedLaneId,
-        onMenuPresentationChange: handleLaneSheetPresentation,
-        floatingGlass: true
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 8) {
+        WorkNewChatMachineDropdown(
+          options: machineOptions,
+          selected: selectedMachineOption,
+          onSelect: selectMachine
+        )
+        .fixedSize()
+        if remoteLanesLoading {
+          ProgressView().controlSize(.small)
+        } else {
+          WorkLanePickerDropdown(
+            lanes: visibleLanes,
+            selectedLaneId: $selectedLaneId,
+            onMenuPresentationChange: handleLaneSheetPresentation,
+            floatingGlass: true
+          )
+          .fixedSize()
+        }
+        Spacer(minLength: 0)
+      }
+      if let machineModelHint {
+        Text(machineModelHint)
+          .font(.caption)
+          .foregroundStyle(ADEColor.warning)
+          .lineLimit(2)
+          .padding(.horizontal, 4)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// A new machine: its lanes and accounts. A machine that is not connected is
+  /// reconnected; its lanes load once it is live.
+  private func selectMachine(_ option: WorkNewChatMachineOption) {
+    errorMessage = nil
+    guard option.machineKey != selectedMachineKey else { return }
+    selectedMachineKey = option.machineKey
+    let keepsAutoCreate = isAutoCreateLane
+    if option.machineKey == nil {
+      remoteLanes = []
+      selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : (workNewChatPrimaryLane(lanes)?.id ?? "")
+    } else {
+      selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : ""
+      Task { await loadRemoteLanes(keepSelection: keepsAutoCreate) }
+    }
+    checkModelOnMachine()
+  }
+
+  @MainActor
+  private func loadRemoteLanes(keepSelection: Bool) async {
+    guard let key = selectedMachineKey else { return }
+    remoteLanesLoading = true
+    defer { remoteLanesLoading = false }
+    // A machine that is not connected is connected now (a pick reconnects it).
+    let live = await machineFleet.connect(machineKey: key)
+    guard selectedMachineKey == key else { return }
+    guard let repo = syncService.remoteLaneRepo(machineKey: key) else {
+      errorMessage = "That machine has no checkout of this project."
+      return
+    }
+    guard live else {
+      errorMessage = "Can’t reach \(repo.machineName) right now."
+      return
+    }
+    do {
+      let snapshots = try await syncService.fetchRemoteLaneSnapshots(
+        repo: repo,
+        timeoutNanoseconds: LaneRemoteMachinesModel.readTimeoutNanoseconds
       )
-      Spacer(minLength: 0)
+      guard selectedMachineKey == key else { return }
+      remoteLanes = snapshots.map(\.lane).filter { $0.archivedAt == nil }
+      if !keepSelection || !remoteLanes.contains(where: { $0.id == selectedLaneId }) && !isAutoCreateLane {
+        selectedLaneId = workNewChatPrimaryLane(remoteLanes)?.id ?? ""
+      }
+    } catch {
+      guard selectedMachineKey == key else { return }
+      errorMessage = "Can’t read \(repo.machineName)’s lanes: \(error.localizedDescription)"
+    }
+  }
+
+  /// The chosen model needs an account on the chosen machine. When that
+  /// machine has none for the model's provider, pick its first provider's
+  /// default model and say so.
+  private func checkModelOnMachine() {
+    machineModelHint = nil
+    let machineName = selectedMachineOption.name
+    let mode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+    switch workNewChatModelCheck(
+      machineKey: selectedMachineKey ?? syncService.focusedMachineKey,
+      provider: provider,
+      mode: mode
+    ) {
+    case .fits:
+      return
+    case .noAccount:
+      machineModelHint = "\(machineName) has no account for this model."
+    case .fallback(let fallbackModelId, let fallbackProvider):
+      let previous = prettyNewChatModelName(modelId)
+      selectedModelOption = nil
+      modelId = fallbackModelId
+      provider = sessionMode == .chat ? workNormalizedChatProvider(fallbackProvider) : fallbackProvider
+      machineModelHint = "\(machineName) has no account for \(previous). Using \(prettyNewChatModelName(fallbackModelId))."
     }
   }
 
@@ -1043,7 +1171,7 @@ struct WorkNewChatScreen: View {
   /// a concrete lane — both act on an existing worktree.
   @ViewBuilder
   private var sessionActionChips: some View {
-    if let lane = selectedConcreteLane {
+    if selectedMachineKey == nil, let lane = selectedConcreteLane {
       let chipsDisabled = busy || shellLaunchBusy
       let shellQueued = queuedShellLaneIds.contains(lane.id)
       let shellDisabled = chipsDisabled || shellQueued
@@ -1060,7 +1188,7 @@ struct WorkNewChatScreen: View {
           NavigationLink {
             WorkImportSessionScreen(
               lane: lane,
-              lanes: lanes,
+              lanes: visibleLanes,
               onCliImported: onCliStarted,
               onChatImported: onChatImported
             )
@@ -1234,6 +1362,19 @@ struct WorkNewChatScreen: View {
       errorMessage = "Reconnect to attach images."
       return false
     }
+    // Another machine: its checkout of this project. CLI sessions stream from
+    // the primary machine only for now.
+    let remoteRepo = selectedRemoteRepo
+    if selectedMachineKey != nil {
+      guard remoteRepo != nil else {
+        errorMessage = "That machine has no checkout of this project."
+        return false
+      }
+      guard sessionMode == .chat else {
+        errorMessage = "Start CLI sessions on the primary machine for now."
+        return false
+      }
+    }
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
     WorkComposerPreferences.save(composerSelection)
@@ -1268,7 +1409,7 @@ struct WorkNewChatScreen: View {
       isAutoCreateLane: isAutoCreateLane,
       isChatSession: sessionMode == .chat,
       cursorCloudMode: false,
-      hostCanStartLaunch: syncService.canStartChatLaunch
+      hostCanStartLaunch: remoteRepo == nil && syncService.canStartChatLaunch
     ) {
       let syncService = syncService
       let attachmentsToStage = readyAttachments
@@ -1309,7 +1450,9 @@ struct WorkNewChatScreen: View {
         let lane = try await syncService.createLane(
           name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
-          branchName: temporaryBranch
+          branchName: temporaryBranch,
+          targetProjectId: remoteRepo?.markedProjectId,
+          targetProjectRootPath: remoteRepo?.rootPath
         )
         targetLaneId = lane.id
         targetLaneForScope = lane
@@ -1326,9 +1469,14 @@ struct WorkNewChatScreen: View {
       }
     } else {
       targetLaneId = selectedLaneId
-      targetLaneForScope = lanes.first { $0.id == selectedLaneId }
+      targetLaneForScope = visibleLanes.first { $0.id == selectedLaneId }
     }
-    let targetScope = targetLaneForScope
+    let targetScope = remoteRepo.map {
+      WorkProjectCommandScope(
+        projectId: $0.markedProjectId,
+        projectRootPath: $0.rootPath
+      )
+    } ?? targetLaneForScope
       .map { workShellProjectScope(for: $0, projects: syncService.projects) }
       ?? WorkProjectCommandScope(projectId: nil, projectRootPath: nil)
 
@@ -1367,7 +1515,7 @@ struct WorkNewChatScreen: View {
         if let session = result.session {
           await onCliStarted(session)
         } else {
-          let lane = lanes.first(where: { $0.id == targetLaneId })
+          let lane = visibleLanes.first(where: { $0.id == targetLaneId })
           await onCliStarted(TerminalSessionSummary(
             id: result.sessionId,
             laneId: targetLaneId,
@@ -1426,6 +1574,15 @@ struct WorkNewChatScreen: View {
       )
       createdChatSummary = summary
       createdChatAttachments = attachmentRefs
+      if let remoteRepo {
+        // The chat lives on that machine: its reads, sends and stream go there.
+        syncService.setRemoteMachineChatScope(
+          sessionId: summary.sessionId,
+          machineKey: remoteRepo.machineKey,
+          projectId: remoteRepo.projectId,
+          projectRootPath: remoteRepo.rootPath
+        )
+      }
       if attachmentRefs.isEmpty {
         await onStarted(summary, opener, false, nil, [])
       } else {
@@ -1978,3 +2135,10 @@ struct HubComposerPreviewHost: View {
   }
 }
 #endif
+
+/// A machine's Primary lane, else its first lane.
+func workNewChatPrimaryLane(_ lanes: [LaneSummary]) -> LaneSummary? {
+  lanes.first { $0.laneType == "primary" }
+    ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
+    ?? lanes.first
+}

@@ -24,6 +24,7 @@ import type {
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
+  SyncFileRequest,
   SyncRosterProject,
   TerminalSessionChangedEvent,
 } from "../../../../desktop/src/shared/types";
@@ -73,6 +74,7 @@ import {
   createBrainProjectActionsSyncHandler,
   recoveryAnalyticsSurface,
 } from "./brainProjectActionsSyncHandler";
+import { runSyncFileServiceRequest } from "./syncFileRequests";
 import {
   generateMachinePairingPin,
   resetBrainMachineSyncStoresForTests,
@@ -10735,6 +10737,83 @@ describe("sync host reliability guards", () => {
       await host.dispose();
       cleanup();
     }
+  });
+
+  it("routes a file request for another open project through its owning project executor", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const getIfBooted = vi.fn().mockResolvedValueOnce({}).mockResolvedValueOnce(null);
+    const executeFileRequest = vi.fn(async (
+      projectId: string,
+      request: SyncFileRequest,
+      context: { isMobile: boolean },
+    ) => ({
+      projectId,
+      action: request.action,
+      isMobile: context.isMobile,
+    }));
+    const host = createReliabilityHost(projectRoot, {
+      remoteCommandExecutor: { executeFileRequest } as never,
+      projectScopes: { getIfBooted },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(await host.waitUntilListening(), host.getBootstrapToken(), "ios-other-project-file");
+      const request = { action: "listWorkspaces", args: {} } as const;
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "other-project-file",
+        projectId: "project-2",
+        payload: request,
+      }));
+
+      const response = await waitForEnvelope(peer.envelopes, "file_response", "other-project-file");
+      expect(executeFileRequest).toHaveBeenCalledWith("project-2", request, { isMobile: true });
+      expect(response.payload).toMatchObject({ ok: true, action: "listWorkspaces" });
+      expect((response.payload as { result: unknown }).result).toEqual({
+        projectId: "project-2",
+        action: "listWorkspaces",
+        isMobile: true,
+      });
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "unbooted-other-project-file",
+        projectId: "project-2",
+        payload: request,
+      }));
+      const rejected = await waitForEnvelope(peer.envelopes, "file_response", "unbooted-other-project-file");
+      expect(rejected.payload).toMatchObject({ ok: false, error: { code: "project_mismatch" } });
+      expect(getIfBooted).toHaveBeenCalledTimes(2);
+      expect(executeFileRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps external workspaces and artifact/watch actions unavailable on mobile file requests", async () => {
+    const readFile = vi.fn();
+    const externalFileService = {
+      listWorkspaces: vi.fn(() => [{ id: "external-1", kind: "external" }]),
+      readFile,
+    };
+    await expect(runSyncFileServiceRequest(externalFileService as never, {
+      action: "readFile",
+      args: { workspaceId: "external-1", path: "private.txt" },
+    }, { isMobile: true })).rejects.toThrow(/External local files are not available on mobile/);
+    expect(readFile).not.toHaveBeenCalled();
+
+    const localFileService = { listWorkspaces: vi.fn(() => []) };
+    await expect(runSyncFileServiceRequest(localFileService as never, {
+      action: "readArtifact",
+      args: { uri: ".ade/artifacts/shot.png" },
+    }, { isMobile: true })).rejects.toThrow(/Unsupported file action: readArtifact/);
+    await expect(runSyncFileServiceRequest(localFileService as never, {
+      action: "watchChanges",
+      args: { workspaceId: "workspace-1" },
+    }, { isMobile: true })).rejects.toThrow(/Unsupported file action: watchChanges/);
+    expect(localFileService.listWorkspaces).toHaveBeenCalledTimes(1);
   });
 
   it("serves artifacts stored under the ade-artifact scheme the broker writes", async () => {

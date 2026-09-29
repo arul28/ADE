@@ -560,6 +560,12 @@ actor ChatThreadEngine {
       if previousRevisions[entry.id] != revision { changed.insert(entry.id) }
     }
     chatThreadWarmMarkdownCaches(next.renderEntries.suffix(48))
+    // New rows outside the tail: an older page prepends block rows the
+    // collection view measures on the main thread as they come into view.
+    let tailStart = max(next.renderEntries.count - 48, 0)
+    chatThreadWarmMarkdownCaches(
+      next.renderEntries[..<tailStart].lazy.filter { changed.contains($0.id) }.prefix(96)
+    )
 
     let canonicalPending = snapshot.pendingInputQueue.resolved(hostPendingInputItemId: summary.pendingInputItemId)
     let pending = overlays.optimisticallyAnsweredInputIds.isEmpty

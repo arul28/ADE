@@ -33,8 +33,10 @@ struct FilesWorkspacePickerDropdown: View {
     .buttonStyle(.plain)
     .accessibilityLabel("Select workspace")
     .accessibilityValue(selectedWorkspace?.name ?? "No workspace selected")
-    .popover(isPresented: $menuPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
-      FilesWorkspacePickerMenu(
+    // A sheet, not a popover: a popover is squeezed into whatever space is
+    // left and cut the list to a few tiny rows.
+    .sheet(isPresented: $menuPresented) {
+      FilesWorkspacePickerSheet(
         workspaces: filteredWorkspaces,
         allWorkspacesEmpty: workspaces.isEmpty,
         lanes: lanes,
@@ -46,8 +48,8 @@ struct FilesWorkspacePickerDropdown: View {
           searchQuery = ""
         }
       )
-      .frame(width: 300)
-      .presentationCompactAdaptation(.popover)
+      .presentationDetents([.medium, .large])
+      .presentationDragIndicator(.visible)
     }
     .onChange(of: menuPresented) { _, isOpen in
       if !isOpen { searchQuery = "" }
@@ -100,8 +102,8 @@ struct FilesWorkspacePickerDropdown: View {
               .foregroundStyle(ADEColor.accent)
           }
           Text(title)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Color.white.opacity(0.85))
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
         }
         HStack(spacing: 4) {
@@ -109,7 +111,7 @@ struct FilesWorkspacePickerDropdown: View {
             .font(.system(size: 9, weight: .regular))
             .foregroundStyle(ADEColor.textMuted.opacity(0.55))
           Text(subtitle)
-            .font(.system(size: 10))
+            .font(.system(size: 11.5))
             .foregroundStyle(ADEColor.textMuted.opacity(0.92))
             .lineLimit(1)
         }
@@ -118,131 +120,21 @@ struct FilesWorkspacePickerDropdown: View {
     } else {
       HStack(spacing: 5) {
         Text(title)
-          .font(.system(size: 11, weight: .medium))
-          .foregroundStyle(Color.white.opacity(0.7))
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
       }
     }
   }
 }
 
-private struct FilesWorkspacePickerMenu: View {
-  let workspaces: [FilesWorkspace]
-  let allWorkspacesEmpty: Bool
-  let lanes: [LaneSummary]
-  let selectedWorkspaceId: String
-  @Binding var searchQuery: String
-  let onSelect: (String) -> Void
-
-  @FocusState private var searchFocused: Bool
-
-  var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .font(.system(size: 12, weight: .regular))
-          .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-        TextField("Search workspaces...", text: $searchQuery)
-          .textFieldStyle(.plain)
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textPrimary)
-          .focused($searchFocused)
-          .submitLabel(.done)
-      }
-      .padding(.horizontal, 10)
-      .frame(height: 32)
-      .overlay(alignment: .bottom) {
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 0.5)
-      }
-
-      ScrollView {
-        LazyVStack(spacing: 0) {
-          if workspaces.isEmpty {
-            Text(allWorkspacesEmpty ? "No workspaces available" : "No workspaces found")
-              .font(.system(size: 11))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 12)
-          } else {
-            ForEach(workspaces) { workspace in
-              workspaceRow(workspace)
-            }
-          }
-        }
-        .padding(4)
-      }
-      .frame(maxHeight: 280)
-    }
-    .background(ADEColor.cardBackground.opacity(0.96))
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.8)
-    )
-    .shadow(color: Color.black.opacity(0.45), radius: 16, y: 8)
-    .onAppear {
-      searchFocused = true
-    }
-  }
-
-  private func workspaceRow(_ workspace: FilesWorkspace) -> some View {
-    let isSelected = workspace.id == selectedWorkspaceId
-    let subtitle = filesWorkspaceSubtitle(workspace)
-    let lane = filesWorkspaceLaneSummary(workspace, lanes: lanes)
-    let laneColor = lane.map { LaneColorPalette.displayColor(forHex: $0.color, fallback: ADEColor.textSecondary) }
-
-    return Button {
-      onSelect(workspace.id)
-    } label: {
-      VStack(alignment: .leading, spacing: subtitle.isEmpty ? 0 : 3) {
-        HStack(spacing: 6) {
-          if let laneColor {
-            WorkLaneLogoMark(color: laneColor, laneIcon: lane?.icon, size: 12)
-          } else if workspace.kind.lowercased() == "primary" {
-            Image(systemName: "house.fill")
-              .font(.system(size: 11, weight: .bold))
-              .foregroundStyle(ADEColor.accent)
-          }
-          Text(workspace.name)
-            .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          if isSelected {
-            Image(systemName: "checkmark")
-              .font(.system(size: 12, weight: .bold))
-              .foregroundStyle(ADEColor.accent)
-          }
-        }
-        if !subtitle.isEmpty {
-          HStack(spacing: 4) {
-            Image(systemName: "arrow.branch")
-              .font(.system(size: 10, weight: .regular))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.6))
-            Text(subtitle)
-              .font(.system(size: 10))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.92))
-              .lineLimit(1)
-          }
-          .padding(.leading, laneColor == nil && workspace.kind.lowercased() != "primary" ? 0 : 18)
-        }
-      }
-      .padding(.horizontal, 8)
-      .padding(.vertical, subtitle.isEmpty ? 6 : 5)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
-        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-  }
+func filesWorkspaceSubtitle(_ workspace: FilesWorkspace) -> String {
+  let base = filesWorkspaceBranchLabel(workspace)
+  guard let machine = workspace.machineName else { return base }
+  return "\(base) · \(machine)"
 }
 
-func filesWorkspaceSubtitle(_ workspace: FilesWorkspace) -> String {
+private func filesWorkspaceBranchLabel(_ workspace: FilesWorkspace) -> String {
   if let branchRef = workspace.branchRef?.trimmingCharacters(in: .whitespacesAndNewlines), !branchRef.isEmpty {
     return normalizedPrBranchName(branchRef)
   }
@@ -268,3 +160,138 @@ private func filesWorkspaceTriggerSurface(workspace: FilesWorkspace?, lane: Lane
   }
   return (Color.white.opacity(0.04), Color.white.opacity(0.08))
 }
+
+/// The workspace list as a sheet on the flat base: searchable, grouped by
+/// machine (this machine first), rows at normal size.
+private struct FilesWorkspacePickerSheet: View {
+  let workspaces: [FilesWorkspace]
+  let allWorkspacesEmpty: Bool
+  let lanes: [LaneSummary]
+  let selectedWorkspaceId: String
+  @Binding var searchQuery: String
+  let onSelect: (String) -> Void
+
+  /// Workspaces grouped by machine: this machine first, then each other
+  /// machine by name. Keyed by machine key, so two machines with one name stay
+  /// apart.
+  private var groups: [(id: String, title: String, items: [FilesWorkspace])] {
+    var local: [FilesWorkspace] = []
+    var remote: [String: (name: String, items: [FilesWorkspace])] = [:]
+    for workspace in workspaces {
+      guard let key = workParseRemoteLaneId(workspace.id)?.machineKey else {
+        local.append(workspace)
+        continue
+      }
+      remote[key, default: (workspace.machineName ?? "Other machine", [])].items.append(workspace)
+    }
+    var result: [(id: String, title: String, items: [FilesWorkspace])] = []
+    if !local.isEmpty {
+      result.append(("local", remote.isEmpty ? "Workspaces" : "This machine", local))
+    }
+    for (key, entry) in remote.sorted(by: { $0.value.name.localizedCaseInsensitiveCompare($1.value.name) == .orderedAscending }) {
+      result.append((key, entry.name, entry.items))
+    }
+    return result
+  }
+
+  var body: some View {
+    NavigationStack {
+      List {
+        if workspaces.isEmpty {
+          Text(allWorkspacesEmpty ? "No workspaces available" : "No workspaces found")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+            .adeFlatRow()
+        }
+        ForEach(groups, id: \.id) { group in
+          Section {
+            ForEach(group.items) { workspace in
+              row(workspace)
+            }
+          } header: {
+            ADEFlatSectionHeader(group.title, detail: "\(group.items.count)")
+          }
+        }
+      }
+      .adeFlatList()
+      .searchable(text: $searchQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search workspaces")
+      .navigationTitle("Workspace")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+  }
+
+  private func row(_ workspace: FilesWorkspace) -> some View {
+    let isSelected = workspace.id == selectedWorkspaceId
+    // The section header names the machine.
+    let subtitle = filesWorkspaceBranchLabel(workspace)
+    let lane = filesWorkspaceLaneSummary(workspace, lanes: lanes)
+    return Button {
+      onSelect(workspace.id)
+    } label: {
+      HStack(spacing: 12) {
+        if let lane {
+          WorkLaneLogoMark(
+            color: LaneColorPalette.displayColor(forHex: lane.color, fallback: ADEColor.textSecondary),
+            laneIcon: lane.icon,
+            size: 14
+          )
+          .frame(width: 22)
+        } else {
+          Image(systemName: workspace.kind.lowercased() == "primary" ? "house.fill" : "folder")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(width: 22)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(workspace.name)
+            .font(.body.weight(isSelected ? .semibold : .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if !subtitle.isEmpty {
+            Text(subtitle)
+              .font(.adeMono(11.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+        }
+        Spacer(minLength: 8)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .adeFlatRow()
+  }
+}
+
+#if DEBUG
+/// `-adePreviewScreen files-picker`: the workspace sheet with lanes on two machines.
+struct FilesWorkspacePickerPreviewHost: View {
+  @State private var query = ""
+  private static let workspaces: [FilesWorkspace] = [
+    FilesWorkspace(id: "s-main", kind: "primary", laneId: "s-main", name: "Primary", branchRef: "main", rootPath: "/Users/a/ADE", isReadOnlyByDefault: false),
+    FilesWorkspace(id: "s-sync", kind: "worktree", laneId: "s-sync", name: "fix sync loop", branchRef: "ade/fix-sync-loop-2f81", rootPath: "/Users/a/ADE/.ade/worktrees/fix", isReadOnlyByDefault: false),
+    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-main"), kind: "primary", laneId: nil, name: "Primary", branchRef: "main", rootPath: "/Users/b/ADE", isReadOnlyByDefault: false, machineName: "MacBook Pro (97)"),
+    FilesWorkspace(id: workRemoteLaneId(machineKey: "mbp", laneId: "m-p4"), kind: "worktree", laneId: nil, name: "phase 4 lanes", branchRef: "ade/mobile-multi-machine-phase-4", rootPath: "/Users/b/ADE/.ade/worktrees/p4", isReadOnlyByDefault: false, machineName: "MacBook Pro (97)"),
+  ]
+
+  var body: some View {
+    Color.clear.sheet(isPresented: .constant(true)) {
+      FilesWorkspacePickerSheet(
+        workspaces: Self.workspaces,
+        allWorkspacesEmpty: false,
+        lanes: [],
+        selectedWorkspaceId: "s-sync",
+        searchQuery: $query,
+        onSelect: { _ in }
+      )
+      .presentationDetents([.large])
+    }
+  }
+}
+#endif

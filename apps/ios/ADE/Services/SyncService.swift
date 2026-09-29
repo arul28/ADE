@@ -703,14 +703,14 @@ enum InitialHydrationGate {
   static func waitForProjectRow(
     timeoutNanoseconds: UInt64 = defaultTimeoutNanoseconds,
     pollIntervalNanoseconds: UInt64 = defaultPollIntervalNanoseconds,
-    currentProjectId: () -> String?,
+    currentProjectId: () async -> String?,
     shouldContinue: () -> Bool = { true },
     sleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
   ) async throws {
     guard shouldContinue() else {
       throw CancellationError()
     }
-    guard currentProjectId() == nil else { return }
+    guard await currentProjectId() == nil else { return }
 
     var waited: UInt64 = 0
     while waited < timeoutNanoseconds {
@@ -719,7 +719,7 @@ enum InitialHydrationGate {
         throw CancellationError()
       }
       waited += pollIntervalNanoseconds
-      if currentProjectId() != nil {
+      if await currentProjectId() != nil {
         return
       }
     }
@@ -971,6 +971,15 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case lan = 0
   case tailnet = 1
   case relay = 2
+
+  /// The route's name in machine rows and pages.
+  var label: String {
+    switch self {
+    case .lan: return "Local network"
+    case .tailnet: return "Tailscale"
+    case .relay: return "ADE relay"
+    }
+  }
 }
 
 /// The machine a user-initiated connect is aimed at, which is NOT the same
@@ -1421,6 +1430,20 @@ func syncEndpointFailureIsMeaningful(_ error: Error) -> Bool {
 /// Wi-Fi or wired interface these cannot succeed, and each one raced eagerly
 /// costs a 5s socket-open timeout. Tailnet CGNAT is excluded — Tailscale works
 /// over cellular — and so is loopback, which is the simulator's own route.
+/// True for a loopback route on a real iPhone: it points at the phone itself
+/// and can never reach a computer, yet hosts advertise it. The simulator keeps
+/// it — there it is the Mac's own route.
+func syncIsUnreachableLoopbackOnDevice(_ address: String) -> Bool {
+  #if targetEnvironment(simulator)
+  return false
+  #else
+  let host = syncNormalizedRouteHost(address.trimmingCharacters(in: .whitespacesAndNewlines))
+  if host == "localhost" || host.hasSuffix(".localhost") || host == "::1" { return true }
+  if let v4 = IPv4Address(host), let first = v4.rawValue.first { return first == 127 }
+  return false
+  #endif
+}
+
 func syncIsLocalLinkOnlyCandidate(_ address: String) -> Bool {
   let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !syncIsFullWebSocketRoute(trimmed) else { return false }
@@ -4001,6 +4024,14 @@ final class SyncService: ObservableObject {
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
+  /// The machine the project's CTO lives on (account setting
+  /// `cto.homeMachine`), as a fleet key. Nil = the primary machine.
+  @Published var ctoHomeMachineKey: String?
+  /// The home machine's name, also when the phone cannot reach it.
+  @Published var ctoHomeMachineName: String?
+  /// The project the CTO home above was read for; another project's CTO
+  /// home is unknown until read again.
+  var ctoHomeProjectId: String?
   /// Short, route-specific progress shown while a fresh account machine is
   /// being adopted. This is intentionally separate from the general reconnect
   /// state so background reconnects do not overwrite the guided account flow.
@@ -4436,7 +4467,7 @@ final class SyncService: ObservableObject {
   private var pendingRelayTransportReady: [Int: CheckedContinuation<Void, Error>] = [:]
   private var relayTransportNegotiationTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private var relayTransportOverallTimeoutTasks: [Int: Task<Void, Never>] = [:]
-  private let decoder = JSONDecoder()
+  let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
   private let syncDateFormatter = ISO8601DateFormatter()
   private let compressionThresholdBytes = 4 * 1024
@@ -4581,6 +4612,9 @@ final class SyncService: ObservableObject {
   /// Work tab's same-repo rows). Every read, write and stream for these goes
   /// through that machine's `MachineConnection`, never the focused socket.
   private var remoteMachineChatsBySession: [String: SyncRemoteMachineChat] = [:]
+  /// Lane details of other machines' lanes, by namespaced lane id. Memory
+  /// only: `ade.db` holds the focused machine's project.
+  private var remoteLaneDetails: [String: LaneDetailPayload] = [:]
   /// Remote chats registered by an open chat screen, and by the Work list's
   /// cross-machine rows. An entry leaves `remoteMachineChatsBySession` only
   /// when neither owner holds it.
@@ -5427,6 +5461,31 @@ final class SyncService: ObservableObject {
     return candidates.first { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }
   }
 
+  /// `ensureActiveProjectCacheRowForHydration` for the connect path: the
+  /// row check and the write run off the main actor, because a catch-up batch
+  /// holds the database queue right after a connect.
+  private func ensureActiveProjectCacheRowForHydrationOffMain() async throws {
+    guard let activeProjectId else { return }
+    if await readDatabaseOffMain({ $0.hasProject(id: activeProjectId) }) { return }
+    guard self.activeProjectId == activeProjectId,
+          let project = activeProjectCatalogEntryForHydration() else {
+      return
+    }
+    let database = self.database
+    try await Task.detached(priority: .userInitiated) {
+      try database.upsertMobileProjectCache(project)
+    }.value
+    let rows = await readDatabaseOffMain { $0.listMobileProjects() }
+    refreshProjectCatalog(preferRemoteSelection: true, cachedRows: rows)
+  }
+
+  /// One database read on a detached task. A changeset batch applies under
+  /// the database queue for the whole batch, so a main-actor read waits it out.
+  func readDatabaseOffMain<T>(_ read: @escaping (DatabaseService) -> T) async -> T {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) { read(database) }.value
+  }
+
   private func ensureActiveProjectCacheRowForHydration() throws {
     guard let activeProjectId else { return }
     if database.hasProject(id: activeProjectId) {
@@ -5921,6 +5980,7 @@ final class SyncService: ObservableObject {
     laneSnapshotSignatures.removeAll()
     laneDetailSignatures.removeAll()
     laneDetailRevisions.removeAll()
+    remoteLaneDetails.removeAll()
   }
 
   private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
@@ -8790,6 +8850,9 @@ final class SyncService: ObservableObject {
     refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard previous != nil else { return }
+    if syncNetworkPathInterfacesChanged(previous: previous, next: snapshot), snapshot.isSatisfied {
+      machineFleet?.networkChanged()
+    }
     guard canReconnectToSavedHost,
           allowAutoReconnect,
           !autoReconnectPausedByUser,
@@ -9805,7 +9868,22 @@ final class SyncService: ObservableObject {
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
-    let summary = try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
+    let target = try ctoCommandTarget()
+    let summary = try await sendDecodableCommand(
+      action: "cto.ensureSession",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: AgentChatSessionSummary.self
+    )
+    if let repo = target.repo {
+      // The CTO thread lives on its home machine: reads, sends, stream go there.
+      setRemoteMachineChatScope(
+        sessionId: summary.sessionId,
+        machineKey: repo.machineKey,
+        projectId: repo.projectId,
+        projectRootPath: repo.rootPath
+      )
+    }
     // Keep the identity marker available to the local Work/activity guards in
     // case the CRR session row arrives before the next roster snapshot.
     cacheChatSummary(summary)
@@ -9817,7 +9895,14 @@ final class SyncService: ObservableObject {
   func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
     var args: [String: Any] = [:]
     if let recentLimit { args["recentLimit"] = recentLimit }
-    return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getState",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoSnapshot.self
+    )
   }
 
   /// Whether the CTO thread is waiting on the user.
@@ -9827,7 +9912,13 @@ final class SyncService: ObservableObject {
   /// talking to an older brain simply never lights the dot instead of erroring.
   /// Callers should check `supportsRemoteAction("cto.getAttention")` first.
   func fetchCtoAttention() async throws -> CtoAttention {
-    try await sendDecodableCommand(action: "cto.getAttention", as: CtoAttention.self)
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getAttention",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoAttention.self
+    )
   }
 
   /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
@@ -9835,7 +9926,13 @@ final class SyncService: ObservableObject {
   /// with a command error, which callers surface as a quiet "not available"
   /// row rather than an error card.
   func fetchCtoMemory() async throws -> CtoMemory {
-    try await sendDecodableCommand(action: "cto.getMemory", as: CtoMemory.self)
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getMemory",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
   }
 
   func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
@@ -10198,9 +10295,12 @@ final class SyncService: ObservableObject {
 
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
+    let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
       args: ["patch": patchArgs],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
       as: CtoSnapshot.self
     )
   }
@@ -10318,6 +10418,14 @@ final class SyncService: ObservableObject {
   }
 
   func refreshLaneDetail(laneId: String) async throws -> LaneDetailPayload {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      // Routed to the lane's machine by its namespaced id; the reply comes
+      // back with namespaced lane ids. No signature: nothing is cached on disk.
+      let raw = try await sendCommand(action: "lanes.getDetail", args: ["laneId": laneId])
+      let detail = try decodeHydrationPayload(raw, as: LaneDetailPayload.self, domainLabel: "lane detail", decoder: decoder)
+      remoteLaneDetails[laneId] = detail
+      return detail
+    }
     let scope = try captureHydrationProjectScope()
     try requireCurrentHydrationProjectScope(scope)
     let statusAttempt = beginDomainHydrationAttempt([.lanes])
@@ -10390,7 +10498,8 @@ final class SyncService: ObservableObject {
   }
 
   func fetchLaneDetail(laneId: String) async throws -> LaneDetailPayload? {
-    database.fetchLaneDetail(laneId: laneId)
+    if workParseRemoteLaneId(laneId) != nil { return remoteLaneDetails[laneId] }
+    return database.fetchLaneDetail(laneId: laneId)
   }
 
   func listWorkspaces() async throws -> [FilesWorkspace] {
@@ -11590,6 +11699,8 @@ final class SyncService: ObservableObject {
   }
 
   private func ensureFilesWorkspaceAvailable(workspaceId: String) throws {
+    // A lane of another machine is that machine's workspace, not in this DB.
+    if isWorkRemoteLaneId(workspaceId) { return }
     guard database.listWorkspaces().contains(where: { $0.id == workspaceId }) else {
       throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
     }
@@ -13128,7 +13239,9 @@ final class SyncService: ObservableObject {
     name: String? = nil,
     description: String? = nil,
     parentLaneId: String? = nil,
-    baseBranch: String? = nil
+    baseBranch: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = ["branchRef": branchRef]
     if let name, !name.isEmpty {
@@ -13143,7 +13256,13 @@ final class SyncService: ObservableObject {
     if let baseBranch, !baseBranch.isEmpty {
       args["baseBranch"] = baseBranch
     }
-    return try await sendDecodableCommand(action: "lanes.importBranch", args: args, as: LaneSummary.self)
+    return try await sendDecodableCommand(
+      action: "lanes.importBranch",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: LaneSummary.self
+    )
   }
 
   func createChildLane(
@@ -15969,6 +16088,10 @@ final class SyncService: ObservableObject {
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
+    ScrollDiagnostics.timeMain("saveProfile") { saveProfileNow(profile) }
+  }
+
+  private func saveProfileNow(_ profile: HostConnectionProfile?) {
     let previousHostKey = activeHostStorageKey()
     let previousProfile = activeHostProfile ?? UserDefaults.standard.data(forKey: profileKey).flatMap {
       try? decoder.decode(HostConnectionProfile.self, from: $0)
@@ -16818,7 +16941,7 @@ final class SyncService: ObservableObject {
     // The pairing secret is sent over ws:// (plaintext) immediately after
     // `openSocket`, so only allow addresses we can trust on an unencrypted
     // transport — loopback, RFC1918 LAN ranges, link-local, and Tailscale CGNAT.
-    addresses.filter { syncCanAttemptPlaintextWebSocket($0) }
+    addresses.filter { syncCanAttemptPlaintextWebSocket($0) && !syncIsUnreachableLoopbackOnDevice($0) }
   }
 
   func syncCanAttemptPlaintextWebSocket(_ address: String) -> Bool {
@@ -18145,6 +18268,10 @@ final class SyncService: ObservableObject {
   }
 
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
+    ScrollDiagnostics.timeMain("applyDiscoveredHosts") { applyDiscoveredHostsNow(hosts) }
+  }
+
+  private func applyDiscoveredHostsNow(_ hosts: [DiscoveredSyncHost]) {
     // Group by computer, not by per-project/per-DB runtime identity. The same
     // machine may advertise multiple project ports or transports; the phone
     // should show and save one machine row with all usable routes.
@@ -21272,7 +21399,7 @@ final class SyncService: ObservableObject {
     )
   }
 
-  private func sendDecodableCommand<T: Decodable>(
+  func sendDecodableCommand<T: Decodable>(
     action: String,
     args: [String: Any] = [:],
     disconnectOnTimeout: Bool = true,
@@ -21655,7 +21782,7 @@ final class SyncService: ObservableObject {
 
   func performCommandRequest(
     action: String,
-    args: [String: Any],
+    args rawArgs: [String: Any],
     commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
@@ -21665,15 +21792,18 @@ final class SyncService: ObservableObject {
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     let targetProjectId: String?
+    let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: rawTargetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId): targetProjectId = projectId
+    case .focused(let projectId, let focusedArgs):
+      targetProjectId = projectId
+      args = focusedArgs
     }
     let runtimeScoped = commandIsRuntimeScoped(action)
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
@@ -21713,9 +21843,9 @@ final class SyncService: ObservableObject {
     return try unwrapSyncCommandResponse(raw)
   }
 
-  private func sendCommand(
+  func sendCommand(
     action: String,
-    args: [String: Any],
+    args rawArgs: [String: Any],
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
@@ -21725,15 +21855,18 @@ final class SyncService: ObservableObject {
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     let targetProjectId: String?
+    let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: rawTargetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId): targetProjectId = projectId
+    case .focused(let projectId, let focusedArgs):
+      targetProjectId = projectId
+      args = focusedArgs
     }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -22032,11 +22165,16 @@ final class SyncService: ObservableObject {
     }
 
     do {
-      try ensureActiveProjectCacheRowForHydration()
+      try await ensureActiveProjectCacheRowForHydrationOffMain()
+      // Polled while the first catch-up batch applies, and that batch holds the
+      // database queue: a main-actor read here waited out the batch (14–83 ms
+      // frames right after a connect). The reads run off main; the main-actor
+      // state they are matched against is read here.
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
-            let cachedProjects = self.database.listMobileProjects().filter { !self.isProjectHidden($0) }
+            let cachedProjects = await self.readDatabaseOffMain { $0.listMobileProjects() }
+              .filter { !self.isProjectHidden($0) }
             guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
               return nil
             }
@@ -22048,7 +22186,10 @@ final class SyncService: ObservableObject {
             }
             return onlyProject.id
           }
-          return self.database.hasProject(id: activeProjectId) ? activeProjectId : nil
+          let hasRow = await self.readDatabaseOffMain { $0.hasProject(id: activeProjectId) }
+          // The selection can move while the read is off main.
+          guard self.activeProjectId == activeProjectId else { return nil }
+          return hasRow ? activeProjectId : nil
         },
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
       )
@@ -22071,23 +22212,25 @@ final class SyncService: ObservableObject {
     }
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+    let projectRows = await readDatabaseOffMain { $0.listMobileProjects() }
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     if activeProjectId == nil {
-      let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
+      let cachedProjects = projectRows.filter { !isProjectHidden($0) }
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
         if supportsProjectCatalog {
           guard remoteProjectCatalog.count == 1,
                 remoteProjectCatalog.first?.id == onlyProject.id else {
-            refreshProjectCatalog()
+            refreshProjectCatalog(cachedRows: projectRows)
             return
           }
         }
         setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       } else {
-        refreshProjectCatalog()
+        refreshProjectCatalog(cachedRows: projectRows)
         return
       }
     }
-    refreshProjectCatalog()
+    refreshProjectCatalog(cachedRows: projectRows)
     // Lanes, work sessions and PRs are three independent host round trips.
     // Awaiting them in series cost the sum of three latencies on every project
     // switch — tolerable on LAN, punishing over relay. `async let` overlaps
@@ -22246,6 +22389,19 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     targetProjectId: String? = nil
   ) async throws -> Any {
+    var args = args
+    // A lane whose machine became the focused one: the focused host knows it
+    // by its plain id.
+    if let raw = args["workspaceId"] as? String,
+       let remote = workParseRemoteLaneId(raw),
+       remote.machineKey == focusedMachineKey {
+      args["workspaceId"] = remote.laneId
+    }
+    // Files of a lane on another machine: that machine, in the project that
+    // holds the lane (the workspace id is the lane id).
+    if let route = try remoteWorkspaceFileRoute(args: args) {
+      return try await route.connection.fileRequest(action: action, args: route.args, projectId: route.projectId)
+    }
     // A file read made on behalf of a chat on another machine (proof
     // artifacts) goes to that machine. See `SyncFleetTaskRoute`.
     if let remote = SyncFleetTaskRoute.chat,
@@ -22272,7 +22428,28 @@ final class SyncService: ObservableObject {
     return raw
   }
 
+  /// The route of a file request whose workspace is a lane of another machine.
+  private func remoteWorkspaceFileRoute(
+    args: [String: Any]
+  ) throws -> (connection: MachineConnection, projectId: String, args: [String: Any])? {
+    guard let raw = args["workspaceId"] as? String,
+          let remote = workParseRemoteLaneId(raw),
+          remote.machineKey != focusedMachineKey
+    else { return nil }
+    let repo = try requireRemoteLaneRepo(machineKey: remote.machineKey)
+    guard let route = try fleetRoute(machineKey: remote.machineKey, projectId: repo.projectId, rootPath: repo.rootPath) else {
+      return nil
+    }
+    var plainArgs = args
+    plainArgs["workspaceId"] = remote.laneId
+    return (route.connection, repo.projectId, plainArgs)
+  }
+
   private func sendFileRequest(action: String, args: [String: Any]) async throws -> Any {
+    // Another machine's lane: live only, never queued for the focused machine.
+    if (args["workspaceId"] as? String).map(isWorkRemoteLaneId) == true {
+      return try await performFileRequest(action: action, args: args)
+    }
     if canSendLiveRequests() {
       return try await performFileRequest(action: action, args: args)
     }
@@ -22429,15 +22606,17 @@ extension SyncService {
     }
   }
 
-  private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
-    if case .routed(let result) = try await routeOrStripFleetTarget(
+  private func performCommandRequestSafe(action: String, args rawArgs: [String: Any]) async throws -> Any {
+    let args: [String: Any]
+    switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: nil,
       targetProjectRootPath: nil,
       timeoutNanoseconds: nil
     ) {
-      return result
+    case .routed(let result): return result
+    case .focused(_, let focusedArgs): args = focusedArgs
     }
     guard supportsRemoteAction(action) else {
       throw NSError(
@@ -24713,6 +24892,21 @@ extension SyncService {
     targetProjectRootPath: String?,
     timeoutNanoseconds: UInt64?
   ) async throws -> SyncFleetTargetResolution {
+    var args = args
+    var targetProjectId = targetProjectId
+    var targetProjectRootPath = targetProjectRootPath
+    // A lane of another machine carries its machine in its id
+    // (`workRemoteLaneId`). The host gets the plain lane id, and the command
+    // goes to the lane's machine in the project that machine holds.
+    let laneTarget = try syncRemoteLaneTarget(args: args)
+    if let laneTarget {
+      args = laneTarget.args
+      if laneTarget.machineKey != focusedMachineKey {
+        let repo = try requireRemoteLaneRepo(machineKey: laneTarget.machineKey)
+        targetProjectId = repo.markedProjectId
+        targetProjectRootPath = repo.rootPath
+      }
+    }
     if let route = try syncFleetRoute(
       action: action,
       args: args,
@@ -24726,9 +24920,21 @@ extension SyncService {
         projectRootPath: route.rootPath,
         timeoutNanoseconds: timeoutNanoseconds
       )
-      return .routed(result)
+      // Lane replies from another machine carry its lanes: tag them, so the
+      // next command on one of them goes back to that machine. A `lanes.*` or
+      // `prs.*` command sent to a machine-marked project (create, import, the
+      // PRs tab's PR list) counts too. Chat replies stay plain: the Work tab
+      // namespaces their lanes itself.
+      let replyNamesLanes = action.hasPrefix("lanes.") || action.hasPrefix("prs.")
+      let replyMachineKey = laneTarget?.machineKey
+        ?? (replyNamesLanes ? syncFleetParseMarkedProjectId(targetProjectId)?.machineKey : nil)
+      guard let replyMachineKey, replyMachineKey != focusedMachineKey else { return .routed(result) }
+      return .routed(syncTagRemoteLaneIds(in: result, machineKey: replyMachineKey))
     }
-    return .focused(projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId)
+    return .focused(
+      projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId,
+      args: args
+    )
   }
 }
 
@@ -24785,6 +24991,37 @@ extension SyncService {
     // Leave the previous machine's project; the Hub is the landing surface.
     projectHubPresented = true
     return await reconnect(toSavedHost: host)
+  }
+
+  /// Settings "Forget on this phone": the machine leaves the connected set,
+  /// its saved pairing (profile and token) is dropped, and it is hidden from
+  /// this phone's lists until it comes back (`HiddenMachineStore`).
+  func forgetMachineOnThisPhone(machineKey: String?, hiddenIdentity: String, isAvailableNow: Bool) {
+    remoteLaneDetails.removeAll()
+    if let machineKey {
+      machineFleet?.stopKeepingLive(machineKey: machineKey)
+      if let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
+         let host = discoveredHost(fromSavedProfile: entry.profile) {
+        removeSavedHost(host)
+      }
+    }
+    HiddenMachineStore.shared.hide(identity: hiddenIdentity, isAvailableNow: isAvailableNow)
+  }
+
+  /// Pairs an account machine this phone never paired and keeps it connected.
+  /// Pairing attaches the phone to it; the previous primary machine stays
+  /// primary. Returns false when the pairing fails.
+  func pairAccountMachineKeepingPrimary(
+    _ machine: AccountMachine,
+    authorization: AccountPairingAuthorization
+  ) async -> Bool {
+    let previousKey = focusedMachineKey
+    guard await pairWithAccountMachine(machine, authorization: authorization) else { return false }
+    if let previousKey, let newKey = focusedMachineKey, newKey != previousKey {
+      machineFleet?.markConnected(machineKey: newKey)
+      _ = await switchFocus(toMachineKey: previousKey)
+    }
+    return true
   }
 
   /// Open a project that lives on another machine: focus that machine, then

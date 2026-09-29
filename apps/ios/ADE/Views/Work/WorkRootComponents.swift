@@ -1284,7 +1284,7 @@ struct WorkLanePrIndicator: View {
       Circle()
         .fill(tint)
         .frame(width: 6, height: 6)
-      Text("#\(tag.githubPrNumber)")
+      Text(verbatim: "#\(tag.githubPrNumber)")
         .font(.caption2.monospacedDigit().weight(.semibold))
       Text(lanePrStateLabel(tag.state))
         .font(.caption2.weight(.medium))

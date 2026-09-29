@@ -148,7 +148,7 @@ struct AccountIdentityCard: View {
   }
 }
 
-private struct AccountAvatar: View {
+struct AccountAvatar: View {
   let identity: AccountIdentity
 
   private var initials: String {
