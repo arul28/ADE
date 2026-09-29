@@ -44,6 +44,7 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  resolveProjectTabFallback,
   type ProjectTabGroup,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
@@ -1680,71 +1681,6 @@ export function TopBar({
     switchRemoteProject,
   ]);
 
-  // Where a remote project tab goes when its machine is disconnected or
-  // removed. A logical tab is a repo (see docs/plans/unified-machines.md), so
-  // one machine going away is not a reason to close it: the tab moves to
-  // another checkout of the same repo. Local first — it needs no connection and
-  // is the tab's natural default — then a connected machine, then any other.
-  // Returns null only when the repo lives nowhere else and the tab must close.
-  const resolveRemoteTabFallback = useCallback(
-    (
-      tab: RemoteProjectTab,
-      excludeTargetId: string,
-    ):
-      | { kind: "local"; rootPath: string }
-      | { kind: "remote"; binding: RemoteProjectTab }
-      | null => {
-      const group = tabGroupsRef.current.find((candidate) =>
-        candidate.machines.some((machine) => machine.bindingKey === tab.key),
-      );
-      if (!group) return null;
-      const others = group.machines.filter(
-        (machine) => machine.bindingKey !== tab.key,
-      );
-      if (others.length === 0) return null;
-
-      const openRoots = openProjectTabRootsRef.current;
-      const openRemoteKeys = new Set(
-        openRemoteProjectTabsRef.current.map((entry) => entry.key),
-      );
-      const isOpen = (machine: ProjectTabGroup["machines"][number]) =>
-        machine.isLocal
-          ? openRoots.includes(machine.rootPath)
-          : openRemoteKeys.has(machine.bindingKey);
-
-      const locals = others.filter(
-        (machine) => machine.isLocal && machine.exists && machine.rootPath,
-      );
-      const local = locals.find(isOpen) ?? locals[0];
-      if (local) {
-        return { kind: "local", rootPath: local.rootPath };
-      }
-
-      const connectedTargetIds = new Set(
-        (remoteSnapshotRef.current?.connections ?? [])
-          .filter((connection) => connection.state === "connected")
-          .map((connection) => connection.target.id),
-      );
-      const remotes = others.filter(
-        (
-          machine,
-        ): machine is ProjectTabGroup["machines"][number] & {
-          binding: RemoteProjectTab;
-        } =>
-          machine.binding?.kind === "remote" &&
-          machine.binding.targetId !== excludeTargetId,
-      );
-      const remote =
-        remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
-        remotes[0];
-      if (remote) {
-        return { kind: "remote", binding: remote.binding };
-      }
-      return null;
-    },
-    [],
-  );
-
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
       target: RemoteRuntimeTarget,
@@ -1757,11 +1693,26 @@ export function TopBar({
       const targetName = target.name || target.hostname;
       const affectedCount = affectedTabs.length;
       // A project is not closed by removing one machine: it moves to another
-      // checkout of the same repo when one exists. Only a repo that lives
-      // nowhere else is actually closed.
+      // checkout of the same repo when one exists (see
+      // resolveProjectTabFallback). Only a repo that lives nowhere else closes.
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const openRemoteBindingKeys = openRemoteProjectTabsRef.current.map(
+        (entry) => entry.key,
+      );
       const plans = affectedTabs.map((tab) => ({
         tab,
-        fallback: resolveRemoteTabFallback(tab, target.id),
+        fallback: resolveProjectTabFallback({
+          bindingKey: tab.key,
+          groups: tabGroupsRef.current,
+          openLocalRoots: openProjectTabRootsRef.current,
+          openRemoteBindingKeys,
+          connectedTargetIds,
+          excludeTargetId: target.id,
+        }),
       }));
       const stayingTabs = plans.filter((plan) => plan.fallback);
       const closingTabs = plans.filter((plan) => !plan.fallback);
@@ -1924,7 +1875,6 @@ export function TopBar({
       return true;
     },
     [
-      resolveRemoteTabFallback,
       setOpenProjectTabRoots,
       setOpenRemoteProjectTabs,
     ],

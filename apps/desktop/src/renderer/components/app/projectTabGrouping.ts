@@ -218,6 +218,66 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
   );
 }
 
+/** Where a project tab moves when its machine is disconnected or removed. */
+export type ProjectTabFallback =
+  | { kind: "local"; rootPath: string }
+  | { kind: "remote"; binding: RemoteProjectTabBinding };
+
+/**
+ * A logical tab is a repo, so one machine going away is not a reason to close
+ * it: the tab falls back to another checkout of the same repo — the local
+ * checkout first (it needs no connection and is the tab's natural default),
+ * then a connected machine, then any other. `null` means the repo lives nowhere
+ * else and the tab must close.
+ */
+export function resolveProjectTabFallback(args: {
+  bindingKey: string;
+  groups: readonly ProjectTabGroup[];
+  openLocalRoots: readonly string[];
+  openRemoteBindingKeys: readonly string[];
+  connectedTargetIds: ReadonlySet<string>;
+  excludeTargetId: string;
+}): ProjectTabFallback | null {
+  const {
+    bindingKey,
+    groups,
+    openLocalRoots,
+    openRemoteBindingKeys,
+    connectedTargetIds,
+    excludeTargetId,
+  } = args;
+  const group = groups.find((candidate) =>
+    candidate.machines.some((machine) => machine.bindingKey === bindingKey),
+  );
+  if (!group) return null;
+  const others = group.machines.filter(
+    (machine) => machine.bindingKey !== bindingKey,
+  );
+  if (others.length === 0) return null;
+
+  const openRemoteKeys = new Set(openRemoteBindingKeys);
+  const isOpen = (machine: ProjectTabMachine) =>
+    machine.isLocal
+      ? openLocalRoots.includes(machine.rootPath)
+      : openRemoteKeys.has(machine.bindingKey);
+
+  const locals = others.filter(
+    (machine) => machine.isLocal && machine.exists && machine.rootPath,
+  );
+  const local = locals.find(isOpen) ?? locals[0];
+  if (local) return { kind: "local", rootPath: local.rootPath };
+
+  const remotes = others.filter(
+    (machine): machine is ProjectTabMachine & { binding: RemoteProjectTabBinding } =>
+      machine.binding?.kind === "remote" &&
+      machine.binding.targetId !== excludeTargetId,
+  );
+  const remote =
+    remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
+    remotes[0];
+  return remote ? { kind: "remote", binding: remote.binding } : null;
+}
+
 export type RecentProjectLocation = {
   summary: RecentProjectSummary;
   recentKey: string | null;
