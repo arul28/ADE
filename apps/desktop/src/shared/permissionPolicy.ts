@@ -463,7 +463,7 @@ export function policyAllowedMcpServers(policy: AgentChatPermissionPolicy): stri
 export function policyRefusesMcpServer(
   policy: AgentChatPermissionPolicy,
   server: string,
-  provider: string,
+  provider: EvaluatePermissionPolicyInput["provider"],
 ): boolean {
   const name = server.trim().toLowerCase();
   if (evaluatePermissionPolicy(policy, { toolName: `mcp:${name}:*`, provider }) !== "deny") return false;

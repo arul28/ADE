@@ -714,6 +714,8 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     runAgentAction("press", input, async (client, session, tracker) => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("App Control press requires a key.");
+      // Parsed before any side effect, so a refused key records nothing.
+      const events = keyEventsForAgentInput(key);
       let element: AppControlElementSnapshot | null = null;
       if (hasElementTarget(input)) {
         element = await locateElementTarget(client, session, input, { focus: true }, tracker);
@@ -721,7 +723,6 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         await captureActionBaseline(client, input, tracker);
       }
       await noteDemoAction(client, session, "key", { element, label: key });
-      const events = keyEventsForAgentInput(key);
       await deps.enablePageDomain(client);
       await client.send("Input.dispatchKeyEvent", events.down);
       await client.send("Input.dispatchKeyEvent", events.up);

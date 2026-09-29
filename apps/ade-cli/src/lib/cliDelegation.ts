@@ -395,12 +395,18 @@ function exitLike(result: DelegatedCliExit): never {
  */
 const RUNTIME_OWNING_COMMANDS = new Set(["serve", "runtime", "rpc"]);
 
-/** The first command word of an `ade` argv, after the global flags. */
-export function cliCommandWord(argv: readonly string[]): string | null {
+/**
+ * The leading global part of an `ade` argv: the flags before the first
+ * command word (a value flag's value is skipped, not listed), and that word.
+ * `--` ends the walk with no word.
+ */
+function scanCliArgv(argv: readonly string[]): { word: string | null; flags: string[] } {
+  const flags: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
-    if (token === "--") return null;
-    if (!token.startsWith("-")) return token;
+    if (token === "--") return { word: null, flags };
+    if (!token.startsWith("-")) return { word: token, flags };
+    flags.push(token);
     if (isCliGlobalValueFlag(token)) {
       index += 1;
     } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
@@ -408,7 +414,12 @@ export function cliCommandWord(argv: readonly string[]): string | null {
       index += 1;
     }
   }
-  return null;
+  return { word: null, flags };
+}
+
+/** The first command word of an `ade` argv, after the global flags. */
+export function cliCommandWord(argv: readonly string[]): string | null {
+  return scanCliArgv(argv).word;
 }
 
 export function cliArgvOwnsRuntime(argv: readonly string[]): boolean {
@@ -425,20 +436,10 @@ const VERSION_FLAGS = new Set(["--version", "-v"]);
  * from an ADE terminal), a delegated answer named the ADE app's CLI instead.
  */
 export function cliArgvAsksVersion(argv: readonly string[]): boolean {
-  // The same walk as `cliCommandWord`, which skips a version flag like any
-  // other flag: `ade --socket /tmp/x.sock --version` asks for the version too.
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index]!;
-    if (token === "--") return false;
-    if (VERSION_FLAGS.has(token)) return true;
-    if (!token.startsWith("-")) return token === "version";
-    if (isCliGlobalValueFlag(token)) {
-      index += 1;
-    } else if (token === "--socket" && looksLikeSocketPathOverride(argv[index + 1] ?? "")) {
-      index += 1;
-    }
-  }
-  return false;
+  // A version flag anywhere among the leading global flags counts:
+  // `ade --socket /tmp/x.sock --version` asks for the version too.
+  const { word, flags } = scanCliArgv(argv);
+  return flags.some((flag) => VERSION_FLAGS.has(flag)) || word === "version";
 }
 
 /**

@@ -20,16 +20,19 @@ export type LastTurnUserMessage = {
   envelope: AgentChatEventEnvelope & { sequence: number };
   event: UserMessageEvent;
   /**
-   * Whether the provider ran the turn: some output (text, reasoning, a tool or
-   * command, a file change) or a `done` that did not fail follows the message.
-   * A send that failed before the provider took it leaves only an `error` and a
-   * failed `done`, and there is then nothing to roll back.
+   * Whether the provider took the turn: a `status: started` that carries a
+   * turn id, some output (text, reasoning, a tool or command, a file change),
+   * or a `done` that did not fail follows the message. A turn the provider
+   * accepted and then failed (a rate limit, a model error) counts. A send that
+   * failed before the provider took it leaves only an `error`, a failed
+   * `status` and a failed `done`, and there is then nothing to roll back.
    */
   delivered: boolean;
   /**
-   * The turn's id: the message's own, else the first provider output's. Null
-   * when neither names one. A failed send's `done` carries an id ADE made up,
-   * so it is never read.
+   * The turn's id: the message's own, else the first one the provider issued
+   * (on a started `status` or on output). Null when none names one. A failed
+   * send's `error`, `status` and `done` carry an id ADE made up, so they are
+   * never read.
    */
   turnId: string | null;
 };
@@ -45,8 +48,14 @@ const PROVIDER_OUTPUT_EVENT_TYPES: ReadonlySet<AgentChatEvent["type"]> = new Set
   "plan",
 ]);
 
-function isProviderOutput(event: AgentChatEvent): boolean {
+/**
+ * An event only a turn the provider took produces. A `status: started` counts
+ * only with a turn id: the optimistic one a Codex send writes first has none,
+ * and a real `turn/start` writes it again with the provider's id.
+ */
+function showsProviderTookTurn(event: AgentChatEvent): boolean {
   if (PROVIDER_OUTPUT_EVENT_TYPES.has(event.type)) return true;
+  if (event.type === "status") return event.turnStatus === "started" && Boolean(event.turnId?.trim());
   return event.type === "done" && event.status !== "failed";
 }
 
@@ -65,7 +74,7 @@ export function findLastTurnUserMessage(envelopes: readonly AgentChatEventEnvelo
     let delivered = false;
     for (let later = index + 1; later < envelopes.length && !(delivered && turnId); later += 1) {
       const laterEvent = envelopes[later]!.event;
-      if (!isProviderOutput(laterEvent)) continue;
+      if (!showsProviderTookTurn(laterEvent)) continue;
       delivered = true;
       const candidate = (laterEvent as { turnId?: unknown }).turnId;
       if (!turnId && typeof candidate === "string" && candidate.trim()) turnId = candidate.trim();
@@ -75,10 +84,15 @@ export function findLastTurnUserMessage(envelopes: readonly AgentChatEventEnvelo
   return null;
 }
 
+/** The content of a top-level Claude SDK user entry, or null for any other entry. */
+function claudeSdkUserContent(message: ClaudeSdkSessionMessage): { content: unknown } | null {
+  if (message.type !== "user" || message.parent_tool_use_id) return null;
+  return { content: (message.message as { content?: unknown } | null)?.content };
+}
+
 /** The text of a Claude SDK user entry, or null for a tool result or an entry with no text. */
 function claudeSdkUserPromptText(message: ClaudeSdkSessionMessage): string | null {
-  if (message.type !== "user" || message.parent_tool_use_id) return null;
-  const content = (message.message as { content?: unknown } | null)?.content;
+  const content = claudeSdkUserContent(message)?.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return null;
   const parts = content
@@ -94,8 +108,9 @@ const collapseWhitespace = (value: string): string => value.replace(/\s+/g, " ")
 
 /** A top-level user entry that is not only tool results: a prompt, with or without text. */
 function isClaudeSdkUserPrompt(message: ClaudeSdkSessionMessage): boolean {
-  if (message.type !== "user" || message.parent_tool_use_id) return false;
-  const content = (message.message as { content?: unknown } | null)?.content;
+  const entry = claudeSdkUserContent(message);
+  if (!entry) return false;
+  const content = entry.content;
   if (!Array.isArray(content)) return true;
   return !content.every((block) =>
     Boolean(block) && typeof block === "object" && (block as { type?: unknown }).type === "tool_result");

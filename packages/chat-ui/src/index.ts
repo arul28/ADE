@@ -5,7 +5,7 @@
  * assembly of them, not a required entry point.
  */
 
-export { AdeChat, type AdeChatProps } from "./AdeChat";
+export { AdeChat, type AdeChatProps, type AdeChatSendResult } from "./AdeChat";
 
 export { Composer, mergeAttachments, type ComposerProps } from "./composer/Composer";
 export {

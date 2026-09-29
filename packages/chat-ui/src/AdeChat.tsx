@@ -32,6 +32,9 @@ import { AdeChatStyles } from "./theme/AdeChatStyles";
 import type { AdeChatTheme } from "./theme/createTheme";
 import { Transcript, type TranscriptProps } from "./transcript/Transcript";
 
+/** What `AdeChatProps.onSend` may return. See `onSend`. */
+export type AdeChatSendResult = void | boolean | "handled";
+
 export type AdeChatProps = {
   client: AdeChatClient;
   /** Thread key. Changing it opens a different conversation. */
@@ -60,19 +63,21 @@ export type AdeChatProps = {
   onValueChange?: ComposerProps["onValueChange"];
   /**
    * Called when the person sends a new message, before it reaches the thread.
-   * Return (or resolve) `false` to cancel: nothing is sent, and the composer
-   * keeps the draft and the staged attachments (for a confirmation or a
-   * validation step). A host that sends the message itself calls
-   * `thread.send` here, returns `false`, and clears the draft through a
-   * controlled `value`. Any other result sends as usual. A throw is shown under
-   * the composer as a failed send, and the draft is restored. Steering a
-   * running turn does not call this. `thread` is the live thread state (see
-   * `children`).
+   * What it returns (or resolves) decides what happens next:
+   *   - `false` cancels: nothing is sent, and the composer keeps the draft and
+   *     the staged attachments (a confirmation or a validation step);
+   *   - `"handled"` means the host sent the message itself (for example with
+   *     `thread.send` and other text): nothing more is sent, and the composer
+   *     stays cleared;
+   *   - anything else sends the message as usual.
+   * A throw is shown under the composer as a failed send, and the draft is
+   * restored. Steering a running turn does not call this. `thread` is the
+   * live thread state (see `children`).
    */
   onSend?: (
     input: SendInput,
     thread: ThreadState,
-  ) => void | boolean | Promise<void | boolean>;
+  ) => AdeChatSendResult | Promise<AdeChatSendResult>;
   /**
    * Render prop drawn between the transcript and the composer, with the live
    * thread state: rows, status, `send`, `update`, the resolved model. Use it
@@ -424,7 +429,9 @@ function AdeChatInner({
       {children ? children(thread) : null}
       <Composer
         onSend={async (input) => {
-          if (onSend && (await onSend(input, threadStateRef.current)) === false) return false;
+          const result = onSend ? await onSend(input, threadStateRef.current) : undefined;
+          if (result === false) return false;
+          if (result === "handled") return;
           await threadStateRef.current.send(input);
         }}
         onSteer={(input) => thread.steer(input)}

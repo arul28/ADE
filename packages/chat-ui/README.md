@@ -85,7 +85,7 @@ Transcript above, composer with the model rail below. No header bar.
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
 | `value` / `onValueChange` | | — | controlled draft, forwarded to `<Composer>` (0.4) |
-| `onSend` | `(input, thread) => void \| boolean \| Promise<…>` | — | runs before a new message is sent; return `false` to cancel and keep the draft (0.4) |
+| `onSend` | `(input, thread) => AdeChatSendResult \| Promise<…>` | — | runs before a new message is sent; `false` cancels and keeps the draft, `"handled"` means you sent it yourself (0.4) |
 | `children` | `(thread: ThreadState) => ReactNode` | — | drawn between transcript and composer (0.4) |
 | `threadRef` | `{ current: ThreadState \| null }` | — | the live thread state for code outside the tree (0.4) |
 | `onLinkClick` | `(href, { source, text }) => void` | — | handle links yourself; pass it in Electron (0.4) |

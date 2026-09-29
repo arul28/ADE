@@ -93,6 +93,11 @@ const NAMED_KEYS: Record<string, NamedKey> = {
   pageup: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
   pagedown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
   insert: { key: "Insert", code: "Insert", windowsVirtualKeyCode: 45 },
+  // A modifier pressed on its own (a page that reacts to a bare Shift press).
+  shift: { key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 },
+  control: { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17 },
+  alt: { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18 },
+  meta: { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91 },
   ...Object.fromEntries(
     Array.from({ length: 12 }, (_, index) => {
       const name = `F${index + 1}`;
@@ -126,7 +131,8 @@ export function keyEventsForAgentInput(input: string): {
   down: Record<string, unknown>;
   up: Record<string, unknown>;
 } {
-  const raw = input.length === 1 ? input : input.trim();
+  // A single code point (an emoji is two UTF-16 units) is one key, as is.
+  const raw = [...input].length === 1 ? input : input.trim();
   // `+` alone, or a trailing `+` ("Shift++"), names the plus key itself.
   const parts = raw.length > 1 ? raw.split(/\+(?!$)/) : [raw];
   let modifiers = 0;
@@ -140,13 +146,14 @@ export function keyEventsForAgentInput(input: string): {
   const typesText = (modifiers & ~SHIFT_MODIFIER_BIT) === 0;
 
   let base: NamedKey;
-  const named = keyPart === " " ? NAMED_KEYS.space : keyPart.length > 1 ? NAMED_KEYS[keyPart.toLowerCase()] : undefined;
+  const single = [...keyPart].length === 1;
+  const named = keyPart === " " ? NAMED_KEYS.space : single ? undefined : NAMED_KEYS[keyPart.toLowerCase()];
   if (named) {
     base = named;
-  } else if (keyPart.length > 1) {
+  } else if (!single) {
     throw new Error(`Unknown key "${keyPart}" in "${input}". Use a single character or a key name such as Enter, Tab, Escape, ArrowUp or F5.`);
   } else {
-    const char = keyPart.slice(0, 1);
+    const char = keyPart;
     const upper = char.toUpperCase();
     const typed = shift && /^[a-z]$/.test(char) ? upper : char;
     base = {

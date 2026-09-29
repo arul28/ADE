@@ -49204,6 +49204,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer: true;
+      rerunToken?: symbol;
     },
   ): Promise<void | AgentChatSteerResult>;
   async function sendMessage(
@@ -49215,6 +49216,8 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer?: false;
+      /** `rerunLastTurn`'s token: lets its own resend past its lock. */
+      rerunToken?: symbol;
     },
   ): Promise<void>;
   async function sendMessage(
@@ -49226,6 +49229,7 @@ export function createAgentChatService(args: {
       preparedMessage?: PreparedSendMessage;
       automaticRecovery?: boolean;
       routeActiveToSteer?: boolean;
+      rerunToken?: symbol;
     },
   ): Promise<void | AgentChatSteerResult> {
     // Composer @-mention chips expand here, before any routing decision, so a
@@ -49293,7 +49297,8 @@ export function createAgentChatService(args: {
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     await refreshCtoLiveStateForTurn(args.sessionId);
-    const prepared = options?.preparedMessage ?? prepareSendMessage(args);
+    const prepared = options?.preparedMessage
+      ?? prepareSendMessage({ ...args, ...(options?.rerunToken ? { rerunToken: options.rerunToken } : {}) });
     if (!prepared) return;
     if (
       prepared.managed.session.provider === "codex"
@@ -59373,29 +59378,41 @@ export function createAgentChatService(args: {
       historyGeneration,
     });
 
+    // The old message is already gone from the history. When the resend did
+    // not write its own message, the text must not be lost: the history shows
+    // the message and the error, as a failed send does. Once it wrote its
+    // message, the send path owns any failure it reports. Every provider path
+    // writes the message before its first await, so it is committed by the
+    // time `sendMessage` returns.
     const userMessageBeforeResend = managed.lastUserMessageSequence ?? 0;
+    const sequenceBeforeResend = managed.eventSequence;
+    const keepUnsentMessage = (error: unknown): void => {
+      if (managed.closed || (managed.lastUserMessageSequence ?? 0) !== userMessageBeforeResend) return;
+      emitPreparedUserMessage(managed, {
+        text: resend.text,
+        ...(resend.displayText ? { displayText: resend.displayText } : {}),
+        attachments: resend.attachments ?? [],
+        contextAttachments: resend.contextAttachments ?? [],
+        metadata: resend.metadata,
+      });
+      // The disk-pressure gate writes its own error without a message.
+      const errorAlreadyReported = (eventHistoryBySession.get(sessionId) ?? []).some((envelope) =>
+        (envelope.sequence ?? 0) > sequenceBeforeResend && envelope.event.type === "error");
+      if (!errorAlreadyReported) emitManagedSendFailure(managed, error);
+    };
     try {
-      // Prepared here, with the token, so the funnel lets this one send
-      // through. The prepared message then goes the normal way.
-      await prepareSessionLaunch(managed);
-      const prepared = prepareSendMessage({ ...resend, rerunToken: token });
-      if (prepared) await sendMessage(resend, { preparedMessage: prepared });
+      // The normal send order, with the token that lets it past the lock.
+      await sendMessage(resend, { rerunToken: token });
     } catch (error) {
-      // The old message is already gone from the history. When the resend
-      // failed before it wrote its own message, the text must not be lost:
-      // the history shows the message and the error, as a failed send does.
-      // Once it wrote its message, the send path owns the failure it reports.
-      if (!managed.closed && (managed.lastUserMessageSequence ?? 0) === userMessageBeforeResend) {
-        emitPreparedUserMessage(managed, {
-          text: resend.text,
-          ...(resend.displayText ? { displayText: resend.displayText } : {}),
-          attachments: resend.attachments ?? [],
-          contextAttachments: resend.contextAttachments ?? [],
-          metadata: resend.metadata,
-        });
-        emitManagedSendFailure(managed, error);
-      }
+      keepUnsentMessage(error);
       throw error;
+    }
+    // A send can also return without sending: an empty prepared message, a
+    // slash command handled locally, the disk-pressure gate.
+    if ((managed.lastUserMessageSequence ?? 0) === userMessageBeforeResend) {
+      const notSent = new Error("ADE did not send the message again. It is kept in the chat; send it again to retry.");
+      keepUnsentMessage(notSent);
+      throw notSent;
     }
     return { retractedFromSequence, historyGeneration, conversationRollback };
   };

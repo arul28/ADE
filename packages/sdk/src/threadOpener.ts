@@ -321,8 +321,10 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     //
     // A refresh that pushed servers is itself an MCP request, so its report is
     // always read.
-    const refreshed = await refreshMcpOnResume(key, summary.sessionId, record, opts.refresh?.mcpServers);
+    // Roots first, as on a live thread: a refused root fails the open before
+    // the MCP servers change.
     await applyAttachmentRoots(key, summary.sessionId, record.attachmentRoots, opts.refresh?.attachmentRoots);
+    const refreshed = await refreshMcpOnResume(key, summary.sessionId, record, opts.refresh?.mcpServers);
     const resumedCapability = refreshed
       ? normalizeMcpCapability(refreshed.mcpCapability)
       : record.requestedMcp === false

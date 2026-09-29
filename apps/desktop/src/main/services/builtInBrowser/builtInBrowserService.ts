@@ -5128,6 +5128,8 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
+      // Parsed before any side effect, so a refused key records nothing.
+      const events = keyEventsForAgentInput(key);
       let element: BuiltInBrowserElementSnapshot | null = null;
       if (hasElementTarget(input)) {
         element = await focusElementTarget(tab, input, { select: false });
@@ -5135,7 +5137,6 @@ function createBuiltInBrowserWindowService(args: {
         await captureActionBaseline(tab, input);
       }
       await noteDemoAction(tab, input, "key", { element, label: key });
-      const events = keyEventsForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.down);
         await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", events.up);

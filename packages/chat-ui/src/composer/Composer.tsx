@@ -59,9 +59,10 @@ export function mergeAttachments(
 export type ComposerProps = {
   /**
    * Start a new turn. Resolve `false` to decline: the composer puts the draft
-   * and the staged attachments back, with no error shown.
+   * and the staged attachments back, with no error shown. Any other result
+   * leaves the composer cleared.
    */
-  onSend: (input: SendInput) => void | false | Promise<void | false>;
+  onSend: (input: SendInput) => unknown;
   /**
    * Deliver into a running turn. Omit to disable steering entirely.
    *
