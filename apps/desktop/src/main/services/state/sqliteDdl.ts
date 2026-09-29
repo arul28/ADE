@@ -163,7 +163,7 @@ function splitTopLevelSqlClauses(body: string): string[] {
  */
 function isDroppedTableConstraint(clause: string): boolean {
   const withoutConstraintName = stripSqlComments(clause).replace(
-    /^\s*constraint\s+(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$]+)\s+/i,
+    /^\s*constraint\s+(?:'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$]+)\s*/i,
     "",
   );
   return /^(?:foreign\s+key|unique)\b/i.test(withoutConstraintName.trimStart());

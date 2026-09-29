@@ -13,7 +13,6 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
-  ProjectSecretHydrationResult,
   ProjectSecretPullResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
@@ -67,10 +66,6 @@ export type ProjectSecretServiceOptions = {
   } | null;
 };
 
-/** Re-exported so callers of this service do not reach past it for the result shape. */
-export type { ProjectSecretHydrationResult };
-
-const NO_HYDRATION: ProjectSecretHydrationResult = { added: 0, updated: 0 };
 const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
 
 /** ISO-8601 parse, or null when the value is not a usable timestamp. */
@@ -342,7 +337,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
    * person, and collapsing them told a signed-out user their secrets were
    * already up to date.
    */
-  const pullAccountSecrets = async (): Promise<ProjectSecretPullResult> => {
+  const pullFromAccount = async (): Promise<ProjectSecretPullResult> => {
     const accountScope = getAccountScope();
     const accountUserId = getAccountUserId();
     if (!accountUserId) return UNAVAILABLE_PULL;
@@ -443,21 +438,13 @@ export function createProjectSecretService(projectRoot: string, options: Project
   /**
    * The migration lifecycle's name for the same pull.
    *
-   * It only needs completion, so an unavailable vault reads as "nothing moved"
-   * there. The user-facing entry below keeps the distinction.
+   * It only needs completion — every caller awaits and ignores the value — so
+   * an unavailable vault is simply a pull that moved nothing. `pullFromAccount`
+   * keeps the distinction for the callers that report it to a person.
    */
-  const hydrateFromVault = async (): Promise<ProjectSecretHydrationResult> => {
-    const outcome = await pullAccountSecrets();
-    return outcome.state === "pulled" ? { added: outcome.added, updated: outcome.updated } : NO_HYDRATION;
+  const hydrateFromVault = async (): Promise<void> => {
+    await pullFromAccount();
   };
-
-  /**
-   * The user-facing name for one pull from the account vault.
-   *
-   * `hydrateFromVault` keeps its name for the migration lifecycle; this is the
-   * entry the action surface, the CLI and the Settings button reach for.
-   */
-  const pullFromAccount = async (): Promise<ProjectSecretPullResult> => await pullAccountSecrets();
 
   return {
     list(): ProjectSecretsListResult {

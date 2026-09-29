@@ -471,13 +471,18 @@ export type TableRebuildPlan = {
  * loop must not swallow it and carry on.
  */
 class RebuildRollbackFailedError extends Error {
+  /**
+   * The failure that stopped the rollback. Deliberately NOT part of `message`:
+   * `isReadonlyDatabaseError` matches on message text, so an "attempt to write a
+   * readonly database" from the rollback would make this error read as the
+   * benign skip the open path makes of readonly failures.
+   */
+  readonly rollbackError: unknown;
+
   constructor(tableName: string, rollbackError: unknown) {
-    super(
-      `Rollback failed while rebuilding ${tableName}: ${
-        rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-      }`,
-    );
+    super(`Rollback failed while rebuilding ${tableName}.`);
     this.name = "RebuildRollbackFailedError";
+    this.rollbackError = rollbackError;
   }
 }
 
@@ -603,7 +608,15 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       } catch (error) {
         // A connection left inside a failed transaction is not a per-table
         // problem: every later statement would run inside it.
-        if (error instanceof RebuildRollbackFailedError) throw error;
+        if (error instanceof RebuildRollbackFailedError) {
+          logger?.warn("db.crr_repair_rollback_failed", {
+            table: table.name,
+            error: error.rollbackError instanceof Error
+              ? error.rollbackError.message
+              : String(error.rollbackError),
+          });
+          throw error;
+        }
         // A rewrite SQLite rejects for ONE table must not wedge the database
         // open for every other table, and with it the whole runtime. The
         // rebuild rolls its own transaction back, so the table keeps the shape
