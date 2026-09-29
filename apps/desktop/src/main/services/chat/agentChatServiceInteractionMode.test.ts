@@ -12,6 +12,7 @@ import {
   mapPermissionToCodex,
   mockState,
   path,
+  peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
   query,
   readPersistedChatState,
@@ -1265,20 +1266,19 @@ describe("createAgentChatService", () => {
       // The OpenCode directory is models.dev in its entirety (195 providers / ~7.2k
       // models). Emitting all of it made the synced catalog 4.85 MB and stalled or
       // killed the iOS model picker. Only connected providers may reach the catalog.
-      replaceDynamicOpenCodeModelDescriptors([
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "GPT 5.4",
-          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
-          openCodeProviderId: "openai",
-          openCodeModelId: "gpt-5.4",
-        }),
-        createDynamicOpenCodeModelDescriptor("", {
-          displayName: "Nano Model",
-          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
-          openCodeProviderId: "nano-gpt",
-          openCodeModelId: "nano-model",
-        }),
-      ]);
+      const openAiModel = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "GPT 5.4",
+        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5.4",
+      });
+      const nanoModel = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "Nano Model",
+        capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+        openCodeProviderId: "nano-gpt",
+        openCodeModelId: "nano-model",
+      });
+      replaceDynamicOpenCodeModelDescriptors([openAiModel, nanoModel]);
       vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
         modelIds: ["opencode/openai/gpt-5.4"],
         providers: [
@@ -1286,7 +1286,7 @@ describe("createAgentChatService", () => {
           { id: "nano-gpt", name: "nano-gpt", connected: false, modelCount: 1, availableModelCount: 0 },
         ],
         error: null,
-        descriptors: [],
+        descriptors: [openAiModel],
       });
 
       const { service } = createService();
@@ -1308,6 +1308,55 @@ describe("createAgentChatService", () => {
       expect(nanoGpt?.modelCount).toBe(0);
       expect(nanoGpt?.subsections).toEqual([]);
     });
+
+    it.each(["fresh probe", "cached inventory"] as const)(
+      "uses the project's OpenCode descriptor for a %s when another project replaced the shared registry entry",
+      async (inventorySource) => {
+        const projectDescriptor = createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Project inventory GPT",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        });
+        const otherProjectDescriptor = createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Other project's GPT",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        });
+        // Simulate the other project's probe replacing the process-wide entry
+        // after this project's inventory has already captured its descriptor.
+        replaceDynamicOpenCodeModelDescriptors([otherProjectDescriptor]);
+        const inventory = {
+          modelIds: [projectDescriptor.id],
+          providers: [
+            { id: "openai", name: "OpenAI", connected: true, modelCount: 1, availableModelCount: 1 },
+          ],
+          error: null,
+          descriptors: [projectDescriptor],
+        };
+        if (inventorySource === "fresh probe") {
+          vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue(inventory);
+        } else {
+          vi.mocked(peekOpenCodeInventoryCache).mockReturnValue(inventory);
+        }
+
+        const { service } = createService();
+        const catalog = await service.getModelCatalog(
+          inventorySource === "fresh probe"
+            ? { mode: "force", refreshProvider: "opencode" }
+            : { mode: "cached" },
+        );
+        const projectModel = catalog.groups
+          .find((group) => group.key === "opencode")
+          ?.providers.find((provider) => provider.key === "openai")
+          ?.subsections.flatMap((subsection) => subsection.models)
+          .find((model) => model.id === projectDescriptor.id);
+
+        expect(projectModel?.displayName).toBe("Project inventory GPT");
+        expect(projectModel?.supportsReasoning).toBe(false);
+      },
+    );
 
     it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({

@@ -55507,9 +55507,7 @@ export function createAgentChatService(args: {
       opencodeInventory.descriptors.map((descriptor) => [descriptor.id, descriptor]),
     );
     for (const id of opencodeInventory.modelIds) {
-      // Older remote runtimes may not send descriptors yet; preserve their
-      // compatibility while preferring this project's exact inventory.
-      const descriptor = openCodeDescriptorsById.get(id) ?? getModelById(id);
+      const descriptor = openCodeDescriptorsById.get(id);
       if (!descriptor) continue;
       descriptors.push(descriptor);
       const groupKey =
