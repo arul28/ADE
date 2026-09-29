@@ -44,6 +44,7 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  type ProjectTabGroup,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -891,6 +892,13 @@ export function TopBar({
   const evictProjectState = useAppStore((s) => s.evictProjectState);
   const openProjectTabRootsRef = useRef(openProjectTabRoots);
   const openRemoteProjectTabsRef = useRef(openRemoteProjectTabs);
+  // Tab groups and the connection snapshot are both derived later in the
+  // component; the removal handler reads them through refs so it can stay a
+  // stable callback with empty deps.
+  const tabGroupsRef = useRef<ProjectTabGroup[]>([]);
+  const remoteSnapshotRef = useRef<RemoteRuntimeConnectionSnapshot | null>(
+    null,
+  );
   // A logical repo tab remembers its chosen checkout even while another repo
   // is active. This is deliberately per TopBar/window instance: opening a
   // local counterpart must not make an inactive remote tab fall back to the
@@ -1229,6 +1237,14 @@ export function TopBar({
       remoteOriginByKey,
     ],
   );
+
+  useEffect(() => {
+    tabGroupsRef.current = tabGroups;
+  }, [tabGroups]);
+
+  useEffect(() => {
+    remoteSnapshotRef.current = remoteSnapshot;
+  }, [remoteSnapshot]);
 
   useEffect(() => {
     if (!activeTabBindingKey) return;
@@ -1664,6 +1680,71 @@ export function TopBar({
     switchRemoteProject,
   ]);
 
+  // Where a remote project tab goes when its machine is disconnected or
+  // removed. A logical tab is a repo (see docs/plans/unified-machines.md), so
+  // one machine going away is not a reason to close it: the tab moves to
+  // another checkout of the same repo. Local first — it needs no connection and
+  // is the tab's natural default — then a connected machine, then any other.
+  // Returns null only when the repo lives nowhere else and the tab must close.
+  const resolveRemoteTabFallback = useCallback(
+    (
+      tab: RemoteProjectTab,
+      excludeTargetId: string,
+    ):
+      | { kind: "local"; rootPath: string }
+      | { kind: "remote"; binding: RemoteProjectTab }
+      | null => {
+      const group = tabGroupsRef.current.find((candidate) =>
+        candidate.machines.some((machine) => machine.bindingKey === tab.key),
+      );
+      if (!group) return null;
+      const others = group.machines.filter(
+        (machine) => machine.bindingKey !== tab.key,
+      );
+      if (others.length === 0) return null;
+
+      const openRoots = openProjectTabRootsRef.current;
+      const openRemoteKeys = new Set(
+        openRemoteProjectTabsRef.current.map((entry) => entry.key),
+      );
+      const isOpen = (machine: ProjectTabGroup["machines"][number]) =>
+        machine.isLocal
+          ? openRoots.includes(machine.rootPath)
+          : openRemoteKeys.has(machine.bindingKey);
+
+      const locals = others.filter(
+        (machine) => machine.isLocal && machine.exists && machine.rootPath,
+      );
+      const local = locals.find(isOpen) ?? locals[0];
+      if (local) {
+        return { kind: "local", rootPath: local.rootPath };
+      }
+
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const remotes = others.filter(
+        (
+          machine,
+        ): machine is ProjectTabGroup["machines"][number] & {
+          binding: RemoteProjectTab;
+        } =>
+          machine.binding?.kind === "remote" &&
+          machine.binding.targetId !== excludeTargetId,
+      );
+      const remote =
+        remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
+        remotes[0];
+      if (remote) {
+        return { kind: "remote", binding: remote.binding };
+      }
+      return null;
+    },
+    [],
+  );
+
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
       target: RemoteRuntimeTarget,
@@ -1675,25 +1756,44 @@ export function TopBar({
       );
       const targetName = target.name || target.hostname;
       const affectedCount = affectedTabs.length;
-      const affectedProjectLines =
-        affectedTabs.length > 0
-          ? affectedTabs.map((entry) => `- ${entry.displayName}`).join("\n")
-          : "";
-      const verb = action === "remove" ? "Removing" : "Disconnecting";
+      // A project is not closed by removing one machine: it moves to another
+      // checkout of the same repo when one exists. Only a repo that lives
+      // nowhere else is actually closed.
+      const plans = affectedTabs.map((tab) => ({
+        tab,
+        fallback: resolveRemoteTabFallback(tab, target.id),
+      }));
+      const stayingTabs = plans.filter((plan) => plan.fallback);
+      const closingTabs = plans.filter((plan) => !plan.fallback);
       const reconnectCopy = action === "remove"
         ? "Add the machine again to reconnect."
         : "ADE will not reconnect to this machine until you connect again.";
-      const message =
-        affectedCount > 0
-          ? [
-              `${affectedCount} open project tab${affectedCount === 1 ? "" : "s"} use this remote connection:`,
-              affectedProjectLines,
-              "",
-              `${verb} will close those project tabs. ${reconnectCopy}`,
-            ].join("\n")
-          : action === "remove"
+      const message = (() => {
+        if (affectedCount === 0) {
+          return action === "remove"
             ? "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+        }
+        const lines: string[] = [];
+        if (stayingTabs.length > 0) {
+          const plural = stayingTabs.length === 1 ? "" : "s";
+          lines.push(
+            `${stayingTabs.length} open project tab${plural} also exist${stayingTabs.length === 1 ? "s" : ""} elsewhere:`,
+            stayingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
+            "",
+            `${stayingTabs.length === 1 ? "It stays" : "They stay"} open. ${action === "remove" ? "Removing" : "Disconnecting"} ${targetName} only removes its work from inside ${stayingTabs.length === 1 ? "it" : "them"}.`,
+          );
+        }
+        if (closingTabs.length > 0) {
+          if (lines.length > 0) lines.push("");
+          lines.push(
+            `${closingTabs.length} open project tab${closingTabs.length === 1 ? "" : "s"} exist only on ${targetName} and will close:`,
+            closingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
+          );
+        }
+        lines.push("", reconnectCopy);
+        return lines.join("\n");
+      })();
 
       const confirmed = await confirmDialog({
         title: action === "remove"
@@ -1707,9 +1807,31 @@ export function TopBar({
       if (affectedTabs.length === 0) return true;
 
       const affectedKeys = new Set(affectedTabs.map((entry) => entry.key));
-      const nextRemoteTabs = latestRemoteTabs.filter(
-        (entry) => !affectedKeys.has(entry.key),
-      );
+      const fallbackRemoteBindings = stayingTabs
+        .map((plan) =>
+          plan.fallback?.kind === "remote" ? plan.fallback.binding : null,
+        )
+        .filter(
+          (binding): binding is RemoteProjectTab =>
+            binding !== null && !affectedKeys.has(binding.key),
+        );
+      const fallbackLocalRoots = stayingTabs
+        .map((plan) =>
+          plan.fallback?.kind === "local" ? plan.fallback.rootPath : null,
+        )
+        .filter((rootPath): rootPath is string => rootPath !== null);
+      const nextRemoteTabs = (() => {
+        const byKey = new Map<string, RemoteProjectTab>();
+        for (const entry of latestRemoteTabs) {
+          if (!affectedKeys.has(entry.key)) byKey.set(entry.key, entry);
+        }
+        // Keep a surviving repo tab alive by opening the checkout it falls back
+        // to. A fallback that is already open is a no-op here.
+        for (const binding of fallbackRemoteBindings) {
+          byKey.set(binding.key, binding);
+        }
+        return [...byKey.values()];
+      })();
       // A disconnect is temporary: the machine can come back, so keep the view
       // state (which chat/tile was open) and the remembered route, and only drop
       // the data snapshots that could be stale against a remote that changed
@@ -1726,6 +1848,15 @@ export function TopBar({
       const finishAffectedTabClose = () => {
         openRemoteProjectTabsRef.current = nextRemoteTabs;
         setOpenRemoteProjectTabs(nextRemoteTabs);
+        if (fallbackLocalRoots.length > 0) {
+          setOpenProjectTabRoots((prev) => {
+            const next = [...prev];
+            for (const rootPath of fallbackLocalRoots) {
+              if (!next.includes(rootPath)) next.push(rootPath);
+            }
+            return next;
+          });
+        }
         for (const binding of affectedTabs) {
           evictForAction(binding.key);
         }
@@ -1741,33 +1872,49 @@ export function TopBar({
         return true;
       }
 
+      // The active project is one of the tabs losing its machine. Move it to
+      // another checkout of the same repo before the binding goes away; only
+      // when the repo lives nowhere else do we fall back to another tab, and
+      // finally close.
+      const activePlan =
+        plans.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
-        const nextRemoteTab = nextRemoteTabs[0] ?? null;
-        if (nextRemoteTab) {
+        if (activePlan?.fallback?.kind === "local") {
+          await latestState.switchProjectToPath(activePlan.fallback.rootPath);
+        } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
-            nextRemoteTab.targetId,
-            nextRemoteTab.projectId,
+            activePlan.fallback.binding.targetId,
+            activePlan.fallback.binding.projectId,
           );
         } else {
-          const nextLocalRoot =
-            openProjectTabRootsRef.current[
-              openProjectTabRootsRef.current.length - 1
-            ] ?? null;
-          if (nextLocalRoot) {
-            await latestState.switchProjectToPath(nextLocalRoot);
+          const nextRemoteTab = nextRemoteTabs[0] ?? null;
+          if (nextRemoteTab) {
+            await latestState.switchRemoteProject(
+              nextRemoteTab.targetId,
+              nextRemoteTab.projectId,
+            );
           } else {
-            // No project tab left to fall back to. A disconnect must still keep
-            // the view state (which chat/tile was open) and the route memory so
-            // reconnecting lands where the user left off; a remove drops both.
-            await latestState.closeProject({
-              preserveRemoteViewState: action === "disconnect",
-            });
-            if (action === "remove") {
-              for (const binding of affectedTabs) {
-                removeStoredProjectRoute(binding.key);
+            const nextLocalRoot =
+              openProjectTabRootsRef.current[
+                openProjectTabRootsRef.current.length - 1
+              ] ?? null;
+            if (nextLocalRoot) {
+              await latestState.switchProjectToPath(nextLocalRoot);
+            } else {
+              // No project tab left to fall back to. A disconnect must still
+              // keep the view state (which chat/tile was open) and the route
+              // memory so reconnecting lands where the user left off; a remove
+              // drops both.
+              await latestState.closeProject({
+                preserveRemoteViewState: action === "disconnect",
+              });
+              if (action === "remove") {
+                for (const binding of affectedTabs) {
+                  removeStoredProjectRoute(binding.key);
+                }
               }
+              return true;
             }
-            return true;
           }
         }
       } catch {
@@ -1776,7 +1923,11 @@ export function TopBar({
       finishAffectedTabClose();
       return true;
     },
-    [],
+    [
+      resolveRemoteTabFallback,
+      setOpenProjectTabRoots,
+      setOpenRemoteProjectTabs,
+    ],
   );
 
   const handleRemoteTargetDisconnectRequested = useCallback(

@@ -27,6 +27,10 @@ export type ProjectTabMachine = {
   isLocal: boolean;
   rootPath: string;
   displayName: string;
+  /** False only for a local checkout whose directory is known to be missing.
+   *  Remote machines report true without probing; their reachability is the
+   *  connection state, not the filesystem. */
+  exists: boolean;
   laneCount?: number;
   iconDataUrl?: string | null;
   /** Full binding when the location can be opened without first becoming a tab. */
@@ -50,6 +54,7 @@ function localMachine(tab: RecentProjectSummary): ProjectTabMachine {
     isLocal: true,
     rootPath: tab.rootPath,
     displayName: tab.displayName,
+    exists: tab.exists !== false,
     laneCount: tab.laneCount,
     binding: {
       kind: "local",
@@ -69,6 +74,7 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
     isLocal: false,
     rootPath: binding.rootPath,
     displayName: binding.displayName,
+    exists: true,
     iconDataUrl: binding.iconDataUrl,
     binding,
   };
