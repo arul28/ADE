@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.82] - 2026-09-29
+
+### SDK 0.4
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` 0.4.0, supporting runtime `>=1.2.82 <2.0.0`. Retry and edit-last turns, validated attachment roots, thread lifecycle and model events, thread lookup, and a composable chat UI with controlled values and links (#1379).
+
+### Runtime 1.2.82
+
+- Provider-aware personal chat retry/edit-last, thread lifecycle notifications, runtime model updates, and attachment routing for SDK 0.4 (#1379). App Control and browser keyboard handling, hidden-page visibility, and Computer Use policy reporting are corrected (#1379).
+
+### Desktop
+
+- Custom providers (#1378), Codex text attachments (#1377), reliable CLI lane setup (#1376), mobile phase 4 (#1374), remote machine removal (#1375), Git pane and lane deletion improvements (#1373), OpenCode as a primary provider (#1372), and proof video posters (#1371).
+
 ## [1.2.81] - 2026-09-28
 
 ### SDK 0.3
@@ -2197,6 +2211,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.82]: https://github.com/arul28/ADE/compare/v1.2.81...v1.2.82
 [1.2.81]: https://github.com/arul28/ADE/compare/v1.2.80...v1.2.81
 [1.2.80]: https://github.com/arul28/ADE/compare/v1.2.79...v1.2.80
 [1.2.79]: https://github.com/arul28/ADE/compare/v1.2.78...v1.2.79

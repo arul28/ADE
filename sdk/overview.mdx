@@ -53,7 +53,7 @@ Provider logins are **not** stored under the sidecar home. Claude / Codex / Curs
 
 ## What's new in 0.4
 
-`@ade-dev/sdk` 0.4.0, `@ade-dev/chat-ui` 0.4.0 and runtime 1.2.82 release together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).
+`@ade-dev/sdk` 0.4.0, `@ade-dev/chat-ui` 0.4.0 and runtime 1.2.82 are available together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).
 
 - **Retry and edit.** `thread.retry()` and `thread.editLast(text)` run the last user message again, and the transcript shows it once. Claude and Codex. See [Retry and edit](/sdk/threads#retry-and-edit).
 - **Links.** `onLinkClick` on `<AdeChat>`, `<Transcript>`, `<ProviderCard>` and `<ProviderCards>`, so a host decides what opens and where. In Electron, pass it. See [Links](/sdk/chat-ui#links).
