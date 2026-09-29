@@ -1,3 +1,4 @@
+import { isPresetSourceAvailableLocally } from "../../../../desktop/src/main/services/chat/harnessRouteCatalog";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -251,6 +252,9 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     // This fallback keeps presets created before the explicit binding list
     // useful while never carrying that source reference over the wire.
     if (preset.source.kind === "account" && args.providerInstanceStore.get(preset.source.instanceId)) {
+      boundPresetIds.add(preset.id);
+    }
+    if ((preset.source.kind === "key" || preset.source.kind === "opencode") && isPresetSourceAvailableLocally(preset.source)) {
       boundPresetIds.add(preset.id);
     }
   }

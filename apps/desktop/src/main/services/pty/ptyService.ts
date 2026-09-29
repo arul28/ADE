@@ -148,6 +148,7 @@ import {
 } from "../../../shared/cliLaunch";
 import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
 import {
   commandArrayToLine,
   commandArrayToWindowsShellLine,
@@ -5847,6 +5848,15 @@ export function createPtyService({
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
       const runtimeCliLaunch = args.runtimeCliLaunch;
+      if (runtimeCliLaunch) {
+        // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
+        // running before the synchronous materializer resolves its endpoint.
+        await prepareHarnessLaunch({
+          provider: String(runtimeCliLaunch.provider),
+          presetId: runtimeCliLaunch.presetId ?? null,
+          credentialId: runtimeCliLaunch.credentialId ?? null,
+        });
+      }
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:

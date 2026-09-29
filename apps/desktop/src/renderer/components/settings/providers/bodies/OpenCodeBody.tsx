@@ -167,9 +167,13 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
             ? { color: COLORS.success, label: entry.hasModels ? "Ready" : "Connected" }
             : needsModelLoad
               ? { color: COLORS.warning, label: "Load a model" }
-              : entry.blocker
-                ? { color: COLORS.warning, label: "Blocked" }
-                : { color: COLORS.warning, label: "Not detected" };
+              // A local server that simply is not running is not "blocked":
+              // start it and refresh. Blocked is kept for a real refusal.
+              : entry.health === "unreachable"
+                ? { color: COLORS.textMuted, label: "Not running" }
+                : entry.blocker
+                  ? { color: COLORS.warning, label: "Blocked" }
+                  : { color: COLORS.warning, label: "Not detected" };
           const loadedModels = entry.modelIds.slice(0, 4);
           const extraModelCount = Math.max(0, entry.modelIds.length - loadedModels.length);
           const message = entry.blocker

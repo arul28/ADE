@@ -14,6 +14,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
+import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 
 type LaneServiceForCliLaunch = Pick<
@@ -89,6 +90,11 @@ export async function launchAgentChatCli(
   const sessionId = randomUUID();
   const permissionMode = arg.permissionMode ?? "full-auto";
 
+  await prepareHarnessLaunch({
+    provider: providerKey,
+    presetId: arg.presetId ?? null,
+    credentialId: arg.credentialId ?? null,
+  });
   const trackedPreset = resolveTrackedCliPreset(providerKey, {
     presetId: arg.presetId ?? null,
     credentialId: arg.credentialId ?? null,

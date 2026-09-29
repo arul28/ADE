@@ -357,6 +357,7 @@ import type { createPrSummaryService } from "../../../../desktop/src/main/servic
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import { resolveProviderInstanceForLaunch } from "../providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "../../../../desktop/src/main/services/chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../../../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import { buildCliIdentityResumeMetadata } from "../../../../desktop/src/shared/cliLaunch";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -4613,6 +4614,11 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
+    await prepareHarnessLaunch({
+      provider,
+      presetId: parsed.presetId ?? null,
+      credentialId: parsed.credentialId ?? null,
+    });
     const trackedPreset = resolveTrackedCliPreset(provider, {
       presetId: parsed.presetId,
       credentialId: parsed.credentialId,

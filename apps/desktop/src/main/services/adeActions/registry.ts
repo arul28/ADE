@@ -39,6 +39,34 @@ import {
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import {
+  buildHarnessLaunchEnv,
+  listHarnessRouteCatalog,
+  testHarnessRoute,
+} from "../chat/harnessRouteCatalog";
+import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
+import type { HarnessRouteSource } from "../../../shared/harnessRoutes";
+
+function requireHarnessRouteSource(value: unknown): HarnessRouteSource["source"] {
+  if (!value || typeof value !== "object") throw new Error("source is required.");
+  const raw = value as Record<string, unknown>;
+  if (raw.kind === "opencode" && typeof raw.providerId === "string" && raw.providerId.trim()) {
+    return { kind: "opencode", providerId: raw.providerId.trim() };
+  }
+  if (
+    raw.kind === "key"
+    && typeof raw.provider === "string" && raw.provider.trim()
+    && typeof raw.credentialId === "string" && raw.credentialId.trim()
+  ) {
+    return {
+      kind: "key",
+      provider: raw.provider.trim(),
+      credentialId: raw.credentialId.trim(),
+      label: typeof raw.label === "string" ? raw.label : raw.provider.trim(),
+    };
+  }
+  throw new Error("source must be an OpenCode sign-in or a stored key.");
+}
+import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
@@ -2164,6 +2192,23 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     cursorAuthCancel: () => {
       cancelCursorSdkLogin();
     },
+    // Custom providers: every model a harness can reach outside its own
+    // sign-in, a one-token live check, and the terminal launcher's env.
+    listHarnessRoutes: () => listHarnessRouteCatalog(),
+    testHarnessRoute: (args?: { harness?: string; source?: unknown; model?: string }) =>
+      testHarnessRoute({
+        harness: requireNonEmptyString(args?.harness, "harness"),
+        source: requireHarnessRouteSource(args?.source),
+        model: requireNonEmptyString(args?.model, "model"),
+      }),
+    harnessLaunchEnv: (args?: { presetId?: string; shell?: string }) =>
+      buildHarnessLaunchEnv(
+        {
+          presetId: requireNonEmptyString(args?.presetId, "presetId"),
+          ...(args?.shell === "pwsh" || args?.shell === "bash" || args?.shell === "zsh" ? { shell: args.shell } : {}),
+        },
+        (presetId) => resolveHarnessPresetForLaunch(presetId),
+      ),
     refreshModelsDev: async () => {
       try {
         await refreshModelsDevNow();

@@ -62,6 +62,14 @@ export function harnessBodyLabel(body: string): string {
   return isHarnessPresetBody(body) ? HARNESS_PRESET_BODY_LABELS[body] : body;
 }
 
+/** A provider signed in inside OpenCode, by ADE's name for it. */
+export function openCodeSourceLabel(providerId: string): string {
+  const id = providerId.trim();
+  if (id === "opencode-go") return "OpenCode Go";
+  if (id === "opencode") return "OpenCode Zen";
+  return id;
+}
+
 /**
  * Providers that hold more than one local sign-in, and are therefore the only
  * ones an `account` or `subscription` source can name. Mirrors
@@ -83,11 +91,16 @@ export function isHarnessPresetAccountProvider(value: unknown): value is Harness
  * - `subscription` — a Claude or Codex subscription used from *another* harness
  *   through ADE's proxy. That needs a second sign-in the proxy holds, which is
  *   why an imported preset can report it as missing.
+ * - `opencode` — a provider signed in *inside OpenCode* (OpenCode Zen, OpenCode
+ *   Go, or any provider connected there), named by OpenCode's provider id. The
+ *   token stays in OpenCode's own store and is read at launch on the machine
+ *   that runs the lane.
  */
 export type HarnessPresetSource =
   | { kind: "account"; provider: HarnessPresetAccountProvider; instanceId: string }
   | { kind: "key"; provider: string; credentialId: string; label: string }
-  | { kind: "subscription"; provider: HarnessPresetAccountProvider };
+  | { kind: "subscription"; provider: HarnessPresetAccountProvider }
+  | { kind: "opencode"; providerId: string };
 
 export type HarnessPresetSourceKind = HarnessPresetSource["kind"];
 
@@ -217,6 +230,12 @@ function validateSource(source: unknown): string | null {
     }
     return null;
   }
+  if (candidate.kind === "opencode") {
+    if (!isNonEmptyString(candidate.providerId) || !/^[A-Za-z0-9._-]+$/.test(candidate.providerId.trim())) {
+      return "Choose a provider signed in to OpenCode.";
+    }
+    return null;
+  }
   return "Choose where this harness gets its intelligence.";
 }
 
@@ -312,6 +331,9 @@ function normalizeSource(value: unknown): HarnessPresetSource | null {
       credentialId: String(raw.credentialId).trim(),
       label: isNonEmptyString(raw.label) ? raw.label.trim() : String(raw.provider).trim(),
     };
+  }
+  if (raw.kind === "opencode") {
+    return { kind: "opencode", providerId: String(raw.providerId).trim() };
   }
   return { kind: "subscription", provider: raw.provider as HarnessPresetAccountProvider };
 }
@@ -417,6 +439,9 @@ export function presetSourceLabel(
   if (source.kind === "key") {
     return `API key · ${source.label}`;
   }
+  if (source.kind === "opencode") {
+    return `${openCodeSourceLabel(source.providerId)} · via OpenCode sign-in`;
+  }
   return `${harnessBodyLabel(source.provider)} subscription`;
 }
 
@@ -477,6 +502,9 @@ function sourceForExport(source: HarnessPresetSource): HarnessPresetSource {
   if (source.kind === "key") {
     return { kind: "key", provider: source.provider, credentialId: source.credentialId, label: source.label };
   }
+  if (source.kind === "opencode") {
+    return { kind: "opencode", providerId: source.providerId };
+  }
   return { kind: "subscription", provider: source.provider };
 }
 
@@ -508,6 +536,9 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
   if (preset.source.kind === "subscription") {
     notes.push("The subscription sign-in is not in this file — whoever imports it signs in through ADE's proxy.");
   }
+  if (preset.source.kind === "opencode") {
+    notes.push("The OpenCode sign-in is not in this file — whoever imports it signs in to that provider in OpenCode.");
+  }
 
   return {
     kind: HARNESS_PRESET_EXPORT_KIND,
@@ -529,7 +560,7 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
 }
 
 /** What an imported preset needs before it can run on this machine. */
-export type HarnessPresetMissing = "account" | "key" | "subscription-signin";
+export type HarnessPresetMissing = "account" | "key" | "subscription-signin" | "opencode-signin";
 
 export type HarnessPresetImportContext = {
   /** Provider-instance ids this machine holds. */
@@ -538,6 +569,8 @@ export type HarnessPresetImportContext = {
   credentialIds?: readonly string[];
   /** Whether ADE's proxy can hold a subscription sign-in on this host. */
   proxySignInAvailable?: boolean;
+  /** OpenCode provider ids signed in on this machine. */
+  openCodeProviderIds?: readonly string[];
 };
 
 export type HarnessPresetImportResult = {
@@ -606,6 +639,13 @@ export function importHarnessPreset(
   if (source.kind === "subscription" && context.proxySignInAvailable !== true) {
     missing.push("subscription-signin");
   }
+  if (
+    source.kind === "opencode"
+    && context.openCodeProviderIds
+    && !context.openCodeProviderIds.includes(source.providerId)
+  ) {
+    missing.push("opencode-signin");
+  }
 
   const preset: HarnessPresetDraft = {
     name: isNonEmptyString(raw.name)
@@ -635,6 +675,9 @@ export function importHarnessPreset(
 export function harnessPresetMissingCopy(missing: HarnessPresetMissing): string {
   if (missing === "account") return "This harness names a provider account this computer does not have. Pick one of yours.";
   if (missing === "key") return "This harness names an API key this computer does not hold. Pick one of yours, or add it in Secrets.";
+  if (missing === "opencode-signin") {
+    return "This harness uses a provider signed in to OpenCode, and it is not signed in on this computer. Sign in under Providers › OpenCode.";
+  }
   return "This harness borrows a subscription through ADE's proxy, which is not signed in on this computer yet.";
 }
 

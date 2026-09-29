@@ -78,6 +78,11 @@ export function providerFamilyForSource(source: HarnessPresetSource | null | und
   if (source.kind === "account" || source.kind === "subscription") {
     return source.provider === "claude" ? "anthropic" : "openai";
   }
+  if (source.kind === "opencode") {
+    // OpenCode Go and Zen serve many vendors' models; the family is only
+    // known per model, so the source itself reads as OpenCode.
+    return KEY_PROVIDER_FAMILIES[source.providerId.trim().toLowerCase()] ?? "opencode";
+  }
   return KEY_PROVIDER_FAMILIES[source.provider.trim().toLowerCase()] ?? null;
 }
 

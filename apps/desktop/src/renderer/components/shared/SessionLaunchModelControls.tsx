@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
@@ -22,6 +22,8 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCat
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { PERMISSION_TRIGGER_CLASS } from "./PermissionModePicker";
+import { useRootAppStore } from "../../state/appStore";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
@@ -258,6 +260,8 @@ export type SessionLaunchModelConfig = {
   fastMode: boolean;
   sessionType: BatchLaunchSessionType;
   nativeControls: NativeControlState;
+  /** A Custom pick (saved preset or ad-hoc route id); null for a plain model. */
+  presetId?: string | null;
 };
 
 export function SessionLaunchModelControls({
@@ -277,6 +281,11 @@ export function SessionLaunchModelControls({
   const patchNative = useCallback((nativeControls: NativeControlState) => {
     onChange({ nativeControls });
   }, [onChange]);
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const activePreset = useMemo(() => {
+    const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
+    return target ? { name: target.name, logo: target.logo } : null;
+  }, [config.presetId, harnessPresets]);
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -292,12 +301,17 @@ export function SessionLaunchModelControls({
         onChange={(modelId, options) => onChange({
           modelId,
           ...(options ? { fastMode: options.fastMode } : {}),
+          // Every pick says whether it is a Custom one, so a plain model row
+          // clears a preset chosen earlier instead of launching under it.
+          presetId: options?.presetId ?? null,
         })}
+        {...(activePreset ? { activePreset } : {})}
+        activePresetId={config.presetId ?? null}
         compact
         triggerClassName={COMPOSER_MODEL_TRIGGER}
-        // CLI mode never lists presets: four of the harnesses take no key from
-        // the launch, so a preset chosen here would be silently dropped.
-        listsHarnessPresets={config.sessionType !== "cli"}
+        // Custom shows in both modes; in CLI mode the CLIs that take no
+        // endpoint from a launch are listed as unavailable, with the reason.
+        harnessLaunchMode={config.sessionType === "cli" ? "cli" : "chat"}
         {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
         fastMode={config.fastMode}
         onFastModeChange={(fastMode) => onChange({ fastMode })}

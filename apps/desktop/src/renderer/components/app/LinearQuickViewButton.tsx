@@ -406,6 +406,7 @@ export function LinearQuickViewButton({
             ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
             kickoffText: args.kickoffText,
             contextAttachments: args.contextAttachments,
+            ...(args.presetId ? { presetId: args.presetId } : {}),
           };
           const session = pin
             ? await window.ade.agentChat.launch(launchArgs, pin)
@@ -428,6 +429,7 @@ export function LinearQuickViewButton({
             ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
             kickoffPrompt: args.kickoffPrompt,
             linearIssues: args.linearIssues,
+            ...(args.presetId ? { presetId: args.presetId } : {}),
           };
           return pin ? window.ade.agentChat.launchCli(cliArgs, pin) : window.ade.agentChat.launchCli(cliArgs);
         },

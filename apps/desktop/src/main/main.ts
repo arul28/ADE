@@ -122,6 +122,7 @@ import { parseWorktreeStatusPorcelainV2 } from "./services/lanes/laneBranchDrift
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
+import { setHarnessProxyStarter } from "./services/chat/harnessLaunchPrepare";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -1558,6 +1559,7 @@ app.whenReady().then(async () => {
     }
     return subscriptionProxyService;
   };
+  setHarnessProxyStarter(() => getSubscriptionProxyService().ensureRunning());
   // Machine-scoped API keys (the CTO voice key) belong to this install, not to
   // whichever project happens to be open — a window with no project bound, a
   // remote-bound window and the in-process mode all reach the machine-key IPC.

@@ -25,6 +25,8 @@ import {
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { useRootAppStore } from "../../state/appStore";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -134,6 +136,7 @@ function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
     fastMode: state.fastMode,
     sessionType: state.sessionType ?? "chat",
     nativeControls: state.nativeControls,
+    presetId: state.presetId ?? null,
   };
 }
 
@@ -148,6 +151,7 @@ function patchFromLaunchModelConfig(
     ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
     ...(patch.sessionType !== undefined ? { sessionType: patch.sessionType } : {}),
     ...(patch.nativeControls !== undefined ? { nativeControls: patch.nativeControls } : {}),
+    ...(patch.presetId !== undefined ? { presetId: patch.presetId } : {}),
   };
 }
 
@@ -213,6 +217,7 @@ export function BatchLaunchModal({
   );
 
 
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
   const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({
     modelId: "",
     reasoningEffort: null,
@@ -359,6 +364,7 @@ export function BatchLaunchModal({
       if (patch.fastMode !== undefined) applyDefaultField("fastMode", patch.fastMode);
       if (patch.sessionType !== undefined) applyDefaultField("sessionType", patch.sessionType);
       if (patch.nativeControls !== undefined) applyDefaultField("nativeControls", patch.nativeControls);
+      if (patch.presetId !== undefined) applyDefaultField("presetId", patch.presetId);
       return next;
     });
   }, [applyDefaultConfigToAll, applyDefaultField]);
@@ -397,6 +403,9 @@ export function BatchLaunchModal({
       const existingLaneId =
         !laneOnly && laneTarget === "existing" ? state.existingLaneId?.trim() || null : null;
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
+      // A Custom pick is resolved here, against the account's preset list,
+      // so the launch knows its harness and the model that harness receives.
+      const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
       entries.push({
         issue,
         config: {
@@ -404,12 +413,19 @@ export function BatchLaunchModal({
           existingLaneId,
           laneOnly,
           nativeControls,
+          presetLaunch: target
+            ? {
+              presetId: target.presetId,
+              harness: target.harness,
+              model: target.harness === "opencode" ? target.launchModelId : target.model,
+            }
+            : null,
         },
       });
     }
     if (!entries.length || !selectedMachineId) return;
     onLaunch(entries, { machineId: selectedMachineId, pin: targetPin });
-  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin]);
+  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin, harnessPresets]);
 
   if (!issues.length) return null;
 

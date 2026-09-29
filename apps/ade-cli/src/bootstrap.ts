@@ -66,6 +66,7 @@ import { createLaneTemplateService } from "../../desktop/src/main/services/lanes
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
+import { setHarnessProxyStarter } from "../../desktop/src/main/services/chat/harnessLaunchPrepare";
 import {
   releaseLaneRuntimeResources,
   teardownArchivedLaneEnvironment,
@@ -918,6 +919,12 @@ export async function createAdeRuntime(args: {
     }
     return proxyService;
   };
+  // Routed launches (a model translated through the proxy) start it on
+  // demand; see `harnessLaunchPrepare.ts`.
+  // Every project runtime points at the same machine-level proxy (one
+  // state.json), so the last registration is as good as any; it is not
+  // cleared on teardown because another open project may still launch.
+  setHarnessProxyStarter(() => getProxyService().ensureRunning());
 
   // Guards every acquisition from the database open onward.
   try {

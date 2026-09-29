@@ -43,9 +43,7 @@ import {
 } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
-import { harnessPresetMatchesQuery, type HarnessPreset } from "../../../../shared/harnessPresets";
-import { useHarnessPresets } from "../../settings/harnesses/useHarnessPresets";
-import { HarnessPresetEmptyState, HarnessPresetList } from "./HarnessPresetList";
+import { CustomPickerPane } from "./CustomPickerPane";
 import { useSmartBalanceProviders } from "../../settings/providers/accounts/useProviderInstances";
 
 /**
@@ -186,6 +184,14 @@ export type ModelPickerContentProps = {
    * from making the choice in the first place.
    */
   listsHarnessPresets?: boolean;
+  /**
+   * Whether this picker starts a chat or a tracked CLI. The Custom tab shows
+   * in both; in CLI mode the CLIs that take no endpoint from the launch are
+   * listed as unavailable with the reason.
+   */
+  harnessLaunchMode?: "chat" | "cli";
+  /** The saved preset or ad-hoc route id the surface runs on, for the Custom tab's highlight. */
+  activePresetId?: string | null;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
   registryFilter?: (model: ModelDescriptor) => boolean;
@@ -222,6 +228,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   hidePermissionRail = false,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
+  harnessLaunchMode = allowCliOnlyModels ? "cli" : "chat",
+  activePresetId = null,
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   allowRegistryExpansion = true,
   registryFilter,
@@ -241,7 +249,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const searchRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const { presets: harnessPresets } = useHarnessPresets();
   const { favorites, isFavorite, toggleFavorite } = useModelFavorites();
   const { recents, recordUsage } = useModelRecents();
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
@@ -407,17 +414,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const searchActive = query.trim().length > 0;
   const harnessesActive = listsHarnessPresets && selection === "harnesses";
 
-  // The harnesses tab searches presets, not models: the box in front of you
-  // filters the list you are looking at, which is the only behaviour that does
-  // not require explaining.
-  const visiblePresets = useMemo<HarnessPreset[]>(
-    () => harnessPresets.filter((preset) => harnessPresetMatchesQuery(preset, query)),
-    [harnessPresets, query],
-  );
-
-  const handlePresetSelect = useCallback(
-    (preset: HarnessPreset) => {
-      onSelect(preset.model, { fastMode: false, presetId: preset.id });
+  // The Custom tab searches its own lists (saved providers and what the Run-in
+  // harness can reach): the box in front of you filters the list you are
+  // looking at, which is the only behaviour that does not require explaining.
+  const handleCustomSelect = useCallback(
+    (modelId: string, presetId: string | undefined) => {
+      onSelect(modelId, presetId ? { fastMode: false, presetId } : { fastMode: false });
     },
     [onSelect],
   );
@@ -647,7 +649,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       const container = listRef.current;
       if (!container) return false;
       const rows = Array.from(
-        container.querySelectorAll<HTMLButtonElement>("[data-harness-preset-select]"),
+        container.querySelectorAll<HTMLButtonElement>(
+          "[data-harness-preset-select]:not([aria-disabled='true']), [data-reachable-select]:not(:disabled)",
+        ),
       );
       if (rows.length === 0) return false;
       const active = document.activeElement as HTMLElement | null;
@@ -691,6 +695,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (harnessesActive) {
         if (handleHarnessListKeyDown(event)) return;
+        // Enter on a focused Custom row is that button's own activation; the
+        // model list's Enter handling below would swallow it.
+        if (event.key === "Enter") return;
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -1014,19 +1021,17 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 	          >
 
 	            {harnessesActive ? (
-              visiblePresets.length === 0 ? (
-                <HarnessPresetEmptyState
-                  searchActive={searchActive}
-                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
-                />
-              ) : (
-                <HarnessPresetList
-                  presets={visiblePresets}
-                  activeModelId={value}
-                  onSelect={handlePresetSelect}
-                  catalogScopeKey={catalogScopeKey}
-                />
-              )
+              <CustomPickerPane
+                query={query}
+                value={value}
+                activePresetId={activePresetId}
+                currentHarness={activeModel ? resolveCliProviderForModel(activeModel) ?? null : null}
+                mode={harnessLaunchMode}
+                runtimePin={runtimePin}
+                {...(catalogScopeKey ? { catalogScopeKey } : {})}
+                onSelect={handleCustomSelect}
+                {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
+              />
             ) : (
               <>
 	            {activeOutOfView && activeModel ? (

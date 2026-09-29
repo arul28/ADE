@@ -272,6 +272,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -2190,6 +2191,35 @@ function pickFallbackChatModelId(selectableModelIds: readonly string[]): string 
   return selectableModelIds[0]!;
 }
 
+/**
+ * The Custom pick that went with the last-used model. A draft restores the
+ * model id on remount; without its preset/route id the model's own family
+ * would pick the harness (a DeepSeek model chosen for Claude Code would reopen
+ * as an OpenCode draft), so the pair is stored and restored together.
+ */
+const LAST_PRESET_SELECTION_KEY = "ade.chat.lastPresetSelection.v1";
+
+function readLastPresetSelection(): string | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_PRESET_SELECTION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { modelId?: unknown; presetId?: unknown };
+    if (typeof parsed.presetId !== "string" || !parsed.presetId.trim()) return null;
+    return parsed.modelId === readLastUsedModelId() ? parsed.presetId : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastPresetSelection(modelId: string, presetId: string | null) {
+  try {
+    if (presetId) window.localStorage.setItem(LAST_PRESET_SELECTION_KEY, JSON.stringify({ modelId, presetId }));
+    else window.localStorage.removeItem(LAST_PRESET_SELECTION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 function writeLastUsedModelId(modelId: string) {
   try {
     window.localStorage.setItem(LAST_MODEL_ID_KEY, modelId);
@@ -3913,7 +3943,16 @@ export function AgentChatPane({
   /* The same preset, held as state so the composer's model trigger can name it
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
-  const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(null);
+  const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(() => readLastPresetSelection());
+  // Root store: the preset list is account-scoped (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((s) => s.harnessPresets);
+  /* The harness a draft's Custom pick runs in. A saved preset or an ad-hoc
+     Run-in route names its own harness, and that — not the family the model id
+     happens to belong to — decides the provider the chat or CLI launches. */
+  const draftLaunchTarget = useMemo(
+    () => resolveHarnessLaunchTarget(draftHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [draftHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
   const setFastModeState = useCallback((enabled: boolean) => {
     fastModeRef.current = enabled;
     setFastMode(enabled);
@@ -5972,8 +6011,9 @@ export function AgentChatPane({
 
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
+    if (!selectedSession && draftLaunchTarget) return draftLaunchTarget.harness;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
-  }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey]);
+  }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey, draftLaunchTarget]);
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
     provider: selectedSession?.provider ?? sessionProvider,
     events: selectedEventsForDisplay,
@@ -8864,7 +8904,8 @@ export function AgentChatPane({
     if (!preferencesReady) return;
     if (!modelId.trim().length) return;
     writeLastUsedModelId(modelId);
-  }, [modelId, preferencesReady]);
+    writeLastPresetSelection(modelId, draftHarnessPresetId);
+  }, [modelId, draftHarnessPresetId, preferencesReady]);
 
   useEffect(() => {
     if (!preferencesReady) return;
@@ -9838,8 +9879,18 @@ export function AgentChatPane({
     const launchExecutionMode = launchState?.executionMode ?? executionMode;
     const launchControls = launchState?.nativeControls ?? currentNativeControls;
     const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
-    const provider = resolveChatRuntimeProvider(desc);
-    const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
+    // A Custom pick names its harness; the model id's own family must not
+    // re-route the chat to another provider (GPT served by OpenCode Go, run in
+    // Claude Code, is a Claude Code chat).
+    const launchTarget = resolveHarnessLaunchTarget(
+      draftLaunchBrainRef.current.presetId,
+      harnessPresets,
+      modelCatalogScopeKey,
+    );
+    const provider: ChatRuntimeProviderKey = launchTarget?.harness ?? resolveChatRuntimeProvider(desc);
+    const model = launchTarget
+      ? (provider === "opencode" ? launchTarget.launchModelId : launchTarget.model)
+      : provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
     const sessionProfile = resolveChatSessionProfile();
     const nativeControlPayload = {
       ...summarizeNativeControls(provider, launchControls),
@@ -9869,7 +9920,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, modelCatalogScopeKey, modelId]);
+  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, harnessPresets, modelCatalogScopeKey, modelId]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -10722,6 +10773,38 @@ export function AgentChatPane({
   // driver starts it once the brain reports the lane ready.
   const buildDraftCliLaunchParams = useCallback((prepared: PreparedDraftLaunch): ChatLaunchCliParams => {
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
+    const brain = draftLaunchBrainRef.current;
+    const launchTarget = resolveHarnessLaunchTarget(brain.presetId, harnessPresets, modelCatalogScopeKey);
+    if (launchTarget) {
+      // A Custom pick (saved or Run-in) launches its own harness's CLI on the
+      // source's model, with the preset id so the runtime that owns the lane
+      // builds the environment. A model from another vendor has no registry
+      // row to derive any of this from, which is why it is not read from one.
+      const provider: CliProvider = launchTarget.harness;
+      const cliPrompt = buildWorkCliInitialPrompt({
+        text: prepared.finalText,
+        attachments: prepared.selectedAttachments,
+        contextAttachments: prepared.selectedContextAttachments,
+      });
+      if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
+      const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
+      const reasoningEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
+      return {
+        profile: provider,
+        title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
+        startupDelayMs: workCliStartupDelayMs,
+        runtimeCliLaunch: {
+          provider,
+          permissionMode: cliPermissionModeFromNativeControls(provider, prepared.nativeControls),
+          ...(cliSessionId ? { sessionId: cliSessionId } : {}),
+          model: provider === "opencode" ? launchTarget.launchModelId : launchTarget.model,
+          reasoningEffort,
+          initialPrompt: cliPrompt,
+          presetId: launchTarget.presetId,
+        },
+        tracked: true,
+      };
+    }
     const desc = resolveScopedModelDescriptor(prepared.modelId, modelCatalogScopeKey);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
     if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
@@ -10763,10 +10846,12 @@ export function AgentChatPane({
           ? { fastMode: launchFastMode }
           : {}),
         initialPrompt: cliPrompt,
+        // A row a stored key makes reachable launches on that key.
+        ...(brain.credentialId ? { credentialId: brain.credentialId } : {}),
       },
       tracked: true,
     };
-  }, [modelCatalogScopeKey]);
+  }, [harnessPresets, modelCatalogScopeKey]);
 
   const startDraftCliLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
@@ -14860,11 +14945,8 @@ export function AgentChatPane({
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={selectedSessionId ? selectedSession?.presetId ?? null : draftHarnessPresetId}
-            // A tracked CLI launch drops a preset by design
-            // (`shared/harnessPresetCliGate.ts`), so the picker must not offer
-            // one here: offering a choice that is then ignored is exactly what
-            // that gate exists to prevent.
-            listsHarnessPresets={workDraftKind !== "cli"}
+            // Custom shows in CLI mode too; the picker lists the CLIs that take
+            // no endpoint (`shared/harnessPresetCliGate.ts`) as unavailable.
             onOpenHarnessSettings={openHarnessSettings}
             modelPickerOpenRequestKey={modelPickerOpenRequestKey}
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
@@ -14963,7 +15045,12 @@ export function AgentChatPane({
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
             onModelChange={(nextModelId, options) => {
-              const modelAllowed = composerConstrainModelSelection
+              // A Custom pick is validated by the picker against what its
+              // harness can reach; its model is often not in this provider
+              // list at all (a DeepSeek model run in Claude Code).
+              const modelAllowed = options?.presetId
+                ? true
+                : composerConstrainModelSelection
                 ? composerAvailableModelIds.includes(nextModelId)
                 : (
                     !effectiveAvailableModelIds.length

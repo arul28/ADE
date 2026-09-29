@@ -27,6 +27,7 @@
  *    how a launch site knows not to rewrite.
  */
 
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
@@ -34,6 +35,7 @@ import {
   HARNESS_PRESET_AGENT_FOLLOWS,
   HARNESS_PRESET_AGENT_KEYS,
   HARNESS_PRESET_SUBAGENT_INHERIT,
+  DEFAULT_HARNESS_PRESET_ACCENT,
   type HarnessPreset,
   type HarnessPresetAgentKey,
   type HarnessPresetBody,
@@ -61,6 +63,7 @@ import {
   buildCodexPresetConfigToml,
   buildCodexProxyConfigToml,
   credentialConfigHome,
+  routeConfigHome,
   type HarnessPresetOpenCodeProvider,
   presetConfigHome,
   pruneOrphanedPresetConfigHomes,
@@ -68,6 +71,15 @@ import {
   writeOpenCodePresetConfig,
 } from "./harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+import { buildHarnessEndpointEnv, buildRouteLaunch } from "./harnessRouteLaunch";
+import {
+  decodeRoutePresetId,
+  harnessAcceptsRoutes,
+  HARNESS_ROUTE_PROTOCOLS,
+  isRoutePresetId,
+  type HarnessRoute,
+} from "../../../shared/harnessRoutes";
+
 import { resolveCredentialForLaunch } from "./harnessPresetCredentialCatalog";
 // The owner-only directory/file primitives live in the CLI's trusted-tools
 // module, which is also where `harnessPresetConfigHomes` takes them from.
@@ -116,6 +128,8 @@ export type HarnessPresetLaunchPlan = {
    * user's words. The chat posts them as notices; the launch still happens.
    */
   notes?: string[];
+  /** How a key/OpenCode source reached the harness: direct, or via ADE's proxy. */
+  route?: HarnessRoute;
 };
 
 export type HarnessPresetLaunchUnsupported = {
@@ -446,6 +460,18 @@ export function resolveHarnessPresetForLaunch(
     };
   }
   const adeHome = deps.adeHome ?? resolveMachineAdeDir();
+  if (isRoutePresetId(id)) {
+    const routePreset = presetFromRouteId(id);
+    if (!routePreset) {
+      return {
+        status: "unsupported",
+        presetId: id,
+        provider: null,
+        unsupported: "This model choice could not be read. Pick the model again.",
+      };
+    }
+    return resolveHarnessPresetPlan(routePreset, { ...deps, adeHome });
+  }
   const presets = deps.readPresets?.() ?? readHarnessPresetsFromMachine(adeHome);
   // WHY the null check: the pruner deletes every preset home the list does not
   // mention, so running it on a list that is really "this machine could not
@@ -475,6 +501,38 @@ export function resolveHarnessPresetForLaunch(
     };
   }
   return resolveHarnessPresetPlan(preset, { ...deps, adeHome });
+}
+
+/**
+ * An ad-hoc route (a picker choice, not a saved preset) as a preset object, so
+ * it resolves through exactly the same code as a saved one. Its config home is
+ * named after a hash of the route and lives under `route/`, outside the
+ * preset namespace the orphan pruner sweeps.
+ */
+function presetFromRouteId(presetId: string): HarnessPreset | null {
+  const spec = decodeRoutePresetId(presetId);
+  if (!spec) return null;
+  const homeId = `r${createHash("sha256").update(presetId).digest("hex").slice(0, 16)}`;
+  const epoch = new Date(0).toISOString();
+  return {
+    id: homeId,
+    name: spec.model,
+    harness: spec.harness,
+    source: spec.source,
+    model: spec.model,
+    ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
+    subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
+    agentOverrides: {},
+    accentColor: DEFAULT_HARNESS_PRESET_ACCENT,
+    logo: { kind: "ade" },
+    createdAt: epoch,
+    updatedAt: epoch,
+  };
+}
+
+/** Preset homes are pruned against the saved list; route homes are not. */
+function isRouteHomeId(id: string): boolean {
+  return /^r[0-9a-f]{16}$/.test(id);
 }
 
 export function resolveHarnessPresetPlan(
@@ -574,12 +632,61 @@ export function resolveHarnessPresetPlan(
     // sign-in and have no endpoint to redirect, which is a capability gap to
     // state rather than a failure to raise.
     if (!isProxySubscriptionHarness(harness)) {
+      if (!harnessAcceptsRoutes(harness)) {
+        return {
+          status: "unsupported",
+          presetId: preset.id,
+          provider: harness,
+          unsupported:
+            `${harnessBodyLabel(harness)} cannot be pointed at ADE's proxy — it reads its own sign-in and takes no endpoint.`,
+        };
+      }
+      // Grok, Droid and Qwen take an endpoint through their own config/env
+      // shape, which the route writer already knows; the proxy holds the login.
+      const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
+      const connection = readConnection(preset.source.provider);
+      if (!connection || ("reason" in connection && connection.reason === "proxy-stopped")) {
+        return {
+          status: "unsupported",
+          presetId: preset.id,
+          provider: harness,
+          unsupported: !connection
+            ? "Sign-in through ADE's proxy is not available yet."
+            : "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
+        };
+      }
+      const parts = connection as ProxySubscriptionConnectionParts;
+      const subscriptionProvider = preset.source.provider;
+      const protocol = HARNESS_ROUTE_PROTOCOLS[harness][0]!;
+      const root = `http://127.0.0.1:${parts.port}`;
+      const configHome = isRouteHomeId(preset.id) ? routeConfigHome(adeHome, preset.id) : presetConfigHome(adeHome, preset.id);
+      const built = (() => {
+        const run = () => buildHarnessEndpointEnv({
+          harness,
+          protocol,
+          baseUrl: protocol === "anthropic" ? root : `${root}/v1`,
+          token: parts.apiKey,
+          model: `${parts.prefix}/${preset.model}`,
+          label: `${harnessBodyLabel(subscriptionProvider)} subscription`,
+          sessionHeader: null,
+          limits: {},
+          configHome,
+          writeConfig,
+          security,
+        });
+        if (!writeConfig) return run();
+        const guarded = guardedPrivateHomeWrite(run);
+        return guarded.status === "ready" ? guarded.value : guarded;
+      })();
+      if (built.status === "unsupported") {
+        return { status: "unsupported", presetId: preset.id, provider: harness, unsupported: built.unsupported };
+      }
       return {
-        status: "unsupported",
-        presetId: preset.id,
-        provider: harness,
-        unsupported:
-          `${harnessBodyLabel(harness)} cannot be pointed at ADE's proxy — it reads its own sign-in and takes no endpoint.`,
+        ...base,
+        model: built.model,
+        env: built.env,
+        route: { kind: "proxy", harnessProtocol: protocol, upstreamProtocol: subscriptionProvider === "claude" ? "anthropic" : "openai-responses", upstreamBaseUrl: "" },
+        ...(notes.length ? { notes } : {}),
       };
     }
     const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
@@ -688,7 +795,72 @@ export function resolveHarnessPresetPlan(
     };
   }
 
-  // source.kind === "key"
+  if (preset.source.kind === "opencode" && harness === "opencode") {
+    // OpenCode already holds this sign-in: the model is simply one of its own.
+    const providerId = preset.source.providerId.trim();
+    const model = preset.model.startsWith("opencode/") ? preset.model : `opencode/${providerId}/${preset.model}`;
+    return {
+      ...base,
+      model,
+      env: {},
+      route: { kind: "native" },
+      ...(notes.length ? { notes } : {}),
+    };
+  }
+
+  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && harness !== "opencode")) {
+    const configHome = isRouteHomeId(preset.id)
+      ? routeConfigHome(adeHome, preset.id)
+      : presetConfigHome(adeHome, preset.id);
+    const routed = (() => {
+      const run = () => buildRouteLaunch({
+        harness,
+        source: preset.source as Extract<HarnessPreset["source"], { kind: "key" } | { kind: "opencode" }>,
+        model: preset.model,
+        configHome,
+        ...(subagentModel ? { subagentModel } : {}),
+        deps: {
+          adeHome,
+          writeConfig,
+          security,
+          ...(deps.getCredentialSummary ? { getCredentialSummary: deps.getCredentialSummary } : {}),
+          ...(deps.getCredentialKey ? { getCredentialKey: deps.getCredentialKey } : {}),
+        },
+      });
+      if (!writeConfig) return run();
+      const guarded = guardedPrivateHomeWrite(run);
+      return guarded.status === "ready" ? guarded.value : guarded;
+    })();
+    if (routed.status === "unsupported") {
+      return {
+        status: "unsupported",
+        presetId: preset.id,
+        provider: harness,
+        unsupported: routed.unsupported,
+      };
+    }
+    const extras = claudeExtras();
+    return {
+      ...base,
+      model: routed.model,
+      env: { ...routed.env, ...extras.env },
+      route: routed.route,
+      ...(extras.claudeAgents ? { claudeAgents: extras.claudeAgents } : {}),
+      ...(routed.codexConfigHome ? { codexConfigHome: routed.codexConfigHome } : {}),
+      ...(notes.length || routed.notes?.length ? { notes: [...notes, ...(routed.notes ?? [])] } : {}),
+    };
+  }
+
+  // source.kind === "key" on OpenCode: OpenCode takes the key as a provider
+  // block in its own config rather than an endpoint in the environment.
+  if (preset.source.kind !== "key") {
+    return {
+      status: "unsupported",
+      presetId: preset.id,
+      provider: harness,
+      unsupported: "This preset's source cannot run in this harness.",
+    };
+  }
   const storeProvider = preset.source.provider?.trim() || credentialStoreProviderForHarness(harness);
   const sourceCredentialId = preset.source.credentialId.trim();
   if (!isSafeIdentifier(storeProvider) || !isSafeIdentifier(sourceCredentialId)) {

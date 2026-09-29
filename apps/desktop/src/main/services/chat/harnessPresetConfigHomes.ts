@@ -55,7 +55,7 @@ function configHomeSegment(id: string): string {
 
 function ownedConfigHome(
   adeHome: string,
-  namespace: "preset" | "credential",
+  namespace: "preset" | "credential" | "route",
   ...segments: readonly string[]
 ): string {
   if (!segments.length || segments.some((segment) => !isSafeIdentifier(segment))) {
@@ -72,6 +72,16 @@ function ownedConfigHome(
 /** `<adeHome>/provider-homes/preset/<presetId>` — one directory per preset. */
 export function presetConfigHome(adeHome: string, presetId: string): string {
   return ownedConfigHome(adeHome, "preset", presetId);
+}
+
+/**
+ * Ad-hoc routes (a picker choice that is not a saved preset) get their own
+ * namespace, keyed by a hash of the route. They must not live under preset/:
+ * the orphan pruner deletes every preset home the saved list does not name,
+ * and an ad-hoc route is by definition not in that list.
+ */
+export function routeConfigHome(adeHome: string, routeHomeId: string): string {
+  return ownedConfigHome(adeHome, "route", routeHomeId);
 }
 
 /**

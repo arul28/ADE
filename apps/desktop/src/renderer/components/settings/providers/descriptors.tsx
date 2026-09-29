@@ -93,6 +93,14 @@ function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor")
   return { state: "not-installed", label: "Not installed", message, errorLine: connection?.blocker ?? null };
 }
 
+/** Where the OpenCode binary came from, in words (the host reports a token). */
+const OPENCODE_BINARY_SOURCE_LABELS: Record<string, string> = {
+  "user-installed": "Your install",
+  "tools-cache": "ADE-managed",
+  bundled: "Bundled with ADE",
+  missing: "Not installed",
+};
+
 export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: "claude",
@@ -297,7 +305,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: (ctx) => (ctx.status?.availableModelIds ?? []).map((id) => ({ id, label: String(id) })),
     facts: (ctx) => {
       const source = ctx.status?.opencodeBinarySource;
-      return source ? [{ label: "Binary", value: source }] : [];
+      return source ? [{ label: "Binary", value: OPENCODE_BINARY_SOURCE_LABELS[source] ?? source }] : [];
     },
     // OpenCode holds no credential of its own — every one belongs to a
     // sub-provider inside it, and naming one of forty on the tile would be
