@@ -422,6 +422,23 @@ function errorKindForHttpStatus(status: number): UsageProviderErrorKind {
   return "unknown";
 }
 
+/**
+ * Whether the Claude CLI fallback can help after a non-OK usage response.
+ *
+ * A 429 or 403 is the provider answering about the ACCOUNT: `claude /usage`
+ * reads the same endpoint with the same token, so spawning it adds a second
+ * request to an account that just asked us to back off — the exact way a
+ * transient throttle becomes a sustained one. Every other status is worth the
+ * bounded pty attempt the fallback exists for (401 repairs, 5xx/network are
+ * transport, an unrecognized body is a schema question). Codex refuses its CLI
+ * fallback for 403/409/429; Claude's usage endpoint has no 409 path, so this
+ * covers its two.
+ */
+function claudeCliFallbackFitsStatus(status: number): boolean {
+  const kind = errorKindForHttpStatus(status);
+  return kind !== "rate_limited" && kind !== "forbidden";
+}
+
 function errorKindForThrown(error: unknown): UsageProviderErrorKind {
   const message = getErrorMessage(error).toLowerCase();
   if (message.includes("abort") || message.includes("timed out") || message.includes("timeout")) {
@@ -772,13 +789,112 @@ export function claudePollAllowsKeychain(
 }
 
 /**
+ * Per-account rate-limit memory for multi-account providers.
+ *
+ * The scheduler's failure and backoff state is per provider, and a healthy
+ * account used to erase it for a throttled sibling: the merged poll had windows
+ * to show, so nothing backed off, and the account that had just answered 429
+ * was asked again on the next cadence tick. That is how a transient throttle
+ * becomes a sustained one — and the throttled account, having no earlier
+ * reading to carry, is the one the user sees stuck at "No usage yet".
+ *
+ * So each account remembers when it may be asked again. A `Retry-After` from
+ * the provider wins; otherwise the wait doubles from two minutes up to fifteen,
+ * and a read that produced windows clears it (an empty-but-OK response keeps
+ * the ladder step, so the next failure does not restart at the base). Process-
+ * local by design: a restart is a fresh, policed attempt.
+ *
+ * A skipped account returns `null` from its instance poll exactly like an
+ * unreadable login, which is what carries its previous windows forward in
+ * `mergeInstancePollResults`.
+ */
+const ACCOUNT_RATE_LIMIT_BASE_COOLDOWN_MS = 2 * 60_000;
+const ACCOUNT_RATE_LIMIT_MAX_COOLDOWN_MS = 15 * 60_000;
+type AccountRateLimitEntry = { nextAttemptAtMs: number; failureCount: number };
+const accountRateLimits = new Map<string, AccountRateLimitEntry>();
+
+function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date.now()): number {
+  const entry = accountRateLimits.get(accountId);
+  // An elapsed entry is returned as "free" but deliberately NOT deleted: its
+  // `failureCount` is the ladder step the next failure doubles from. An entry
+  // leaves the map only on a read that produced windows, so a long-lived
+  // process holds one small record per account id ever polled *without* a
+  // windows-producing read — bounded in practice by the number of accounts the
+  // machine has had, and the price of escalating instead of pinning every
+  // failure at the base wait.
+  if (!entry || entry.nextAttemptAtMs <= nowMs) return 0;
+  return entry.nextAttemptAtMs;
+}
+
+/** Drops the per-account cooldowns so a test starts from a clean cadence. */
+function resetAccountRateLimitsForTest(): void {
+  accountRateLimits.clear();
+}
+
+/**
+ * Mark accounts the provider is throttling and that have nothing to show.
+ *
+ * Without it the row's only words are "No usage yet" — the same sentence a
+ * brand-new account gets — which is what made a throttle read as a broken
+ * account. Only accounts with no unexpired window are marked: a carried
+ * reading still answers the question the row exists to answer, and the host's
+ * own status already says it is stale.
+ *
+ * `message` is the STATE, not the sentence: "Rate-limited". The retry phrase
+ * and its countdown belong to the client, which is the only side that knows
+ * "now" — a host-rendered clock would be stale between polls.
+ *
+ * The `notice` is deliberately local: it describes THIS machine's last attempt,
+ * so `boundPeerAccount` drops it when accounts travel in a rollup.
+ */
+function attachAccountRateLimitNotices(
+  accounts: UsageAccount[],
+  windows: readonly UsageWindow[],
+  nowMs: number = Date.now(),
+): void {
+  for (const account of accounts) {
+    const nextAttemptAtMs = accountRateLimitNextAttemptAtMs(account.id, nowMs);
+    if (nextAttemptAtMs <= 0) continue;
+    if (windows.some((window) => window.provider === account.provider && window.accountId === account.id)) continue;
+    account.notice = {
+      message: "Rate-limited",
+      nextRetryAt: new Date(nextAttemptAtMs).toISOString(),
+    };
+  }
+}
+
+function noteAccountPollOutcome(
+  accountId: string,
+  result: UsageProviderPollResult | null,
+  nowMs: number = Date.now(),
+): void {
+  // `null` is "not asked" or "no login either way", never a verdict on the
+  // account's quota, so it must not move the cooldown in either direction.
+  if (!result) return;
+  if (result.errorKind !== "rate_limited") {
+    if (result.windows.length > 0) accountRateLimits.delete(accountId);
+    return;
+  }
+  const failureCount = (accountRateLimits.get(accountId)?.failureCount ?? 0) + 1;
+  const exponential = Math.min(
+    ACCOUNT_RATE_LIMIT_MAX_COOLDOWN_MS,
+    ACCOUNT_RATE_LIMIT_BASE_COOLDOWN_MS * 2 ** Math.min(3, failureCount - 1),
+  );
+  // Mirrors `providerBackoffMs`: the provider's own `Retry-After` is honoured
+  // however long it is, and the exponential only sets the floor.
+  const cooldownMs = Math.max(result.retryAfterMs ?? 0, exponential);
+  accountRateLimits.set(accountId, { nextAttemptAtMs: nowMs + cooldownMs, failureCount });
+}
+
+/**
  * Fold one provider's per-account results into the single result the scheduler
  * consumes.
  *
- * `null` means the account holds no login ADE can read in this pass: it
- * contributes no windows and no error, because a second account the user has
- * not signed into yet must not raise a failure a single-account machine would
- * never have seen. It is not a sign-out, though — a scoped macOS login can
+ * `null` means the account has nothing to report this pass — no readable
+ * login, or a poll skipped inside the account's own rate-limit cooldown (see
+ * `pollQuotaInstances`). It contributes no windows and no error, because a
+ * second account the user has not signed into yet must not raise a failure a
+ * single-account machine would never have seen. It is not a sign-out, though — a scoped macOS login can
  * live only in the Keychain, and a miss still happens — so the account's last
  * windows are carried forward (bounded by their own reset times) instead of
  * vanishing on every restart.
@@ -802,7 +918,11 @@ function mergeInstancePollResults(
   let preserved = false;
   for (const entry of entries) {
     if (!entry.result) {
-      if (!entry.instance.isDefault) unreadableAccounts.push(entry.instance);
+      // Every `null` result — a login this pass could not read, and a
+      // rate-limited account the poll deliberately skipped — carries its
+      // previous windows below. The default used to be excluded here, which
+      // blanked exactly the account the skip path was written to protect.
+      unreadableAccounts.push(entry.instance);
       continue;
     }
     if (entry.result.disposition === "preserve_previous") {
@@ -848,16 +968,24 @@ function mergeInstancePollResults(
     const accountId = usageAccountId({ provider, instanceId: instance.id });
     if (result.windows.length > 0) {
       for (const window of result.windows) windows.push({ ...window, accountId });
-    } else if (!instance.isDefault) {
-      // A secondary account's empty/error response must not erase its last
-      // usable windows while the provider is transiently unavailable. The
-      // error remains below so the UI can show the degraded poll honestly.
+    } else {
+      // An account that answered with no windows must not erase its last usable
+      // reading while the provider is transiently unavailable. That applies to
+      // the DEFAULT account too: the provider-level reconciliation only carries
+      // previous windows when nothing read fresh at all, so one healthy sibling
+      // used to be enough to blank it. Windows that predate account
+      // attribution belong to the default and are adopted here, exactly as the
+      // preserved-default path above does.
       windows.push(...filterUnexpiredCarriedWindows(
-        previousSnapshot?.windows.filter((window) => (
-          window.provider === provider && window.accountId === accountId
-        )) ?? [],
+        previousSnapshot?.windows
+          .filter((window) => (
+            window.provider === provider
+            && (window.accountId ? window.accountId === accountId : instance.isDefault)
+          ))
+          .map((window) => (window.accountId ? window : { ...window, accountId })) ?? [],
         polledAt,
       ));
+      // The error stays below so the UI can show the degraded poll honestly.
     }
     errors.push(...result.errors);
   }
@@ -900,6 +1028,10 @@ function mergeInstancePollResults(
   return {
     windows,
     errors,
+    // How many of `windows` a live read produced this pass. `windows` also
+    // carries previous readings for accounts that failed or could not be read,
+    // so it is not a success signal on its own.
+    freshWindowCount,
     ...(source ? { source } : {}),
     ...(base.errorKind ? { errorKind: base.errorKind } : {}),
     ...(base.retryAfterMs != null ? { retryAfterMs: base.retryAfterMs } : {}),
@@ -918,6 +1050,47 @@ function mergeInstancePollResults(
         ? { spendControlReached: base.spendControlReached }
         : {})),
   };
+}
+
+/**
+ * Poll every local account once, skipping any account inside its own
+ * rate-limit cooldown.
+ *
+ * The skip is the whole point: an account whose provider just said "slow down"
+ * is not asked again until its own `Retry-After` elapses, while its siblings
+ * keep polling. A skipped account returns `null`, exactly like a login this
+ * pass could not read, which is what carries its previous windows forward in
+ * `mergeInstancePollResults`. When every account is cooling down, the provider
+ * reports a preserved state rather than a fresh empty one, so the scheduler's
+ * failure count does not grow over attempts deliberately not taken.
+ */
+async function pollQuotaInstances(
+  logger: Logger,
+  provider: QuotaInstanceProvider,
+  context: UsageProviderPollContext,
+  instances: readonly QuotaInstance[],
+  preservedSource: UsageProviderSource,
+  pollInstance: (
+    logger: Logger,
+    context: UsageProviderPollContext,
+    instance: QuotaInstance,
+  ) => Promise<UsageProviderPollResult | null>,
+): Promise<UsageProviderPollResult> {
+  let skippedForRateLimit = 0;
+  const entries = await Promise.all(instances.map(async (instance) => {
+    const accountId = usageAccountId({ provider, instanceId: instance.id });
+    if (accountRateLimitNextAttemptAtMs(accountId) > 0) {
+      skippedForRateLimit += 1;
+      return { instance, result: null };
+    }
+    const result = await pollInstance(logger, context, instance);
+    noteAccountPollOutcome(accountId, result);
+    return { instance, result };
+  }));
+  if (skippedForRateLimit > 0 && entries.every((entry) => entry.result === null)) {
+    return { disposition: "preserve_previous", windows: [], errors: [], source: preservedSource };
+  }
+  return mergeInstancePollResults(provider, entries, context.previousSnapshot);
 }
 
 /**
@@ -1005,7 +1178,13 @@ async function pollClaudeInstance(
         }
       }
 
-      if (allowInteractiveSources) {
+      // A throttled or forbidden endpoint is the one status the CLI cannot fix:
+      // `claude /usage` reads the same endpoint with the same account, so
+      // spawning it doubles the pressure on a token that just asked us to back
+      // off — which is exactly how a transient 429 becomes a sustained one.
+      // Codex already refuses its CLI fallback for 403/409/429; same rule here.
+      const httpErrorKind = errorKindForHttpStatus(result.status);
+      if (allowInteractiveSources && claudeCliFallbackFitsStatus(result.status)) {
         const fallback = await measureUsagePhase(
           logger,
           { provider: "claude", phase: "cli_fallback", reason: context.reason },
@@ -1018,7 +1197,7 @@ async function pollClaudeInstance(
         source: "oauth",
         extraUsage: null,
         errors: [`claude: API returned ${result.status}`],
-        errorKind: errorKindForHttpStatus(result.status),
+        errorKind: httpErrorKind,
         ...(result.retryAfterMs != null ? { retryAfterMs: result.retryAfterMs } : {}),
       };
     }
@@ -1070,11 +1249,7 @@ async function pollClaudeUsage(
   context: UsageProviderPollContext = { reason: "user" },
   instances: readonly QuotaInstance[] = listQuotaInstances("claude"),
 ): Promise<UsageProviderPollResult> {
-  const entries = await Promise.all(instances.map(async (instance) => ({
-    instance,
-    result: await pollClaudeInstance(logger, context, instance),
-  })));
-  return mergeInstancePollResults("claude", entries, context.previousSnapshot);
+  return await pollQuotaInstances(logger, "claude", context, instances, "oauth", pollClaudeInstance);
 }
 
 // ── Codex Usage Polling ──────────────────────────────────────────
@@ -1172,11 +1347,7 @@ async function pollCodexUsage(
   context: UsageProviderPollContext = { reason: "user" },
   instances: readonly QuotaInstance[] = listQuotaInstances("codex"),
 ): Promise<UsageProviderPollResult> {
-  const entries = await Promise.all(instances.map(async (instance) => ({
-    instance,
-    result: await pollCodexInstance(logger, context, instance),
-  })));
-  return mergeInstancePollResults("codex", entries, context.previousSnapshot);
+  return await pollQuotaInstances(logger, "codex", context, instances, "http", pollCodexInstance);
 }
 
 /**
@@ -3209,6 +3380,14 @@ function resetCreditProviderForAccountId(accountId: string): QuotaInstanceProvid
   return prefix === "claude" || prefix === "codex" ? prefix : null;
 }
 
+/**
+ * Reconcile one provider's poll into the windows and status the snapshot
+ * carries.
+ *
+ * The optional tail is one object rather than four more positional parameters:
+ * six leading arguments of plain data plus a heterogeneous optional run is a
+ * signature where named fields read, and review, far better than position does.
+ */
 function buildProviderWindows(
   provider: UsageProvider,
   freshWindows: UsageWindow[],
@@ -3216,16 +3395,31 @@ function buildProviderWindows(
   prevWindows: UsageWindow[],
   prevStatus: UsageProviderStatus | string | null,
   polledAt: string,
-  source?: UsageProviderSource,
-  errorKind?: UsageProviderErrorKind,
-  nextRetryAt?: string | null,
+  options: {
+    source?: UsageProviderSource;
+    errorKind?: UsageProviderErrorKind;
+    nextRetryAt?: string | null;
+    /**
+     * How many of `freshWindows` a live read produced this pass.
+     *
+     * Multi-account providers merge carried-forward readings into
+     * `freshWindows`, so a non-empty list is not a success. When no live window
+     * arrived, the provider is degraded and the previous readings are carried
+     * with a stale/error status instead of being relabelled "ok" at poll time.
+     * Absent (an older or injected single-account caller) reads as
+     * `freshWindows.length`, which is what it always meant.
+     */
+    freshWindowCount?: number;
+  } = {},
 ): { windows: UsageWindow[]; status: UsageProviderStatus; lastSuccessAt: string | null } {
+  const { source, errorKind, nextRetryAt, freshWindowCount } = options;
   const normalizedPrevStatus: UsageProviderStatus | null = typeof prevStatus === "string"
     ? { state: "stale", lastSuccessAt: prevStatus, updatedAt: prevStatus }
     : prevStatus;
   const prevLastSuccessAt = normalizedPrevStatus?.lastSuccessAt ?? null;
   const resolvedSource = source ?? normalizedPrevStatus?.source;
-  if (freshWindows.length > 0) {
+  const freshCount = freshWindowCount ?? freshWindows.length;
+  if (freshCount > 0) {
     return {
       windows: freshWindows,
       status: {
@@ -4562,7 +4756,14 @@ export function createUsageTrackingService({
                 result,
               };
             }
-            if (result.windows.length > 0) {
+            // Carried-forward windows keep the display honest through a
+            // transient failure, so they are not evidence this pass reached the
+            // provider. Only windows a live read produced clear the backoff —
+            // otherwise one healthy account keeps erasing the rate limit of its
+            // throttled sibling. Injected pollers predate the field and keep
+            // their old reading.
+            const freshWindowCount = result.freshWindowCount ?? result.windows.length;
+            if (freshWindowCount > 0) {
               providerFailureCount[strategy.provider] = 0;
               providerNextRetryAtMs[strategy.provider] = 0;
             } else {
@@ -4683,9 +4884,12 @@ export function createUsageTrackingService({
               ? { state: "stale", lastSuccessAt: providerLastSuccess[provider]! }
               : null),
             polledAt,
-            result.source,
-            result.errorKind,
-            nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
+            {
+              source: result.source,
+              errorKind: result.errorKind,
+              nextRetryAt: nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
+              freshWindowCount: result.freshWindowCount,
+            },
           );
           if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
           const accountEmail = "accountEmail" in result && typeof result.accountEmail === "string"
@@ -4774,6 +4978,9 @@ export function createUsageTrackingService({
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
         });
+        // After attribution, so a legacy window with no accountId counts as the
+        // default account's before the notice decides the account has nothing.
+        attachAccountRateLimitNotices(accounts, allWindows);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -5417,6 +5624,10 @@ export const _testing = {
   isUsageSnapshot,
   pollClaudeUsage,
   pollCodexUsage,
+  resetAccountRateLimitsForTest,
+  accountRateLimitNextAttemptAtMs,
+  noteAccountPollOutcome,
+  claudeCliFallbackFitsStatus,
   consumeCodexResetCredit,
   probeCodexResetCredits,
   readCachedCodexResetCredits,

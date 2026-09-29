@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AiProviderConnectionStatus, AiProviderConnections, UsageAccount, UsageWindow } from "../../../shared/types";
 import { providerColor } from "./providerColors";
 import {
+  accountNoticeLine,
   emailInitials,
   buildAccountRows,
   buildLimitCards,
@@ -23,6 +24,19 @@ function window(overrides: Partial<UsageWindow> & Pick<UsageWindow, "windowType"
     ...overrides,
   } as UsageWindow;
 }
+
+describe("accountNoticeLine", () => {
+  it("phrases the wait once, and never says 'retrying in now'", () => {
+    const notice = { message: "Rate-limited", nextRetryAt: new Date(NOW + 240_000).toISOString() };
+    expect(accountNoticeLine(notice, NOW)).toBe("Rate-limited — retrying in 4m");
+    // The settings row has no clock; the sentence still has to read whole.
+    expect(accountNoticeLine(notice)).toBe("Rate-limited — retrying");
+    // A deadline that passed between polls must not become "in now".
+    expect(accountNoticeLine({ ...notice, nextRetryAt: new Date(NOW - 1_000).toISOString() }, NOW))
+      .toBe("Rate-limited — retrying");
+    expect(accountNoticeLine({ message: "Rate-limited" }, NOW)).toBe("Rate-limited — retrying");
+  });
+});
 
 describe("emailInitials", () => {
   it("takes one letter from each name part, or two from a single one", () => {

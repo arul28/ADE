@@ -40,9 +40,8 @@ import type {
 import {
   accountAccent,
   accountIdentityLine,
-  accountUsagePercents,
+  accountUsageLine,
   accentTint,
-  formatAccountUsage,
   providerHasFiveHourWindow,
 } from "./accountPresentation";
 import { AccentSwatchRow } from "./AccentSwatchRow";
@@ -406,7 +405,7 @@ export function ProviderAccountsPanel({
   const usageByInstance = useMemo(() => {
     const out = new Map<string, string | null>();
     for (const instance of instances) {
-      out.set(instance.id, formatAccountUsage(accountUsagePercents(snapshot, provider, instance)));
+      out.set(instance.id, accountUsageLine(snapshot, provider, instance));
     }
     return out;
   }, [instances, provider, snapshot]);

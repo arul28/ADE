@@ -221,7 +221,9 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
  *
  * `resetCredits` is deliberately dropped: a reset credit is a per-machine
  * credential the local host redeems against its own account registry, so a
- * peer's credit would render a "Use reset" the local host cannot spend.
+ * peer's credit would render a "Use reset" the local host cannot spend. The
+ * same goes for `notice` — it describes the peer's last polling attempt, and
+ * showing it here would name this machine's connection as the problem.
  */
 function boundPeerAccount(value: unknown): UsageAccount | null {
   if (!value || typeof value !== "object") return null;
