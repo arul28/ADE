@@ -512,6 +512,7 @@ function ProofFilmstripVideoTile({
       ref={containerRef}
       type="button"
       title={artifact.title || artifact.uri || artifact.id}
+      aria-label={artifact.title || artifact.uri || "Open proof"}
       onClick={() => onOpen?.(artifact)}
       data-chat-proof-video=""
       className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
