@@ -3,6 +3,7 @@ import {
   activeMachineForGroup,
   groupRecentProjects,
   groupProjectTabs,
+  resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
   type RemoteProjectTabBinding,
 } from "./projectTabGrouping";
@@ -340,5 +341,95 @@ describe("groupRecentProjects", () => {
 
     expect(groups[0].lastOpenedAt).toBe("2026-07-28T12:00:00.000Z");
     expect(groups[0].primary.machineName).toBe("Mac Studio");
+  });
+});
+
+describe("resolveProjectTabFallback", () => {
+  const ORIGIN = "git@github.com:arul28/ADE.git";
+  const localCheckout = local("/Users/me/ADE", ORIGIN);
+  const studio = { ...remote("studio", "ade", "Mac Studio"), gitOriginUrl: ORIGIN };
+  const laptop = { ...remote("laptop", "ade", "MacBook Pro"), gitOriginUrl: ORIGIN };
+  const desktop = { ...remote("desktop", "ade", "Mac mini"), gitOriginUrl: ORIGIN };
+
+  function groupsWith(
+    knownLocal: RecentProjectSummary[],
+    knownRemote: RemoteProjectTabBinding[],
+  ) {
+    return groupProjectTabs({
+      localTabs: [],
+      remoteTabs: [studio],
+      knownLocalTabs: knownLocal,
+      knownRemoteTabs: knownRemote,
+      remoteOriginByKey: Object.fromEntries(
+        [studio, ...knownRemote].map((binding) => [binding.key, ORIGIN]),
+      ),
+    });
+  }
+
+  // The tab's machine is going away (`excludeTargetId`); the tab is the repo,
+  // so it must land on another checkout of that repo, local first.
+  it.each([
+    {
+      name: "prefers the local checkout of the same repo",
+      knownLocal: [localCheckout],
+      knownRemote: [] as RemoteProjectTabBinding[],
+      connected: [] as string[],
+      expected: { kind: "local", rootPath: "/Users/me/ADE" },
+    },
+    {
+      name: "skips a missing local checkout and uses a connected machine",
+      knownLocal: [{ ...localCheckout, exists: false }],
+      knownRemote: [laptop],
+      connected: ["laptop"],
+      expected: { kind: "remote", binding: laptop },
+    },
+    {
+      name: "prefers a connected machine over a disconnected one",
+      knownLocal: [],
+      knownRemote: [laptop, desktop],
+      connected: ["desktop"],
+      expected: { kind: "remote", binding: desktop },
+    },
+  ])("$name", ({ knownLocal, knownRemote, connected, expected }) => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: groupsWith(knownLocal, knownRemote),
+        openLocalRoots: [],
+        openRemoteBindingKeys: [studio.key],
+        connectedTargetIds: new Set(connected),
+        excludeTargetId: "studio",
+      }),
+    ).toEqual(expected);
+  });
+
+  it("returns null when the repo lives only on the machine being removed", () => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: groupProjectTabs({
+          localTabs: [],
+          remoteTabs: [studio],
+          remoteOriginByKey: { [studio.key]: ORIGIN },
+        }),
+        openLocalRoots: [],
+        openRemoteBindingKeys: [studio.key],
+        connectedTargetIds: new Set(["studio"]),
+        excludeTargetId: "studio",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when no group contains the tab", () => {
+    expect(
+      resolveProjectTabFallback({
+        bindingKey: studio.key,
+        groups: [],
+        openLocalRoots: [],
+        openRemoteBindingKeys: [],
+        connectedTargetIds: new Set(),
+        excludeTargetId: "studio",
+      }),
+    ).toBeNull();
   });
 });
