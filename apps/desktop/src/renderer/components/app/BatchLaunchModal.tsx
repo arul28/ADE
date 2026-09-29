@@ -27,6 +27,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { showToast } from "./toast/toastStore";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -406,6 +407,14 @@ export function BatchLaunchModal({
       // A Custom pick is resolved here, against the account's preset list,
       // so the launch knows its harness and the model that harness receives.
       const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
+      if (config.presetId && !target) {
+        showToast({
+          tone: "error",
+          title: "Custom provider no longer available",
+          message: "Choose a different provider before launching.",
+        });
+        return;
+      }
       entries.push({
         issue,
         config: {

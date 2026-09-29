@@ -22,10 +22,18 @@ type ProxyStarter = () => Promise<unknown>;
 // Registered once per process by whichever process owns the proxy service:
 // desktop main (`main.ts`) and every project runtime in the brain
 // (`bootstrap.ts`). They all point at the same machine-level proxy.
-let proxyStarter: ProxyStarter | null = null;
+const proxyStarters = new Set<ProxyStarter>();
+let processProxyStarter: ProxyStarter | null = null;
 
+/** Register one runtime-owned starter and remove only that starter on teardown. */
+export function registerHarnessProxyStarter(starter: ProxyStarter): () => void {
+  proxyStarters.add(starter);
+  return () => proxyStarters.delete(starter);
+}
+
+/** Register a process-owned starter (used by desktop main). */
 export function setHarnessProxyStarter(starter: ProxyStarter | null): void {
-  proxyStarter = starter;
+  processProxyStarter = starter;
 }
 
 
@@ -43,6 +51,7 @@ export async function prepareHarnessLaunch(args: {
   const presetId = args.presetId?.trim() || null;
   const credentialId = args.credentialId?.trim() || null;
   if (!presetId && !credentialId) return false;
+  const proxyStarter = [...proxyStarters].at(-1) ?? processProxyStarter;
   if (!proxyStarter) return false;
   let needsProxy = false;
   try {

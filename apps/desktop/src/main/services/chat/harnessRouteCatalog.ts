@@ -157,10 +157,10 @@ export function listHarnessRouteCatalog(deps: { adeHome?: string } = {}): Harnes
 export function isPresetSourceAvailableLocally(source: HarnessPresetSource): boolean {
   try {
     if (source.kind === "opencode") {
-      return readOpenCodeSignedInProviderIds().includes(source.providerId);
+      return readOpenCodeSignedInProviderIds().includes(source.providerId.trim());
     }
     if (source.kind === "key") {
-      return listApiCredentials(source.provider).some((entry) => entry.credentialId === source.credentialId);
+      return listApiCredentials(source.provider.trim()).some((entry) => entry.credentialId === source.credentialId.trim());
     }
   } catch {
     return false;

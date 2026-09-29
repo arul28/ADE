@@ -780,6 +780,23 @@ describe("ProvidersSection", () => {
     expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
 
+  it("keeps a connected OpenCode provider visible when it advertises no models", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 0 }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({ methods: {} });
+
+    renderProvidersSection("opencode");
+
+    const tile = await screen.findByLabelText("Open OpenAI");
+    expect(within(tile).getByText("Connected")).toBeTruthy();
+    expect(within(tile).getByText("No models")).toBeTruthy();
+  });
+
   /** Open a Pi provider's card, then return its sign-in button from the dialog. */
   async function openPiProviderSignIn(providerName: string, buttonName: string): Promise<HTMLElement> {
     const tile = await screen.findByRole("button", {

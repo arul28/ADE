@@ -612,11 +612,10 @@ export function ProvidersSection({
     [openCodeCatalog],
   );
 
-  // A provider OpenCode reports as connected but with no models is not
-  // something you can use yet, so it is not a Connected card. A key the user
-  // stored stays visible either way — hiding it would hide their own secret.
+  // A provider OpenCode reports as connected stays visible even when it has no
+  // models yet, so the user can inspect its status. A stored key also stays visible.
   const connectedOpenCodeProviders = useMemo(
-    () => openCodeCatalog.filter((p) => p.hasKey || (p.connected && p.modelCount !== 0)),
+    () => openCodeCatalog.filter((p) => p.hasKey || p.connected),
     [openCodeCatalog],
   );
 

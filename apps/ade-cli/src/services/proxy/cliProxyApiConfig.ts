@@ -8,6 +8,7 @@ import {
   securePrivatePath,
   type PrivateFileSecurityOptions,
 } from "../../lib/trustedWindowsTools";
+import { withCredentialFileLock } from "../credentials/credentialFileIo";
 import type { CliProxyApiRelease, CliProxyApiReleaseAsset } from "./cliProxyApiRelease";
 
 const PROXY_HOST = "127.0.0.1" as const;
@@ -46,6 +47,11 @@ export type CliProxyApiConfig = {
 
 /** The upstream sections ADE manages, in one list so read and write agree. */
 export const CLI_PROXY_API_UPSTREAM_SECTIONS = ["openai-compatibility", "claude-api-key", "codex-api-key"] as const;
+
+/** Serialize config read-modify-write operations across ADE runtimes. */
+export function withCliProxyApiConfigLock<T>(configPath: string, fn: () => T): T {
+  return withCredentialFileLock(`${configPath}.lock`, fn);
+}
 
 export type CliProxyApiState = {
   port: number;

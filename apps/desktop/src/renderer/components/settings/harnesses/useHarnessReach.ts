@@ -73,47 +73,55 @@ export function useHarnessReach({
   // The binding object is a routing payload; its key is the reactive input.
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const requestSeqRef = useRef(0);
   const pinKey = pin?.key ?? "";
 
-  const loadCatalog = useCallback(async () => {
+  const loadCatalog = useCallback(async (seq = ++requestSeqRef.current, binding = pinRef.current) => {
     const list = window.ade?.ai?.listHarnessRoutes;
     if (typeof list !== "function") {
-      setCatalog({ sources: [], proxyAvailable: false });
+      if (seq === requestSeqRef.current) setCatalog({ sources: [], proxyAvailable: false });
       return;
     }
     try {
-      setCatalog(await list(pinRef.current));
+      const result = await list(binding);
+      if (seq === requestSeqRef.current) setCatalog(result);
     } catch {
-      setCatalog((current) => current ?? { sources: [], proxyAvailable: false });
+      if (seq === requestSeqRef.current) setCatalog((current) => current ?? { sources: [], proxyAvailable: false });
     }
   }, []);
 
-  const loadProxy = useCallback(async () => {
+  const loadProxy = useCallback(async (seq = ++requestSeqRef.current, binding = pinRef.current) => {
     const status = proxyBridge()?.status;
     if (typeof status !== "function") {
-      setProxyLogins(null);
+      if (seq === requestSeqRef.current) setProxyLogins(null);
       return;
     }
     try {
-      const result = await status(pinRef.current);
+      const result = await status(binding);
       const signedIn = new Set(
         (result?.logins ?? [])
           .filter((login) => login && login.disabled !== true)
           .map((login) => String(login.provider).toLowerCase()),
       );
-      setProxyLogins(signedIn);
+      if (seq === requestSeqRef.current) setProxyLogins(signedIn);
     } catch {
-      setProxyLogins(null);
+      if (seq === requestSeqRef.current) setProxyLogins(null);
     }
   }, []);
 
   const refresh = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
+    const binding = pinRef.current;
     setLoading(true);
     try {
-      const [, , accountRows] = await Promise.all([loadCatalog(), loadProxy(), loadHarnessAccounts(pinRef.current)]);
-      setAccounts(accountRows);
+      const [, , accountRows] = await Promise.all([
+        loadCatalog(seq, binding),
+        loadProxy(seq, binding),
+        loadHarnessAccounts(binding),
+      ]);
+      if (seq === requestSeqRef.current) setAccounts(accountRows);
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   }, [loadCatalog, loadProxy]);
 
@@ -140,23 +148,29 @@ export function useHarnessReach({
     const test = window.ade?.ai?.testHarnessRoute;
     if (typeof test !== "function") return null;
     const key = routeTestKey(harness, source, model);
+    const seq = requestSeqRef.current;
+    const binding = pinRef.current;
     setTestState((prev) => ({ ...prev, [key]: { status: "testing" } }));
     try {
-      const result = await test({ harness, source, model }, pinRef.current);
-      setTestState((prev) => ({
-        ...prev,
-        [key]: result.ok
-          ? { status: "ok", latencyMs: result.latencyMs }
-          : { status: "failed", error: result.error?.trim() || "The model did not answer." },
-      }));
+      const result = await test({ harness, source, model }, binding);
+      if (seq === requestSeqRef.current) {
+        setTestState((prev) => ({
+          ...prev,
+          [key]: result.ok
+            ? { status: "ok", latencyMs: result.latencyMs }
+            : { status: "failed", error: result.error?.trim() || "The model did not answer." },
+        }));
+      }
       // The verdict is recorded by main; re-read so the row's route follows it.
-      void loadCatalog();
+      void loadCatalog(seq, binding);
       return result;
     } catch (error) {
-      setTestState((prev) => ({
-        ...prev,
-        [key]: { status: "failed", error: error instanceof Error ? error.message : "The check could not run." },
-      }));
+      if (seq === requestSeqRef.current) {
+        setTestState((prev) => ({
+          ...prev,
+          [key]: { status: "failed", error: error instanceof Error ? error.message : "The check could not run." },
+        }));
+      }
       return null;
     }
   }, [loadCatalog]);
@@ -164,12 +178,14 @@ export function useHarnessReach({
   const proxySignIn = useCallback(async (provider: HarnessPresetAccountProvider) => {
     const signIn = proxyBridge()?.signIn;
     if (typeof signIn !== "function") return;
+    const seq = requestSeqRef.current;
+    const binding = pinRef.current;
     setProxySigningIn(provider);
     try {
-      await signIn({ provider }, pinRef.current);
+      await signIn({ provider }, binding);
     } finally {
-      setProxySigningIn(null);
-      await loadProxy();
+      if (seq === requestSeqRef.current) setProxySigningIn(null);
+      await loadProxy(seq, binding);
     }
   }, [loadProxy]);
 

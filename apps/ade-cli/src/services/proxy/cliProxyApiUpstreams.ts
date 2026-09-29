@@ -3,6 +3,7 @@ import fs from "node:fs";
 import {
   CLI_PROXY_API_UPSTREAM_SECTIONS,
   readCliProxyApiConfig,
+  withCliProxyApiConfigLock,
   writeCliProxyApiConfig,
   type CliProxyApiConfig,
 } from "./cliProxyApiConfig";
@@ -129,24 +130,26 @@ export function upsertCliProxyApiUpstream(
   upstream: ProxyUpstream,
   security: PrivateFileSecurityOptions = {},
 ): boolean {
-  if (!fs.existsSync(configPath)) return false;
-  const config: CliProxyApiConfig = readCliProxyApiConfig(configPath);
-  const section = SECTION_FOR_PROTOCOL[upstream.protocol];
-  const entries = Array.isArray(config[section]) ? [...(config[section] as unknown[])] : [];
-  const index = entries.findIndex((entry) => entryId(entry) === upstream.id);
-  const next = renderEntry(upstream, index >= 0 ? existingModelNames(entries[index]) : []);
-  if (index >= 0 && JSON.stringify(entries[index]) === JSON.stringify(next)) return true;
-  if (index >= 0) entries[index] = next;
-  else entries.push(next);
-  config[section] = entries;
-  // One source lives in exactly one section: a source whose protocol changed
-  // (a probe corrected it) must not leave a stale twin with the old key.
-  for (const other of CLI_PROXY_API_UPSTREAM_SECTIONS) {
-    if (other === section || !Array.isArray(config[other])) continue;
-    config[other] = (config[other] as unknown[]).filter((entry) => entryId(entry) !== upstream.id);
-  }
-  writeCliProxyApiConfig(configPath, config, security);
-  return true;
+  return withCliProxyApiConfigLock(configPath, () => {
+    if (!fs.existsSync(configPath)) return false;
+    const config: CliProxyApiConfig = readCliProxyApiConfig(configPath);
+    const section = SECTION_FOR_PROTOCOL[upstream.protocol];
+    const entries = Array.isArray(config[section]) ? [...(config[section] as unknown[])] : [];
+    const index = entries.findIndex((entry) => entryId(entry) === upstream.id);
+    const next = renderEntry(upstream, index >= 0 ? existingModelNames(entries[index]) : []);
+    if (index >= 0 && JSON.stringify(entries[index]) === JSON.stringify(next)) return true;
+    if (index >= 0) entries[index] = next;
+    else entries.push(next);
+    config[section] = entries;
+    // One source lives in exactly one section: a source whose protocol changed
+    // (a probe corrected it) must not leave a stale twin with the old key.
+    for (const other of CLI_PROXY_API_UPSTREAM_SECTIONS) {
+      if (other === section || !Array.isArray(config[other])) continue;
+      config[other] = (config[other] as unknown[]).filter((entry) => entryId(entry) !== upstream.id);
+    }
+    writeCliProxyApiConfig(configPath, config, security);
+    return true;
+  });
 }
 
 /**
@@ -170,21 +173,23 @@ export function removeCliProxyApiUpstreams(
   id: string,
   security: PrivateFileSecurityOptions = {},
 ): void {
-  const ids = new Set([id, ...HEADERLESS_UPSTREAM_HARNESSES.map((harness) => adeUpstreamVariantId(id, harness))]);
-  if (!fs.existsSync(configPath)) return;
-  const config = readCliProxyApiConfig(configPath);
-  let changed = false;
-  for (const section of CLI_PROXY_API_UPSTREAM_SECTIONS) {
-    const entries = config[section];
-    if (!Array.isArray(entries)) continue;
-    const kept = entries.filter((entry) => {
-      const entryIdValue = entryId(entry);
-      return !(entryIdValue && ids.has(entryIdValue));
-    });
-    if (kept.length !== entries.length) {
-      config[section] = kept;
-      changed = true;
+  withCliProxyApiConfigLock(configPath, () => {
+    const ids = new Set([id, ...HEADERLESS_UPSTREAM_HARNESSES.map((harness) => adeUpstreamVariantId(id, harness))]);
+    if (!fs.existsSync(configPath)) return;
+    const config = readCliProxyApiConfig(configPath);
+    let changed = false;
+    for (const section of CLI_PROXY_API_UPSTREAM_SECTIONS) {
+      const entries = config[section];
+      if (!Array.isArray(entries)) continue;
+      const kept = entries.filter((entry) => {
+        const entryIdValue = entryId(entry);
+        return !(entryIdValue && ids.has(entryIdValue));
+      });
+      if (kept.length !== entries.length) {
+        config[section] = kept;
+        changed = true;
+      }
     }
-  }
-  if (changed) writeCliProxyApiConfig(configPath, config, security);
+    if (changed) writeCliProxyApiConfig(configPath, config, security);
+  });
 }

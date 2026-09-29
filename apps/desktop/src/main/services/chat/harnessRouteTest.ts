@@ -71,6 +71,18 @@ async function pingProtocol(args: {
   let url: string;
   let body: Record<string, unknown>;
   if (protocol === "anthropic") {
+    // Anthropic's first-party API requires x-api-key; Anthropic-compatible
+    // gateways use Bearer auth and must keep it (for example OpenRouter).
+    let hostname: string | null = null;
+    try {
+      hostname = new URL(baseUrl).hostname;
+    } catch {
+      // Leave endpoint validation and fetch failure handling to the request path.
+    }
+    if (hostname === "api.anthropic.com") {
+      delete headers.authorization;
+      headers["x-api-key"] = token;
+    }
     url = `${stripTrailingV1(baseUrl)}/v1/messages`;
     headers["anthropic-version"] = "2023-06-01";
     body = { model, max_tokens: 8, messages: [{ role: "user", content: "Reply with OK." }] };

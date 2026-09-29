@@ -83,7 +83,7 @@ function OpenCodeProviderCard({
 
 function TileStatusLine({ connected, modelCount }: { connected: boolean; modelCount?: number }) {
   const models = typeof modelCount === "number"
-    ? `${modelCount} model${modelCount === 1 ? "" : "s"}`
+    ? modelCount === 0 ? "No models" : `${modelCount} model${modelCount === 1 ? "" : "s"}`
     : null;
   if (!connected && !models) return null;
   return (
@@ -132,10 +132,7 @@ function OpenCodeHouseCard({
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.4 }}>
             {OPENCODE_HOUSE_BLURB[id]}
           </div>
-          <TileStatusLine
-            connected={connected}
-            modelCount={typeof provider.modelCount === "number" && provider.modelCount > 0 ? provider.modelCount : undefined}
-          />
+          <TileStatusLine connected={connected} modelCount={provider.modelCount} />
         </div>
       )}
     />

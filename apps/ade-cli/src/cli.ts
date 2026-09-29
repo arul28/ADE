@@ -5487,7 +5487,7 @@ function buildHarnessPlan(args: string[]): CliPlan {
     return { kind: "help", text: HELP_BY_COMMAND.harness ?? topLevelHelpText() };
   }
   const sub = firstStandalonePositional(args) ?? "routes";
-  const rest = args.slice(args.indexOf(sub) + 1);
+  const rest = args;
   if (sub === "env") {
     const via = readValue(rest, ["--via"])?.trim() || null;
     const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
