@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseAgentChatFileRefs,
+  parseAgentChatSendArgs,
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
@@ -109,5 +110,27 @@ describe("parseAgentChatFileRefs", () => {
       { type: "image", path: "/tmp/a.png" },
       { type: "image-url", path: "https://example.com/b.png", url: "https://example.com/b.png" },
     ]);
+  });
+
+  it("preserves folded-paste intent through send and new-chat launch payloads", () => {
+    const foldedPaste = { path: "/tmp/pasted-text.txt", type: "file", intent: "user_prompt" };
+    const sent = parseAgentChatSendArgs({
+      sessionId: "chat-1",
+      text: "",
+      attachments: [foldedPaste],
+    });
+    expect(sent).toMatchObject({ sessionId: "chat-1", text: "", attachments: [foldedPaste] });
+    expect(() => parseAgentChatSendArgs({ sessionId: "chat-1", text: "" }))
+      .toThrow("chat.send requires text.");
+
+    const launched = parseChatLaunchArgs(rawLaunch({
+      create: { provider: "codex" },
+      message: { text: "", attachments: [foldedPaste] },
+    }));
+    expect(launched.chat?.message).toMatchObject({ text: "", attachments: [foldedPaste] });
+
+    expect(parseAgentChatFileRefs([
+      { path: "/tmp/ordinary.txt", type: "file", intent: "other" },
+    ])).toEqual([{ path: "/tmp/ordinary.txt", type: "file" }]);
   });
 });

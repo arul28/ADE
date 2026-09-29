@@ -77,7 +77,11 @@ import {
   parseComposerClipboard,
   serializeComposerClipboard,
 } from "../../../shared/composerClipboard";
-import { pastedTextAttachmentFile, shouldFoldPastedText } from "../../../shared/composerPasteFolding";
+import {
+  isPastedTextAttachmentFile,
+  pastedTextAttachmentFile,
+  shouldFoldPastedText,
+} from "../../../shared/composerPasteFolding";
 import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
 import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
@@ -85,6 +89,7 @@ import {
   activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
+  hasPastedTextPromptAttachment,
   type HeicConversionErrorCode,
   isImageAttachmentPath,
   isHeicAttachment,
@@ -3015,7 +3020,11 @@ export function AgentChatComposer({
             rememberPreviewUrl(staged.path, staged.previewDataUrl ?? pendingImage?.previewUrl);
           }
           rememberAttachmentSize(staged.path, file.size);
-          onAddAttachment({ path: staged.path, type: attachmentType });
+          onAddAttachment({
+            path: staged.path,
+            type: attachmentType,
+            ...(isPastedTextAttachmentFile(file) ? { intent: "user_prompt" as const } : {}),
+          });
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           addedInBatch += 1;
         } catch (error) {
@@ -5217,8 +5226,8 @@ export function AgentChatComposer({
   /**
    * Draft text, or any selected visual/issue context. This is the composer's one
    * content test, so the enable predicates and the submit guards cannot disagree.
-   * File attachments are deliberately not part of it: only some surfaces allow an
-   * attachment-only submit, and Cursor Cloud receives no file attachments at all.
+   * File attachments stay separate because local file-only sends are opt-in and
+   * Cursor Cloud validates its own file-delivery path.
    */
   const hasComposerContextContent =
     draft.trim().length > 0
@@ -5227,8 +5236,8 @@ export function AgentChatComposer({
     || hasBuiltInBrowserContext
     || contextAttachmentCount > 0;
   /**
-   * What a local send or an active-turn steer has to deliver. An empty or
-   * whitespace-only draft disables the send actions instead of silently no-oping.
+   * Content that a local send or active-turn steer can deliver. Empty drafts
+   * with no supported attachment or context keep the send actions disabled.
    */
   const activeTurnHasContent =
     hasComposerContextContent || (allowAttachmentOnlySubmit && attachments.length > 0);
@@ -5372,12 +5381,12 @@ export function AgentChatComposer({
       modelReady: cloudModelReady,
       // Match the predicate of the path the send will actually take: a fresh
       // launch delivers text + issue context + file attachments, while a
-      // linked reply rides submit, which accepts composer context but not
-      // file-attachment-only payloads.
+      // linked reply rides submit, which accepts composer context and folded
+      // pasted prompts, but not ordinary file-only payloads.
       hasContent: cloudCanLaunch
         ? draft.trim().length > 0 || contextAttachmentCount > 0
           || (cloudFileAttachmentsDelivered && attachments.length > 0)
-        : hasComposerContextContent,
+        : hasComposerContextContent || hasPastedTextPromptAttachment(attachments),
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
@@ -5389,7 +5398,9 @@ export function AgentChatComposer({
     && (parallelReady || (cloudModeActiveForSend
       ? cloudSendBlock === null
       : singleReady));
-  const activeSteerEnabled = !composerInputLocked && !hasPendingImageAttachments && activeTurnHasContent;
+  const activeSteerEnabled = !composerInputLocked
+    && !hasPendingImageAttachments
+    && (cloudModeActiveForSend ? cloudSendBlock === null : activeTurnHasContent);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
     && !backgroundLaunchBusy

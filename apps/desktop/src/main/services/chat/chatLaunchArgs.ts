@@ -59,7 +59,11 @@ export function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | und
     if (entry.type === "image") type = "image";
     else if (entry.type === "file") type = "file";
     if (!path || !type) continue;
-    attachments.push({ path, type });
+    attachments.push({
+      path,
+      type,
+      ...(entry.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
+    });
   }
   return attachments;
 }
@@ -128,10 +132,15 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
 }
 
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
+  const messageFields = parseAgentChatMessageFields(value);
+  const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
+  if (text === null || (!text && !messageFields.attachments?.length)) {
+    throw new Error("chat.send requires text.");
+  }
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
-    text: requireString(value.text, "chat.send requires text."),
-    ...parseAgentChatMessageFields(value),
+    text,
+    ...messageFields,
   };
 }
 
@@ -139,8 +148,9 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
  * A launch's chat: the `chat.create` fields plus the harness selection the
  * desktop composer names by id (the brain resolves it against its own preset
  * and key stores), and the opening message. Unlike `chat.send`, the opening
- * message may have empty text when it carries only context (a visual-context
- * launch), and it keeps its context attachments and cursor runtime.
+ * message may have empty text when it carries only attachments or context (a
+ * file-only or visual-context launch), and it keeps its attachments and cursor
+ * runtime.
  */
 function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   const rawChat = isRecord(value) ? value : null;

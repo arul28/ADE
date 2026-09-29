@@ -3221,6 +3221,7 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
       path: "/tmp/ade-pasted-text.txt",
       type: "file",
+      intent: "user_prompt",
     }));
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(saveTempAttachment).toHaveBeenCalledWith(
@@ -4006,6 +4007,31 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
 
     expect(onSubmitToCloud).toHaveBeenCalledWith("Run this in the cloud.");
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      kind: "folded pasted prompt",
+      attachment: { path: "/tmp/pasted-text.txt", type: "file" as const, intent: "user_prompt" as const },
+      disabled: false,
+    },
+    {
+      kind: "ordinary file",
+      attachment: { path: "/tmp/notes.txt", type: "file" as const },
+      disabled: true,
+    },
+  ])("uses only $kind as linked cloud steer content", ({ attachment, disabled }) => {
+    renderComposer(cloudProps({
+      turnActive: true,
+      draft: "",
+      attachments: [attachment],
+      allowAttachmentOnlySubmit: true,
+      cloudSessionLinked: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, canLaunch: false },
+    }));
+
+    expect((screen.getByRole("button", { name: "Send steer message" }) as HTMLButtonElement).disabled)
+      .toBe(disabled);
   });
 });
 

@@ -65,6 +65,8 @@ import {
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import {
+  DEFAULT_ATTACHMENT_ONLY_PROMPT,
+  hasPastedTextPromptAttachment,
   isUnsupportedAgentChatRecoveryActionError,
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
@@ -479,7 +481,7 @@ const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
-export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
+export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = DEFAULT_ATTACHMENT_ONLY_PROMPT;
 
 const chatToolbarActionBase =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
@@ -1030,10 +1032,19 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
     displayChips: snapshot.visualContextDisplayChips,
   });
   let finalText = composed.text;
-  if (!finalText.trim().length && snapshot.contextAttachments.length) {
+  if (
+    !finalText.trim().length
+    && snapshot.contextAttachments.length
+    && !hasPastedTextPromptAttachment(snapshot.attachments)
+  ) {
     finalText = "Use the attached issue context.";
   }
-  const finalDisplayText = composed.displayText ?? "Attached issue context";
+  let finalDisplayText = composed.displayText ?? "Attached issue context";
+  if (composed.displayText == null && snapshot.attachments.length) {
+    finalDisplayText = hasPastedTextPromptAttachment(snapshot.attachments)
+      ? ""
+      : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+  }
   return {
     ...snapshot,
     finalText,
@@ -2932,7 +2943,11 @@ function normalizeComposerFileAttachments(value: unknown): AgentChatFileRef[] {
     const type = rawType === "image" || rawType === "file"
       ? rawType
       : inferAttachmentType(path);
-    out.set(path, { path, type });
+    out.set(path, {
+      path,
+      type,
+      ...(entry.intent === "user_prompt" ? { intent: "user_prompt" as const } : {}),
+    });
   }
   return [...out.values()];
 }
@@ -3246,6 +3261,7 @@ export function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | und
 export function buildParallelLaunchPrompt(args: {
   text: string;
   attachmentCount: number;
+  attachments?: readonly AgentChatFileRef[];
   contextAttachmentCount?: number;
 }): { sendText: string; displayText: string } {
   const trimmed = args.text.trim();
@@ -3253,7 +3269,9 @@ export function buildParallelLaunchPrompt(args: {
   if (trimmed.length) {
     displayText = trimmed;
   } else if (args.attachmentCount > 0) {
-    displayText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+    displayText = hasPastedTextPromptAttachment(args.attachments ?? [])
+      ? ""
+      : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
   } else if ((args.contextAttachmentCount ?? 0) > 0) {
     displayText = "Use the attached issue context.";
   }
@@ -9965,6 +9983,7 @@ export function AgentChatPane({
       && !visualContextPrefix.length
       && !contextAttachmentsSnapshot.length
       && !(isWorkCliLaunchDraft && attachments.length)
+      && !attachments.some((attachment) => attachment.type === "file")
     ) {
       return null;
     }
@@ -10105,14 +10124,20 @@ export function AgentChatPane({
       // to show until history loads: hand it the prompt as its first bubble,
       // plus where the composer and text sat so both can animate into place.
       const prepared = launch.firstMessage;
+      const isPastedTextPrompt = hasPastedTextPromptAttachment(prepared.selectedAttachments);
+      const visibleAttachments = isPastedTextPrompt
+        ? prepared.selectedAttachments.filter((attachment) => !(
+          attachment.type === "file" && attachment.intent === "user_prompt"
+        ))
+        : prepared.selectedAttachments;
       const firstMessage: AgentChatEventEnvelope = {
         sessionId: launch.sessionId,
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
           text: prepared.finalText,
-          displayText: prepared.finalDisplayText || "Selected visual app context",
-          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
+          displayText: prepared.finalDisplayText || (isPastedTextPrompt ? "Pasted text prompt" : "Selected visual app context"),
+          ...(visibleAttachments.length ? { attachments: visibleAttachments } : {}),
           ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
         },
       };
@@ -12261,6 +12286,7 @@ export function AgentChatPane({
         const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
           text,
           attachmentCount: attachmentsSnapshot.length,
+          attachments: attachmentsSnapshot,
           contextAttachmentCount: contextAttachmentsSnapshot.length,
         });
 
@@ -12427,7 +12453,11 @@ export function AgentChatPane({
     const visualContextPrefix = visualContext.prefix;
     const composedWithVisualContext = applyVisualContext(text, visualContext);
     if (
-      (!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length && !(isWorkCliLaunchDraft && attachments.length))
+      (!text.length
+        && !visualContextPrefix.length
+        && !contextAttachmentsSnapshot.length
+        && !(isWorkCliLaunchDraft && attachments.length)
+        && !attachments.some((attachment) => attachment.type === "file"))
       || !laneId
     ) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
@@ -12529,6 +12559,7 @@ export function AgentChatPane({
     }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
+    const hasPastedPrompt = hasPastedTextPromptAttachment(attachmentsSnapshot);
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
     const isCodexGoalSlashCommand = sessionProvider === "codex" && isCodexGoalSlashInput(text);
     const suppressOptimisticOutgoing = isCodexGoalSlashCommand;
@@ -12551,14 +12582,22 @@ export function AgentChatPane({
     // Show the optimistic bubble immediately when we already have a session.
     // Awaiting session-create roundtrips before this setter delays the bubble
     // by hundreds of ms on a typical send.
-    const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
+    const selectedAttachmentsForOptimistic = isLiteralSlashCommand
+      ? []
+      : attachmentsSnapshot.filter((attachment) => !(
+        attachment.type === "file" && attachment.intent === "user_prompt"
+      ));
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
-    const optimisticDisplayText = composedWithVisualContext.displayText
-      ?? (attachmentsSnapshot.length
-        ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
-        : contextAttachmentsSnapshot.length
-          ? "Attached issue context"
-          : text);
+    let optimisticDisplayText = composedWithVisualContext.displayText;
+    if (optimisticDisplayText == null) {
+      if (attachmentsSnapshot.length) {
+        optimisticDisplayText = hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+      } else if (contextAttachmentsSnapshot.length) {
+        optimisticDisplayText = "Attached issue context";
+      } else {
+        optimisticDisplayText = text;
+      }
+    }
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
@@ -12579,13 +12618,15 @@ export function AgentChatPane({
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
-      if (!finalText.trim().length && attachmentsSnapshot.length) {
+      if (!finalText.trim().length && attachmentsSnapshot.length && !hasPastedPrompt) {
         finalText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
-      } else if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
+      } else if (!finalText.trim().length && contextAttachmentsSnapshot.length && !hasPastedPrompt) {
         finalText = "Use the attached issue context.";
       }
       const finalDisplayText = composedWithVisualContext.displayText
-        ?? (attachmentsSnapshot.length ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST : "Attached issue context");
+        ?? (attachmentsSnapshot.length
+          ? (hasPastedPrompt ? "" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
+          : "Attached issue context");
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -12606,8 +12647,8 @@ export function AgentChatPane({
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
-          text: finalDisplayText || finalText,
-          ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+          text: optimisticDisplayText,
+          ...(selectedAttachmentsForOptimistic.length ? { attachments: selectedAttachmentsForOptimistic } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
           deliveryState: "queued",
         },
@@ -14950,7 +14991,9 @@ export function AgentChatPane({
               ? useThisComputerForDraft
               : undefined}
             contextAttachments={contextAttachments}
-            allowAttachmentOnlySubmit={workDraftKind === "cli"}
+            allowAttachmentOnlySubmit={
+              workDraftKind === "cli" || attachments.some((attachment) => attachment.type === "file")
+            }
             pinnedLinearIssue={pinnedLinearIssue}
             pendingInput={composerPendingInput}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}

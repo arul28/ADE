@@ -1119,11 +1119,30 @@ describe("createAgentChatService", () => {
         && event.event.attachments?.some((attachment) => attachment.path === attachmentPath),
       )).toBe(true);
 
+      const pastedPrompt = "Follow this pasted request as the chat task.";
+      const pastedPromptPath = path.join(tmpRoot, "pasted-text.txt");
+      fs.writeFileSync(pastedPromptPath, pastedPrompt);
+      const pastedPromptResult = await service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        attachments: [{ path: pastedPromptPath, type: "file", intent: "user_prompt" }],
+      }, { routeActiveToSteer: true });
+      expect(pastedPromptResult).toMatchObject({ queued: true, steerId: expect.any(String) });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.text === pastedPrompt
+        && event.event.deliveryState === "queued"
+        && !event.event.attachments?.some((attachment) => attachment.path === pastedPromptPath),
+      )).toBe(true);
+
       finishActiveTurn();
       await activeTurn;
       await vi.waitFor(() => {
         expect(send.mock.calls.some(([payload]) =>
           JSON.stringify(payload).includes("Please review the attached files."),
+        )).toBe(true);
+        expect(send.mock.calls.some(([payload]) =>
+          JSON.stringify(payload).includes(pastedPrompt),
         )).toBe(true);
       });
       // Claude's persistent streaming-input query consumes the queued steer

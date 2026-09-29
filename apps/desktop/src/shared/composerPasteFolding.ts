@@ -23,6 +23,8 @@ export const PASTED_TEXT_ATTACHMENT_FILENAME = "pasted-text.txt";
 /** Pasted text's media type, so the host stages it as a plain text file. */
 export const PASTED_TEXT_ATTACHMENT_MIME = "text/plain";
 
+const pastedTextAttachmentFiles = new WeakSet<File>();
+
 /**
  * Lines in pasted text, CRLF and lone-CR normalized, a single trailing newline
  * ignored. A text that ends with one newline is not one line longer than it is.
@@ -49,7 +51,14 @@ export function shouldFoldPastedText(text: string | null | undefined): boolean {
  * from disk), so the existing base64 staging leg carries it to the host.
  */
 export function pastedTextAttachmentFile(text: string): File {
-  return new File([text], PASTED_TEXT_ATTACHMENT_FILENAME, {
+  const file = new File([text], PASTED_TEXT_ATTACHMENT_FILENAME, {
     type: PASTED_TEXT_ATTACHMENT_MIME,
   });
+  pastedTextAttachmentFiles.add(file);
+  return file;
+}
+
+/** True only for files created from ADE's folded-paste path. */
+export function isPastedTextAttachmentFile(file: File): boolean {
+  return pastedTextAttachmentFiles.has(file);
 }
