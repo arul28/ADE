@@ -304,6 +304,30 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         `object { days?: number (1-${ADE_TURN_USAGE_MAX_DAYS}, default ${ADE_TURN_USAGE_DEFAULT_DAYS}), groupBy?: ${ADE_TURN_USAGE_GROUP_BY.map((value) => JSON.stringify(value)).join(" | ")} (default ${JSON.stringify(DEFAULT_ADE_TURN_USAGE_GROUP_BY)}), recent?: number (newest rows of the calling project to include, max ${ADE_TURN_USAGE_MAX_RECENT}) }`,
       example: "ade usage turns --days 14 --text",
     },
+    getModelRoutes: {
+      description:
+        "List every route (harness × model × effort) this machine can run, rated from the model registry: expected coding-agent score, cost and time per task, speed, and who bills it. Registry data is based on Artificial Analysis (artificialanalysis.ai).",
+      input: "object { provider?: \"claude\" | \"codex\" | \"opencode\" | \"cursor\", limit?: number }",
+      example: "ade router routes --provider claude --text",
+    },
+    previewModelRoute: {
+      description:
+        "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",
+      input:
+        "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"unknown\" }",
+      example: "ade router pick \"summarize how sync works\" --provider claude --model opus --text",
+    },
+    getRouterShadowSummary: {
+      description:
+        "Summarize the shadow router: for each subagent that started, the route it would have picked instead, the estimated saving, and why it kept the original.",
+      input: "object { days?: number (1-90, default 7) }",
+      example: "ade router shadow --days 7 --text",
+    },
+    refreshModelRegistry: {
+      description: "Fetch the newest model registry from the ADE account directory (signed-in accounts only).",
+      input: "object { force?: boolean }",
+      example: "ade router refresh --text",
+    },
     getUsageSnapshot: {
       description:
         "Read provider rate-limit windows and spend controls. Account-tied, so it takes no scope.",

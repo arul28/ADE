@@ -138,6 +138,61 @@ export function logUsageResearchUpload(args: {
 }
 
 /**
+ * One line per `/router/registry` request. `reason` is set on every refusal
+ * (the caller-token classification on a 401, never the token); a 200 and a 304
+ * carry none. No user id: the route serves the same bytes to every account, so
+ * who asked tells support nothing the status does not.
+ */
+export function logModelRegistryRequest(args: {
+  method: string;
+  status: number;
+  reason?: string;
+  durationMs: number;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "model_registry_request",
+    method: args.method,
+    status: args.status,
+    ...(args.reason ? { reason: args.reason } : {}),
+    durationMs: Math.max(0, Math.round(args.durationMs)),
+  }));
+}
+
+/**
+ * One line per model registry refresh the cron actually ran (a tick that finds
+ * the snapshot fresh logs nothing). A source error is how a site redesign that
+ * broke the parser gets noticed: the snapshot keeps serving the previous data,
+ * so nothing else fails.
+ */
+export function logModelRegistryRefresh(args: {
+  stored: boolean;
+  reason?: string;
+  bytes: number;
+  models: number;
+  agents: number;
+  artificialAnalysisError?: string;
+  modelsDevError?: string;
+  durationMs: number;
+}): void {
+  const failed = !args.stored || args.artificialAnalysisError || args.modelsDevError;
+  (failed ? console.error : console.log)(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    kind: "model_registry_refresh",
+    stored: args.stored,
+    ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
+    bytes: args.bytes,
+    models: args.models,
+    agents: args.agents,
+    ...(args.artificialAnalysisError ? { artificialAnalysisError: args.artificialAnalysisError } : {}),
+    ...(args.modelsDevError ? { modelsDevError: args.modelsDevError } : {}),
+    durationMs: Math.max(0, Math.round(args.durationMs)),
+  }));
+}
+
+/**
  * One line per cron cleanup that threw. Each cleanup is guarded on its own, so
  * one failing table does not take the others' sweep down with it, and this
  * line is how a sweep that keeps failing gets noticed.

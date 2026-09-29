@@ -177,6 +177,7 @@ import {
 } from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
 import { usageAccountId } from "./usageAccountId";
 import {
   EMPTY_GITHUB_STATS,
@@ -3345,6 +3346,12 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
    * adds its changed quota readings to it, and `getTurnUsageSummary` reads it.
    */
   turnUsageLedger?: TurnUsageLedger | null;
+  /**
+   * The machine-wide model router (shadow mode). When present, the router
+   * actions read it: `getModelRoutes`, `previewModelRoute`,
+   * `getRouterShadowSummary`, `refreshModelRegistry`.
+   */
+  modelRouter?: ModelRouterService | null;
   scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
   collectDatabaseStats?: (range: ResolvedAdeUsageRange, db?: AdeDb | null) => AdeDatabaseUsageStats | null;
   scanUsageLedgers?: (
@@ -4268,6 +4275,19 @@ export function createUsageTrackingService({
       projectRoot: forScope.projectRoot,
     });
   }
+
+  const requireModelRouter = (): ModelRouterService => {
+    const router = dependencies?.modelRouter;
+    if (!router) throw new Error("The model router is not available in this host.");
+    return router;
+  };
+  /** Every route this machine can run, rated from the model registry. */
+  const getModelRoutes = (args: RouterRoutesArgs = {}) => requireModelRouter().routes(args);
+  /** The route the router would pick for one task, without running anything. */
+  const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
+  /** What the shadow router would have changed over the last days. */
+  const getRouterShadowSummary = (args: { days?: number } = {}) => requireModelRouter().shadowSummary(args);
+  const refreshModelRegistry = (args: { force?: boolean } = {}) => requireModelRouter().refreshRegistry(args);
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
     return { costs: cachedCosts, adeCosts: cachedAdeCosts };
@@ -5310,6 +5330,10 @@ export function createUsageTrackingService({
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
+      getModelRoutes,
+      previewModelRoute,
+      getRouterShadowSummary,
+      refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
       getAutoStartState: autoStartScheduler.getAutoStartState,
@@ -5344,6 +5368,10 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
+    getModelRoutes,
+    previewModelRoute,
+    getRouterShadowSummary,
+    refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,
     getAutoStartState: autoStartScheduler.getAutoStartState,

@@ -246,8 +246,11 @@ import {
 } from "./services/account/accountAuthService";
 import {
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
+import { attachSharedModelRouter, createModelRouterService } from "../../desktop/src/main/services/router/modelRouterService";
+import { createModelRegistryStore, createWorkerRegistryFetcher } from "../../desktop/src/main/services/router/modelRegistryStore";
 import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
   adeCliShimDirName,
@@ -1916,6 +1919,38 @@ export async function createAdeRuntime(args: {
       }));
     teardown.push(() => detachUsageResearch());
 
+    // Machine-level as well: the model router in shadow mode. It reads the
+    // daily model registry from the account directory (signed-in accounts
+    // only), this brain's model catalog, and the ledger's quota windows, and
+    // logs the route it would have picked for each subagent. It changes no
+    // turn. `ADE_MODEL_ROUTER_SHADOW=0` turns the watching off.
+    const sharedModelRouter = attachSharedModelRouter({
+      adeDir: resolveMachineAdeLayout().adeDir,
+      modelSource: async (provider) => (await agentChatService?.getAvailableModels({ provider })) ?? [],
+      create: (getAvailableModels) => createModelRouterService({
+        usageDir: turnUsageLedger.store.dir,
+        registry: createModelRegistryStore({
+          dir: path.join(resolveMachineAdeLayout().adeDir, "router"),
+          overrideFile: process.env.ADE_MODEL_REGISTRY_FILE?.trim() || null,
+          logger,
+          fetchSnapshot: createWorkerRegistryFetcher({
+            baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
+            getToken: async () => {
+              const token = await getAccountAccessToken();
+              if (!token) throw new Error("not signed in");
+              return token;
+            },
+          }),
+        }),
+        getAvailableModels,
+        readTurns: (sinceMs) => turnUsageLedger.store.readTurns({ sinceMs }),
+        readQuotaSamples: (sinceMs) => turnUsageLedger.store.readQuotaSamples({ sinceMs }),
+        logger,
+      }),
+    });
+    teardown.push(() => sharedModelRouter.detach());
+    const modelRouter = sharedModelRouter.service;
+
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
@@ -1980,6 +2015,7 @@ export async function createAdeRuntime(args: {
           event,
         }),
         turnUsageLedger,
+        modelRouter,
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -2625,6 +2661,7 @@ export async function createAdeRuntime(args: {
         dependencies: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
           turnUsageLedger,
+          modelRouter,
         },
       }),
       {

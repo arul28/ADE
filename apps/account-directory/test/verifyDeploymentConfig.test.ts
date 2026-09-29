@@ -26,6 +26,7 @@ const completeVars = {
   USAGE_RESEARCH_DAILY_GLOBAL_LIMIT: "20000",
   USAGE_RESEARCH_RETENTION_DAYS: "180",
   USAGE_RESEARCH_STORAGE_CEILING_MB: "4096",
+  MODEL_REGISTRY_REFRESH: "1",
 };
 
 const relayBinding = [{ binding: "ACTIVITY_RELAY", service: "ade-push-relay" }];
@@ -160,6 +161,7 @@ describe("account directory deployment preflight", () => {
       "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT",
       "USAGE_RESEARCH_RETENTION_DAYS",
       "USAGE_RESEARCH_STORAGE_CEILING_MB",
+      "MODEL_REGISTRY_REFRESH",
     ].map((name) => expect.stringContaining(`${name} is not set for the ${environment} environment`))));
   });
 
