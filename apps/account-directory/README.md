@@ -560,7 +560,8 @@ ADE machines. ADE's model router reads it to rate every route (harness × model
 (`https://artificialanalysis.ai`) has no API for this data. Every
 `/models/<slug>` page embeds all model records in its React Server Components
 payload, so the refresh reads one model page and `/agents/coding-agents`: two
-page fetches a day, never more, with the user agent `ADE model registry
+page fetches on a successful refresh, retried with a bounded backoff only
+after a failure, with the user agent `ADE model registry
 (+https://ade-app.dev)`. Anything that shows the data carries
 `MODEL_REGISTRY_AA_ATTRIBUTION` ("Source: Artificial Analysis
 (artificialanalysis.ai)"). Prices come from `https://models.dev/api.json`.
@@ -573,8 +574,11 @@ collection at once. Serving keeps working from the stored snapshots.
 indexed read) and refreshes when it is 24 hours old. A one-row claim
 (`model_registry_refresh_claim`) makes sure two ticks never refresh at once:
 the upsert that takes it only overwrites a claim that has run out (15
-minutes). A refresh that stores nothing keeps the claim for 10 more minutes,
-which is the retry wait; one that stores a snapshot releases it.
+minutes). A refresh that stores nothing keeps the claim for a growing retry
+wait — ten minutes, doubling with each consecutive failure up to the 24-hour
+interval — so a source that refuses the Worker is not refetched every ten
+minutes for as long as the failure lasts. A refresh that stores a snapshot
+releases the claim and resets the failure count (`failures`).
 
 **Failure isolation.** A source that fails (an HTTP error, a model page that
 parses fewer than 100 records, no agent rows, JSON that does not parse, no

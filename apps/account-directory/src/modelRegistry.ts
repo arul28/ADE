@@ -18,7 +18,10 @@ import { sha256Hex } from "./sinkUtils";
  * how fast it runs, served to signed-in ADE machines at `GET /router/registry`
  * for the model router.
  *
- * Two public sources, read by the minute cron at most once a day:
+ * Two public sources, read by the minute cron, at most once a day while it
+ * keeps storing a snapshot. A refresh that stores nothing retries after a
+ * growing backoff (ten minutes, doubling up to the daily interval), so a
+ * persistent source failure is bounded rather than re-fetching every minute.
  *
  * - Artificial Analysis. Any `/models/<slug>` page embeds every model record
  *   (about 684) in its React Server Components payload, and
@@ -556,11 +559,13 @@ export type ModelRegistryCronResult =
 /**
  * The cron's entry point, called every minute. Refreshes only when the newest
  * snapshot is a day old, never while another tick holds the claim, and not
- * again for `MODEL_REGISTRY_RETRY_AFTER_MS` after a refresh that stored
- * nothing. A tick that has nothing to do costs one indexed read.
+ * again for a growing retry wait after a refresh that stored nothing (ten
+ * minutes, doubling up to the daily interval). A tick that has nothing to do
+ * costs one indexed read.
  *
- * The claim row doubles as the retry wait: a failed refresh leaves its claim
- * in place until the wait is over, a stored one releases it at once.
+ * The claim row doubles as the retry wait: a failed refresh leaves its claim in
+ * place until the wait is over, a stored one releases it at once and resets the
+ * failure count.
  */
 export async function runModelRegistryCron(
   env: ModelRegistryEnv,
@@ -588,6 +593,10 @@ export async function runModelRegistryCron(
     .bind(nowMs, nowMs + MODEL_REGISTRY_CLAIM_TTL_MS, nowMs)
     .run();
   if (!claim.meta.changes) return { ran: false, reason: "claimed" };
+  const claimRow = await db
+    .prepare("select failures from model_registry_refresh_claim where id = 1")
+    .first<{ failures: number }>();
+  const priorFailures = Math.max(0, Number(claimRow?.failures ?? 0));
 
   const startedAt = Date.now();
   let result: ModelRegistryRefreshResult;
@@ -596,10 +605,16 @@ export async function runModelRegistryCron(
   } catch (error) {
     result = { stored: false, reason: `error: ${errorText(error)}` };
   }
-  // Release, or hold until the retry wait is over. Only this tick's claim.
+  // Release, or hold until the backoff is over. Only this tick's claim. The
+  // wait doubles with each consecutive failure, capped at the daily interval,
+  // so a source that blocks the Worker is not refetched every ten minutes
+  // forever. A stored snapshot clears the count.
+  const retryWaitMs = result.stored
+    ? 0
+    : Math.min(MODEL_REGISTRY_REFRESH_INTERVAL_MS, MODEL_REGISTRY_RETRY_AFTER_MS * 2 ** priorFailures);
   await db
-    .prepare("update model_registry_refresh_claim set expires_at = ? where id = 1 and claimed_at = ?")
-    .bind(result.stored ? now() : now() + MODEL_REGISTRY_RETRY_AFTER_MS, nowMs)
+    .prepare("update model_registry_refresh_claim set expires_at = ?, failures = ? where id = 1 and claimed_at = ?")
+    .bind(result.stored ? now() : now() + retryWaitMs, result.stored ? 0 : priorFailures + 1, nowMs)
     .run();
   logModelRegistryRefresh({
     stored: result.stored,

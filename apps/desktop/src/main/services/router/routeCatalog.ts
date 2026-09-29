@@ -123,7 +123,10 @@ export function routeHarnessOf(provider: string): RouteHarness | null {
 
 /** Who bills a route, from the harness and the model id's gateway segment. */
 export function routeBillingFor(harness: RouteHarness, modelId: string): RouteBilling {
-  if (/(^|[-/])free($|[-/])/.test(modelId)) return { kind: "free" };
+  // Only a trailing `-free` (or a bare `free` id) is a free route — the same
+  // suffix `registryFamilyForModelId` strips. A `free` segment in the middle of
+  // a name must not override plan/metered billing.
+  if (/(^|[-/])free$/.test(modelId)) return { kind: "free" };
   if (harness === "claude" || harness === "codex" || harness === "cursor") return { kind: "plan", plan: harness };
   const gateway = modelId.split("/")[1] ?? "";
   if (gateway === "opencode-go") return { kind: "plan", plan: "opencode-go" };

@@ -126,7 +126,7 @@ export class FakeD1Database {
   /** `model_registry_snapshots`, in insert order; `id` is the rowid SQLite would assign. */
   modelRegistrySnapshots: StoredModelRegistrySnapshot[] = [];
   /** The single `model_registry_refresh_claim` row, or null before the first claim. */
-  modelRegistryClaim: { claimed_at: number; expires_at: number } | null = null;
+  modelRegistryClaim: { claimed_at: number; expires_at: number; failures: number } | null = null;
   /** `usage_research_daily`, keyed `${install_id}|${day}` — the table's primary key. */
   usageResearchRows = new Map<string, StoredUsageResearchRow>();
   /** `usage_research_days`: the fleet write budget, one row per UTC day of receipt. */
@@ -428,15 +428,23 @@ export class FakeD1Database {
       const [claimedAt, expiresAt, nowMs] = values;
       const guarded = /where\s+model_registry_refresh_claim\.expires_at\s*<=\s*\?/.test(normalized);
       if (this.modelRegistryClaim && guarded && this.modelRegistryClaim.expires_at > Number(nowMs)) return 0;
-      this.modelRegistryClaim = { claimed_at: Number(claimedAt), expires_at: Number(expiresAt) };
+      this.modelRegistryClaim = {
+        claimed_at: Number(claimedAt),
+        expires_at: Number(expiresAt),
+        failures: this.modelRegistryClaim?.failures ?? 0,
+      };
       return 1;
     }
     if (normalized.includes("update model_registry_refresh_claim")) {
-      const [expiresAt, claimedAt] = values;
+      const [expiresAt, failures, claimedAt] = values;
       if (!this.modelRegistryClaim) return 0;
       const guarded = /claimed_at\s*=\s*\?/.test(normalized);
       if (guarded && this.modelRegistryClaim.claimed_at !== Number(claimedAt)) return 0;
-      this.modelRegistryClaim = { ...this.modelRegistryClaim, expires_at: Number(expiresAt) };
+      this.modelRegistryClaim = {
+        ...this.modelRegistryClaim,
+        expires_at: Number(expiresAt),
+        failures: Number(failures),
+      };
       return 1;
     }
     return null;
@@ -465,6 +473,9 @@ export class FakeD1Database {
         ? this.modelRegistrySnapshots.find((snapshot) => snapshot.id === Number(values[0]))
         : this.modelRegistrySnapshots.at(-1);
       return (row ? { ...row } : null) as T | null;
+    }
+    if (normalized.includes("from model_registry_refresh_claim")) {
+      return (this.modelRegistryClaim ? { failures: this.modelRegistryClaim.failures } : null) as T | null;
     }
     if (normalized.includes("from usage_research_daily")) {
       const [installId, day] = values;

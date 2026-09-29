@@ -20,10 +20,13 @@ create table if not exists model_registry_snapshots (
 
 -- One row: who holds the refresh, and until when. The cron claims it with an
 -- upsert that only overwrites an expired claim, so two ticks never refresh at
--- once. A refresh that stored nothing keeps the claim for ten more minutes,
--- which is the retry wait; a stored one releases it.
+-- once. A refresh that stored nothing keeps the claim for a growing backoff
+-- (`failures` counts consecutive failures; the wait doubles each time up to the
+-- daily interval), which bounds how often a persistent failure re-fetches the
+-- sources; a stored one releases it and resets `failures`.
 create table if not exists model_registry_refresh_claim (
   id integer primary key check (id = 1),
   claimed_at integer not null,
-  expires_at integer not null
+  expires_at integer not null,
+  failures integer not null default 0
 );

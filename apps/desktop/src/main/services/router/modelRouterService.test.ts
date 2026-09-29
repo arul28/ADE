@@ -188,6 +188,7 @@ describe("route catalog", () => {
     ["opencode", "opencode/opencode-go/glm-5", { kind: "plan", plan: "opencode-go" }],
     ["opencode", "opencode/opencode/glm-5", { kind: "metered", channel: "opencode-zen" }],
     ["opencode", "opencode/big-pickle-free", { kind: "free" }],
+    ["claude", "claude-free-tier-5", { kind: "plan", plan: "claude" }],
   ] as const)("classifies %s/%s billing as %o", (harness, modelId, billing) => {
     expect(routeBillingFor(harness, modelId)).toEqual(billing);
   });

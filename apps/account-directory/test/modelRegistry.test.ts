@@ -343,6 +343,28 @@ describe("runModelRegistryCron", () => {
       .toMatchObject({ ran: true, result: { stored: true } });
   });
 
+  it("backs the retry wait off after repeat failures and resets it on success", async () => {
+    quiet();
+    const env = makeEnv();
+    const fail = () => sources({ models: 500 }).fetchImpl;
+
+    // First failure: the retry waits ten minutes.
+    await runModelRegistryCron(env, { now: () => NOW, fetchImpl: fail() });
+    // Second failure at +10m: the wait doubles, so the next attempt is +30m.
+    await runModelRegistryCron(env, { now: () => NOW + 10 * 60_000, fetchImpl: fail() });
+
+    const early = sources();
+    expect(await runModelRegistryCron(env, { now: () => NOW + 25 * 60_000, fetchImpl: early.fetchImpl }))
+      .toEqual({ ran: false, reason: "claimed" });
+    expect(early.calls).toEqual([]);
+    expect(env.DB.modelRegistryClaim?.failures).toBe(2);
+
+    // The third attempt lands at +30m, stores a snapshot, and clears the count.
+    expect(await runModelRegistryCron(env, { now: () => NOW + 30 * 60_000, fetchImpl: sources().fetchImpl }))
+      .toMatchObject({ ran: true, result: { stored: true } });
+    expect(env.DB.modelRegistryClaim?.failures).toBe(0);
+  });
+
   it("fetches nothing when MODEL_REGISTRY_REFRESH is 0", async () => {
     const env = makeEnv({ MODEL_REGISTRY_REFRESH: "0" });
     const off = sources();

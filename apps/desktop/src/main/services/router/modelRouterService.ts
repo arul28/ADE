@@ -77,7 +77,6 @@ export type RouterShadowDecisionRow = {
   taskId: string;
   kind: RouterTaskKind;
   agentType: string | null;
-  description: string;
   reference: DecisionSummary | null;
   sameHarness: DecisionSummary | null;
   anyHarness: DecisionSummary | null;
@@ -164,8 +163,17 @@ export function createModelRouterService(args: {
   };
 
   const loadCatalog = async (): Promise<ModelRoute[]> => {
-    void args.registry.refresh();
-    const snapshot = args.registry.getSnapshot();
+    let snapshot = args.registry.getSnapshot();
+    if (!snapshot) {
+      // No cached registry yet: fetch once so the first decisions are not all
+      // "not in the catalog". The decision runs in the background, so this
+      // never blocks the chat; once a snapshot is cached, later calls refresh
+      // passively and read the cache.
+      await args.registry.refresh();
+      snapshot = args.registry.getSnapshot();
+    } else {
+      void args.registry.refresh();
+    }
     if (!snapshot) return [];
     const fresh = catalog && now() - catalog.atMs < CATALOG_TTL_MS && catalog.generatedAt === snapshot.generatedAt;
     if (fresh) return catalog!.routes;
@@ -271,7 +279,6 @@ export function createModelRouterService(args: {
           taskId: event.taskId,
           kind: pick.kind,
           agentType: event.agentType ?? null,
-          description: (event.description ?? "").slice(0, 240),
           reference: summarize(pick.reference),
           sameHarness: summarize(pick.sameHarness),
           anyHarness: summarize(pick.anyHarness),
@@ -476,6 +483,10 @@ export function attachSharedModelRouter(args: {
     detach: () => {
       const index = current.sources.lastIndexOf(args.modelSource);
       if (index >= 0) current.sources.splice(index, 1);
+      // The router and its registry fetcher close over the first scope's
+      // directory configuration, so leave nothing behind once every scope has
+      // detached; the next scope builds a fresh one against its own config.
+      if (current.sources.length === 0) sharedRouters.delete(key);
     },
   };
 }
