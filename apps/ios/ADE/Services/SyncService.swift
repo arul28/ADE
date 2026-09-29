@@ -4015,6 +4015,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
+  /// The machine the project's CTO lives on (account setting
+  /// `cto.homeMachine`), as a fleet key. Nil = the primary machine.
+  @Published var ctoHomeMachineKey: String?
+  /// The home machine's name, also when the phone cannot reach it.
+  @Published var ctoHomeMachineName: String?
   /// Short, route-specific progress shown while a fresh account machine is
   /// being adopted. This is intentionally separate from the general reconnect
   /// state so background reconnects do not overwrite the guided account flow.
@@ -9850,7 +9855,22 @@ final class SyncService: ObservableObject {
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
-    let summary = try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
+    let target = ctoCommandTarget()
+    let summary = try await sendDecodableCommand(
+      action: "cto.ensureSession",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: AgentChatSessionSummary.self
+    )
+    if let repo = target.repo {
+      // The CTO thread lives on its home machine: reads, sends, stream go there.
+      setRemoteMachineChatScope(
+        sessionId: summary.sessionId,
+        machineKey: repo.machineKey,
+        projectId: repo.projectId,
+        projectRootPath: repo.rootPath
+      )
+    }
     // Keep the identity marker available to the local Work/activity guards in
     // case the CRR session row arrives before the next roster snapshot.
     cacheChatSummary(summary)
@@ -9862,7 +9882,14 @@ final class SyncService: ObservableObject {
   func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
     var args: [String: Any] = [:]
     if let recentLimit { args["recentLimit"] = recentLimit }
-    return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
+    let target = ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getState",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoSnapshot.self
+    )
   }
 
   /// Whether the CTO thread is waiting on the user.
@@ -9872,7 +9899,13 @@ final class SyncService: ObservableObject {
   /// talking to an older brain simply never lights the dot instead of erroring.
   /// Callers should check `supportsRemoteAction("cto.getAttention")` first.
   func fetchCtoAttention() async throws -> CtoAttention {
-    try await sendDecodableCommand(action: "cto.getAttention", as: CtoAttention.self)
+    let target = ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getAttention",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoAttention.self
+    )
   }
 
   /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
@@ -9880,7 +9913,13 @@ final class SyncService: ObservableObject {
   /// with a command error, which callers surface as a quiet "not available"
   /// row rather than an error card.
   func fetchCtoMemory() async throws -> CtoMemory {
-    try await sendDecodableCommand(action: "cto.getMemory", as: CtoMemory.self)
+    let target = ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getMemory",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
   }
 
   func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
@@ -10243,9 +10282,12 @@ final class SyncService: ObservableObject {
 
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
+    let target = ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
       args: ["patch": patchArgs],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
       as: CtoSnapshot.self
     )
   }
@@ -11644,6 +11686,8 @@ final class SyncService: ObservableObject {
   }
 
   private func ensureFilesWorkspaceAvailable(workspaceId: String) throws {
+    // A lane of another machine is that machine's workspace, not in this DB.
+    if isWorkRemoteLaneId(workspaceId) { return }
     guard database.listWorkspaces().contains(where: { $0.id == workspaceId }) else {
       throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
     }
@@ -22332,6 +22376,11 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     targetProjectId: String? = nil
   ) async throws -> Any {
+    // Files of a lane on another machine: that machine, in the project that
+    // holds the lane (the workspace id is the lane id).
+    if let route = try remoteWorkspaceFileRoute(args: args) {
+      return try await route.connection.fileRequest(action: action, args: route.args, projectId: route.projectId)
+    }
     // A file read made on behalf of a chat on another machine (proof
     // artifacts) goes to that machine. See `SyncFleetTaskRoute`.
     if let remote = SyncFleetTaskRoute.chat,
@@ -22358,7 +22407,30 @@ final class SyncService: ObservableObject {
     return raw
   }
 
+  /// The route of a file request whose workspace is a lane of another machine.
+  private func remoteWorkspaceFileRoute(
+    args: [String: Any]
+  ) throws -> (connection: MachineConnection, projectId: String, args: [String: Any])? {
+    guard let raw = args["workspaceId"] as? String,
+          let remote = workParseRemoteLaneId(raw),
+          remote.machineKey != focusedMachineKey
+    else { return nil }
+    guard let repo = remoteLaneRepo(machineKey: remote.machineKey) else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This lane's machine no longer lists this project."])
+    }
+    guard let route = try fleetRoute(machineKey: remote.machineKey, projectId: repo.projectId, rootPath: repo.rootPath) else {
+      return nil
+    }
+    var plainArgs = args
+    plainArgs["workspaceId"] = remote.laneId
+    return (route.connection, repo.projectId, plainArgs)
+  }
+
   private func sendFileRequest(action: String, args: [String: Any]) async throws -> Any {
+    // Another machine's lane: live only, never queued for the focused machine.
+    if (args["workspaceId"] as? String).map(isWorkRemoteLaneId) == true {
+      return try await performFileRequest(action: action, args: args)
+    }
     if canSendLiveRequests() {
       return try await performFileRequest(action: action, args: args)
     }
@@ -25058,6 +25130,66 @@ extension SyncService {
     let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
     if let snapshots = payload.snapshots { return snapshots }
     return payload.lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
+  }
+}
+
+// MARK: - CTO home machine
+
+extension SyncService {
+  /// Git origin of the focused project, the key of its account repo settings.
+  var activeProjectGitOriginUrl: String? {
+    guard let activeProject else { return nil }
+    if let origin = nonEmptyTrimmed(rosterProject(for: activeProject)?.repoOriginUrl) { return origin }
+    guard let owner = nonEmptyTrimmed(activeProject.repoOwner),
+          let name = nonEmptyTrimmed(activeProject.repoName) else { return nil }
+    return "https://github.com/\(owner)/\(name)"
+  }
+
+  /// Where CTO commands go: the home machine's checkout of this project when
+  /// it is another live machine, else the primary machine (nil target).
+  func ctoCommandTarget() -> (projectId: String?, rootPath: String?, repo: WorkRemoteMachineRepo?) {
+    guard let key = ctoHomeMachineKey,
+          key != focusedMachineKey,
+          machineFleet?.machine(for: key)?.state == .live,
+          let repo = remoteLaneRepo(machineKey: key)
+    else { return (nil, nil, nil) }
+    return (syncFleetMarkedProjectId(machineKey: key, projectId: repo.projectId), repo.rootPath, repo)
+  }
+
+  /// Reads the project's CTO home machine from the account settings (through
+  /// the primary machine). An older brain leaves the CTO on the primary one.
+  func refreshCtoHomeMachine() async {
+    guard supportsRemoteAction("cto.getHomeMachine"), let origin = activeProjectGitOriginUrl else { return }
+    guard let raw = try? await sendCommand(action: "cto.getHomeMachine", args: ["gitOriginUrl": origin]),
+          let result = raw as? [String: Any],
+          result["available"] as? Bool == true
+    else { return }
+    let record = result["value"] as? [String: Any]
+    let deviceId = (record?["deviceId"] as? String).flatMap(nonEmptyTrimmed)
+    let key = deviceId.map { "machine:\($0.lowercased())" }
+    let nextKey = key == focusedMachineKey ? nil : key
+    if ctoHomeMachineKey != nextKey { ctoHomeMachineKey = nextKey }
+    let name = (record?["name"] as? String).flatMap(nonEmptyTrimmed)
+    if ctoHomeMachineName != name { ctoHomeMachineName = name }
+  }
+
+  /// Makes `machineKey` (nil = the primary machine) the project's CTO home
+  /// for every device on the account.
+  func setCtoHomeMachine(machineKey: String?, name: String) async throws {
+    guard let origin = activeProjectGitOriginUrl else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This project has no git origin, so its CTO home can't be shared."])
+    }
+    let deviceId = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:))
+      ?? nonEmptyTrimmed(activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId)
+    guard let deviceId else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine has no account identity yet."])
+    }
+    _ = try await sendCommand(
+      action: "cto.setHomeMachine",
+      args: ["gitOriginUrl": origin, "record": ["deviceId": deviceId, "name": name]]
+    )
+    ctoHomeMachineKey = machineKey == focusedMachineKey ? nil : machineKey
+    ctoHomeMachineName = name
   }
 }
 

@@ -20,6 +20,7 @@ import {
   type SyncTailnetDiscoveryStatus,
   type SyncTransferBlocker,
   type SyncTransferReadiness,
+  type SyncFileRequest,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -63,6 +64,7 @@ import {
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
+  runSyncFileServiceRequest,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
@@ -1928,6 +1930,11 @@ export function createSyncService(args: SyncServiceArgs) {
       context?: Parameters<SyncRemoteCommandService["execute"]>[1],
     ): Promise<unknown> {
       return await remoteCommandService.execute(payload, context);
+    },
+
+    /** A `file_request` routed here from the brain's sync host. */
+    async executeRemoteFileRequest(payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown> {
+      return await runSyncFileServiceRequest(args.fileService, payload, context);
     },
 
     getDeviceRegistryService() {

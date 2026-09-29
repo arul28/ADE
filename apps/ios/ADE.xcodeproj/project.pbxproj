@@ -20,6 +20,7 @@
 		EB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB000000000000000000UI01 /* WorkChatScrollBenchUITests.swift */; };
 		DCF01D0000000000000004 /* WorkComposerFoldUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCF01D0000000000000003 /* WorkComposerFoldUITests.swift */; };
 		E20000000000000000000091 /* LinearBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000091 /* LinearBrand.swift */; };
+		E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */; };
 		E20000000000000000000F31 /* SettingsMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F31 /* SettingsMachines.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
@@ -446,6 +447,7 @@
 		CA1A00000000000000000002 /* ChatLaunchStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchStore.swift; path = ADE/Services/ChatLaunchStore.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000001 /* ChatLaunchModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchModels.swift; path = ADE/Models/ChatLaunchModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000091 /* LinearBrand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearBrand.swift; path = ADE/Views/Linear/LinearBrand.swift; sourceTree = "<group>"; };
+		D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatMachinePicker.swift; path = ADE/Views/Work/WorkNewChatMachinePicker.swift; sourceTree = "<group>"; };
 		D20000000000000000000F31 /* SettingsMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachines.swift; path = ADE/Views/Settings/SettingsMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
@@ -1116,6 +1118,7 @@
 				D10000000000000000000F0D /* WorkLaneToolChips.swift */,
 				D10000000000000000000F0E /* WorkToolsSheet.swift */,
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
+				D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D30000000000000000000042 /* WorkUsageLimitsModule.swift */,
 				CA1A00000000000000000004 /* WorkChatLaunchViews.swift */,
@@ -2002,6 +2005,7 @@
 				E10000000000000000000F0D /* WorkLaneToolChips.swift in Sources */,
 				E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */,
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
+				E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */,
 				CA1A00000000000000000014 /* WorkChatLaunchViews.swift in Sources */,

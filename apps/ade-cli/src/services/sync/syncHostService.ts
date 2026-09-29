@@ -745,6 +745,65 @@ export function assertFileRequestWorkspaceVisibleToPeer(args: {
 }
 
 /**
+ * Runs one `file_request` against a project's file service: every action but
+ * the artifact reads, which belong to the sync host's own project. The host
+ * uses it for its project; the brain uses it for a request that names another
+ * open project (a phone reading a lane of this machine's other checkout).
+ */
+export async function runSyncFileServiceRequest(
+  fileService: ReturnType<typeof createFileService>,
+  payload: SyncFileRequest,
+  opts: { isMobile: boolean },
+): Promise<unknown> {
+  if (opts.isMobile) {
+    const workspaceId = syncFileRequestWorkspaceId(payload);
+    assertFileRequestWorkspaceVisibleToPeer({
+      isMobile: true,
+      workspace: workspaceId
+        ? fileService.listWorkspaces({ includeArchived: true }).find((entry) => entry.id === workspaceId) ?? null
+        : null,
+    });
+  }
+  switch (payload.action) {
+    case "listWorkspaces":
+      return visibleFileWorkspacesForPeer(fileService.listWorkspaces(payload.args ?? {}), { isMobile: opts.isMobile });
+    case "listTree":
+      return await fileService.listTree(payload.args);
+    case "listTreeChildren":
+      return await fileService.listTreeChildren(payload.args);
+    case "refreshGitDecorations":
+      return await fileService.refreshGitDecorations(payload.args);
+    case "readFile":
+      return fileContentToBlob(payload.args.path, await fileService.readFile(payload.args));
+    case "readFileRange":
+      return await fileService.readFileRange(payload.args);
+    case "gitBlame":
+      return await fileService.blame(payload.args);
+    case "writeText":
+      fileService.writeWorkspaceText(payload.args);
+      return { ok: true };
+    case "createFile":
+      fileService.createFile(payload.args);
+      return { ok: true };
+    case "createDirectory":
+      fileService.createDirectory(payload.args);
+      return { ok: true };
+    case "rename":
+      fileService.rename(payload.args);
+      return { ok: true };
+    case "deletePath":
+      fileService.deletePath(payload.args);
+      return { ok: true };
+    case "quickOpen":
+      return await fileService.quickOpen(payload.args);
+    case "searchText":
+      return await fileService.searchText(payload.args);
+    default:
+      throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
+  }
+}
+
+/**
  * Concurrency model for the per-peer message queue.
  *
  * Everything used to run on one serialized chain, so a cold search index build
@@ -1580,6 +1639,8 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
  */
 export type SyncHostRemoteCommandExecutor = Pick<SyncRemoteCommandService, "execute"> & {
   releaseStreamConnection?(connectionId: string): void;
+  /** Runs a `file_request` in the (open) project it names. */
+  executeFileRequest?(projectId: string, payload: SyncFileRequest, context: { isMobile: boolean }): Promise<unknown>;
 };
 
 type SyncHostProjectScopeResolution =
@@ -6448,67 +6509,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | { ok: true } = { ok: true };
 
       switch (payload.action) {
-        case "listWorkspaces":
-          result = visibleFileWorkspacesForPeer(args.fileService.listWorkspaces(payload.args ?? {}), {
-            isMobile: isMobilePeer(peer),
-          });
-          break;
-        case "listTree":
-          result = await args.fileService.listTree(payload.args);
-          break;
-        case "listTreeChildren":
-          result = await args.fileService.listTreeChildren(payload.args);
-          break;
-        case "refreshGitDecorations":
-          result = await args.fileService.refreshGitDecorations(payload.args);
-          break;
-        case "readFile":
-          result = fileContentToBlob(payload.args.path, await args.fileService.readFile(payload.args));
-          break;
-        case "readFileRange":
-          result = await args.fileService.readFileRange(payload.args);
-          break;
-        case "gitBlame":
-          result = await args.fileService.blame(payload.args);
-          break;
-        case "writeText":
-          args.fileService.writeWorkspaceText(payload.args);
-          result = { ok: true };
-          break;
-        case "createFile":
-          args.fileService.createFile(payload.args);
-          result = { ok: true };
-          break;
-        case "createDirectory":
-          args.fileService.createDirectory(payload.args);
-          result = { ok: true };
-          break;
-        case "rename":
-          args.fileService.rename(payload.args);
-          result = { ok: true };
-          break;
-        case "deletePath":
-          args.fileService.deletePath(payload.args);
-          result = { ok: true };
-          break;
         case "watchChanges":
         case "stopWatching":
           throw new Error(`Unsupported file action: ${payload.action}`);
-        case "quickOpen":
-          result = await args.fileService.quickOpen(payload.args);
-          break;
-        case "searchText":
-          result = await args.fileService.searchText(payload.args);
-          break;
-        case "readArtifact": {
+        case "readArtifact":
           result = await readArtifactBlob(payload.args);
           break;
-        }
         case "readArtifactRange":
           result = await readArtifactRange(payload.args);
           break;
         default:
-          throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
+          result = await runSyncFileServiceRequest(args.fileService, payload, { isMobile: isMobilePeer(peer) }) as typeof result;
       }
 
       respond({
@@ -6516,6 +6527,34 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         action: payload.action,
         result,
       });
+    } catch (error) {
+      respond({
+        ok: false,
+        action: payload.action,
+        error: {
+          code: "file_request_failed",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  async function handleRoutedFileRequest(
+    peer: PeerState,
+    requestId: string | null,
+    projectId: string,
+    payload: SyncFileRequest,
+  ): Promise<void> {
+    const action = toOptionalString(payload?.action) ?? "unknown";
+    const respond = (response: SyncFileResponsePayload) => {
+      sendRequired(peer, "file_response", response, requestId, { action: `files.${action}` });
+    };
+    try {
+      if (action === "readArtifact" || action === "readArtifactRange" || action === "watchChanges" || action === "stopWatching") {
+        throw new Error(`Unsupported file action for another project: ${action}`);
+      }
+      const result = await args.remoteCommandExecutor!.executeFileRequest!(projectId, payload, { isMobile: isMobilePeer(peer) });
+      respond({ ok: true, action: payload.action, result: result as SyncFileResponsePayload["result"] });
     } catch (error) {
       respond({
         ok: false,
@@ -8139,6 +8178,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+    if (
+      !projectScope.ok
+      && projectScope.code === "project_mismatch"
+      && envelope.type === "file_request"
+      && projectScope.receivedProjectId
+      && args.remoteCommandExecutor?.executeFileRequest
+    ) {
+      // A phone reading a lane of this machine's other open project.
+      await handleRoutedFileRequest(peer, envelope.requestId, projectScope.receivedProjectId, envelope.payload as SyncFileRequest);
+      return;
+    }
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       return;

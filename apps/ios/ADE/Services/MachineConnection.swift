@@ -422,12 +422,12 @@ final class MachineConnection {
   // MARK: - Requests
 
   @discardableResult
-  private func send(type: String, requestId: String?, payload: Any) -> Bool {
+  private func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
     guard let socket else { return false }
     guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
       requestId: requestId,
-      projectId: nil,
+      projectId: projectId,
       payload: payload,
       compressionCodec: compressionCodec ?? .gzip,
       compressionThresholdBytes: compressionThresholdBytes,
@@ -452,6 +452,7 @@ final class MachineConnection {
     type: String,
     payload: [String: Any],
     requestId: String = UUID().uuidString,
+    projectId: String? = nil,
     timeoutNanoseconds: UInt64,
     timeoutMessage: String
   ) async throws -> Any {
@@ -465,7 +466,7 @@ final class MachineConnection {
         self?.resolve(requestId: requestId, result: .failure(SyncRequestTimeout.error(message: timeoutMessage)))
       }
       pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask)
-      if !send(type: type, requestId: requestId, payload: payload) {
+      if !send(type: type, requestId: requestId, payload: payload, projectId: projectId) {
         resolve(requestId: requestId, result: .failure(NSError(
           domain: "ADE",
           code: 14,
@@ -507,11 +508,14 @@ final class MachineConnection {
     return try unwrapSyncCommandResponse(raw)
   }
 
-  /// A `file_request` (artifact reads) on this machine.
-  func fileRequest(action: String, args: [String: Any]) async throws -> Any {
+  /// A `file_request` on this machine. `projectId` names the project whose
+  /// files are read (a lane's checkout); nil reads the machine's sync project
+  /// (artifacts of its chats).
+  func fileRequest(action: String, args: [String: Any], projectId: String? = nil) async throws -> Any {
     let raw = try await request(
       type: "file_request",
       payload: ["action": action, "args": args],
+      projectId: projectId,
       timeoutNanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds,
       timeoutMessage: SyncRequestTimeout.message
     )

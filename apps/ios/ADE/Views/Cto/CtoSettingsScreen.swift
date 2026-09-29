@@ -5,7 +5,10 @@ import SwiftUI
 /// as a sheet from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
+  @State private var homeMachineError: String?
+  @State private var homeMachineSaving = false
 
   let onSnapshotChanged: (CtoSnapshot) -> Void
 
@@ -46,6 +49,8 @@ struct CtoSettingsScreen: View {
               ADECardSkeleton(rows: 3)
             }
           }
+
+          homeMachineSection
 
           if let snapshot {
             identitySection(snapshot)
@@ -121,6 +126,75 @@ struct CtoSettingsScreen: View {
   // MARK: - Identity
 
   @ViewBuilder
+  // MARK: - Home machine
+
+  /// The machine the project's one CTO lives on, for every device on the
+  /// account (desktop "CTO home"). Machines with a checkout of this project.
+  private var homeMachineSection: some View {
+    let options = workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
+    let currentName = syncService.ctoHomeMachineKey == nil
+      ? options.first?.name ?? "Primary machine"
+      : syncService.ctoHomeMachineName ?? options.first { $0.machineKey == syncService.ctoHomeMachineKey }?.name ?? "Another machine"
+    return VStack(alignment: .leading, spacing: 6) {
+      SectionHeader(title: "Home machine")
+      Menu {
+        ForEach(options) { option in
+          Button {
+            Task { await chooseHomeMachine(option) }
+          } label: {
+            Label(option.isLive ? option.name : "\(option.name) (not connected)", systemImage: option.symbol)
+          }
+        }
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: "desktopcomputer")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.ctoAccent)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(currentName)
+              .font(.system(size: 13.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("The CTO's memory and thread live here, for every device.")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textMuted)
+          }
+          Spacer(minLength: 8)
+          if homeMachineSaving {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        .padding(.vertical, 8)
+      }
+      .disabled(homeMachineSaving || !syncService.supportsRemoteAction("cto.setHomeMachine"))
+      if let homeMachineError {
+        Text(homeMachineError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+      }
+    }
+  }
+
+  @MainActor
+  private func chooseHomeMachine(_ option: WorkNewChatMachineOption) async {
+    homeMachineError = nil
+    homeMachineSaving = true
+    defer { homeMachineSaving = false }
+    if let key = option.machineKey, !option.isLive {
+      machineFleet.keepLive(machineKey: key)
+    }
+    do {
+      try await syncService.setCtoHomeMachine(machineKey: option.machineKey, name: option.name)
+      await reload()
+      ADEHaptics.light()
+    } catch {
+      homeMachineError = error.localizedDescription
+    }
+  }
+
   private func identitySection(_ snapshot: CtoSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Identity")
