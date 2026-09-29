@@ -259,6 +259,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { name: string, value: string }",
       example: "ade secrets set STRIPE_API_KEY --value sk_test_...",
     },
+    pullFromAccount: {
+      description: "Take every account-stored secret this repository has in the account vault onto this machine. Returns how many were added and updated; values are never returned. A secret kept for this device only is never replaced.",
+      input: "no input",
+      example: "ade secrets pull --text",
+    },
     delete: {
       description: "Delete one ADE project secret.",
       input: "object { name: string, confirmName: string }",

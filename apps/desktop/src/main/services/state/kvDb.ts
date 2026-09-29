@@ -531,9 +531,169 @@ export function rebuildTableInTransaction(
   }
 }
 
+/**
+ * A top-level clause of a CREATE TABLE body, with its offsets in that body.
+ */
+type SqlClauseSpan = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+/**
+ * `text` with every quoted region replaced by NUL, keeping the length.
+ *
+ * Every schema rewrite below runs its regexes against the masked copy and then
+ * slices the ORIGINAL text with the offsets it found, so a keyword or comma
+ * that lives inside a default (`default 'unique, not really'`) or a quoted
+ * identifier can neither be matched nor split. SQLite has four quoting styles:
+ * `'…'`, `"…"`, `` `…` `` and `[…]`. A doubled `'`, `"` or `` ` `` is an
+ * escaped terminator, not the end of the region; `[…]` does not double.
+ */
+function maskSqlQuotedText(text: string): string {
+  const chars = text.split("");
+  let quoteEnd: string | null = null;
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index]!;
+    if (quoteEnd !== null) {
+      chars[index] = "\u0000";
+      if (char === quoteEnd) {
+        if (chars[index + 1] === quoteEnd && quoteEnd !== "]") {
+          chars[index + 1] = "\u0000";
+          index += 1;
+        } else {
+          quoteEnd = null;
+        }
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quoteEnd = char;
+      chars[index] = "\u0000";
+      continue;
+    }
+    if (char === "[") {
+      quoteEnd = "]";
+      chars[index] = "\u0000";
+    }
+  }
+  return chars.join("");
+}
+
+/** Offsets of the body between the outermost parentheses of a CREATE TABLE. */
+function findCreateTableBody(sql: string): { open: number; close: number } | null {
+  const masked = maskSqlQuotedText(sql);
+  const open = masked.indexOf("(");
+  if (open < 0) return null;
+  let depth = 0;
+  for (let index = open; index < masked.length; index += 1) {
+    const char = masked[index];
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return { open, close: index };
+    }
+  }
+  return null;
+}
+
+/**
+ * Split a CREATE TABLE body at the commas that separate its clauses.
+ *
+ * A comma inside a column type (`decimal(10, 2)`), inside a string default, or
+ * inside a table constraint (`foreign key(a, b)`) does not end a clause, so the
+ * scan tracks parenthesis depth and skips quoted regions. This is what makes a
+ * clause that wraps across several lines stay ONE clause.
+ */
+function splitTopLevelSqlClauses(body: string): SqlClauseSpan[] {
+  const masked = maskSqlQuotedText(body);
+  const clauses: SqlClauseSpan[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < masked.length; index += 1) {
+    const char = masked[index];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    else if (char === "," && depth === 0) {
+      clauses.push({ start, end: index, text: body.slice(start, index) });
+      start = index + 1;
+    }
+  }
+  clauses.push({ start, end: body.length, text: body.slice(start) });
+  return clauses;
+}
+
+/**
+ * True when a clause is a table constraint cr-sqlite cannot carry.
+ *
+ * `crsql_as_crr` refuses a table with a checked foreign key or a UNIQUE
+ * constraint, so the retrofit drops both. A column definition can never start
+ * with these keywords: `unique` and `foreign` are reserved, so an unquoted
+ * column cannot be named either, and a quoted name starts with its quote.
+ */
+function isDroppedTableConstraint(clause: string): boolean {
+  const withoutConstraintName = clause.replace(
+    /^\s*constraint\s+(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$]+)\s+/i,
+    "",
+  );
+  return /^(?:foreign\s+key|unique)\b/i.test(withoutConstraintName.trimStart());
+}
+
+/** Drop the column-level `unique` keyword, and any `on conflict` clause after it. */
+function stripInlineUniqueKeyword(clause: string): string {
+  const masked = maskSqlQuotedText(clause);
+  const pattern = /\bunique\b(?:\s+on\s+conflict\s+[\w$]+)?/gi;
+  let result = "";
+  let cursor = 0;
+  for (let match = pattern.exec(masked); match !== null; match = pattern.exec(masked)) {
+    result += clause.slice(cursor, match.index);
+    cursor = match.index + match[0].length;
+  }
+  return cursor === 0 ? clause : result + clause.slice(cursor);
+}
+
+/**
+ * Drop the table constraints cr-sqlite cannot carry.
+ *
+ * The body is split into top-level clauses instead of being filtered line by
+ * line. A line filter cannot see that a `foreign key(…)` clause continues onto
+ * the following `references …` and `on delete …` lines: it deletes the head and
+ * leaves a bare `references`, which is not valid SQLite. That invalid statement
+ * aborts the repair, and with it the whole database open — seen in the field on
+ * an older CLI opening a newer database, where the table
+ * `github_pr_stack_entries` carries exactly that wrapped foreign key.
+ *
+ * When a wrapped foreign key IS the last clause, the line filter also left the
+ * comma behind, which is the second way the same statement became invalid.
+ *
+ * Returns `sql` unchanged when nothing was dropped, so the caller's
+ * `nextSql === table.sql` short-circuit keeps working and a schema that has
+ * already converged is never rebuilt a second time.
+ */
+function stripCrrUnsupportedTableConstraints(sql: string): string {
+  const body = findCreateTableBody(sql);
+  if (!body) return sql;
+  const clauses = splitTopLevelSqlClauses(sql.slice(body.open + 1, body.close));
+  let changed = false;
+  const kept: string[] = [];
+  for (const clause of clauses) {
+    if (!clause.text.trim()) continue;
+    if (isDroppedTableConstraint(clause.text)) {
+      changed = true;
+      continue;
+    }
+    const withoutUnique = stripInlineUniqueKeyword(clause.text);
+    if (withoutUnique !== clause.text) changed = true;
+    kept.push(withoutUnique);
+  }
+  if (!changed) return sql;
+  return `${sql.slice(0, body.open + 1)}${kept.join(",")}${sql.slice(body.close)}`;
+}
+
 function retrofitLegacyPrimaryKeyNotNullSchema(
   db: DatabaseSyncType,
   ambiguousTables: ReadonlySet<string> = new Set(),
+  logger?: Logger,
 ): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
@@ -571,70 +731,92 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
       if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
 
-      const tableInfo = allRows<{
-        name: string;
-        type: string;
-        notnull: number;
-        dflt_value: string | null;
-        pk: number;
-      }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`);
-
-      let nextSql = table.sql;
-      for (const column of tableInfo) {
-        const columnPattern = new RegExp(`(^|[,(])\\s*${escapeRegExp(column.name)}\\s+([^,\\n\\r)]+)`, "im");
-        const match = nextSql.match(columnPattern);
-        if (!match) continue;
-        let columnDefinition = match[0];
-        if (column.pk > 0 && !/\bnot\s+null\b/i.test(columnDefinition)) {
-          columnDefinition = columnDefinition.replace(/\bprimary\s+key\b/i, "not null primary key");
-        }
-        if (column.notnull === 1 && column.dflt_value == null && !/\bdefault\b/i.test(columnDefinition)) {
-          columnDefinition = `${columnDefinition} default ${defaultLiteralForType(column.type)}`;
-        }
-        nextSql = nextSql.replace(match[0], columnDefinition);
+      try {
+        if (retrofitTableLegacyPrimaryKey(db, table.name, table.sql)) changed = true;
+      } catch (error) {
+        // A rewrite SQLite rejects for ONE table must not wedge the database
+        // open for every other table, and with it the whole runtime. The
+        // rebuild rolls its own transaction back, so the table keeps the shape
+        // it had and the next open tries again.
+        logger?.warn("db.crr_repair_table_failed", {
+          table: table.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-
-      nextSql = nextSql
-        .split("\n")
-        .filter((line) => !line.trim().toLowerCase().startsWith("foreign key("))
-        .join("\n")
-        .replace(/,\s*unique\s*\([^)]*\)(?:\s+on\s+conflict\s+\w+)?/gi, "")
-        .replace(/\bunique\b(?:\s+on\s+conflict\s+\w+)?/gi, "")
-        .replace(/,\s*\)/g, "\n    )");
-
-      const indexes = allRows<{ name: string; unique: number; origin: string }>(db, `pragma index_list('${table.name.replace(/'/g, "''")}')`);
-      const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
-      if (nextSql === table.sql && !hasDisallowedUniqueIndices) {
-        continue;
-      }
-
-      const repairName = `__ade_crr_repair_${table.name}`;
-      const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
-      const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
-      const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
-      const indexSqls = allRows<{ name: string; sql: string | null }>(
-        db,
-        "select name, sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
-        [table.name],
-      )
-        .filter((index) => nonUniqueIndexNames.has(index.name))
-        .map((index) => index.sql?.trim() ?? "")
-        .filter(Boolean);
-
-      rebuildTableInTransaction(db, {
-        tableName: table.name,
-        stagingName: repairName,
-        createStagingSql: rewrittenSql,
-        columnsSql,
-        indexSqlsToRecreate: indexSqls,
-      });
-      changed = true;
     }
   } finally {
     runStatement(db, "pragma foreign_keys = on");
   }
 
   return changed;
+}
+
+/**
+ * Rebuild one table that the legacy primary-key retrofit has to change.
+ *
+ * Returns true when the table was rebuilt and false when its stored schema is
+ * already correct. Throws when SQLite rejects the rewritten DDL; the caller
+ * isolates that per table so one schema it cannot express does not wedge the
+ * database open.
+ */
+function retrofitTableLegacyPrimaryKey(
+  db: DatabaseSyncType,
+  tableName: string,
+  tableSql: string,
+): boolean {
+  const tableInfo = allRows<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`);
+
+  let nextSql = tableSql;
+  for (const column of tableInfo) {
+    const columnPattern = new RegExp(`(^|[,(])\\s*${escapeRegExp(column.name)}\\s+([^,\\n\\r)]+)`, "im");
+    const match = nextSql.match(columnPattern);
+    if (!match) continue;
+    let columnDefinition = match[0];
+    if (column.pk > 0 && !/\bnot\s+null\b/i.test(columnDefinition)) {
+      columnDefinition = columnDefinition.replace(/\bprimary\s+key\b/i, "not null primary key");
+    }
+    if (column.notnull === 1 && column.dflt_value == null && !/\bdefault\b/i.test(columnDefinition)) {
+      columnDefinition = `${columnDefinition} default ${defaultLiteralForType(column.type)}`;
+    }
+    nextSql = nextSql.replace(match[0], columnDefinition);
+  }
+
+  nextSql = stripCrrUnsupportedTableConstraints(nextSql);
+
+  const indexes = allRows<{ name: string; unique: number; origin: string }>(
+    db,
+    `pragma index_list('${tableName.replace(/'/g, "''")}')`,
+  );
+  const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
+  if (nextSql === tableSql && !hasDisallowedUniqueIndices) return false;
+
+  const repairName = `__ade_crr_repair_${tableName}`;
+  const rewrittenSql = rewriteCreateTableName(nextSql, tableName, repairName);
+  const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
+  const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
+  const indexSqls = allRows<{ name: string; sql: string | null }>(
+    db,
+    "select name, sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
+    [tableName],
+  )
+    .filter((index) => nonUniqueIndexNames.has(index.name))
+    .map((index) => index.sql?.trim() ?? "")
+    .filter(Boolean);
+
+  rebuildTableInTransaction(db, {
+    tableName,
+    stagingName: repairName,
+    createStagingSql: rewrittenSql,
+    columnsSql,
+    indexSqlsToRecreate: indexSqls,
+  });
+  return true;
 }
 
 /**
@@ -4165,7 +4347,7 @@ export async function openKvDb(
 
     let retrofittedLegacyPrimaryKeySchema = false;
     try {
-      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables);
+      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables, logger);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }

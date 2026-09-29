@@ -34,6 +34,7 @@ echoing it into logs or chat unless the user explicitly asks.
 
 ```
 ade secrets list --text
+ade secrets pull --text                 # take this repository's account secrets out of the vault
 ade secrets get STRIPE_API_KEY --text
 ade secrets set STRIPE_API_KEY --value sk_...
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin

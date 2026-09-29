@@ -4936,6 +4936,10 @@ const adeBridge = {
       callProjectRuntimeActionOr("project_secret", "delete", { args }, () =>
         ipcRenderer.invoke(IPC.projectSecretsDelete, args),
       ),
+    pullFromAccount: async (): Promise<{ added: number; updated: number }> =>
+      callProjectRuntimeActionOr("project_secret", "pullFromAccount", {}, () =>
+        ipcRenderer.invoke(IPC.projectSecretsPullFromAccount),
+      ),
     chooseEnvFile: async (): Promise<ProjectSecretsImportPreview | null> => {
       const file = await ipcRenderer.invoke(IPC.projectSecretsChooseEnvFile) as ProjectSecretEnvFile | null;
       if (!file) return null;

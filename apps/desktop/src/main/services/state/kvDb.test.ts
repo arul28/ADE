@@ -308,6 +308,75 @@ describe("GitHub stacked pull request schema", () => {
           foreignKey.table === "github_pr_stacks" && foreignKey.on_delete.toLowerCase() === "cascade"),
     ).toBe(true);
   });
+
+  it("rebuilds a table whose foreign key wraps onto its own references line", async () => {
+    // `github_pr_stack_entries` above carries a foreign key whose `references`
+    // and `on delete` sit on their own lines. The repair that strips foreign
+    // keys out of stored DDL used to work one line at a time, so it deleted the
+    // `foreign key(` line and kept the continuation: SQLite rejected
+    // `…, references github_pr_stacks(…) on delete cascade )` and the whole
+    // database failed to open. An older CLI opening a newer database hit
+    // exactly that, which is why this fixture repeats the wrapped shape under a
+    // name the local-only exclusion list does not cover.
+    const projectRoot = makeProjectRoot("ade-kvdb-wrapped-foreign-key-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(first);
+
+    first.run(`
+      create table repair_probe_entries (
+        project_id text not null,
+        repo_owner text collate nocase not null,
+        repo_name text collate nocase not null,
+        github_stack_number integer not null,
+        github_pr_number integer not null,
+        position integer not null,
+        primary key(project_id, repo_owner, repo_name, github_stack_number, github_pr_number),
+        foreign key(project_id) references projects(id),
+        foreign key(project_id, repo_owner, repo_name, github_stack_number)
+          references github_pr_stacks(project_id, repo_owner, repo_name, github_stack_number)
+          on delete cascade
+      )
+    `);
+    first.run(
+      `create unique index uq_repair_probe_entries_position
+         on repair_probe_entries(project_id, github_stack_number, position)`,
+    );
+    // The probe's foreign keys are enforced on write, so the parent stack has
+    // to exist before the child row does.
+    first.run(
+      `insert into github_pr_stacks(
+         project_id, repo_owner, repo_name, github_stack_number, github_stack_id,
+         base_branch, created_at, synced_at
+       ) values ('project-1', 'arul28', 'ADE', 7, 'S_7', 'main',
+                 '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z')`,
+    );
+    first.run(
+      `insert into repair_probe_entries(
+         project_id, repo_owner, repo_name, github_stack_number, github_pr_number, position
+       ) values ('project-1', 'arul28', 'ADE', 7, 42, 1)`,
+    );
+    first.close();
+
+    // Reopening IS the assertion: the rewritten DDL has to be valid SQLite.
+    const reopened = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(
+      reopened.get<{ position: number }>(
+        "select position from repair_probe_entries where project_id = ? and github_pr_number = ?",
+        ["project-1", 42],
+      )?.position,
+    ).toBe(1);
+    const storedSql = (
+      reopened.get<{ sql: string }>(
+        "select sql from sqlite_master where type = 'table' and name = 'repair_probe_entries'",
+      )?.sql ?? ""
+    ).toLowerCase();
+    expect(storedSql).not.toContain("references");
+    expect(storedSql).not.toContain("foreign key");
+    expect(blockingUniqueIndexes(reopened, "repair_probe_entries")).toEqual([]);
+  });
 });
 
 describe("lane_linear_issue_links schema", () => {

@@ -994,8 +994,12 @@ Renderer — settings:
   `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. New
   secrets default to the account and can be saved to the current repository's
   account scope or this device only; an account choice falls back to this
-  device when the repository has no Git remote. The list shows the effective
-  destination for every secret. When the active project is remote, only the
+  device when the repository has no Git remote, when nobody is signed in, or
+  when no account vault is wired, and the save message says which of those
+  happened. A "Pull from account" control in the section header takes every
+  account secret the repository has in the vault onto this machine without
+  touching a device-only row. The list shows the effective destination for
+  every secret. When the active project is remote, only the
   Finder read happens on the controller Mac:
   the bounded file content is parsed/imported by the active runtime and export
   writes to Downloads on the remote project host.

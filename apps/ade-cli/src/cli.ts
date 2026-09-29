@@ -3016,11 +3016,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE project secrets
 
   Secrets are encrypted under the active project's .ade/secrets directory.
-  Account-linked projects default to account storage; pass --storage device to
-  keep a secret on this machine. List output never reveals values and shows
-  where each secret lives; use get only for the specific secret you need.
+  Account-linked projects default to account storage, but only when the account
+  vault is reachable: otherwise the secret is saved for this machine and the
+  list says so. List output never reveals values and shows where each secret
+  lives; use get only for the specific secret you need.
 
     $ ade secrets list --text                       List secret names and metadata
+    $ ade secrets pull --text                       Take account secrets from the vault
     $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
     $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
     $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
@@ -15073,6 +15075,14 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "project_secret", "list", {})],
     };
   }
+  if (sub === "pull" || sub === "sync") {
+    return {
+      kind: "execute",
+      label: "secrets pull",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "pullFromAccount", {})],
+    };
+  }
   if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
@@ -26993,6 +27003,16 @@ function formatHarnessTest(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
+  if (typeof record.added === "number" && typeof record.updated === "number") {
+    if (record.added === 0 && record.updated === 0) {
+      return "Account secrets are already up to date on this machine.";
+    }
+    const parts = [
+      record.added > 0 ? `${record.added} added` : null,
+      record.updated > 0 ? `${record.updated} updated` : null,
+    ].filter((part): part is string => part !== null);
+    return `Pulled ${parts.join(", ")} from account storage.`;
+  }
   if (typeof record.value === "string") {
     return record.value;
   }

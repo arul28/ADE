@@ -33,6 +33,18 @@ export type ProjectSecretGetArgs = {
   name: string;
 };
 
+/**
+ * What one pull from the account vault changed on this machine.
+ *
+ * `added` counts secrets this machine did not have at all; `updated` counts
+ * account-scoped secrets whose vault copy was newer. A device-scoped secret is
+ * never counted and never touched.
+ */
+export type ProjectSecretHydrationResult = {
+  added: number;
+  updated: number;
+};
+
 export type ProjectSecretDeleteArgs = {
   name: string;
   confirmName?: string;

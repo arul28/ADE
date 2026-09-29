@@ -13,6 +13,7 @@ import {
   SettingsPanel,
   SettingsRow,
   SettingsSection,
+  SettingsSectionAction,
   SettingsSegmented,
   SettingsSplit,
 } from "./primitives";
@@ -20,6 +21,35 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
+
+/**
+ * What one pull from the account vault did.
+ *
+ * Worded the same way as `ade secrets pull --text`, so the Settings pane and
+ * the terminal never describe the same result differently.
+ */
+function pullSummary(result: { added: number; updated: number }): string {
+  if (result.added === 0 && result.updated === 0) {
+    return "Account secrets are already up to date on this machine.";
+  }
+  const parts = [
+    result.added > 0 ? `${result.added} added` : null,
+    result.updated > 0 ? `${result.updated} updated` : null,
+  ].filter((part): part is string => part !== null);
+  return `Pulled ${parts.join(", ")} from account storage.`;
+}
+
+/**
+ * What to say after a save whose requested scope could not be honoured.
+ *
+ * The backend reports where the value actually went. When that is not where the
+ * person asked for, saying only "Saved" is the lie this sentence exists to
+ * avoid: the row would look shared and never be shared.
+ */
+function savedMessage(name: string, requested: ProjectSecretStorage, actual: ProjectSecretStorage): string {
+  if (requested === actual) return `Saved ${name}.`;
+  return `Saved ${name} for this device only: your account vault is not reachable right now, so it cannot follow you to another machine yet.`;
+}
 
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
@@ -64,6 +94,7 @@ export function SecretsSection() {
   const [importing, setImporting] = React.useState(false);
   const [importError, setImportError] = React.useState<string | null>(null);
   const [exporting, setExporting] = React.useState(false);
+  const [pulling, setPulling] = React.useState(false);
   const [confirmingExport, setConfirmingExport] = React.useState(false);
   const [importPreview, setImportPreview] = React.useState<ProjectSecretsImportPreview | null>(null);
   const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
@@ -102,7 +133,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      await window.ade.projectSecrets.set({ name: nextName, value, storage });
+      const saved = await window.ade.projectSecrets.set({ name: nextName, value, storage });
       setValue("");
       setName("");
       setConfirmDeleteName(null);
@@ -112,8 +143,8 @@ export function SecretsSection() {
         delete next[nextName];
         return next;
       });
-      setMessage(`Saved ${nextName}.`);
       await load();
+      setMessage(savedMessage(nextName, storage, saved.storage));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -273,11 +304,37 @@ export function SecretsSection() {
   const secrets = snapshot?.secrets ?? [];
   const canAdd = !saving && Boolean(name.trim()) && Boolean(value);
 
+  const pullFromAccount = async () => {
+    setPulling(true);
+    setMessage(null);
+    setError(null);
+    try {
+      setMessage(pullSummary(await window.ade.projectSecrets.pullFromAccount()));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPulling(false);
+    }
+  };
+
   const list = (
     // One-line headings on both sides, so the two panels start level.
     <SettingsSection
       title="Saved secrets"
-      actions={<span className="ade-settings-summary">{secrets.length} saved · encrypted</span>}
+      actions={(
+        <>
+          <span className="ade-settings-summary">{secrets.length} saved · encrypted</span>
+          <SettingsSectionAction
+            icon={<DownloadSimple size={13} />}
+            label={pulling ? "Pulling…" : "Pull from account"}
+            title="Take the account-stored secrets this repository has in the vault onto this machine"
+            onClick={() => {
+              if (!pulling) void pullFromAccount();
+            }}
+          />
+        </>
+      )}
     >
       <div className="ade-settings-panel">
         {secrets.length === 0 ? (

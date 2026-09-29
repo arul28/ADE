@@ -88,6 +88,7 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretHydrationResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -1316,6 +1317,7 @@ declare global {
         get: (args: ProjectSecretGetArgs) => Promise<ProjectSecretValueResult>;
         set: (args: ProjectSecretSetArgs) => Promise<ProjectSecretSummary>;
         delete: (args: ProjectSecretDeleteArgs) => Promise<{ deleted: boolean; name: string }>;
+        pullFromAccount: () => Promise<ProjectSecretHydrationResult>;
         chooseEnvFile: () => Promise<ProjectSecretsImportPreview | null>;
         importEnv: (args: ProjectSecretsImportArgs) => Promise<ProjectSecretsImportResult>;
         exportEnv: () => Promise<ProjectSecretsExportResult>;

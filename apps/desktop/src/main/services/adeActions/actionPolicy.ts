@@ -837,7 +837,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"],
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount"],
   // Reads and writes of the user's own account-scoped settings. No secret
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"

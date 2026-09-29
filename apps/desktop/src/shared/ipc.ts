@@ -828,6 +828,7 @@ export const IPC = {
   projectSecretsGet: "ade.projectSecrets.get",
   projectSecretsSet: "ade.projectSecrets.set",
   projectSecretsDelete: "ade.projectSecrets.delete",
+  projectSecretsPullFromAccount: "ade.projectSecrets.pullFromAccount",
   projectSecretsChooseEnvFile: "ade.projectSecrets.chooseEnvFile",
   projectSecretsPreviewEnvImport: "ade.projectSecrets.previewEnvImport",
   projectSecretsImportEnv: "ade.projectSecrets.importEnv",

@@ -5575,6 +5575,12 @@ export function registerIpc({
     return ctx.projectSecretService.delete(arg);
   });
 
+  ipcMain.handle(IPC.projectSecretsPullFromAccount, async (): Promise<{ added: number; updated: number }> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return await ctx.projectSecretService.pullFromAccount();
+  });
+
   ipcMain.handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {

@@ -26,7 +26,12 @@ export type AccountMigrationContext = {
     list(): { secrets: Array<{ name: string; storage: string }> };
     getSecretProvenance(name: string): CredentialProvenance | null | undefined;
     get(args: { name: string }): { value: string };
-    hydrateFromVault(): Promise<void>;
+    /**
+     * Completion is all this lifecycle needs. `unknown` rather than `void`,
+     * because the secret service now answers with how much it pulled and the
+     * linear service still answers with nothing.
+     */
+    hydrateFromVault(): Promise<unknown>;
     purgeAccountCredentials?(): void;
   } | null;
 };

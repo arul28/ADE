@@ -145,7 +145,13 @@ describe("createProjectSecretService", () => {
     const projectRoot = makeProjectRoot();
     addOrigin(projectRoot);
     const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    // A signed-in user is part of this fixture because the vault store itself
+    // drops every mutation made while signed out, and the service now reports
+    // the destination it can honour rather than the one that was asked for.
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
     service.set({ name: "MOVE_ME", value: "account-value", storage: "account" });
     vault.set.mockClear();
 

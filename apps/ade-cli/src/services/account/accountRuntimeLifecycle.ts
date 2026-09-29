@@ -222,9 +222,40 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     migrationStarted = accountMigrationRunner.start();
   };
 
-  if (accountMigrationRunner && accountVaultStore) {
+  let hydrationInFlight: Promise<void> | null = null;
+  /**
+   * Pull every open project's account secrets out of the vault.
+   *
+   * Deliberately NOT behind `migrationStarted`. The migration runs once per
+   * process, so anything behind that latch can never see a secret another
+   * machine adds later — which is how a secret could reach the vault and never
+   * reach the second machine. The vault sync calls this on each tick that
+   * reports "ready", the one event that says new rows may have landed.
+   */
+  const pullAccountSecrets = (): void => {
+    if (!accountVaultStore || !accountStoreUserId()) return;
+    if (hydrationInFlight) return;
+    hydrationInFlight = (async () => {
+      for (const context of options.getContexts()) {
+        try {
+          await context.projectSecretService?.hydrateFromVault();
+        } catch (error) {
+          options.logger.warn("account.vault_hydrate_failed", {
+            source: "project_context",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    })().finally(() => {
+      hydrationInFlight = null;
+    });
+  };
+
+  if (accountVaultStore) {
     options.teardown.push(accountVaultStore.startPeriodicSync(undefined, (status) => {
-      if (status === "ready") startAccountMigration();
+      if (status !== "ready") return;
+      pullAccountSecrets();
+      startAccountMigration();
     }));
   }
 
@@ -245,6 +276,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         options.logger.warn("account.migration_skipped_vault_unavailable", { status });
         return;
       }
+      // A project that opens after the migration still gets its account
+      // secrets; the pull is not part of the one-shot migration.
+      pullAccountSecrets();
       startAccountMigration();
     })().finally(() => {
       initializationInFlight = null;

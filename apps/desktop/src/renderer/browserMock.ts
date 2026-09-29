@@ -4339,6 +4339,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       get: resolvedArg({ name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account", value: "sk_test_preview" }),
       set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
       delete: resolvedArg({ deleted: true, name: "" }),
+      pullFromAccount: resolved({ added: 0, updated: 0 }),
       chooseEnvFile: resolved(null),
       importEnv: resolvedArg({ imported: [], replaced: [] }),
       exportEnv: resolved({ filePath: "", secretCount: 0 }),

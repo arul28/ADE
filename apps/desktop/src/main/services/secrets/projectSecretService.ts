@@ -13,6 +13,7 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretHydrationResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -60,9 +61,35 @@ export type ProjectSecretServiceOptions = {
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
   logger?: {
+    info?(message: string, meta?: Record<string, unknown>): void;
     warn?(message: string, meta?: Record<string, unknown>): void;
   } | null;
 };
+
+/** Re-exported so callers of this service do not reach past it for the result shape. */
+export type { ProjectSecretHydrationResult };
+
+const NO_HYDRATION: ProjectSecretHydrationResult = { added: 0, updated: 0 };
+
+/** ISO-8601 parse, or null when the value is not a usable timestamp. */
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * True when the vault's row is strictly newer than the copy on this machine.
+ *
+ * An unparsable timestamp on either side answers false, so a malformed vault
+ * row can never overwrite a value that already works here.
+ */
+function isVaultRowNewer(vaultUpdatedAt: string, localUpdatedAt: string): boolean {
+  const vaultTime = parseTimestamp(vaultUpdatedAt);
+  const localTime = parseTimestamp(localUpdatedAt);
+  if (vaultTime === null || localTime === null) return false;
+  return vaultTime > localTime;
+}
 
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
@@ -175,6 +202,35 @@ export function createProjectSecretService(projectRoot: string, options: Project
     }
   };
 
+  /** Is a vault bridge wired at all? Quiet, because a "no" here is routine. */
+  const hasAccountVault = (): boolean => {
+    try {
+      return Boolean(options.getAccountVault?.());
+    } catch (error) {
+      logVaultFailure("resolve", "*", error);
+      return false;
+    }
+  };
+
+  /**
+   * The storage a write can actually honour.
+   *
+   * "Account" is a promise that the value leaves this machine, so it is
+   * claimable only when this project has an account scope, the person is signed
+   * in, and a vault bridge is wired. Reporting "account" for a value that
+   * silently stayed on this disk is the defect this guards against: the row
+   * looked shared, the other machines never saw it, and nothing said so.
+   */
+  const resolveWritableStorage = (
+    requested: ProjectSecretStorage,
+    accountScope = getAccountScope(),
+  ): ProjectSecretStorage => {
+    if (requested !== "account") return "device";
+    if (!accountScope) return "device";
+    if (!getAccountUserId()) return "device";
+    return hasAccountVault() ? "account" : "device";
+  };
+
   const syncSecretToVault = (
     name: string,
     value: string,
@@ -237,7 +293,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const imported: string[] = [];
     const replaced: string[] = [];
     const accountScope = getAccountScope();
-    const defaultStorage: ProjectSecretStorage = accountScope ? "account" : "device";
+    const defaultStorage: ProjectSecretStorage = resolveWritableStorage("account", accountScope);
     const saved: Array<{ name: string; value: string; storage: ProjectSecretStorage }> = [];
     const now = nowIso();
     store.updateSync((values) => {
@@ -263,6 +319,125 @@ export function createProjectSecretService(projectRoot: string, options: Project
       syncSecretToVault(secret.name, secret.value, secret.storage, accountScope);
     }
     return { imported, replaced };
+  };
+
+  /**
+   * Take everything the account vault holds for this repository.
+   *
+   * The vault used to be write-only from this side: `set` pushed a value and
+   * nothing ever read it back, because the only caller of this method was the
+   * one-shot account migration. A secret added on a second machine therefore
+   * reached the vault and never reached this one — the reported symptom.
+   *
+   * A row lands only when it is genuinely new or genuinely newer. A
+   * device-scoped secret is never replaced, however old it looks: device is a
+   * deliberate "this machine only", and the account copy is not the owner.
+   */
+  const hydrateFromVault = async (): Promise<ProjectSecretHydrationResult> => {
+    const accountScope = getAccountScope();
+    const accountUserId = getAccountUserId();
+    if (!accountUserId) return NO_HYDRATION;
+    if (!accountScope) return NO_HYDRATION;
+    const vault = resolveAccountVault("list", "*");
+    if (!vault) return NO_HYDRATION;
+
+    let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
+    try {
+      listed = await vault.list(accountScope);
+    } catch (error) {
+      logVaultFailure("list", "*", error);
+      return NO_HYDRATION;
+    }
+    if (!listed.ok) {
+      logVaultFailure("list", "*", listed);
+      return NO_HYDRATION;
+    }
+
+    if (getAccountUserId() !== accountUserId) return NO_HYDRATION;
+
+    let added = 0;
+    let updated = 0;
+    for (const item of listed.value) {
+      if (item.scope !== accountScope || item.kind !== "project_secret") continue;
+      let name: string;
+      try {
+        name = normalizeSecretName(item.key);
+      } catch {
+        continue;
+      }
+      const known = readIndex().entries[name];
+      if (known && known.storage !== "account") continue;
+      if (known && !isVaultRowNewer(item.updatedAt, known.updatedAt)) continue;
+
+      let value = typeof item.value === "string" ? item.value : null;
+      if (value === null) {
+        let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
+        try {
+          fetched = await vault.get(accountScope, "project_secret", name);
+        } catch (error) {
+          logVaultFailure("get", name, error);
+          continue;
+        }
+        if (!fetched.ok) {
+          logVaultFailure("get", name, fetched);
+          continue;
+        }
+        value = fetched.value;
+      }
+      if (!value?.length) continue;
+      if (getAccountUserId() !== accountUserId) break;
+
+      // Re-read: the awaits above gave another writer a window.
+      const current = readIndex().entries[name];
+      if (current && current.storage !== "account") continue;
+      if (current && !isVaultRowNewer(item.updatedAt, current.updatedAt)) continue;
+      const wasAbsent = !current;
+      const vaultUpdatedAt = parseTimestamp(item.updatedAt) === null ? nowIso() : item.updatedAt;
+
+      let wrote = false;
+      try {
+        store.updateSync((values) => {
+          const index = parseIndex(values[INDEX_KEY] ?? null);
+          const existing = index.entries[name];
+          if (existing && existing.storage !== "account") return false;
+          if (existing && !isVaultRowNewer(item.updatedAt, existing.updatedAt)) return false;
+          values[valueKey(name)] = value!;
+          index.entries[name] = {
+            createdAt: existing?.createdAt ?? vaultUpdatedAt,
+            updatedAt: vaultUpdatedAt,
+            valueLength: value!.length,
+            storage: "account",
+            source: "account",
+            accountUserId,
+          };
+          values[INDEX_KEY] = serializeIndex(index);
+          wrote = true;
+          return;
+        });
+      } catch (error) {
+        logVaultFailure("hydrate", name, error);
+        continue;
+      }
+      if (!wrote) continue;
+      if (wasAbsent) added += 1;
+      else updated += 1;
+    }
+
+    if (added > 0 || updated > 0) {
+      options.logger?.info?.("project_secret.account_vault_pull", { added, updated });
+    }
+    return { added, updated };
+  };
+
+  /**
+   * The user-facing name for one pull from the account vault.
+   *
+   * `hydrateFromVault` keeps its name for the migration lifecycle, which
+   * already calls it; this is the entry the action surface, the CLI and the
+   * Settings button reach for.
+   */
+  const pullFromAccount = async (): Promise<ProjectSecretHydrationResult> => {
+    return await hydrateFromVault();
   };
 
   return {
@@ -301,9 +476,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (!nextValue.length) throw new Error("Secret value is required.");
       const requestedStorage = normalizeStorage(args?.storage);
       const accountScope = getAccountScope();
-      const storage: ProjectSecretStorage = requestedStorage === "account" && accountScope
-        ? "account"
-        : "device";
+      const storage = resolveWritableStorage(requestedStorage, accountScope);
       const now = nowIso();
       let entry: ProjectSecretIndexEntry | null = null;
       let previousStorage: ProjectSecretStorage = "device";
@@ -325,83 +498,16 @@ export function createProjectSecretService(projectRoot: string, options: Project
       });
       if (!entry) throw new Error("Failed to save ADE secret.");
       syncSecretToVault(name, nextValue, storage, accountScope);
-      if (storage === "device") removeSecretFromVault(name, previousStorage, accountScope);
+      // Only an explicit "this device only" forgets the account copy. A request
+      // for account storage that degraded because the vault was unreachable
+      // leaves the vault row alone: deleting it would destroy the copy the
+      // other machines already hold.
+      if (requestedStorage === "device") removeSecretFromVault(name, previousStorage, accountScope);
       return toSummary(name, entry, storage);
     },
 
-    async hydrateFromVault(): Promise<void> {
-      const accountScope = getAccountScope();
-      const accountUserId = getAccountUserId();
-      if (!accountUserId) return;
-      if (!accountScope) return;
-      const vault = resolveAccountVault("list", "*");
-      if (!vault) return;
-
-      let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
-      try {
-        listed = await vault.list(accountScope);
-      } catch (error) {
-        logVaultFailure("list", "*", error);
-        return;
-      }
-      if (!listed.ok) {
-        logVaultFailure("list", "*", listed);
-        return;
-      }
-
-      if (getAccountUserId() !== accountUserId) return;
-
-      for (const item of listed.value) {
-        if (item.scope !== accountScope || item.kind !== "project_secret") continue;
-        let name: string;
-        try {
-          name = normalizeSecretName(item.key);
-        } catch {
-          continue;
-        }
-        if (readIndex().entries[name]) continue;
-
-        let value = typeof item.value === "string" ? item.value : null;
-        if (value === null) {
-          let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;
-          try {
-            fetched = await vault.get(accountScope, "project_secret", name);
-          } catch (error) {
-            logVaultFailure("get", name, error);
-            continue;
-          }
-          if (!fetched.ok) {
-            logVaultFailure("get", name, fetched);
-            continue;
-          }
-          value = fetched.value;
-        }
-        if (!value?.length || readIndex().entries[name]) continue;
-        if (getAccountUserId() !== accountUserId) return;
-
-        try {
-          const now = nowIso();
-          store.updateSync((values) => {
-            const index = parseIndex(values[INDEX_KEY] ?? null);
-            if (index.entries[name]) return false;
-            values[valueKey(name)] = value!;
-            index.entries[name] = {
-              createdAt: now,
-              updatedAt: now,
-              valueLength: value!.length,
-              storage: "account",
-              source: "account",
-              accountUserId,
-            };
-            values[INDEX_KEY] = serializeIndex(index);
-            return;
-          });
-        } catch (error) {
-          logVaultFailure("hydrate", name, error);
-        }
-      }
-    },
-
+    hydrateFromVault,
+    pullFromAccount,
     previewEnvImport(args: ProjectSecretEnvFile): ProjectSecretsImportPreview {
       const fileName = path.basename(typeof args?.fileName === "string" ? args.fileName.trim() : "") || ".env";
       const content = typeof args?.content === "string" ? args.content : "";
