@@ -35,7 +35,7 @@ function installAdeMock() {
       })),
       importEnv,
       exportEnv,
-      pullFromAccount: vi.fn(async () => ({ added: 0, updated: 0 })),
+      pullFromAccount: vi.fn(async () => ({ state: "pulled" as const, added: 0, updated: 0 })),
     },
   };
   return { get, set, importEnv, exportEnv, writeClipboardText };

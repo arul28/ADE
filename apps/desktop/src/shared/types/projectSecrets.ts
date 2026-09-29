@@ -45,6 +45,18 @@ export type ProjectSecretHydrationResult = {
   updated: number;
 };
 
+/**
+ * Outcome of a pull from the account vault, including the case where it could
+ * not run at all.
+ *
+ * `unavailable` is a distinct answer, not an empty one. "Nothing to pull" and
+ * "this machine cannot pull right now" are different sentences to show a person,
+ * and collapsing them told a signed-out user their secrets were up to date.
+ */
+export type ProjectSecretPullResult =
+  | { state: "pulled"; added: number; updated: number }
+  | { state: "unavailable" };
+
 export type ProjectSecretDeleteArgs = {
   name: string;
   confirmName?: string;

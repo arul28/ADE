@@ -148,6 +148,7 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretPullResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -5575,7 +5576,7 @@ export function registerIpc({
     return ctx.projectSecretService.delete(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsPullFromAccount, async (): Promise<{ added: number; updated: number }> => {
+  ipcMain.handle(IPC.projectSecretsPullFromAccount, async (): Promise<ProjectSecretPullResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return await ctx.projectSecretService.pullFromAccount();

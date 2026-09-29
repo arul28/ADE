@@ -940,7 +940,7 @@ function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
     get: async () => ({ value: null }),
     set: async (args: { name?: string }) => ({ name: args.name ?? "", hasValue: false, updatedAt: new Date().toISOString() }),
     delete: async (args: { name?: string }) => ({ deleted: false, name: args.name ?? "" }),
-    pullFromAccount: async () => ({ added: 0, updated: 0 }),
+    pullFromAccount: async () => ({ state: "unavailable" as const }),
   } as unknown as AdeNamespace<"projectSecrets">;
 }
 

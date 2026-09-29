@@ -251,11 +251,19 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     });
   };
 
+  /**
+   * What every vault-ready tick does: take what other machines added, then run
+   * the one-shot migration for anything still only local.
+   */
+  const onVaultReady = (): void => {
+    pullAccountSecrets();
+    startAccountMigration();
+  };
+
   if (accountVaultStore) {
     options.teardown.push(accountVaultStore.startPeriodicSync(undefined, (status) => {
       if (status !== "ready") return;
-      pullAccountSecrets();
-      startAccountMigration();
+      onVaultReady();
     }));
   }
 
@@ -278,8 +286,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       }
       // A project that opens after the migration still gets its account
       // secrets; the pull is not part of the one-shot migration.
-      pullAccountSecrets();
-      startAccountMigration();
+      onVaultReady();
     })().finally(() => {
       initializationInFlight = null;
     });

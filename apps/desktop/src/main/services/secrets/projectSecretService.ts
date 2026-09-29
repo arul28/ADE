@@ -14,6 +14,7 @@ import type {
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
   ProjectSecretHydrationResult,
+  ProjectSecretPullResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -70,6 +71,7 @@ export type ProjectSecretServiceOptions = {
 export type { ProjectSecretHydrationResult };
 
 const NO_HYDRATION: ProjectSecretHydrationResult = { added: 0, updated: 0 };
+const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
 
 /** ISO-8601 parse, or null when the value is not a usable timestamp. */
 function parseTimestamp(value: string | null | undefined): number | null {
@@ -332,28 +334,35 @@ export function createProjectSecretService(projectRoot: string, options: Project
    * A row lands only when it is genuinely new or genuinely newer. A
    * device-scoped secret is never replaced, however old it looks: device is a
    * deliberate "this machine only", and the account copy is not the owner.
+   *
+   * Every way of not reading the vault at all — signed out, no repository
+   * scope, no vault wired, the list throwing, the list answering unavailable,
+   * the account changing mid-pull — answers `unavailable`, never a count of
+   * zero. "Nothing new" and "could not ask" are different sentences to show a
+   * person, and collapsing them told a signed-out user their secrets were
+   * already up to date.
    */
-  const hydrateFromVault = async (): Promise<ProjectSecretHydrationResult> => {
+  const pullAccountSecrets = async (): Promise<ProjectSecretPullResult> => {
     const accountScope = getAccountScope();
     const accountUserId = getAccountUserId();
-    if (!accountUserId) return NO_HYDRATION;
-    if (!accountScope) return NO_HYDRATION;
+    if (!accountUserId) return UNAVAILABLE_PULL;
+    if (!accountScope) return UNAVAILABLE_PULL;
     const vault = resolveAccountVault("list", "*");
-    if (!vault) return NO_HYDRATION;
+    if (!vault) return UNAVAILABLE_PULL;
 
     let listed: Awaited<ReturnType<AccountVaultBridge["list"]>>;
     try {
       listed = await vault.list(accountScope);
     } catch (error) {
       logVaultFailure("list", "*", error);
-      return NO_HYDRATION;
+      return UNAVAILABLE_PULL;
     }
     if (!listed.ok) {
       logVaultFailure("list", "*", listed);
-      return NO_HYDRATION;
+      return UNAVAILABLE_PULL;
     }
 
-    if (getAccountUserId() !== accountUserId) return NO_HYDRATION;
+    if (getAccountUserId() !== accountUserId) return UNAVAILABLE_PULL;
 
     let added = 0;
     let updated = 0;
@@ -385,7 +394,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
         value = fetched.value;
       }
       if (!value?.length) continue;
-      if (getAccountUserId() !== accountUserId) break;
+      // The account changed under this pull; stop rather than write one
+      // owner's secrets into another owner's store.
+      if (getAccountUserId() !== accountUserId) return UNAVAILABLE_PULL;
 
       // Re-read: the awaits above gave another writer a window.
       const current = readIndex().entries[name];
@@ -426,19 +437,27 @@ export function createProjectSecretService(projectRoot: string, options: Project
     if (added > 0 || updated > 0) {
       options.logger?.info?.("project_secret.account_vault_pull", { added, updated });
     }
-    return { added, updated };
+    return { state: "pulled", added, updated };
+  };
+
+  /**
+   * The migration lifecycle's name for the same pull.
+   *
+   * It only needs completion, so an unavailable vault reads as "nothing moved"
+   * there. The user-facing entry below keeps the distinction.
+   */
+  const hydrateFromVault = async (): Promise<ProjectSecretHydrationResult> => {
+    const outcome = await pullAccountSecrets();
+    return outcome.state === "pulled" ? { added: outcome.added, updated: outcome.updated } : NO_HYDRATION;
   };
 
   /**
    * The user-facing name for one pull from the account vault.
    *
-   * `hydrateFromVault` keeps its name for the migration lifecycle, which
-   * already calls it; this is the entry the action surface, the CLI and the
-   * Settings button reach for.
+   * `hydrateFromVault` keeps its name for the migration lifecycle; this is the
+   * entry the action surface, the CLI and the Settings button reach for.
    */
-  const pullFromAccount = async (): Promise<ProjectSecretHydrationResult> => {
-    return await hydrateFromVault();
-  };
+  const pullFromAccount = async (): Promise<ProjectSecretPullResult> => await pullAccountSecrets();
 
   return {
     list(): ProjectSecretsListResult {
@@ -483,7 +502,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
       store.updateSync((values) => {
         const index = parseIndex(values[INDEX_KEY] ?? null);
         const previous = index.entries[name];
-        previousStorage = previous?.storage ?? "account";
+        // No local entry means no local account copy to forget. Defaulting to
+        // "account" here made a first device-only save delete a vault row this
+        // machine had never seen — another machine's only copy of the name.
+        previousStorage = previous?.storage ?? "device";
         entry = {
           createdAt: previous?.createdAt ?? now,
           updatedAt: now,

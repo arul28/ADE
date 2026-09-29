@@ -66,6 +66,10 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
+import {
+  isProjectSecretPullResult,
+  projectSecretPullSummary,
+} from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import { publishProofToPullRequest, type ProofPublishResult } from "./proofPublish";
@@ -27003,15 +27007,8 @@ function formatHarnessTest(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  if (typeof record.added === "number" && typeof record.updated === "number") {
-    if (record.added === 0 && record.updated === 0) {
-      return "Account secrets are already up to date on this machine.";
-    }
-    const parts = [
-      record.added > 0 ? `${record.added} added` : null,
-      record.updated > 0 ? `${record.updated} updated` : null,
-    ].filter((part): part is string => part !== null);
-    return `Pulled ${parts.join(", ")} from account storage.`;
+  if (isProjectSecretPullResult(value)) {
+    return projectSecretPullSummary(value);
   }
   if (typeof record.value === "string") {
     return record.value;

@@ -1,10 +1,11 @@
 import React from "react";
-import { Key, Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { Check, CloudArrowDown, Copy, DownloadSimple, Eye, EyeSlash, Key, Plus, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 import type {
   ProjectSecretStorage,
   ProjectSecretsImportPreview,
   ProjectSecretsListResult,
 } from "../../../shared/types";
+import { projectSecretPullSummary } from "../../../shared/projectSecretPullSummary";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { relativeTimeCompact } from "../../lib/format";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
@@ -23,23 +24,6 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 const ANCHOR = "secrets";
 
 /**
- * What one pull from the account vault did.
- *
- * Worded the same way as `ade secrets pull --text`, so the Settings pane and
- * the terminal never describe the same result differently.
- */
-function pullSummary(result: { added: number; updated: number }): string {
-  if (result.added === 0 && result.updated === 0) {
-    return "Account secrets are already up to date on this machine.";
-  }
-  const parts = [
-    result.added > 0 ? `${result.added} added` : null,
-    result.updated > 0 ? `${result.updated} updated` : null,
-  ].filter((part): part is string => part !== null);
-  return `Pulled ${parts.join(", ")} from account storage.`;
-}
-
-/**
  * What to say after a save whose requested scope could not be honoured.
  *
  * The backend reports where the value actually went. When that is not where the
@@ -48,7 +32,7 @@ function pullSummary(result: { added: number; updated: number }): string {
  */
 function savedMessage(name: string, requested: ProjectSecretStorage, actual: ProjectSecretStorage): string {
   if (requested === actual) return `Saved ${name}.`;
-  return `Saved ${name} for this device only: your account vault is not reachable right now, so it cannot follow you to another machine yet.`;
+  return `Saved ${name} for this device only. Your account vault is not reachable, so this value stays on this machine and will not follow you to another one.`;
 }
 
 function formatUpdatedAt(value: string): string {
@@ -99,7 +83,14 @@ export function SecretsSection() {
   const [importPreview, setImportPreview] = React.useState<ProjectSecretsImportPreview | null>(null);
   const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
+  const [noteTone, setNoteTone] = React.useState<"success" | "warning">("success");
   const [error, setError] = React.useState<string | null>(null);
+
+  /** The inline note carries a tone: a degraded outcome is not a success. */
+  const note = React.useCallback((text: string, tone: "success" | "warning" = "success") => {
+    setNoteTone(tone);
+    setMessage(text);
+  }, []);
 
   const load = React.useCallback(async () => {
     try {
@@ -144,7 +135,7 @@ export function SecretsSection() {
         return next;
       });
       await load();
-      setMessage(savedMessage(nextName, storage, saved.storage));
+      note(savedMessage(nextName, storage, saved.storage), storage === saved.storage ? "success" : "warning");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -189,7 +180,7 @@ export function SecretsSection() {
         setError(`Couldn't copy ${secretName} to the clipboard.${reason ? ` ${reason}` : ""}`);
         return;
       }
-      setMessage(`Copied ${secretName}.`);
+      note(`Copied ${secretName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -219,7 +210,7 @@ export function SecretsSection() {
         delete next[secretName];
         return next;
       });
-      setMessage(`Deleted ${secretName}.`);
+      note(`Deleted ${secretName}.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -271,7 +262,7 @@ export function SecretsSection() {
       });
       setImportPreview(null);
       setSelectedImportNames(new Set());
-      setMessage(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);
+      note(`Imported ${total} secret${total === 1 ? "" : "s"}${result.replaced.length ? ` (${result.replaced.length} replaced)` : ""}.`);
       await load();
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
@@ -293,7 +284,7 @@ export function SecretsSection() {
     setError(null);
     try {
       const result = await window.ade.projectSecrets.exportEnv();
-      setMessage(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on the active machine.`);
+      note(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on the active machine.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -309,7 +300,8 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      setMessage(pullSummary(await window.ade.projectSecrets.pullFromAccount()));
+      const result = await window.ade.projectSecrets.pullFromAccount();
+      note(projectSecretPullSummary(result), result.state === "unavailable" ? "warning" : "success");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -326,7 +318,7 @@ export function SecretsSection() {
         <>
           <span className="ade-settings-summary">{secrets.length} saved · encrypted</span>
           <SettingsSectionAction
-            icon={<DownloadSimple size={13} />}
+            icon={<CloudArrowDown size={13} />}
             label={pulling ? "Pulling…" : "Pull from account"}
             title="Take the account-stored secrets this repository has in the vault onto this machine"
             onClick={() => {
@@ -554,8 +546,14 @@ export function SecretsSection() {
     <SettingsColumn wide>
       <div id={ANCHOR} data-settings-anchor={ANCHOR} className="ade-settings-split-stack" style={{ scrollMarginTop: 16 }}>
         {(message || error) && (
-          <div role={error ? "alert" : "status"} className="ade-settings-note" style={{ color: error ? COLORS.danger : COLORS.success }}>
-            {error ? <X size={14} weight="bold" /> : <Check size={14} weight="bold" />}
+          <div
+            role={error ? "alert" : "status"}
+            className="ade-settings-note"
+            style={{ color: error ? COLORS.danger : noteTone === "warning" ? COLORS.warning : COLORS.success }}
+          >
+            {error
+              ? <X size={14} weight="bold" />
+              : noteTone === "warning" ? <WarningCircle size={14} weight="bold" /> : <Check size={14} weight="bold" />}
             <span>{error ?? message}</span>
           </div>
         )}

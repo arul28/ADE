@@ -10,6 +10,7 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
+import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -462,6 +463,24 @@ export type TableRebuildPlan = {
   indexSqlsToRecreate: string[];
 };
 
+/**
+ * Thrown when a table rebuild could not roll its own transaction back.
+ *
+ * The failed transaction may still be open on the connection, so every later
+ * statement would run inside it. That is not a per-table problem, and the repair
+ * loop must not swallow it and carry on.
+ */
+class RebuildRollbackFailedError extends Error {
+  constructor(tableName: string, rollbackError: unknown) {
+    super(
+      `Rollback failed while rebuilding ${tableName}: ${
+        rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+      }`,
+    );
+    this.name = "RebuildRollbackFailedError";
+  }
+}
+
 export function rebuildTableInTransaction(
   db: DatabaseSyncType,
   plan: TableRebuildPlan,
@@ -523,171 +542,19 @@ export function rebuildTableInTransaction(
     if (transactionMayBeOpen) {
       try {
         runStatement(db, "rollback");
-      } catch {
-        // COMMIT may have succeeded before an injected failure was raised.
+      } catch (rollbackError) {
+        // "no transaction is active" means the COMMIT had in fact already
+        // succeeded before the failure was raised, which is benign. Anything
+        // else leaves the failed transaction open, so the caller must stop
+        // instead of running more statements inside it.
+        const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        if (!/no transaction is active/i.test(rollbackMessage)) {
+          throw new RebuildRollbackFailedError(plan.tableName, rollbackError);
+        }
       }
     }
     throw error;
   }
-}
-
-/**
- * A top-level clause of a CREATE TABLE body, with its offsets in that body.
- */
-type SqlClauseSpan = {
-  start: number;
-  end: number;
-  text: string;
-};
-
-/**
- * `text` with every quoted region replaced by NUL, keeping the length.
- *
- * Every schema rewrite below runs its regexes against the masked copy and then
- * slices the ORIGINAL text with the offsets it found, so a keyword or comma
- * that lives inside a default (`default 'unique, not really'`) or a quoted
- * identifier can neither be matched nor split. SQLite has four quoting styles:
- * `'…'`, `"…"`, `` `…` `` and `[…]`. A doubled `'`, `"` or `` ` `` is an
- * escaped terminator, not the end of the region; `[…]` does not double.
- */
-function maskSqlQuotedText(text: string): string {
-  const chars = text.split("");
-  let quoteEnd: string | null = null;
-  for (let index = 0; index < chars.length; index += 1) {
-    const char = chars[index]!;
-    if (quoteEnd !== null) {
-      chars[index] = "\u0000";
-      if (char === quoteEnd) {
-        if (chars[index + 1] === quoteEnd && quoteEnd !== "]") {
-          chars[index + 1] = "\u0000";
-          index += 1;
-        } else {
-          quoteEnd = null;
-        }
-      }
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") {
-      quoteEnd = char;
-      chars[index] = "\u0000";
-      continue;
-    }
-    if (char === "[") {
-      quoteEnd = "]";
-      chars[index] = "\u0000";
-    }
-  }
-  return chars.join("");
-}
-
-/** Offsets of the body between the outermost parentheses of a CREATE TABLE. */
-function findCreateTableBody(sql: string): { open: number; close: number } | null {
-  const masked = maskSqlQuotedText(sql);
-  const open = masked.indexOf("(");
-  if (open < 0) return null;
-  let depth = 0;
-  for (let index = open; index < masked.length; index += 1) {
-    const char = masked[index];
-    if (char === "(") depth += 1;
-    else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return { open, close: index };
-    }
-  }
-  return null;
-}
-
-/**
- * Split a CREATE TABLE body at the commas that separate its clauses.
- *
- * A comma inside a column type (`decimal(10, 2)`), inside a string default, or
- * inside a table constraint (`foreign key(a, b)`) does not end a clause, so the
- * scan tracks parenthesis depth and skips quoted regions. This is what makes a
- * clause that wraps across several lines stay ONE clause.
- */
-function splitTopLevelSqlClauses(body: string): SqlClauseSpan[] {
-  const masked = maskSqlQuotedText(body);
-  const clauses: SqlClauseSpan[] = [];
-  let start = 0;
-  let depth = 0;
-  for (let index = 0; index < masked.length; index += 1) {
-    const char = masked[index];
-    if (char === "(") depth += 1;
-    else if (char === ")") depth -= 1;
-    else if (char === "," && depth === 0) {
-      clauses.push({ start, end: index, text: body.slice(start, index) });
-      start = index + 1;
-    }
-  }
-  clauses.push({ start, end: body.length, text: body.slice(start) });
-  return clauses;
-}
-
-/**
- * True when a clause is a table constraint cr-sqlite cannot carry.
- *
- * `crsql_as_crr` refuses a table with a checked foreign key or a UNIQUE
- * constraint, so the retrofit drops both. A column definition can never start
- * with these keywords: `unique` and `foreign` are reserved, so an unquoted
- * column cannot be named either, and a quoted name starts with its quote.
- */
-function isDroppedTableConstraint(clause: string): boolean {
-  const withoutConstraintName = clause.replace(
-    /^\s*constraint\s+(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[\w$]+)\s+/i,
-    "",
-  );
-  return /^(?:foreign\s+key|unique)\b/i.test(withoutConstraintName.trimStart());
-}
-
-/** Drop the column-level `unique` keyword, and any `on conflict` clause after it. */
-function stripInlineUniqueKeyword(clause: string): string {
-  const masked = maskSqlQuotedText(clause);
-  const pattern = /\bunique\b(?:\s+on\s+conflict\s+[\w$]+)?/gi;
-  let result = "";
-  let cursor = 0;
-  for (let match = pattern.exec(masked); match !== null; match = pattern.exec(masked)) {
-    result += clause.slice(cursor, match.index);
-    cursor = match.index + match[0].length;
-  }
-  return cursor === 0 ? clause : result + clause.slice(cursor);
-}
-
-/**
- * Drop the table constraints cr-sqlite cannot carry.
- *
- * The body is split into top-level clauses instead of being filtered line by
- * line. A line filter cannot see that a `foreign key(…)` clause continues onto
- * the following `references …` and `on delete …` lines: it deletes the head and
- * leaves a bare `references`, which is not valid SQLite. That invalid statement
- * aborts the repair, and with it the whole database open — seen in the field on
- * an older CLI opening a newer database, where the table
- * `github_pr_stack_entries` carries exactly that wrapped foreign key.
- *
- * When a wrapped foreign key IS the last clause, the line filter also left the
- * comma behind, which is the second way the same statement became invalid.
- *
- * Returns `sql` unchanged when nothing was dropped, so the caller's
- * `nextSql === table.sql` short-circuit keeps working and a schema that has
- * already converged is never rebuilt a second time.
- */
-function stripCrrUnsupportedTableConstraints(sql: string): string {
-  const body = findCreateTableBody(sql);
-  if (!body) return sql;
-  const clauses = splitTopLevelSqlClauses(sql.slice(body.open + 1, body.close));
-  let changed = false;
-  const kept: string[] = [];
-  for (const clause of clauses) {
-    if (!clause.text.trim()) continue;
-    if (isDroppedTableConstraint(clause.text)) {
-      changed = true;
-      continue;
-    }
-    const withoutUnique = stripInlineUniqueKeyword(clause.text);
-    if (withoutUnique !== clause.text) changed = true;
-    kept.push(withoutUnique);
-  }
-  if (!changed) return sql;
-  return `${sql.slice(0, body.open + 1)}${kept.join(",")}${sql.slice(body.close)}`;
 }
 
 function retrofitLegacyPrimaryKeyNotNullSchema(
@@ -734,6 +601,9 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       try {
         if (retrofitTableLegacyPrimaryKey(db, table.name, table.sql)) changed = true;
       } catch (error) {
+        // A connection left inside a failed transaction is not a per-table
+        // problem: every later statement would run inside it.
+        if (error instanceof RebuildRollbackFailedError) throw error;
         // A rewrite SQLite rejects for ONE table must not wedge the database
         // open for every other table, and with it the whole runtime. The
         // rebuild rolls its own transaction back, so the table keeps the shape
