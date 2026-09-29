@@ -141,4 +141,23 @@ describe("LaneSidebarRow", () => {
     expect(props.onSelect).not.toHaveBeenCalled();
     expect(props.onContextMenu).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { shiftKey: false, expectDeeplink: true },
+    { shiftKey: true, expectDeeplink: false },
+  ])("starts the deeplink drag only without Shift (shiftKey=$shiftKey)", ({ shiftKey, expectDeeplink }) => {
+    renderRow();
+    const row = screen.getByTestId("lane-sidebar-row");
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "" };
+    // jsdom has no DragEvent, so RTL's dragStart drops shiftKey from the init.
+    // Build the event so the handler actually sees the modifier.
+    const event = new MouseEvent("dragstart", { bubbles: true, cancelable: true, shiftKey });
+    Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    fireEvent(row, event);
+    if (expectDeeplink) {
+      expect(dataTransfer.setData).toHaveBeenCalledWith("text/uri-list", "ade://lane/lane-1");
+    } else {
+      expect(dataTransfer.setData).not.toHaveBeenCalled();
+    }
+  });
 });
