@@ -2,11 +2,16 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createDynamicOpenCodeModelDescriptor, replaceDynamicOpenCodeModelDescriptors } from "../../../shared/modelRegistry";
+import {
+  createDynamicOpenCodeModelDescriptor,
+  getDynamicOpenCodeModelDescriptors,
+  replaceDynamicOpenCodeModelDescriptors,
+} from "../../../shared/modelRegistry";
 import { describe, expect, it } from "vitest";
 import {
   __setOpenCodeInventoryPersistencePathForTests,
   classifyOpenCodeVariants,
+  clearOpenCodeInventoryCache,
   peekOpenCodeInventoryCache,
 } from "./openCodeInventory";
 
@@ -39,6 +44,7 @@ describe("OpenCode provider inventory", () => {
     const cachePath = path.join(tempDir, "inventory.json");
     const projectRoot = path.join(tempDir, "project");
     const projectConfig = {};
+    const previousDescriptors = getDynamicOpenCodeModelDescriptors();
     const projectDescriptor = createDynamicOpenCodeModelDescriptor("", {
       displayName: "Project inventory GPT",
       capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
@@ -89,6 +95,8 @@ describe("OpenCode provider inventory", () => {
       expect(inventory?.descriptors[0]?.displayName).toBe("Project inventory GPT");
       expect(inventory?.descriptors[0]?.capabilities.reasoning).toBe(false);
     } finally {
+      clearOpenCodeInventoryCache();
+      replaceDynamicOpenCodeModelDescriptors(previousDescriptors);
       __setOpenCodeInventoryPersistencePathForTests(null);
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
