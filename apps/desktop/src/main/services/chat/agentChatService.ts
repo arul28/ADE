@@ -55446,6 +55446,7 @@ export function createAgentChatService(args: {
         modelIds: [] as string[],
         providers: [],
         error: null as string | null,
+        descriptors: [] as ModelDescriptor[],
       };
     })();
 
@@ -55498,12 +55499,17 @@ export function createAgentChatService(args: {
     // `/config/providers` store while the full `/provider` payload (which carries a
     // `connected: string[]`) feeds only the provider-connect dialog; the desktop app
     // and `opencode models` CLI likewise list connected providers only.
-    // `opencodeInventory.providers` still carries every
-    // provider (id/name/connected/modelCount), so browsing survives without the bulk,
-    // and ids still resolve through the dynamic descriptor registry that
-    // openCodeInventory populates from every catalog entry.
+    // `opencodeInventory.providers` still carries every provider (id/name/
+    // connected/modelCount), so browsing survives without the bulk. Resolve
+    // picker rows from this project's inventory result: the shared model
+    // registry is process-wide and another project's probe can replace it.
+    const openCodeDescriptorsById = new Map(
+      opencodeInventory.descriptors.map((descriptor) => [descriptor.id, descriptor]),
+    );
     for (const id of opencodeInventory.modelIds) {
-      const descriptor = getModelById(id);
+      // Older remote runtimes may not send descriptors yet; preserve their
+      // compatibility while preferring this project's exact inventory.
+      const descriptor = openCodeDescriptorsById.get(id) ?? getModelById(id);
       if (!descriptor) continue;
       descriptors.push(descriptor);
       const groupKey =
