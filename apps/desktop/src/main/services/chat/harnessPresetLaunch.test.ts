@@ -472,10 +472,6 @@ describe("resolveHarnessPresetPlan — unsupported sources", () => {
       { source: { kind: "subscription", provider: "claude" } },
       { readProxyConnection: () => ({ reason: "proxy-stopped" }) },
       "Sign-in through ADE's proxy is stopped; start the proxy and try again."],
-    ["a harness the proxy cannot drive",
-      { harness: "droid", source: { kind: "subscription", provider: "claude" } },
-      { readProxyConnection: liveProxy },
-      /cannot be pointed at ADE's proxy/],
     ["a preset key missing from the store",
       {},
       { getCredentialSummary: () => null },
@@ -490,6 +486,35 @@ describe("resolveHarnessPresetPlan — unsupported sources", () => {
 });
 
 describe("resolveHarnessPresetPlan — subscription source", () => {
+
+  it.each([
+    ["grok", "grok-4"],
+    ["droid", "deepseek/deepseek-r1"],
+    ["qwen", "qwen3-coder-plus"],
+  ] as const)("routes a Claude subscription through the proxy in %s", (harness, model) => {
+    const proxyDir = path.join(adeHome, "proxy");
+    fs.mkdirSync(proxyDir, { recursive: true });
+    fs.writeFileSync(path.join(proxyDir, "state.json"), JSON.stringify({
+      version: "test",
+      port: 8123,
+      pid: process.pid,
+      startedAt: Date.now(),
+      healthyAt: Date.now(),
+    }));
+    fs.writeFileSync(path.join(proxyDir, "config.yaml"),
+      `api-keys:\n  - k\nauth-dir: ${path.join(proxyDir, "auth")}\n`);
+    const readProxyConnection = () => ({ port: 8123, apiKey: "k", prefix: "anth" });
+    const plan = resolveHarnessPresetPlan(
+      preset({ harness, model, source: { kind: "subscription", provider: "claude" } }),
+      deps({ readProxyConnection, writeConfig: false }),
+    );
+
+    expect(plan.status).toBe("ready");
+    if (plan.status !== "ready") throw new Error("expected a ready subscription route");
+    expect(plan.route?.kind).toBe("proxy");
+    expect(plan.model).toContain("anth/");
+    expect(plan.model).toContain(model);
+  });
 
   it("builds Claude's gateway env from the proxy connection", () => {
     const plan = resolveHarnessPresetPlan(
@@ -889,7 +914,7 @@ describe("resolveLaunchBrain", () => {
       deps({ readPresets: () => [preset({ model: "gateway/opus" })] }),
     )).toEqual({
       preset: {
-        env: expect.objectContaining({ CLAUDE_CONFIG_DIR: expect.any(String) }),
+        env: expect.objectContaining({ ANTHROPIC_AUTH_TOKEN: expect.any(String) }),
         passthroughModelId: true,
       },
       model: "gateway/opus",
@@ -917,9 +942,9 @@ describe("previewHarnessLaunchPlan", () => {
     expect(JSON.stringify(preview)).not.toContain("sk-test-key");
   });
 
-  it("does not resolve or preview a gated CLI brain", () => {
+  it("does not resolve or preview a gated Cursor CLI preset", () => {
     const preview = previewHarnessLaunchPlan(
-      { provider: "grok", presetId: "hp_grok", mode: "cli" },
+      { provider: "cursor", presetId: "hp_cursor", mode: "cli" },
       deps({
         readPresets: () => {
           throw new Error("the CLI gate should run before resolving the preset");
@@ -929,7 +954,7 @@ describe("previewHarnessLaunchPlan", () => {
 
     expect(preview).toMatchObject({
       status: "gated",
-      presetId: "hp_grok",
+      presetId: "hp_cursor",
       model: null,
       env: {},
       reason: expect.stringMatching(/own sign-in/),

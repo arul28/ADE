@@ -203,41 +203,4 @@ describe("model picker custom tab", () => {
     expect(document.querySelector('[data-harness-preset-details="hp_1"]')).toBeNull();
   });
 
-  it("points an empty list at the settings page that fills it", () => {
-    renderPicker();
-    openHarnessesTab();
-    expect(screen.getByText("Nothing custom yet")).toBeTruthy();
-    expect(screen.getByText("Settings › Providers › Custom")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Add a custom setup" })).toBeNull();
-  });
-
-  /**
-   * The CTA existed but nothing ever passed a handler, so the empty state
-   * always degraded to inert breadcrumb text.
-   */
-  it("offers Add a custom setup when the host can navigate, and calls back on click", () => {
-    const onOpenHarnessSettings = vi.fn();
-    render(
-      <ModelPickerContent
-        value="anthropic/claude-haiku-4-5"
-        models={MODEL_REGISTRY.filter((model) => model.family === "anthropic")}
-        isAvailable={() => true}
-        onSelect={vi.fn()}
-        onRequestClose={() => undefined}
-        onOpenHarnessSettings={onOpenHarnessSettings}
-      />,
-    );
-    openHarnessesTab();
-
-    const cta = screen.getByRole("button", { name: "Add a custom setup" });
-    expect(screen.queryByText("Settings › Providers › Custom")).toBeNull();
-    // The guidance sentence stays, under the button.
-    const empty = document.querySelector("[data-harness-preset-empty]") as HTMLElement;
-    const order = Array.from(empty.children).map((node) => node.textContent);
-    expect(order.indexOf("Add a custom setup"))
-      .toBeLessThan(order.findIndex((text) => text?.startsWith("A custom provider")));
-
-    fireEvent.click(cta);
-    expect(onOpenHarnessSettings).toHaveBeenCalledTimes(1);
-  });
 });

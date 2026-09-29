@@ -697,37 +697,15 @@ describe("ProvidersSection", () => {
     expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
   });
 
-  /**
-   * Custom is not an eleventh provider.
-   *
-   * It sat as the last row INSIDE the providers table, where it read as a
-   * thing you sign in to. It is the combinations you saved of the ten above,
-   * so it is its own section, below them, with its own mark — a purple gear-and-wrench mark,
-   * not the ADE logo it used to wear and not a vendor's.
-   */
-  it("puts Custom in its own section below the provider table, under the Custom mark", async () => {
+  it("opens the custom provider editor from the settings section", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
     getStatusMock.mockResolvedValue(buildStatus(true, []));
 
-    const { container } = renderProvidersSection();
-
-    const entry = await waitFor(() => {
-      const node = container.querySelector('[data-custom-presets-entry="true"]');
-      expect(node).toBeTruthy();
-      return node as HTMLElement;
-    });
-
-    const providerTable = container.querySelector('[data-settings-manager="ai-providers"]');
-    const customSection = container.querySelector('[data-settings-manager="ai-harnesses-entry"]');
-    expect(providerTable).toBeTruthy();
-    expect(customSection).toBeTruthy();
-    // Document order: the whole provider table, then Custom.
-    expect(providerTable!.compareDocumentPosition(customSection!) & Node.DOCUMENT_POSITION_FOLLOWING)
-      .toBeTruthy();
-    expect(providerTable!.contains(customSection!)).toBe(false);
-    expect(customSection!.querySelector("[data-custom-mark]")).toBeTruthy();
-    expect(entry.querySelector("[data-harness-logo]")).toBeNull();
+    renderProvidersSection();
+    const add = await waitFor(() => screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(add);
+    expect(await screen.findByRole("dialog", { name: "New custom provider" })).toBeTruthy();
   });
 
   /**

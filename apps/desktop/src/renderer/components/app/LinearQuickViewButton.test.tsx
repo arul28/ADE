@@ -136,6 +136,7 @@ describe("LinearQuickViewButton batch-launch UI", () => {
     expect(onChange).toHaveBeenCalledWith({
       modelId: "openai/gpt-5.5",
       fastMode: true,
+      presetId: null,
     });
   });
 

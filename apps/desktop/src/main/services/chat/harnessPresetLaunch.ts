@@ -460,10 +460,9 @@ export function resolveHarnessPresetPlan(
   }
 
   if (preset.source.kind === "subscription") {
-    // Only three harnesses can be pointed at an OpenAI/Anthropic-shaped
-    // endpoint the proxy speaks. The rest read their identity from their own
-    // sign-in and have no endpoint to redirect, which is a capability gap to
-    // state rather than a failure to raise.
+    // These subscription-native harnesses are handled by proxyEnvForSubscription.
+    // Grok, Droid and Qwen accept the same proxy login through their own
+    // config/env shape, so the route writer builds those launches below.
     if (!isProxySubscriptionHarness(harness)) {
       if (!harnessAcceptsRoutes(harness)) {
         return {
