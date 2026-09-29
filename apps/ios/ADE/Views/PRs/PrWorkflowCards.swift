@@ -2,65 +2,6 @@ import SwiftUI
 
 // MARK: - Legacy cards (unchanged surface, lightly restyled)
 
-struct IntegrationWorkflowCard: View {
-  let proposal: IntegrationProposal
-  let onOpenPr: (String) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(proposal.title?.isEmpty == false ? proposal.title! : (proposal.integrationLaneName?.isEmpty == false ? proposal.integrationLaneName! : "Integration workflow"))
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-          Text("Base branch: \(proposal.baseBranch)")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 8)
-        ADEStatusPill(text: proposal.overallOutcome.uppercased(), tint: proposal.overallOutcome == "clean" ? ADEColor.success : ADEColor.warning)
-      }
-
-      HStack(spacing: 8) {
-        ADEStatusPill(text: proposal.status.uppercased(), tint: ADEColor.accent)
-        if let workflowDisplayState = proposal.workflowDisplayState {
-          ADEStatusPill(text: workflowDisplayState.uppercased(), tint: ADEColor.textSecondary)
-        }
-        if let cleanupState = proposal.cleanupState {
-          ADEStatusPill(text: cleanupState.uppercased(), tint: ADEColor.warning)
-        }
-      }
-
-      Text("\(proposal.steps.count) steps · \(proposal.laneSummaries.count) lanes")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-
-      if !proposal.steps.isEmpty {
-        VStack(alignment: .leading, spacing: 6) {
-          ForEach(proposal.steps.prefix(3)) { step in
-            Text("\(step.position + 1). \(step.laneName) · \(step.outcome)")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-        }
-      }
-
-      if let linkedPrId = proposal.linkedPrId {
-        Button("Open linked PR") {
-          onOpenPr(linkedPrId)
-        }
-        .buttonStyle(.glass)
-      }
-    }
-    .adeGlassCard(cornerRadius: 18)
-  }
-}
-
-// MARK: - Unified workflow card
-
-/// Unified workflow card driven by the `PrMobileSnapshot.workflowCards`
-/// payload. Integration and rebase cards share one rendering surface.
-///
 struct PrMobileWorkflowCardView: View {
   let card: PrWorkflowCard
   let isLive: Bool
@@ -75,41 +16,16 @@ struct PrMobileWorkflowCardView: View {
   let onDeferRebase: (String) -> Void
   let onDismissRebase: (String) -> Void
 
-  /// Tint applied to the outer liquid-glass card and the 4pt status rail on
-  /// the left edge.
-  private var cardTint: Color {
-    switch card.kind {
-    case "integration": return PrGlassPalette.warning
-    case "rebase": return PrGlassPalette.warning
-    default: return PrGlassPalette.purple
-    }
-  }
-
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      // 4pt status rail tinted by workflow kind.
-      RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [cardTint, cardTint.opacity(0.5)],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-        )
-        .frame(width: 4)
-        .shadow(color: cardTint.opacity(0.55), radius: 8, x: 0, y: 0)
-
-      VStack(alignment: .leading, spacing: 14) {
-        switch card.kind {
-        case "integration": integrationSection
-        case "rebase": rebaseSection
-        default: unknownSection
-        }
+    // Flat: the row sits on the page; the section header names the kind.
+    VStack(alignment: .leading, spacing: 12) {
+      switch card.kind {
+      case "integration": integrationSection
+      case "rebase": rebaseSection
+      default: unknownSection
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(14)
-    .prGlassCard(cornerRadius: 20, tint: cardTint)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   // MARK: Integration
@@ -459,65 +375,6 @@ struct PrConflictBadge: View {
     .accessibilityLabel("Warning: \(text)")
   }
 }
-
-struct RebaseWorkflowCard: View {
-  let item: PrRebaseWorkflowItem
-  let onRebase: () -> Void
-  let onDefer: () -> Void
-  let onDismiss: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(item.laneName)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(item.branchRef)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 8)
-        ADEStatusPill(text: item.severity.uppercased(), tint: item.severity == "critical" ? ADEColor.danger : item.severity == "warning" ? ADEColor.warning : ADEColor.textSecondary)
-      }
-
-      Text(item.statusMessage)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-
-      if let deferredUntil = item.deferredUntil {
-        Text("Deferred until \(prAbsoluteTime(deferredUntil))")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-
-      HStack(spacing: 10) {
-        Button("Rebase") {
-          onRebase()
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
-
-        Button("Defer") {
-          onDefer()
-        }
-        .buttonStyle(.glass)
-
-        Button("Dismiss") {
-          onDismiss()
-        }
-        .buttonStyle(.glass)
-        .tint(ADEColor.textSecondary)
-      }
-    }
-    .adeGlassCard(cornerRadius: 18)
-  }
-}
-
-// MARK: - Private styling helpers
-// Scoped to this file — shared public helpers (PrSectionHdr, PrTagChip, ...)
-// are being introduced by the foundation workstream; this file stays
-// self-contained so it compiles independently.
 
 private struct WkConfigRow: View {
   let label: String

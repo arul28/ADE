@@ -303,38 +303,3 @@ enum PrMergeChecklist {
 }
 
 // MARK: - Checklist view
-
-/// Renders the requirement checklist with the liquid-glass row treatment used
-/// across the PR detail surfaces.
-struct PrMergeChecklistView: View {
-  let items: [PrMergeChecklistItem]
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      ForEach(items) { item in
-        HStack(alignment: .top, spacing: 10) {
-          Image(systemName: item.state.icon)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(item.state.tint)
-            .frame(width: 18, height: 18)
-            .padding(.top, 1)
-
-          VStack(alignment: .leading, spacing: 2) {
-            Text(item.label)
-              .font(.system(size: 13, weight: .medium))
-              .foregroundStyle(ADEColor.textPrimary)
-              .fixedSize(horizontal: false, vertical: true)
-            if let detail = item.detail {
-              Text(detail)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(ADEColor.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-          }
-
-          Spacer(minLength: 0)
-        }
-      }
-    }
-  }
-}

@@ -1419,6 +1419,9 @@ struct PrMarkdownRenderer: View {
       .foregroundStyle(ADEColor.textPrimary)
       .tint(ADEColor.accent)
       .frame(maxWidth: .infinity, alignment: .leading)
+      // In a List row the proposed height is tight; without this, list items
+      // truncate to one line instead of wrapping.
+      .fixedSize(horizontal: false, vertical: true)
       .textSelection(.enabled)
   }
 }

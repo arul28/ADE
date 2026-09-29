@@ -1,460 +1,245 @@
 import SwiftUI
 
-/// PR description rendered as the first card of the thread.
-struct PrThreadDescriptionCard: View {
-  let author: String?
-  private let blocks: [PrGitHubDescriptionBlock]
-  @State private var expandedDisclosureIds: Set<String> = []
+// The top and bottom of the PR detail screen on the flat base: the header
+// (number, author, age, state, title, branches, lane) and the slim glass bar
+// with the next step and its one action.
 
-  init(author: String?, text: String) {
-    self.author = author
+/// "3d ago", plus "· updated 2h ago" only when that says something new.
+func prFlatHeaderAge(createdAt: String?, updatedAt: String?) -> String? {
+  let created = prCompactRelativeTime(createdAt)
+  guard !created.isEmpty else { return nil }
+  let opened = created == "now" ? "just now" : "\(created) ago"
+  let updated = prCompactRelativeTime(updatedAt)
+  guard !updated.isEmpty, updated != created else { return opened }
+  return "\(opened) · updated \(updated == "now" ? "just now" : "\(updated) ago")"
+}
+
+struct PrFlatDetailHeader: View {
+  let number: Int
+  let author: String?
+  let authorIsBot: Bool?
+  let createdAt: String?
+  let updatedAt: String?
+  let state: String
+  let title: String
+  let baseBranch: String
+  let headBranch: String
+  let laneName: String?
+  let ghostLaneName: String?
+  /// The lane's machine, when the repository is on more than one.
+  let machineName: String?
+  let stackLabel: String?
+  let onOpenLane: (() -> Void)?
+  let onOpenStack: (() -> Void)?
+  let canCreateLane: Bool
+  let canLinkLane: Bool
+  let onCreateLane: () -> Void
+  let onLinkLane: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .center, spacing: 6) {
+        Text(verbatim: "#\(number)")
+          .font(.adeMono(13, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+        if let author, !author.isEmpty {
+          Text("·").foregroundStyle(ADEColor.textMuted)
+          PrAvatar(login: author, isBot: authorIsBot, size: 16)
+          Text(author)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        if let age = prFlatHeaderAge(createdAt: createdAt, updatedAt: updatedAt) {
+          Text("· \(age)")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 6)
+        ADEFlatBadge(text: state.isEmpty ? "unknown" : state, tint: prStateColor(state))
+      }
+      Text(title)
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+      if !baseBranch.isEmpty || !headBranch.isEmpty {
+        Text(verbatim: "\(baseBranch) ← \(headBranch)")
+          .font(.adeMono(11.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      HStack(spacing: 6) {
+        if let laneName, !laneName.isEmpty {
+          Button { onOpenLane?() } label: {
+            ADEFlatChip(symbol: "arrow.triangle.branch", text: laneName, tint: ADEColor.textPrimary)
+          }
+          .buttonStyle(.plain)
+          .disabled(onOpenLane == nil)
+          .accessibilityHint("Opens the lane")
+          if let machineName {
+            ADEFlatChip(symbol: "desktopcomputer", text: machineName)
+          }
+        } else {
+          if let ghostLaneName, !ghostLaneName.isEmpty {
+            ADEFlatChip(symbol: nil, text: "was: \(ghostLaneName)", tint: ADEColor.textMuted)
+          }
+          if canCreateLane || canLinkLane {
+            Menu {
+              if canCreateLane {
+                Button(action: onCreateLane) { Label("Create lane from branch", systemImage: "plus.square.on.square") }
+              }
+              if canLinkLane {
+                Button(action: onLinkLane) { Label("Link an existing lane", systemImage: "link") }
+              }
+            } label: {
+              ADEFlatChip(symbol: "plus", text: "Lane", tint: ADEColor.accent)
+            }
+            .accessibilityLabel("Add a lane for this PR")
+          }
+        }
+        if let stackLabel {
+          Button { onOpenStack?() } label: {
+            ADEFlatChip(symbol: "square.stack.3d.up", text: stackLabel)
+          }
+          .buttonStyle(.plain)
+          .disabled(onOpenStack == nil)
+        }
+        Spacer(minLength: 0)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+struct PrFlatDetailHeaderSkeleton: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        ADESkeletonView(width: 140, height: 12, cornerRadius: 3)
+        Spacer()
+        ADESkeletonView(width: 56, height: 16, cornerRadius: 4)
+      }
+      ADESkeletonView(height: 18, cornerRadius: 4)
+      ADESkeletonView(width: 220, height: 18, cornerRadius: 4)
+      ADESkeletonView(width: 180, height: 11, cornerRadius: 3)
+    }
+  }
+}
+
+/// The slim bar above the tab bar: the next step on the left, one main action
+/// on the right. Never opens a sheet: the text jumps to the tab that explains it.
+struct PrNextStepFlatBar<Primary: View>: View {
+  let step: PrNextStep
+  let isBusy: Bool
+  let busyLabel: String?
+  let onTapText: () -> Void
+  @ViewBuilder let primary: () -> Primary
+
+  /// The next thing in the way after the headline, never the headline again.
+  private var subline: String? {
+    if let busyLabel { return busyLabel }
+    let restated: String?
+    switch step.kind {
+    case .checksFailing, .checksPending: restated = "checks"
+    case .behind: restated = "up_to_date"
+    case .conflicts: restated = "conflicts"
+    case .changesRequested, .reviewRequired: restated = "review"
+    default: restated = nil
+    }
+    let chips = step.chips.filter { $0.id != restated }
+    if let chip = chips.first(where: { $0.state == .fail }) ?? chips.first(where: { $0.state == .pending }) {
+      return chip.label
+    }
+    // The detail of a checks / behind / conflicts / review step says the
+    // headline again ("1 check failing" / "1 failing check").
+    return restated == nil ? step.detail : nil
+  }
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Button(action: onTapText) {
+        HStack(spacing: 9) {
+          if isBusy {
+            ProgressView().controlSize(.small)
+          } else {
+            Circle().fill(prNextStepColor(step.tone)).frame(width: 8, height: 8)
+          }
+          VStack(alignment: .leading, spacing: 1) {
+            Text(step.headline)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            if let subline {
+              Text(subline)
+                .font(.caption)
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            }
+          }
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Next step: \(step.headline)")
+      primary()
+    }
+    .padding(.leading, 16)
+    .padding(.trailing, 8)
+    .padding(.vertical, 8)
+    .glassEffect(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .padding(.horizontal, 12)
+    .padding(.bottom, 6)
+  }
+}
+
+func prNextStepColor(_ tone: PrNextStepTone) -> Color {
+  switch tone {
+  case .success: return ADEColor.success
+  case .danger: return ADEColor.danger
+  case .warning: return ADEColor.warning
+  case .info: return ADEColor.info
+  case .merged: return ADEColor.accent
+  case .neutral: return ADEColor.textMuted
+  }
+}
+
+/// The cleaned PR description as markdown on the page, `<details>` blocks as
+/// disclosures.
+struct PrFlatDescription: View {
+  private let blocks: [PrGitHubDescriptionBlock]
+  @State private var expanded: Set<String> = []
+
+  init(text: String) {
     blocks = parsePrGitHubDescriptionBlocks(text)
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text("Description")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        if let author, !author.isEmpty {
-          Text("@\(author)")
-            .font(.system(size: 12))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-      }
-
-      Divider().overlay(PrGlassPalette.cardBorder)
-
+    VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
         switch block {
         case .markdown(_, let markdown):
           PrMarkdownRenderer(markdown: markdown)
         case .disclosure(let id, let title, let markdown):
-          DisclosureGroup(isExpanded: disclosureBinding(for: id)) {
-            PrMarkdownRenderer(markdown: markdown)
-              .padding(.top, 8)
+          DisclosureGroup(isExpanded: Binding(
+            get: { expanded.contains(id) },
+            set: { if $0 { expanded.insert(id) } else { expanded.remove(id) } }
+          )) {
+            PrMarkdownRenderer(markdown: markdown).padding(.top, 6)
           } label: {
             Text(title)
-              .font(.system(size: 14, weight: .semibold))
+              .font(.subheadline.weight(.medium))
               .foregroundStyle(ADEColor.textPrimary)
-              .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+              .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
               .contentShape(Rectangle())
           }
           .tint(ADEColor.textSecondary)
-          .accessibilityValue(expandedDisclosureIds.contains(id) ? "Expanded" : "Collapsed")
-        }
-      }
-    }
-    .padding(.horizontal, 4)
-    .padding(.vertical, 4)
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func disclosureBinding(for id: String) -> Binding<Bool> {
-    Binding(
-      get: { expandedDisclosureIds.contains(id) },
-      set: { expanded in
-        if expanded {
-          expandedDisclosureIds.insert(id)
-        } else {
-          expandedDisclosureIds.remove(id)
-        }
-      }
-    )
-  }
-}
-
-/// Compact mobile summary that replaces the old PR hero card. It keeps the
-/// state/actions context above the thread without forcing a large title card at
-/// the top of every detail screen.
-struct PrDetailSummarySection: View {
-  let pr: PullRequestListItem
-  let snapshot: PullRequestSnapshot?
-  let mergeGate: PrMergeGateInfo
-  @Binding var commitsExpanded: Bool
-  let onChecksTap: () -> Void
-  let onFilesTap: () -> Void
-  let onCommitTap: (PrCommit) -> Void
-
-  private var state: String { snapshot?.status?.state ?? pr.state }
-  private var stateTint: Color { prStateTint(state) }
-  private var checksStatus: String { snapshot?.status?.checksStatus ?? pr.checksStatus }
-  private var checksReason: String? { snapshot?.status?.checksReason ?? pr.checksReason }
-
-  /// ADE-135. The merge gate counts *observed* failures, so a PR that nothing
-  /// ever verified still reaches its "All checks green" subline. Absence outranks
-  /// that copy here — the gate itself is left alone, this only changes what the
-  /// header says.
-  private var subline: String {
-    if checksStatus == "not_run" {
-      return checksReason ?? noCIReasonText
-    }
-    return mergeGate.subline
-  }
-  private var files: [PrFile] { snapshot?.files ?? [] }
-  private var commits: [PrCommit] { snapshot?.commits ?? [] }
-
-  private var additions: Int {
-    files.isEmpty ? pr.additions : files.reduce(0) { $0 + $1.additions }
-  }
-
-  private var deletions: Int {
-    files.isEmpty ? pr.deletions : files.reduce(0) { $0 + $1.deletions }
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack(alignment: .center, spacing: 8) {
-        PrTagChip(label: state.isEmpty ? "unknown" : state, color: stateTint)
-        Text(subline)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 14)
-      .padding(.top, 13)
-      .padding(.bottom, 10)
-
-      Divider().overlay(PrGlassPalette.cardBorder)
-
-      HStack(spacing: 0) {
-        PrSummaryMetricButton(
-          title: "Checks",
-          value: prChecksLabel(checksStatus),
-          tint: prChecksTint(checksStatus),
-          action: onChecksTap
-        )
-
-        PrSummaryMetricDivider()
-
-        PrSummaryMetricButton(
-          title: "Changes",
-          value: "\(files.count) file\(files.count == 1 ? "" : "s")",
-          detail: "+\(additions) / −\(deletions)",
-          tint: ADEColor.info,
-          action: onFilesTap
-        )
-
-        PrSummaryMetricDivider()
-
-        PrSummaryMetricButton(
-          title: "Commits",
-          value: "\(commits.count) commit\(commits.count == 1 ? "" : "s")",
-          tint: ADEColor.accent,
-          isExpanded: commits.isEmpty ? nil : commitsExpanded,
-          action: {
-            guard !commits.isEmpty else { return }
-            withAnimation(.easeInOut(duration: 0.18)) {
-              commitsExpanded.toggle()
-            }
-          }
-        )
-      }
-
-      if commitsExpanded, !commits.isEmpty {
-        Divider().overlay(PrGlassPalette.cardBorder)
-        VStack(spacing: 0) {
-          ForEach(Array(commits.prefix(25).enumerated()), id: \.element.id) { index, commit in
-            PrSummaryCommitRow(commit: commit) {
-              onCommitTap(commit)
-            }
-            if index < min(commits.count, 25) - 1 {
-              Divider()
-                .padding(.leading, 14)
-                .overlay(PrGlassPalette.cardBorder)
-            }
-          }
-          if commits.count > 25 {
-            Divider()
-              .padding(.leading, 14)
-              .overlay(PrGlassPalette.cardBorder)
-            Text("+ \(commits.count - 25) older commits")
-              .font(.system(size: 11, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.horizontal, 14)
-              .padding(.vertical, 10)
-          }
-        }
-        .transition(.opacity.combined(with: .move(edge: .top)))
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 16)
-  }
-}
-
-struct PrDetailSummarySkeleton: View {
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 10) {
-        ADESkeletonView(width: 58, height: 22, cornerRadius: 7)
-        ADESkeletonView(width: 190, height: 13, cornerRadius: 5)
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 13)
-
-      Divider().overlay(PrGlassPalette.cardBorder)
-
-      HStack(spacing: 0) {
-        ForEach(0..<3, id: \.self) { index in
-          VStack(alignment: .leading, spacing: 6) {
-            ADESkeletonView(width: 48, height: 10, cornerRadius: 4)
-            ADESkeletonView(width: index == 1 ? 68 : 58, height: 14, cornerRadius: 4)
-          }
-          .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-
-          if index < 2 {
-            PrSummaryMetricDivider()
-          }
         }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 16)
-  }
-}
-
-private struct PrSummaryMetricButton: View {
-  let title: String
-  let value: String
-  var detail: String?
-  let tint: Color
-  var isExpanded: Bool? = nil
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 4) {
-          Text(title)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-          Spacer(minLength: 0)
-          if let isExpanded {
-            Image(systemName: "chevron.right")
-              .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .rotationEffect(.degrees(isExpanded ? 90 : 0))
-          }
-        }
-        Text(value)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(tint)
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
-        if let detail, !detail.isEmpty {
-          Text(detail)
-            .font(.system(size: 10.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-      }
-      .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-private struct PrSummaryMetricDivider: View {
-  var body: some View {
-    Rectangle()
-      .fill(PrGlassPalette.cardBorder)
-      .frame(width: 1, height: 44)
-  }
-}
-
-private struct PrSummaryCommitRow: View {
-  let commit: PrCommit
-  let action: () -> Void
-
-  private var author: String? {
-    commit.authorLogin ?? commit.authorName
-  }
-
-  private var message: String {
-    commit.message
-      .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-      .first
-      .map(String.init)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      ?? "Commit"
-  }
-
-  private var shortSha: String {
-    commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
-  }
-
-  var body: some View {
-    Button(action: action) {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: "smallcircle.filled.circle")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(prChecksTint(commit.checkStatus ?? "none"))
-          .frame(width: 15, height: 18)
-        VStack(alignment: .leading, spacing: 3) {
-          Text(message)
-            .font(.system(size: 12.5, weight: .medium))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          HStack(spacing: 7) {
-            Text(shortSha)
-              .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-              .foregroundStyle(ADEColor.accent)
-            if let author, !author.isEmpty {
-              Text(author)
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Text(prCompactRelativeTime(commit.committedDate))
-              .font(.system(size: 10.5, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        Image(systemName: "arrow.down.to.line.compact")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.top, 2)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-/// Collapsed offer at the top of the thread when no local lane tracks this PR's
-/// branch: create one from the branch, link an existing one, or open GitHub.
-///
-/// Deliberately quiet and neutral. Every PR action on this screen is a GitHub
-/// call that works without a lane, so this is an offer to start local work — not
-/// a warning, and not a gate on anything.
-struct PrLocalLaneOfferBanner: View {
-  let canAutoMap: Bool
-  let canMap: Bool
-  @Binding var isExpanded: Bool
-  let onAutoMap: () -> Void
-  let onMap: () -> Void
-  let onOpenInGitHub: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
-          isExpanded.toggle()
-        }
-      } label: {
-        HStack(spacing: 10) {
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-          Text("Work on this branch locally")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Spacer(minLength: 0)
-          Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-        }
-        .padding(.horizontal, 13)
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Work on this branch locally")
-      .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-      .accessibilityHint(isExpanded ? "Collapses lane actions" : "Shows lane actions")
-
-      if isExpanded {
-        Divider().overlay(ADEColor.textMuted.opacity(0.22))
-
-        VStack(alignment: .leading, spacing: 0) {
-          Text("Create a lane from this branch, or link one you already have, to edit the code on your machine.")
-            .font(.system(size: 12))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-
-          if canAutoMap {
-            PrLaneOfferActionRow(
-              title: "Create lane from PR branch",
-              systemImage: "arrow.triangle.branch",
-              tint: ADEColor.accent,
-              action: onAutoMap
-            )
-          }
-
-          if canMap {
-            PrLaneOfferActionRow(
-              title: "Link an existing lane",
-              systemImage: "link",
-              tint: ADEColor.accent,
-              action: onMap
-            )
-          }
-
-          PrLaneOfferActionRow(
-            title: "Open in GitHub",
-            systemImage: "arrow.up.right.square",
-            trailingSystemImage: "arrow.up.right",
-            tint: ADEColor.textSecondary,
-            action: onOpenInGitHub
-          )
-        }
-        .transition(.opacity.combined(with: .move(edge: .top)))
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(PrGlassPalette.threadCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.7)
-    )
-  }
-}
-
-private struct PrLaneOfferActionRow: View {
-  let title: String
-  let systemImage: String
-  var trailingSystemImage = "chevron.right"
-  let tint: Color
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      HStack(spacing: 10) {
-        Image(systemName: systemImage)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(tint)
-          .frame(width: 18)
-        Text(title)
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        Image(systemName: trailingSystemImage)
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 13)
-      .frame(minHeight: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
   }
 }

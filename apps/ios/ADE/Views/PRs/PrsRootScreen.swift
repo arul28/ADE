@@ -7,7 +7,6 @@ struct PRsTabView: View {
   @EnvironmentObject private var machineFleet: MachineFleet
   /// PR ↔ lane links and lanes of the other machines holding this repository.
   @StateObject private var remotePrs = PrRemoteMachinesModel()
-  @Namespace private var prTransitionNamespace
   var isActive = true
 
   @State private var path = NavigationPath()
@@ -26,7 +25,6 @@ struct PRsTabView: View {
   // requests.
   @State private var isLoadingExternalHistory = false
   @State private var errorMessage: String?
-  @State private var actionMessage: String?
   @State private var createPresented = false
   @State private var createInitialLaneId: String?
   @State private var stackPresentation: PrStackPresentation?
@@ -34,7 +32,6 @@ struct PRsTabView: View {
   @State private var lastPrsLocalProjectionReload = Date.distantPast
   @State private var lastHandledPrsProjectionRevision: Int?
   @State private var lastPrsLiveSnapshotAttempt = Date.distantPast
-  @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
   @State private var prDetailRouteScopes: [String: PrDetailRouteScope] = [:]
   @State private var prDetailInitialTabs: [String: PrDetailTab] = [:]
@@ -44,10 +41,6 @@ struct PRsTabView: View {
   @State private var githubDerived: PrGitHubDerivedList = .empty
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var autoMapRequest: PrAutoMapRequest?
-  /// The PR a swipe-to-close is waiting on confirmation for. Closing is a
-  /// GitHub state change on someone's work, so it asks first here exactly as it
-  /// does on desktop — a swipe plus one tap is not a decision.
-  @State private var closeConfirmationTarget: PullRequestListItem?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
   /// Primary headline selector for the GitHub surface (desktop parity): three
@@ -56,28 +49,14 @@ struct PRsTabView: View {
   @SceneStorage("ade.prs.githubScopeFilter") private var githubScopeFilterRawValue = PrGitHubScopeFilter.all.rawValue
   @SceneStorage("ade.prs.githubSort") private var githubSortRawValue = PrGitHubSortOption.updated.rawValue
   @State private var searchText = ""
-  @State private var filtersExpanded = false
+  @State private var searchPresented = false
+  @State private var toast: ADEToastMessage?
 
   private var hasActiveFilters: Bool {
     // Status is now driven by the always-visible category tabs, so only the
     // secondary scope + sort controls count as "active advanced filters".
     selectedGitHubScopeFilter.wrappedValue != .all
       || selectedGitHubSort.wrappedValue != .updated
-  }
-
-  /// Compact one-liner shown when filters are collapsed but non-default,
-  /// e.g. "ADE-linked · sort newest".
-  private var activeFilterSummary: String {
-    var parts: [String] = []
-    let scope = selectedGitHubScopeFilter.wrappedValue
-    if scope != .all {
-      parts.append(scope == .ade ? "ADE-linked" : "External")
-    }
-    let sort = selectedGitHubSort.wrappedValue
-    if sort != .updated {
-      parts.append("Sort \(sort.title.lowercased())")
-    }
-    return parts.isEmpty ? "Filters" : parts.joined(separator: " · ")
   }
 
   private var prsStatus: SyncDomainStatus {
@@ -302,21 +281,13 @@ struct PRsTabView: View {
     return syncService.requestedPrNavigation?.id
   }
 
-  private var syncEyebrow: String {
-    if isLoadingSkeleton {
-      return "HYDRATING…"
+  private var workflowKindCounts: [String: Int] {
+    var counts: [String: Int] = [:]
+    for card in workflowCards {
+      counts[card.kind, default: 0] += 1
     }
-    if !isLive {
-      return "CACHED"
-    }
-    if let syncedAt = githubSnapshot?.syncedAt, !syncedAt.isEmpty {
-      return "UP TO DATE · \(prRelativeTime(syncedAt).uppercased())"
-    }
-    return "UP TO DATE"
-  }
-
-  private var linkedPrCount: Int {
-    githubDerived.linkedCount
+    counts["all"] = workflowCards.count
+    return counts
   }
 
   /// Re-read the other machines while the tab is visible, for the focused
@@ -391,97 +362,14 @@ struct PRsTabView: View {
   var body: some View {
     NavigationStack(path: $path) {
       List {
-        prsSearchPill
-
-        if let notice = laneContextNotice {
-          notice.prListRow()
-        }
-
+        noticeRows
         if isLoadingSkeleton {
-          ForEach(0..<3, id: \.self) { _ in
-            PrRowCardSkeleton()
-              .prListRow()
+          Section {
+            ForEach(0..<4, id: \.self) { _ in
+              PrRowCardSkeleton().adeFlatRow()
+            }
           }
         } else {
-          // Suppress hydration and view-error banners when the host is
-          // unreachable — the red gear dot is the single source of truth
-          // for connection state.
-          if !syncService.connectionState.isHostUnreachable,
-            !syncService.shouldSuppressDomainHydrationNotices,
-            let hydrationNotice = prsStatus.inlineHydrationFailureNotice(for: .prs)
-          {
-            ADEInstructionErrorCard(
-              notice: hydrationNotice,
-              retry: { Task { await reload(refreshRemote: true) } }
-            )
-            .prListRow()
-          }
-          if let errorMessage,
-            prsStatus.phase == .ready,
-            !syncService.connectionState.isHostUnreachable
-          {
-            ADENoticeCard(
-              title: "PR view error",
-              message: errorMessage,
-              icon: "exclamationmark.triangle.fill",
-              tint: ADEColor.danger,
-              actionTitle: "Retry",
-              action: { Task { await reload(refreshRemote: true) } }
-            )
-            .prListRow()
-          }
-
-          // In-flight banner reads from the DURABLE service registry, so it
-          // survives a tab switch + remount — the action keeps running at the
-          // service level even while this view is gone.
-          if let rootActionInFlightLabel {
-            HStack(spacing: 10) {
-              ProgressView()
-                .tint(ADEColor.accent)
-              Text(rootActionInFlightLabel)
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
-              Spacer(minLength: 0)
-            }
-            .adeGlassCard(cornerRadius: 12, padding: 12)
-            .prListRow()
-          }
-
-          // External-history fetch indicator. `loadGitHubExternalHistoryIfNeeded`
-          // used to fetch silently when switching off the Open filter; surface a
-          // lightweight row so the user knows closed/merged history is loading.
-          if isLoadingExternalHistory {
-            HStack(spacing: 10) {
-              ProgressView()
-                .tint(ADEColor.accent)
-              Text("Loading closed & merged history…")
-                .font(.subheadline)
-                .foregroundStyle(ADEColor.textSecondary)
-              Spacer(minLength: 0)
-            }
-            .adeGlassCard(cornerRadius: 12, padding: 12)
-            .prListRow()
-          }
-
-          if let actionMessage {
-            ADENoticeCard(
-              title: "PR workflow updated",
-              message: actionMessage,
-              icon: "checkmark.circle.fill",
-              tint: ADEColor.success,
-              actionTitle: nil,
-              action: nil
-            )
-            .prListRow()
-          }
-
-          PrsSurfaceToggle(
-            selection: selectedRootSurface,
-            repoPrCount: allGitHubPrsCount,
-            workflowCount: workflowCards.count
-          )
-          .prListRowChrome()
-
           switch selectedRootSurface.wrappedValue {
           case .github:
             githubSurfaceRows
@@ -490,19 +378,18 @@ struct PRsTabView: View {
           }
         }
       }
-      .listStyle(.plain)
-      .listRowSpacing(0)
-      .contentMargins(.horizontal, 0, for: .scrollContent)
-      .contentMargins(.bottom, 88, for: .scrollContent)
-      .scrollContentBackground(.hidden)
-      .adeScreenBackground()
-      .adeNavigationGlass()
+      .adeFlatList()
+      .contentMargins(.bottom, 24, for: .scrollContent)
+      .searchable(
+        text: $searchText,
+        isPresented: $searchPresented,
+        placement: .navigationBarDrawer(displayMode: .automatic),
+        prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflows"
+      )
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar(.hidden, for: .navigationBar)
-      .safeAreaInset(edge: .top, spacing: 0) {
-        prsInlineTopBar
-      }
+      .toolbar { prsToolbar }
+      .adeToast($toast)
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
       .task(id: prsProjectionReloadKey) {
         guard let revision = prsProjectionReloadKey else { return }
@@ -560,14 +447,13 @@ struct PRsTabView: View {
       .refreshable {
         await refreshFromPullGesture()
       }
-      // NOTE: We intentionally do NOT cancel any action task on disappear.
-      // Root PR actions now run at the service level (`runDurablePrAction`), so
-      // switching tabs must not abort in-flight integration or link work.
+      // Root PR actions run at the service level (`runDurablePrAction`), so
+      // switching tabs never aborts in-flight integration or link work.
       .navigationDestination(for: String.self) { prId in
         let routeScope = prDetailRouteScopes[prId]
         PrDetailView(
           prId: prId,
-          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+          transitionNamespace: nil,
           requestedRepoOwner: routeScope?.repoOwner,
           requestedRepoName: routeScope?.repoName,
           availableLanes: linkableLanes,
@@ -576,7 +462,7 @@ struct PRsTabView: View {
           machineContext: machineContext,
           onRemoteLinksChanged: { await refreshRemotePrs() }
         )
-          .environmentObject(syncService)
+        .environmentObject(syncService)
       }
       .sheet(isPresented: $createPresented, onDismiss: {
         createInitialLaneId = nil
@@ -623,96 +509,76 @@ struct PRsTabView: View {
         )
         .environmentObject(syncService)
       }
-      .confirmationDialog(
-        prCloseConfirmationTitle(prNumber: closeConfirmationTarget?.githubPrNumber),
-        isPresented: Binding(
-          get: { closeConfirmationTarget != nil },
-          set: { if !$0 { closeConfirmationTarget = nil } }
-        ),
-        titleVisibility: .visible,
-        presenting: closeConfirmationTarget
-      ) { target in
-        Button("Close pull request", role: .destructive) {
-          closeConfirmationTarget = nil
-          runPrRootAction("Closing pull request") {
-            try await syncService.closePullRequest(prId: target.id)
-          }
-        }
-        Button("Cancel", role: .cancel) { closeConfirmationTarget = nil }
-      } message: { target in
-        Text(prCloseConfirmationMessage(headBranch: target.headBranch))
-      }
     }
   }
 
-  /// Count shown in the hero-header chip — matches whichever surface the user
-  /// is currently viewing, so we don't flash "GitHub 42" in the title while
-  /// the workflows surface is showing 3 cards.
-  private var heroCount: Int {
-    switch selectedRootSurface.wrappedValue {
-    case .github:
-      return filteredGitHubPrs.count
-    case .workflows:
-      return groupedWorkflowCards.count
-    }
-  }
+  // MARK: - Top bar
 
-  /// Inline top bar — eyebrow + 32pt PRs title on the left, refresh +
-  /// gradient-plus on the right, all in one row. Pulls the hero up so we
-  /// stop wasting an entire scroll-row on whitespace.
-  @ViewBuilder
-  private var prsInlineTopBar: some View {
-    HStack(alignment: .center, spacing: 12) {
+  @ToolbarContentBuilder
+  private var prsToolbar: some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) {
       ADEHubBackButton()
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text("PRs")
-          .font(.system(size: 28, weight: .bold, design: .rounded))
-          .tracking(-0.6)
-          .foregroundStyle(PrsGlass.textPrimary)
-          .shadow(color: Color.black.opacity(0.45), radius: 6, x: 0, y: 2)
-          .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
-        if heroCount > 0 {
-          Text("\(heroCount)")
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(PrsGlass.textMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(
-              Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.6)
-            )
-            .fixedSize()
+    }
+    .sharedBackgroundVisibility(.hidden)
+
+    ToolbarItem(placement: .topBarLeading) {
+      titleMenu
+    }
+    .sharedBackgroundVisibility(.hidden)
+
+    ToolbarItemGroup(placement: .topBarTrailing) {
+      Button {
+        searchPresented = true
+      } label: {
+        Image(systemName: "magnifyingglass")
+      }
+      .accessibilityLabel("Search pull requests")
+
+      Button {
+        createInitialLaneId = nil
+        createPresented = true
+      } label: {
+        Image(systemName: "plus")
+      }
+      .disabled(!canCreatePr)
+      .accessibilityLabel("Create pull request")
+    }
+
+    ToolbarItem(placement: .topBarTrailing) {
+      ADERootToolbarControls(scopeKey: "PRs")
+    }
+    .sharedBackgroundVisibility(.hidden)
+  }
+
+  /// "PRs ▾": GitHub or Workflows, and the list's scope and sort.
+  private var titleMenu: some View {
+    Menu {
+      Picker("View", selection: selectedRootSurface) {
+        Label("GitHub", systemImage: "arrow.triangle.pull").tag(PrRootSurface.github)
+        Label(workflowCards.isEmpty ? "Workflows" : "Workflows (\(workflowCards.count))", systemImage: "point.3.filled.connected.trianglepath.dotted")
+          .tag(PrRootSurface.workflows)
+      }
+      if selectedRootSurface.wrappedValue == .github {
+        Section {
+          Picker(selection: selectedGitHubScopeFilter) {
+            ForEach(PrGitHubScopeFilter.allCases) { scope in
+              Text(scope.title).tag(scope)
+            }
+          } label: {
+            Label("Show", systemImage: "line.3.horizontal.decrease")
+          }
+          .pickerStyle(.menu)
+          Picker(selection: selectedGitHubSort) {
+            ForEach(PrGitHubSortOption.allCases) { sort in
+              Text(sort.title).tag(sort)
+            }
+          } label: {
+            Label("Sort", systemImage: "arrow.up.arrow.down")
+          }
+          .pickerStyle(.menu)
         }
       }
-      .layoutPriority(1)
-      Spacer(minLength: 0)
-      HStack(spacing: 8) {
-        // Filter toggle — collapsed by default, expands the filter chip
-        // panel inline in the list. Tints purple when any non-default
-        // filter is active so users know they're looking at a subset.
-        Button {
-          withAnimation(.easeInOut(duration: 0.2)) {
-            filtersExpanded.toggle()
-          }
-        } label: {
-          let active = hasActiveFilters
-          PrsGlassDisc(
-            tint: active ? PrsGlass.accentTop : PrsGlass.textSecondary,
-            isAlive: active
-          ) {
-            Image(systemName: filtersExpanded ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-              .font(.system(size: 14, weight: .bold))
-              .foregroundStyle(active ? PrsGlass.accentTop : PrsGlass.textSecondary)
-          }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(filtersExpanded ? "Hide filters" : "Show filters")
-
+      Section {
         Button {
           Task {
             async let remote: Void = refreshRemotePrs()
@@ -720,287 +586,157 @@ struct PRsTabView: View {
             await remote
           }
         } label: {
-          PrsGlassDisc(tint: PrsGlass.textSecondary, isAlive: false) {
-            Image(systemName: "arrow.clockwise")
-              .font(.system(size: 13, weight: .bold))
-              .foregroundStyle(PrsGlass.textSecondary)
-          }
+          Label("Refresh", systemImage: "arrow.clockwise")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Refresh pull requests")
         .disabled(prsStatus.phase == .hydrating)
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Text(selectedRootSurface.wrappedValue == .github ? "PRs" : "Workflows")
+          .font(.system(size: 20, weight: .bold, design: .rounded))
+          .foregroundStyle(ADEColor.textPrimary)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+        if hasActiveFilters {
+          Circle().fill(ADEColor.accent).frame(width: 6, height: 6)
+        }
+      }
+      .fixedSize()
+    }
+    .accessibilityLabel(selectedRootSurface.wrappedValue == .github ? "PRs, switch view" : "Workflows, switch view")
+  }
 
-        Button {
-          createInitialLaneId = nil
-          createPresented = true
-        } label: {
-          ZStack {
-            Circle()
-              .fill(
-                LinearGradient(
-                  colors: [PrsGlass.accentTop, PrsGlass.accentBottom],
-                  startPoint: .topLeading,
-                  endPoint: .bottomTrailing
-                )
-              )
-              .frame(width: 34, height: 34)
-              .overlay(
-                Circle()
-                  .strokeBorder(Color.white.opacity(0.45), lineWidth: 0.75)
-              )
-              .shadow(color: PrsGlass.glowPurple.opacity(0.55), radius: 10, x: 0, y: 3)
-            Image(systemName: "plus")
-              .font(.system(size: 15, weight: .bold))
-              .foregroundStyle(.white)
+  // MARK: - Notices
+
+  @ViewBuilder
+  private var noticeRows: some View {
+    let hydrationNotice: SyncDomainFailureNotice? = (!syncService.connectionState.isHostUnreachable
+      && !syncService.shouldSuppressDomainHydrationNotices)
+      ? prsStatus.inlineHydrationFailureNotice(for: .prs) : nil
+    let viewError = (prsStatus.phase == .ready && !syncService.connectionState.isHostUnreachable) ? errorMessage : nil
+    if hydrationNotice != nil || viewError != nil || rootActionInFlightLabel != nil || laneContextLaneId != nil {
+      Section {
+        if let hydrationNotice {
+          ADEFlatInlineNotice(message: hydrationNotice.title, retry: { Task { await reload(refreshRemote: true) } })
+            .adeFlatRow(separator: .hidden)
+        }
+        if let viewError {
+          ADEFlatInlineNotice(message: viewError, tint: ADEColor.danger, retry: { Task { await reload(refreshRemote: true) } })
+            .adeFlatRow(separator: .hidden)
+        }
+        // The in-flight label reads from the durable service registry, so it
+        // survives a tab switch and remount.
+        if let rootActionInFlightLabel {
+          HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(rootActionInFlightLabel).font(.footnote).foregroundStyle(ADEColor.textSecondary)
+            Spacer(minLength: 0)
           }
+          .adeFlatRow(separator: .hidden)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Create pull request")
-        .disabled(!canCreatePr)
-        .opacity(canCreatePr ? 1 : 0.4)
-
-        // Keep the shared attention control in the PRs tab so alerts remain
-        // reachable without switching tabs.
-        ADERootToolbarControls(scopeKey: "PRs")
-      }
-    }
-    .padding(.horizontal, 16)
-    .padding(.top, 4)
-    .padding(.bottom, 6)
-    .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isHeader)
-  }
-
-  @ViewBuilder
-  private var prsHeroHeader: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 8) {
-        PrsEyebrowLabel(text: "Open Pull Requests")
-        PrsLivePulse(isLive: isLive, syncedLabel: syncSubtitle)
-        Spacer(minLength: 0)
-        if linkedPrCount > 0 {
-          HStack(spacing: 4) {
-            Image(systemName: "link")
-              .font(.system(size: 9, weight: .bold))
-            Text("\(linkedPrCount)")
-              .font(.system(size: 10, weight: .bold, design: .monospaced))
+        if let laneContextLaneId {
+          let laneName = lanes.first(where: { $0.id == laneContextLaneId })?.name ?? "a lane"
+          HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold)).foregroundStyle(ADEColor.accent)
+            Text("Opened from \(laneName)").font(.footnote).foregroundStyle(ADEColor.textSecondary)
+            Spacer(minLength: 8)
+            Button("Clear") { self.laneContextLaneId = nil }
+              .font(.footnote.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .buttonStyle(.plain)
           }
-          .foregroundStyle(PrsGlass.textMuted)
+          .adeFlatRow(separator: .hidden)
         }
       }
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        Text("PRs")
-          .font(.system(size: 32, weight: .bold, design: .rounded))
-          .tracking(-0.8)
-          .foregroundStyle(PrsGlass.textPrimary)
-        if heroCount > 0 {
-          Text("\(heroCount)")
-            .font(.system(size: 13, weight: .bold, design: .monospaced))
-            .foregroundStyle(PrsGlass.textMuted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(
-              Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-              Capsule(style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.6)
-            )
-        }
-        Spacer(minLength: 0)
-      }
     }
-    .padding(.top, 0)
-    .padding(.bottom, 0)
-    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-    .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isHeader)
   }
 
-  @ViewBuilder
-  private var prsSearchPill: some View {
-    PrsGlassSearchPill(
-      text: $searchText,
-      placeholder: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards"
-    )
-    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-  }
-
-  @ViewBuilder
-  private var compactStatusHeader: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
-      PrsLivePulse(isLive: isLive, syncedLabel: syncSubtitle)
-
-      Spacer(minLength: 0)
-
-      if linkedPrCount > 0 {
-        HStack(spacing: 4) {
-          Image(systemName: "link")
-            .font(.system(size: 9, weight: .bold))
-          Text("\(linkedPrCount) linked")
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-        }
-        .foregroundStyle(PrsGlass.textMuted)
-        .lineLimit(1)
-      }
-    }
-    .padding(.horizontal, 4)
-    .padding(.top, 4)
-    .padding(.bottom, 6)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Pull request sync status: \(syncEyebrow)")
-    .listRowBackground(Color.clear)
-    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-    .listRowSeparator(.hidden)
-  }
-
-  private var syncSubtitle: String? {
-    if isLoadingSkeleton { return "hydrating" }
-    if !isLive { return "cached" }
-    if let syncedAt = githubSnapshot?.syncedAt, !syncedAt.isEmpty {
-      return "synced \(prRelativeTime(syncedAt))"
-    }
-    return nil
-  }
-
-  private var workflowKindCounts: [String: Int] {
-    var counts: [String: Int] = [:]
-    for card in workflowCards {
-      counts[card.kind, default: 0] += 1
-    }
-    counts["all"] = workflowCards.count
-    return counts
-  }
+  // MARK: - GitHub list
 
   @ViewBuilder
   private var githubSurfaceRows: some View {
-    // Headline three-category selector (Open / Merged / Closed) — the primary
-    // top-level control, mirroring desktop's GitHubTab. Always visible; the
-    // scope + sort live in the collapsible advanced filters below.
-    PrGitHubCategoryTabs(
-      selection: selectedGitHubCategory,
-      counts: githubCategoryCounts
-    )
-    .prListRowChrome()
-
-    if filtersExpanded {
-      PrGitHubFiltersCard(
-        scopeFilter: selectedGitHubScopeFilter,
-        sortOption: selectedGitHubSort,
-        counts: githubFilterCounts
-      )
-      .transition(.opacity.combined(with: .move(edge: .top)))
-      .prListRow()
-    } else if hasActiveFilters {
-      // Compact summary chip when filters are collapsed but active.
-      Button {
-        withAnimation(.easeInOut(duration: 0.2)) { filtersExpanded = true }
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "line.3.horizontal.decrease.circle.fill")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(PrsGlass.accentTop)
-          Text(activeFilterSummary)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(PrsGlass.textSecondary)
-            .lineLimit(1)
-          Spacer(minLength: 0)
-          Image(systemName: "chevron.down")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(PrsGlass.textMuted)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-          Capsule(style: .continuous)
-            .fill(Color.white.opacity(0.05))
-        )
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(PrsGlass.accentTop.opacity(0.30), lineWidth: 0.75)
-        )
+    let counts = githubCategoryCounts
+    Section {
+      Picker("Status", selection: selectedGitHubCategory) {
+        Text(verbatim: "Open \(counts.open)").tag(PrGitHubCategory.open)
+        Text(verbatim: "Merged \(counts.merged)").tag(PrGitHubCategory.merged)
+        Text(verbatim: "Closed \(counts.closed)").tag(PrGitHubCategory.closed)
       }
-      .buttonStyle(.plain)
-      .prListRow()
-    }
+      .pickerStyle(.segmented)
+      .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
 
-    if prsStatus.phase == .ready && filteredGitHubPrs.isEmpty {
-      ADEEmptyStateView(
-        symbol: searchText.isEmpty ? "arrow.triangle.pull" : "magnifyingglass",
-        title: searchText.isEmpty ? "No pull requests for these filters" : "No PRs match this search",
-        message: searchText.isEmpty
-          ? "Try a different status or scope, or refresh GitHub state from the machine."
-          : "Try a broader query or switch the status and scope filters."
-      )
-      .prListRow()
+      if prsStatus.phase == .ready && filteredGitHubPrs.isEmpty && !isLoadingExternalHistory {
+        PrFlatEmptyRow(
+          title: searchText.isEmpty ? "No pull requests here" : "No PRs match “\(searchText)”",
+          message: searchText.isEmpty ? "Pull down to refresh from GitHub." : "Try a branch, an author, or a number."
+        )
+        .adeFlatRow(separator: .hidden)
+      } else if filteredGitHubPrs.isEmpty && isLoadingExternalHistory {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Loading history…").font(.footnote).foregroundStyle(ADEColor.textSecondary)
+        }
+        .adeFlatRow(separator: .hidden)
+      }
     }
 
     if githubSnapshot != nil || !prs.isEmpty {
       let repoItems = githubDerived.repoItems
       let externalItems = githubDerived.externalItems
       if !repoItems.isEmpty {
-        // Merged/closed history reads as a log, so it gets period headers. Open stays
-        // flat — a work queue does not benefit from being chopped up by date.
+        // Merged/closed history reads as a log, so it gets period headers.
+        // Open stays flat: a work queue is not chopped up by date.
         if selectedGitHubCategory.wrappedValue == .open {
-          ForEach(repoItems) { item in
-            githubRowNavigation(for: item)
-              .prListRowCard()
+          Section {
+            ForEach(repoItems) { item in
+              githubRow(for: item)
+            }
           }
         } else {
-          ForEach(prListPeriodGroups(repoItems)) { group in
-            PrsPeriodHeader(group: group)
-              .prListRow()
-            ForEach(group.items) { item in
-              githubRowNavigation(for: item)
-                .prListRowCard()
+          let groups = prListPeriodGroups(repoItems)
+          ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            Section {
+              ForEach(group.items) { item in
+                githubRow(for: item)
+              }
+            } header: {
+              PrListGroupHeader(group: group, isLoading: index == 0 && isLoadingExternalHistory)
             }
           }
         }
       }
       if !externalItems.isEmpty {
-        HStack(spacing: 6) {
-          PrsEyebrowLabel(text: "External", tint: PrsGlass.externalTop)
-          Spacer(minLength: 0)
-        }
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-        .prListRow()
-        ForEach(externalItems) { item in
-          githubRowNavigation(for: item)
-            .prListRowCard()
+        Section {
+          ForEach(externalItems) { item in
+            githubRow(for: item)
+          }
+        } header: {
+          ADEFlatSectionHeader("External", detail: "\(externalItems.count)")
         }
       }
       if selectedGitHubCategory.wrappedValue != .open,
         githubSnapshot?.history?.repoPullRequestsMayHaveMore == true,
         githubHistoryPageLimit < 10
       {
-        Button {
-          Task { await loadMoreGitHubHistory() }
-        } label: {
-          HStack(spacing: 8) {
-            if isLoadingExternalHistory {
-              ProgressView()
-                .controlSize(.small)
-            } else {
-              Image(systemName: "arrow.down.circle")
+        Section {
+          Button {
+            Task { await loadMoreGitHubHistory() }
+          } label: {
+            HStack(spacing: 8) {
+              if isLoadingExternalHistory {
+                ProgressView().controlSize(.small)
+              }
+              Text(isLoadingExternalHistory ? "Loading more…" : "Load older pull requests")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+              Spacer(minLength: 0)
             }
-            Text(isLoadingExternalHistory ? "Loading more pull requests…" : "Load more pull requests")
-              .font(.system(size: 13, weight: .semibold))
-            Spacer(minLength: 0)
           }
-          .foregroundStyle(PrsGlass.textSecondary)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .prGlassCard(cornerRadius: 12, shadow: false)
+          .buttonStyle(.plain)
+          .disabled(isLoadingExternalHistory)
+          .adeFlatRow(separator: .hidden)
         }
-        .buttonStyle(.plain)
-        .disabled(isLoadingExternalHistory)
-        .prListRow()
       }
     }
   }
@@ -1010,79 +746,69 @@ struct PRsTabView: View {
     return prs.first { $0.id == linkedPrId }
   }
 
-  /// The machine a row's lane is on, when the repository is on more than one.
-  /// Called per row, so it avoids building `machineContext`.
+  /// The machine a row's lane is on, only when that is not the primary
+  /// (focused) machine. Lanes of other machines have namespaced ids.
   private func laneMachineName(for item: GitHubPrListItem) -> String? {
-    guard !remotePrs.machines.isEmpty else { return nil }
-    guard let laneId = item.linkedLaneId ?? linkedPullRequest(for: item)?.laneId, !laneId.isEmpty else { return nil }
-    guard let remote = workParseRemoteLaneId(laneId) else { return focusedMachineName }
-    return remotePrs.machines.first { $0.machineKey == remote.machineKey }?.name
+    guard let laneId = item.linkedLaneId ?? linkedPullRequest(for: item)?.laneId,
+      let remote = workParseRemoteLaneId(laneId),
+      remote.machineKey != syncService.focusedMachineKey
+    else { return nil }
+    return remotePrs.machines.first { $0.machineKey == remote.machineKey }?.name ?? "another machine"
   }
 
-  @ViewBuilder
-  private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
+  private func openRow(_ item: GitHubPrListItem) {
     if let prId = item.linkedPrId {
-      Button {
-        if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
-          prDetailRouteScopes[prId] = routeScope
-        }
-        path.append(prId)
-      } label: {
-        PrRowCard(
-          item: item,
-          linkedPr: linkedPullRequest(for: item),
-          laneMachineName: laneMachineName(for: item),
-          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
-          isSelectedTransitionSource: selectedPrTransitionId == prId
-        )
+      if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
+        prDetailRouteScopes[prId] = routeScope
       }
-      .buttonStyle(.plain)
-      .simultaneousGesture(TapGesture().onEnded { selectedPrTransitionId = prId })
-      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
-          .tint(ADEColor.accent)
-      }
-    } else if item.scope == "external" {
-      Button {
-        openGitHubDetail(item)
-      } label: {
-        PrRowCard(item: item)
-      }
-      .buttonStyle(.plain)
-      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
-          .tint(ADEColor.accent)
-      }
+      path.append(prId)
     } else {
+      openGitHubDetail(item)
+    }
+  }
+
+  private func openLane(for item: GitHubPrListItem) {
+    guard let laneId = item.linkedLaneId ?? linkedPullRequest(for: item)?.laneId, !laneId.isEmpty else { return }
+    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+  }
+
+  private func githubRow(for item: GitHubPrListItem) -> some View {
+    let linkedPr = linkedPullRequest(for: item)
+    let row = PrRowCard(item: item, linkedPr: linkedPr, laneMachineName: laneMachineName(for: item))
+    let hasLane = row.data.laneId != nil
+    return Button {
+      openRow(item)
+    } label: {
+      row
+    }
+    .buttonStyle(.plain)
+    .adeFlatRow(insets: EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16))
+    .contextMenu {
+      if hasLane {
+        Button { openLane(for: item) } label: { Label("Open lane", systemImage: "arrow.triangle.branch") }
+      } else if item.scope != "external" {
+        if canAutoMapGitHubPullRequests {
+          Button { presentAutoMap(for: item) } label: { Label("Create lane", systemImage: "plus.square.on.square") }
+        }
+        if canLinkGitHubPullRequests {
+          Button { laneLinkRequest = PrGitHubLaneLinkRequest(item: item) } label: { Label("Link a lane…", systemImage: "link") }
+        }
+      }
+      Button { openGitHub(urlString: item.githubUrl) } label: { Label("Open in GitHub", systemImage: "arrow.up.right.square") }
+        .disabled(item.githubUrl.isEmpty)
       Button {
-        openGitHubDetail(item)
-      } label: {
-        PrRowCard(
-          item: item,
-          linkedPr: linkedPullRequest(for: item),
-          laneMachineName: laneMachineName(for: item)
-        )
-      }
-      .buttonStyle(.plain)
-      .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-        Button("Review") { openGitHubDetail(item) }
-        .tint(ADEColor.warning)
-        // A lane on another machine already gives this PR a home.
-        if canAutoMapGitHubPullRequests, item.linkedLaneId == nil {
-          Button("Create lane") {
-            presentAutoMap(for: item)
-          }
-          .tint(ADEColor.success)
-        }
-        if canLinkGitHubPullRequests, item.linkedLaneId == nil {
-          Button("Link lane") {
-            laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
-          }
-          .tint(ADEColor.tintPRs)
-        }
-        Button("Open in GitHub") { openGitHub(urlString: item.githubUrl) }
-          .tint(ADEColor.accent)
-      }
+        UIPasteboard.general.string = item.githubUrl
+        ADEHaptics.success()
+        toast = ADEToastMessage(text: "Link copied")
+      } label: { Label("Copy link", systemImage: "link") }
+        .disabled(item.githubUrl.isEmpty)
+    } preview: {
+      PrRowContextPreview(
+        data: row.data,
+        syncService: syncService,
+        snapshotPrId: item.linkedPrId,
+        warmKey: item.linkedPrId ?? prSyntheticGitHubId(for: item)
+      )
     }
   }
 
@@ -1120,111 +846,90 @@ struct PRsTabView: View {
 
   @ViewBuilder
   private var workflowsSurfaceRows: some View {
-    PrsWorkflowFilterPills(
-      selection: selectedWorkflowFilter,
-      counts: workflowKindCounts
-    )
-    .prListRow()
-
-    if groupedWorkflowCards.isEmpty {
-      ADEEmptyStateView(
-        symbol: "point.3.filled.connected.trianglepath.dotted",
-        title: "No active PR workflows",
-        message: "Integration and rebase work appears here once the machine syncs workflow state."
-      )
-      .prListRow()
-    } else {
-      ForEach(groupedWorkflowCards, id: \.title) { group in
-        Section(group.title) {
-          ForEach(group.cards) { card in
-            PrMobileWorkflowCardView(
-              card: card,
-              isLive: canRunWorkflowActions,
-              onOpenPr: { prId in path.append(prId) },
-              onCreateIntegrationLane: { proposalId in
-                runPrRootAction("Creating integration lane") {
-                  _ = try await syncService.createIntegrationLaneForProposal(proposalId: proposalId)
-                }
-              },
-              onDeleteIntegrationProposal: { proposalId in
-                runPrRootAction("Deleting integration proposal") {
-                  _ = try await syncService.deleteIntegrationProposal(proposalId: proposalId)
-                }
-              },
-              onDismissIntegrationCleanup: { proposalId in
-                runPrRootAction("Dismissing integration cleanup") {
-                  try await syncService.dismissIntegrationCleanup(proposalId: proposalId)
-                }
-              },
-              onCleanupIntegrationWorkflow: { proposalId, sourceLaneIds in
-                runPrRootAction("Cleaning up integration lanes") {
-                  try await syncService.cleanupIntegrationWorkflow(
-                    proposalId: proposalId,
-                    archiveIntegrationLane: true,
-                    archiveSourceLaneIds: sourceLaneIds
-                  )
-                }
-              },
-              onResolveIntegrationLane: { proposalId, laneId in
-                runPrRootAction("Resolving integration lane") {
-                  _ = try await syncService.startIntegrationResolution(proposalId: proposalId, laneId: laneId)
-                }
-              },
-              onRecheckIntegrationLane: { proposalId, laneId in
-                runPrRootAction("Rechecking integration lane") {
-                  _ = try await syncService.recheckIntegrationStep(proposalId: proposalId, laneId: laneId)
-                }
-              },
-              onRebaseLane: { laneId in
-                runPrRootAction("Rebasing lane") {
-                  try await syncService.startLaneRebase(laneId: laneId)
-                }
-              },
-              onDeferRebase: { laneId in
-                runPrRootAction("Deferring rebase") {
-                  try await syncService.deferRebaseSuggestion(laneId: laneId)
-                }
-              },
-              onDismissRebase: { laneId in
-                runPrRootAction("Dismissing rebase") {
-                  try await syncService.dismissRebaseSuggestion(laneId: laneId)
-                }
-              }
-            )
-            .prListRow()
-          }
+    Section {
+      Picker("Kind", selection: selectedWorkflowFilter) {
+        ForEach(PrWorkflowKindFilter.allCases) { filter in
+          let count = workflowKindCounts[filter.rawValue] ?? 0
+          Text(verbatim: count > 0 ? "\(filter.title) \(count)" : filter.title).tag(filter)
         }
+      }
+      .pickerStyle(.segmented)
+      .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
+      if groupedWorkflowCards.isEmpty {
+        PrFlatEmptyRow(
+          title: "No active PR workflows",
+          message: "Integration and rebase work shows here once the machine syncs it."
+        )
+        .adeFlatRow(separator: .hidden)
+      }
+    }
+    ForEach(groupedWorkflowCards, id: \.title) { group in
+      Section {
+        ForEach(group.cards) { card in
+          workflowCardView(card)
+            .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        }
+      } header: {
+        ADEFlatSectionHeader(group.title, detail: "\(group.cards.count)")
       }
     }
   }
 
-  @ViewBuilder
-  private func rowSwipeActions(for pr: PullRequestListItem) -> some View {
-    let caps = mobileSnapshot?.capabilities[pr.id]
-
-    Button("Open in GitHub") {
-      openGitHub(urlString: pr.githubUrl)
-    }
-    .tint(ADEColor.accent)
-
-    Button("Copy URL") {
-      UIPasteboard.general.string = pr.githubUrl
-      ADEHaptics.success()
-    }
-    .tint(ADEColor.textSecondary)
-
-    if caps?.canClose ?? (pr.state == "open") {
-      Button("Close", role: .destructive) {
-        closeConfirmationTarget = pr
-      }
-    } else if caps?.canReopen ?? (pr.state == "closed") {
-      Button("Reopen") {
-        runPrRootAction("Reopening pull request") {
-          try await syncService.reopenPullRequest(prId: pr.id)
+  private func workflowCardView(_ card: PrWorkflowCard) -> some View {
+    PrMobileWorkflowCardView(
+      card: card,
+      isLive: canRunWorkflowActions,
+      onOpenPr: { prId in path.append(prId) },
+      onCreateIntegrationLane: { proposalId in
+        runPrRootAction("Creating integration lane") {
+          _ = try await syncService.createIntegrationLaneForProposal(proposalId: proposalId)
+        }
+      },
+      onDeleteIntegrationProposal: { proposalId in
+        runPrRootAction("Deleting integration proposal") {
+          _ = try await syncService.deleteIntegrationProposal(proposalId: proposalId)
+        }
+      },
+      onDismissIntegrationCleanup: { proposalId in
+        runPrRootAction("Dismissing integration cleanup") {
+          try await syncService.dismissIntegrationCleanup(proposalId: proposalId)
+        }
+      },
+      onCleanupIntegrationWorkflow: { proposalId, sourceLaneIds in
+        runPrRootAction("Cleaning up integration lanes") {
+          try await syncService.cleanupIntegrationWorkflow(
+            proposalId: proposalId,
+            archiveIntegrationLane: true,
+            archiveSourceLaneIds: sourceLaneIds
+          )
+        }
+      },
+      onResolveIntegrationLane: { proposalId, laneId in
+        runPrRootAction("Resolving integration lane") {
+          _ = try await syncService.startIntegrationResolution(proposalId: proposalId, laneId: laneId)
+        }
+      },
+      onRecheckIntegrationLane: { proposalId, laneId in
+        runPrRootAction("Rechecking integration lane") {
+          _ = try await syncService.recheckIntegrationStep(proposalId: proposalId, laneId: laneId)
+        }
+      },
+      onRebaseLane: { laneId in
+        runPrRootAction("Rebasing lane") {
+          try await syncService.startLaneRebase(laneId: laneId)
+        }
+      },
+      onDeferRebase: { laneId in
+        runPrRootAction("Deferring rebase") {
+          try await syncService.deferRebaseSuggestion(laneId: laneId)
+        }
+      },
+      onDismissRebase: { laneId in
+        runPrRootAction("Dismissing rebase") {
+          try await syncService.dismissRebaseSuggestion(laneId: laneId)
         }
       }
-      .tint(ADEColor.success)
-    }
+    )
   }
 
   private struct WorkflowCardGroup {
@@ -1251,19 +956,6 @@ struct PRsTabView: View {
       groups.append(WorkflowCardGroup(title: "Rebase", cards: rebase))
     }
     return groups
-  }
-
-  private var laneContextNotice: ADENoticeCard? {
-    guard let laneContextLaneId else { return nil }
-    let laneName = lanes.first(where: { $0.id == laneContextLaneId })?.name ?? "lane context"
-    return ADENoticeCard(
-      title: "Opened from \(laneName)",
-      message: "Review the linked pull request or keep scanning PRs from the native tab.",
-      icon: "arrow.triangle.pull",
-      tint: ADEColor.accent,
-      actionTitle: "Clear",
-      action: { self.laneContextLaneId = nil }
-    )
   }
 
   @MainActor
@@ -1456,7 +1148,6 @@ struct PRsTabView: View {
       await reload(refreshRemote: false)
       rootSurfaceRawValue = PrRootSurface.github.rawValue
       path = NavigationPath()
-      selectedPrTransitionId = nil
       laneContextLaneId = createLaneId
       createInitialLaneId = createLaneId
       createPresented = true
@@ -1481,13 +1172,11 @@ struct PRsTabView: View {
 
     rootSurfaceRawValue = PrRootSurface.github.rawValue
     path = NavigationPath()
-    selectedPrTransitionId = nil
     laneContextLaneId = nil
 
     let destinationResolved: Bool
     switch target {
     case .detail(let prId, let laneId, let repoScope):
-      selectedPrTransitionId = prId
       laneContextLaneId = laneId
       prDetailInitialTabs[prId] = request.detailTab ?? .overview
       if let repoScope {
@@ -1609,8 +1298,6 @@ struct PRsTabView: View {
     onSuccess: @escaping @MainActor () -> Void = {}
   ) {
     let service = syncService
-    errorMessage = nil
-    actionMessage = nil
     service.runDurablePrAction(
       key: Self.rootActionKey,
       label: label,
@@ -1624,11 +1311,13 @@ struct PRsTabView: View {
       onSuccess: {
         onSuccess()
         Task { await reload() }
-        actionMessage = "\(label) finished."
+        ADEHaptics.success()
+        toast = ADEToastMessage(text: "\(label) done")
       },
       onFailure: { error in
         Task { await reload() }
-        errorMessage = error.localizedDescription
+        ADEHaptics.error()
+        toast = ADEToastMessage(text: error.localizedDescription, kind: .failure)
       }
     )
   }
@@ -1700,7 +1389,6 @@ struct PRsTabView: View {
         && $0.githubPrNumber == item.githubPrNumber
         && $0.linkedPrId != nil
     }), let prId = mapped.linkedPrId {
-      selectedPrTransitionId = prId
       path.append(prId)
     }
   }
@@ -1721,18 +1409,16 @@ struct PRsTabView: View {
   ) async -> Bool {
     let token = syncService.beginPrAction(key: Self.rootActionKey, label: label)
     defer { syncService.endPrAction(key: Self.rootActionKey, token: token) }
-    errorMessage = nil
-    actionMessage = nil
     do {
       try await operation()
       onSuccess()
       await reload(refreshRemote: true)
-      actionMessage = "\(label) finished."
+      toast = ADEToastMessage(text: "\(label) done")
       return true
     } catch {
       let message = error.localizedDescription
       await reload(refreshRemote: false)
-      errorMessage = message
+      toast = ADEToastMessage(text: message, kind: .failure)
       return false
     }
   }

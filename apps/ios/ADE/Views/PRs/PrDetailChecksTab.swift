@@ -1,12 +1,16 @@
 import SwiftUI
 
+// The Checks tab on the flat base: one summary line, then FAILING, RUNNING
+// and PASSED (folded) sections. A row opens the check's page with its job
+// steps and the link to its log on GitHub.
+
+// MARK: - Rules
+
 struct PrChecksSummaryStats: Equatable {
   let fail: Int
   let pending: Int
   let pass: Int
-  /// ADE-135: neutral/skipped used to be folded into `pass`, so an all-skipped
-  /// suite rendered a green "3 pass" bar directly beneath the banner saying no
-  /// CI had run. They get their own muted bucket; `total` still sums the four.
+  /// Neutral / skipped: not a pass, since nothing was verified.
   let skipped: Int
   let total: Int
 }
@@ -18,37 +22,22 @@ func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> Pr
     case .success: pass += 1
     case .failure: fail += 1
     case .pending: pending += 1
-    // Non-failing, but nothing was verified either — counting these as passes
-    // is the same mistake the rollup used to make.
     case .neutral: skipped += 1
     }
   }
   if !checks.isEmpty {
-    // ADE-135: on PR #988 three third-party rows carried `success`, so a naive
-    // tally renders "3 pass" directly beneath a banner saying no CI ran. iOS
-    // cannot tell a test job from a preview bot on its own — the host already
-    // decided that and said `not_run`, so trust it and report those rows as
-    // unverified rather than reimplementing the producer rule here and letting
-    // the two drift.
+    // ADE-135: when the host says nothing verified the commit, third-party
+    // `success` rows are reported as unverified, never as passes.
     if overallChecksStatus?.lowercased() == "not_run" {
       return .init(fail: fail, pending: pending, pass: 0, skipped: pass + skipped, total: checks.count)
     }
     return .init(fail: fail, pending: pending, pass: pass, skipped: skipped, total: checks.count)
   }
-
   switch overallChecksStatus?.lowercased() {
-  case "failing", "failure", "failed":
-    return .init(fail: 1, pending: 0, pass: 0, skipped: 0, total: 1)
-  case "pending", "running", "in_progress":
-    return .init(fail: 0, pending: 1, pass: 0, skipped: 0, total: 1)
-  case "passing", "success", "passed":
-    return .init(fail: 0, pending: 0, pass: 1, skipped: 0, total: 1)
-  // ADE-135: nothing verified the commit, so there is no synthetic row to invent
-  // in any bucket — least of all pass.
-  case "not_run":
-    return .init(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
-  default:
-    return .init(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
+  case "failing", "failure", "failed": return .init(fail: 1, pending: 0, pass: 0, skipped: 0, total: 1)
+  case "pending", "running", "in_progress": return .init(fail: 0, pending: 1, pass: 0, skipped: 0, total: 1)
+  case "passing", "success", "passed": return .init(fail: 0, pending: 0, pass: 1, skipped: 0, total: 1)
+  default: return .init(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
   }
 }
 
@@ -57,478 +46,45 @@ func prChecksHasFailedSignal(checks: [PrCheck], overallChecksStatus: String?) ->
     || prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus).fail > 0
 }
 
-func prChecksEmptyStateCopy(
-  overallChecksStatus: String?,
-  checksReason: String? = nil
-) -> (title: String, message: String) {
+func prChecksEmptyStateCopy(overallChecksStatus: String?, checksReason: String? = nil) -> (title: String, message: String) {
   switch overallChecksStatus?.lowercased() {
-  // ADE-135. Distinct from the default "No CI checks": there nothing was
-  // expected, here something was and it never arrived.
   case "not_run":
-    return (
-      "No CI ran on this commit",
-      checksReason ?? noCIReasonText
-    )
+    return ("No CI ran on this commit", checksReason ?? noCIReasonText)
   case "failing", "failure", "failed":
-    return (
-      "Checks failing",
-      "The PR summary reports failing checks, but individual check runs have not synced yet."
-    )
+    return ("Checks failing", "The PR summary reports failing checks, but individual check runs have not synced yet.")
   case "pending", "running", "in_progress":
-    return (
-      "Checks pending",
-      "The PR summary reports pending checks, but individual check runs have not synced yet."
-    )
+    return ("Checks pending", "The PR summary reports pending checks, but individual check runs have not synced yet.")
   case "passing", "success", "passed":
-    return (
-      "Checks passing",
-      "The PR summary reports passing checks, but individual check runs have not synced yet."
-    )
+    return ("Checks passing", "The PR summary reports passing checks, but individual check runs have not synced yet.")
   default:
-    return (
-      "No CI checks",
-      "No check runs were synced for this PR yet."
-    )
+    return ("No CI checks", "No check runs were synced for this PR yet.")
   }
 }
 
-struct PrChecksTab: View {
-  let checks: [PrCheck]
-  let overallChecksStatus: String?
-  /// Host-supplied explanation for a non-obvious rollup, e.g. "3 checks reported,
-  /// none from a CI provider."
-  let checksReason: String?
-  /// Required contexts that never reported, in the order GitHub declared them.
-  let missingRequired: [String]
-  let actionRuns: [PrActionRun]
-  let deployments: [PrDeployment]
-  let canRerunChecks: Bool
-  let isLive: Bool
-  let onRerun: () -> Void
-
-  init(
-    checks: [PrCheck],
-    overallChecksStatus: String? = nil,
-    checksReason: String? = nil,
-    missingRequired: [String] = [],
-    actionRuns: [PrActionRun],
-    deployments: [PrDeployment] = [],
-    canRerunChecks: Bool,
-    isLive: Bool,
-    onRerun: @escaping () -> Void
-  ) {
-    self.checks = checks
-    self.overallChecksStatus = overallChecksStatus
-    self.checksReason = checksReason
-    self.missingRequired = missingRequired
-    self.actionRuns = actionRuns
-    self.deployments = deployments
-    self.canRerunChecks = canRerunChecks
-    self.isLive = isLive
-    self.onRerun = onRerun
+/// "5 of 6 passed · 1 failing", "2 running · 3 passed", "3 reported · no CI".
+func prChecksHeadline(checks: [PrCheck], overallChecksStatus: String?) -> (text: String, failing: Int, running: Int) {
+  let stats = prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus)
+  if overallChecksStatus?.lowercased() == "not_run" {
+    return ("\(stats.total) reported · no CI ran", stats.fail, stats.pending)
   }
-
-  private var stats: PrChecksSummaryStats {
-    prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus)
-  }
-
-  private var groups: [PrCheckGroup] {
-    PrCheckGroup.buildGroups(from: checks)
-  }
-
-  private var hasFailedChecks: Bool {
-    prChecksHasFailedSignal(checks: checks, overallChecksStatus: overallChecksStatus)
-  }
-
-  private var emptyStateCopy: (title: String, message: String) {
-    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus, checksReason: checksReason)
-  }
-
-  /// The canonical rollup said nothing verified this commit.
-  private var isNotRun: Bool {
-    overallChecksStatus?.lowercased() == "not_run"
-  }
-
-  /// True when the rollup itself is the finding: nothing verified the commit, so
-  /// the reason banner leads even if unrelated check rows did sync.
-  private var showsNotRunBanner: Bool {
-    isNotRun && !checks.isEmpty
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      if stats.total > 0 {
-        PrChecksProgressBar(stats: stats)
-      }
-      PrChecksStatStrip(stats: stats)
-
-      if showsNotRunBanner {
-        PrChecksNotRunBanner(reason: checksReason ?? noCIReasonText)
-      }
-
-      if checks.isEmpty {
-        ADEEmptyStateView(
-          symbol: "checklist",
-          title: emptyStateCopy.title,
-          message: emptyStateCopy.message
-        )
-      } else {
-        ForEach(groups, id: \.kind) { group in
-          PrChecksGroupCard(group: group, notRun: isNotRun)
-        }
-      }
-
-      if !missingRequired.isEmpty {
-        PrChecksMissingRequiredCard(contexts: missingRequired)
-      }
-
-      // Outline rerun button.
-      PrChecksRerunButton(
-        canRerun: canRerunChecks && isLive && hasFailedChecks,
-        onRerun: onRerun
-      )
-
-      if !deployments.isEmpty {
-        PrDetailSectionCard("Deployments") {
-          VStack(spacing: 0) {
-            ForEach(Array(deployments.enumerated()), id: \.1.id) { index, deployment in
-              if index > 0 {
-                Divider().overlay(ADEColor.glassBorder)
-              }
-              PrDeploymentRow(deployment: deployment)
-            }
-          }
-          .adeInsetField(cornerRadius: 12, padding: 0)
-        }
-      }
-
-      if !actionRuns.isEmpty {
-        PrDetailSectionCard("Action runs") {
-          VStack(alignment: .leading, spacing: 12) {
-            ForEach(actionRuns) { run in
-              PrActionRunRow(run: run)
-            }
-          }
-        }
-      }
-
-      if !canRerunChecks {
-        Text("This machine has not exposed PR check reruns to the mobile sync channel yet.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-  }
+  var parts = ["\(stats.pass) of \(stats.total) passed"]
+  if stats.fail > 0 { parts.append("\(stats.fail) failing") }
+  if stats.pending > 0 { parts.append("\(stats.pending) running") }
+  if stats.skipped > 0 { parts.append("\(stats.skipped) skipped") }
+  return (parts.joined(separator: " · "), stats.fail, stats.pending)
 }
 
-// MARK: - Progress bar
-
-/// Slim 4-color summary bar mirroring the desktop CI / Checks header. Each
-/// segment width is proportional to its share of the run set; the layout uses
-/// GeometryReader so it tracks the parent width even on rotation.
-private struct PrChecksProgressBar: View {
-  let stats: PrChecksSummaryStats
-
-  private var passSummary: String {
-    let total = stats.total
-    if total == 0 { return "no checks" }
-    if stats.fail > 0 { return "\(stats.fail) failing" }
-    if stats.pending > 0 { return "\(stats.pending) pending · \(stats.pass) passing" }
-    // ADE-135: "all passing" with zero passes is the lie in miniature. A suite
-    // that only skipped verified nothing, and says so.
-    if stats.pass == 0 && stats.skipped > 0 { return "\(stats.skipped) skipped · none passing" }
-    if stats.skipped > 0 { return "\(stats.pass) passing · \(stats.skipped) skipped" }
-    return "all passing"
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Text("CI / CHECKS")
-          .font(.system(size: 10, weight: .bold))
-          .tracking(1.0)
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 6)
-        Text(passSummary)
-          .font(.system(size: 10.5, weight: .semibold))
-          .foregroundStyle(
-            stats.fail > 0
-              ? ADEColor.danger
-              : (stats.pending > 0
-                  ? ADEColor.warning
-                  : (stats.pass > 0 ? ADEColor.success : ADEColor.textMuted))
-          )
-      }
-      .padding(.horizontal, 4)
-
-      GeometryReader { geo in
-        let total = max(stats.total, 1)
-        let passW = geo.size.width * CGFloat(stats.pass) / CGFloat(total)
-        let failW = geo.size.width * CGFloat(stats.fail) / CGFloat(total)
-        let pendW = geo.size.width * CGFloat(stats.pending) / CGFloat(total)
-        let skipW = geo.size.width * CGFloat(stats.skipped) / CGFloat(total)
-        HStack(spacing: 0) {
-          if stats.fail > 0 { Rectangle().fill(ADEColor.danger).frame(width: failW) }
-          if stats.pending > 0 { Rectangle().fill(ADEColor.warning).frame(width: pendW) }
-          if stats.pass > 0 { Rectangle().fill(ADEColor.success).frame(width: passW) }
-          if stats.skipped > 0 { Rectangle().fill(ADEColor.textMuted.opacity(0.5)).frame(width: skipW) }
-          if stats.total == 0 { Rectangle().fill(ADEColor.textMuted.opacity(0.3)) }
-        }
-        .clipShape(Capsule())
-      }
-      .frame(height: 6)
-      .background(Capsule().fill(Color.white.opacity(0.05)))
-      .overlay(Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
-    }
-  }
-}
-
-// MARK: - Stat strip
-
-private struct PrChecksStatStrip: View {
-  let stats: PrChecksSummaryStats
-
-  var body: some View {
-    HStack(spacing: 8) {
-      PrChecksStatTile(count: stats.fail, label: "Fail", tint: ADEColor.danger)
-      PrChecksStatTile(count: stats.pending, label: "Pending", tint: ADEColor.warning)
-      PrChecksStatTile(count: stats.pass, label: "Pass", tint: ADEColor.success)
-      if stats.skipped > 0 {
-        PrChecksStatTile(count: stats.skipped, label: "Skipped", tint: ADEColor.textMuted)
-      }
-      PrChecksStatTile(count: stats.total, label: "Total", tint: PrGlassPalette.purpleBright)
-    }
-  }
-}
-
-private struct PrChecksStatTile: View {
-  let count: Int
-  let label: String
-  let tint: Color
-
-  var body: some View {
-    VStack(spacing: 2) {
-      Text(label)
-        .font(.system(size: 9.5, weight: .bold))
-        .tracking(0.8)
-        .foregroundStyle(tint.opacity(0.9))
-      Text("\(count)")
-        .font(.system(size: 24, weight: .semibold, design: .rounded))
-        .foregroundStyle(tint)
-        .shadow(color: tint.opacity(0.45), radius: 6)
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 10)
-    .background(
-      ZStack {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(.ultraThinMaterial)
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(tint.opacity(0.16))
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [Color.white.opacity(0.08), Color.white.opacity(0)],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-          )
-      }
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(tint.opacity(0.38), lineWidth: 0.75)
-    )
-  }
-}
-
-// MARK: - Not-run banner
-
-/// ADE-135. Shown when checks synced but none of them verified the commit — the
-/// case that used to render as "CI passed". Muted, not red: this is a gap in what
-/// we know, not a failing build.
-private struct PrChecksNotRunBanner: View {
-  let reason: String
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Circle()
-        .strokeBorder(
-          ADEColor.textSecondary,
-          style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6])
-        )
-        .frame(width: 15, height: 15)
-        .padding(.top, 1)
-
-      VStack(alignment: .leading, spacing: 3) {
-        Text("No CI ran on this commit")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(reason)
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 11)
-    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-    )
-    .accessibilityElement(children: .combine)
-  }
-}
-
-// MARK: - Missing required contexts
-
-/// Required contexts GitHub declared that never reported. Rendered as dimmed
-/// ghost rows in the order the API gave them (no sorting — that order is how the
-/// ruleset reads), so a job that never ran is visible as an empty slot rather
-/// than as nothing at all.
-private struct PrChecksMissingRequiredCard: View {
-  let contexts: [String]
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text("REQUIRED · NOT REPORTED")
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
-          .tracking(1.2)
-          .foregroundColor(ADEColor.textSecondary)
-        Spacer(minLength: 12)
-        Text("\(contexts.count) missing")
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 4)
-      .padding(.vertical, 4)
-
-      VStack(spacing: 0) {
-        ForEach(Array(contexts.enumerated()), id: \.offset) { index, context in
-          if index > 0 {
-            Divider().overlay(ADEColor.glassBorder)
-          }
-          PrChecksMissingRequiredRow(context: context)
-        }
-      }
-      .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-    }
-  }
-}
-
-private struct PrChecksMissingRequiredRow: View {
-  let context: String
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      // Same hollow dashed ring as the PR row card: an empty slot where a result
-      // should be.
-      ZStack {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(ADEColor.textSecondary.opacity(0.08))
-        Circle()
-          .strokeBorder(
-            ADEColor.textSecondary,
-            style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2.0, 2.4])
-          )
-          .frame(width: 12, height: 12)
-      }
-      .frame(width: 22, height: 22)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(context)
-          .font(.system(.footnote, design: .monospaced).weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-        Text("required · not reported")
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .opacity(0.72)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(context), required, not reported")
-  }
-}
-
-// MARK: - Groups
-
-private enum PrCheckGroupKind: String, CaseIterable {
-  case ci, bots, security, other
-
-  var label: String {
-    switch self {
-    case .ci: return "CI"
-    case .bots: return "Bots"
-    case .security: return "Security"
-    case .other: return "Other"
-    }
-  }
-}
-
-private struct PrCheckGroup {
-  let kind: PrCheckGroupKind
-  let checks: [PrCheck]
-
-  static func buildGroups(from checks: [PrCheck]) -> [PrCheckGroup] {
-    var buckets: [PrCheckGroupKind: [PrCheck]] = [:]
-    for check in checks {
-      let kind = classify(check)
-      buckets[kind, default: []].append(check)
-    }
-    return PrCheckGroupKind.allCases.compactMap { kind in
-      guard let entries = buckets[kind], !entries.isEmpty else { return nil }
-      return PrCheckGroup(kind: kind, checks: entries)
-    }
-  }
-
-  static func classify(_ check: PrCheck) -> PrCheckGroupKind {
-    let name = check.name.lowercased()
-    let host = detailsHost(for: check).lowercased()
-    let haystack = "\(name) \(host)"
-    let securityKeywords = ["codeql", "snyk", "dependabot", "trivy", "semgrep"]
-    if securityKeywords.contains(where: { haystack.contains($0) }) {
-      return .security
-    }
-    let botKeywords = ["coderabbit", "greptile", "sonarcloud", "codecov", "sourcery", "seer", "reviewbot", "codeql-bot"]
-    if botKeywords.contains(where: { haystack.contains($0) }) {
-      return .bots
-    }
-    return .ci
-  }
-}
-
-/// One coloured fragment of a group card's right-hand summary. Split out from the
-/// view so ADE-135's "never green when nothing verified the commit" rule can be
-/// asserted without rendering.
+/// One coloured fragment of a checks tally.
 struct PrChecksGroupSummaryPart: Equatable {
   enum Tone: Equatable { case fail, pending, pass, muted }
   let text: String
   let tone: Tone
 }
 
-/// ADE-135. The per-group tally is producer-blind in exactly the way the top-level
-/// rollup used to be: three third-party apps reporting `success` rendered a green
-/// "3 pass" in the CI group, directly under the banner saying no CI ran. When the
-/// host says `not_run`, those rows are reported as arrived-but-unverifying instead
-/// of as passes, so no green survives anywhere on the screen.
+/// ADE-135: when the host says `not_run`, successful rows are reported as
+/// arrived-but-unverifying, so no green survives.
 func prChecksGroupSummaryParts(checks: [PrCheck], notRun: Bool) -> [PrChecksGroupSummaryPart] {
-  var pass = 0
-  var fail = 0
-  var pending = 0
+  var pass = 0, fail = 0, pending = 0
   for check in checks {
     switch prCheckConclusionKind(check) {
     case .success: pass += 1
@@ -538,431 +94,295 @@ func prChecksGroupSummaryParts(checks: [PrCheck], notRun: Bool) -> [PrChecksGrou
     }
   }
   var parts: [PrChecksGroupSummaryPart] = []
-  if fail > 0 {
-    parts.append(.init(text: "\(fail) fail", tone: .fail))
-  }
-  if pending > 0 {
-    parts.append(.init(text: "\(pending) pending", tone: .pending))
-  }
+  if fail > 0 { parts.append(.init(text: "\(fail) fail", tone: .fail)) }
+  if pending > 0 { parts.append(.init(text: "\(pending) pending", tone: .pending)) }
   if pass > 0 {
-    parts.append(
-      notRun
-        ? .init(text: "\(pass) reported", tone: .muted)
-        : .init(text: "\(pass) pass", tone: .pass)
-    )
+    parts.append(notRun ? .init(text: "\(pass) reported", tone: .muted) : .init(text: "\(pass) pass", tone: .pass))
   }
-  if parts.isEmpty {
-    return [.init(text: "\(checks.count) total", tone: .muted)]
-  }
-  return parts
+  return parts.isEmpty ? [.init(text: "\(checks.count) total", tone: .muted)] : parts
 }
 
-private struct PrChecksGroupCard: View {
-  let group: PrCheckGroup
-  /// The canonical rollup says nothing verified this commit.
-  let notRun: Bool
+enum PrCheckConclusionKind {
+  case success, failure, pending, neutral
+}
 
-  private func color(for tone: PrChecksGroupSummaryPart.Tone) -> Color {
-    switch tone {
-    case .fail: return ADEColor.danger
-    case .pending: return ADEColor.warning
-    case .pass: return ADEColor.success
-    case .muted: return ADEColor.textSecondary
-    }
-  }
-
-  private var summary: AttributedString {
-    let parts = prChecksGroupSummaryParts(checks: group.checks, notRun: notRun)
-    var result = AttributedString("")
-    for (index, part) in parts.enumerated() {
-      if index > 0 {
-        var sep = AttributedString(" · ")
-        sep.foregroundColor = ADEColor.textMuted
-        result.append(sep)
-      }
-      var fragment = AttributedString(part.text)
-      fragment.foregroundColor = color(for: part.tone)
-      result.append(fragment)
-    }
-    return result
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text(group.kind.label.uppercased())
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
-          .tracking(1.2)
-          .foregroundColor(ADEColor.textSecondary)
-        Spacer(minLength: 12)
-        Text(summary)
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
-      }
-      .padding(.horizontal, 4)
-      .padding(.top, 4)
-      .padding(.bottom, 4)
-
-      VStack(spacing: 0) {
-        ForEach(Array(group.checks.enumerated()), id: \.1.id) { index, check in
-          if index > 0 {
-            Divider().overlay(ADEColor.glassBorder)
-          }
-          PrCheckRowCompact(
-            check: check,
-            isBot: group.kind == .bots,
-            isSecurity: group.kind == .security
-          )
-        }
-      }
-      .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-    }
+func prCheckConclusionKind(_ check: PrCheck) -> PrCheckConclusionKind {
+  if check.status != "completed" { return .pending }
+  switch check.conclusion {
+  case "success": return .success
+  case "failure", "timed_out", "cancelled", "action_required", "startup_failure": return .failure
+  default: return .neutral
   }
 }
 
-private struct PrCheckRowCompact: View {
-  let check: PrCheck
-  let isBot: Bool
-  let isSecurity: Bool
+private func prCheckGlyph(_ kind: PrCheckConclusionKind) -> (symbol: String, tint: Color) {
+  switch kind {
+  case .success: return ("checkmark.circle.fill", ADEColor.success)
+  case .failure: return ("xmark.circle.fill", ADEColor.danger)
+  case .pending: return ("clock.fill", ADEColor.warning)
+  case .neutral: return ("minus.circle", ADEColor.textMuted)
+  }
+}
 
-  @State private var expanded = false
-
-  private var kind: PrCheckConclusionKind { prCheckConclusionKind(check) }
-
-  private var tint: Color {
-    switch kind {
-    case .success: return ADEColor.success
-    case .failure: return ADEColor.danger
-    case .pending: return ADEColor.warning
-    case .neutral: return ADEColor.textSecondary
+/// The job of an Actions run that produced `check`, matched by name.
+func prActionJob(for check: PrCheck, in runs: [PrActionRun]) -> (run: PrActionRun, job: PrActionJob)? {
+  let name = check.name.lowercased()
+  for run in runs {
+    if let job = run.jobs.first(where: { $0.name.lowercased() == name }) { return (run, job) }
+  }
+  for run in runs {
+    if let job = run.jobs.first(where: { name.hasSuffix($0.name.lowercased()) || $0.name.lowercased().hasSuffix(name) }) {
+      return (run, job)
     }
   }
+  return nil
+}
 
-  private var iconName: String {
-    switch kind {
-    case .success: return "checkmark"
-    case .failure: return "xmark"
-    case .pending: return "circle"
-    case .neutral: return "minus"
-    }
-  }
+// MARK: - Tab rows
 
-  private var subLine: String {
-    if let details = check.detailsUrl, !details.isEmpty, let url = URL(string: details), let host = url.host {
-      if let context = check.conclusion ?? Optional(check.status), !context.isEmpty {
-        return "\(host) · \(context)"
-      }
-      return host
-    }
-    if let conclusion = check.conclusion { return conclusion }
-    return check.status.replacingOccurrences(of: "_", with: " ")
-  }
+/// The Checks tab's sections, emitted as List sections.
+struct PrChecksSections: View {
+  let checks: [PrCheck]
+  let overallChecksStatus: String?
+  let checksReason: String?
+  let missingRequired: [String]
+  let actionRuns: [PrActionRun]
+  let deployments: [PrDeployment]
+  let canRerun: Bool
+  let onRerun: () -> Void
 
-  private var duration: String? {
-    if kind == .pending { return "running…" }
-    return prDurationText(startedAt: check.startedAt, completedAt: check.completedAt)
-  }
+  @State private var passedExpanded = false
 
-  private var hasDetails: Bool {
-    guard let details = check.detailsUrl, !details.isEmpty else { return false }
-    return URL(string: details) != nil
+  private var isNotRun: Bool { overallChecksStatus?.lowercased() == "not_run" }
+
+  private var failing: [PrCheck] { checks.filter { prCheckConclusionKind($0) == .failure } }
+  private var running: [PrCheck] { checks.filter { prCheckConclusionKind($0) == .pending } }
+  private var finished: [PrCheck] {
+    checks.filter { [.success, .neutral].contains(prCheckConclusionKind($0)) }
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        if hasDetails {
-          withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
-        }
-      } label: {
-        HStack(alignment: .top, spacing: 10) {
-          // Red accent rail on failing rows.
-          Rectangle()
-            .fill(kind == .failure ? ADEColor.danger : Color.clear)
-            .frame(width: 2)
-            .cornerRadius(1)
-            .shadow(color: kind == .failure ? ADEColor.danger.opacity(0.6) : .clear, radius: 4)
-
-          ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-              .fill(tint.opacity(0.15))
-            if kind == .pending {
-              Image(systemName: iconName)
-                .font(.system(size: 11, weight: .heavy))
-                .foregroundStyle(tint)
-                .symbolEffect(.pulse, options: .repeat(.continuous))
-            } else {
-              Image(systemName: iconName)
-                .font(.system(size: 11, weight: .heavy))
-                .foregroundStyle(tint)
+    Group {
+      Section {
+        if checks.isEmpty {
+          let copy = prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus, checksReason: checksReason)
+          PrFlatEmptyRow(title: copy.title, message: copy.message)
+            .adeFlatRow(separator: .hidden)
+        } else {
+          let headline = prChecksHeadline(checks: checks, overallChecksStatus: overallChecksStatus)
+          HStack(spacing: 8) {
+            Image(systemName: headline.failing > 0 ? "xmark.circle.fill" : headline.running > 0 ? "clock.fill" : "checkmark.circle.fill")
+              .foregroundStyle(headline.failing > 0 ? ADEColor.danger : headline.running > 0 ? ADEColor.warning : (isNotRun ? ADEColor.textMuted : ADEColor.success))
+              .font(.system(size: 13, weight: .semibold))
+            Text(headline.text)
+              .font(.subheadline.weight(.medium))
+              .foregroundStyle(ADEColor.textPrimary)
+            Spacer(minLength: 8)
+            if canRerun && headline.failing > 0 {
+              Button("Re-run", action: onRerun)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .buttonStyle(.plain)
             }
           }
-          .frame(width: 22, height: 22)
-          .padding(.top, 1)
-
-          VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-              Text(check.name)
-                .font(.system(.footnote, design: .monospaced).weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              if isBot {
-                PrTagChip(label: "bot", color: ADEColor.tintPRs)
-              }
-              if isSecurity {
-                PrTagChip(label: "security", color: ADEColor.accent)
-              }
-              Spacer(minLength: 0)
-            }
-            Text(subLine)
-              .font(.system(size: 10, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-            if kind == .failure, let context = check.conclusion, !context.isEmpty, context != "failure" {
-              Text(context)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(ADEColor.danger)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(ADEColor.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(
-                  RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(ADEColor.danger.opacity(0.22), lineWidth: 0.5)
-                )
-                .padding(.top, 3)
-            }
-          }
-
-          if let duration {
-            Text(duration)
-              .font(.system(size: 10, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-              .padding(.top, 3)
-          }
-
-          if hasDetails {
-            Image(systemName: "chevron.right")
-              .font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .rotationEffect(.degrees(expanded ? 90 : 0))
-              .animation(.easeInOut(duration: 0.18), value: expanded)
-              .padding(.top, 3)
+          .adeFlatRow(separator: .hidden)
+          if isNotRun {
+            ADEFlatInlineNotice(message: checksReason ?? noCIReasonText, tint: ADEColor.textMuted)
+              .adeFlatRow(separator: .hidden)
           }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
 
-      if expanded, let details = check.detailsUrl, let url = URL(string: details) {
-        Divider().overlay(ADEColor.glassBorder).padding(.leading, 44)
-        HStack(spacing: 8) {
-          Image(systemName: "arrow.up.right.square")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-          Link("Open check details", destination: url)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-          Spacer(minLength: 0)
-          if let started = check.startedAt, let completed = check.completedAt {
-            let dur = prDurationText(startedAt: started, completedAt: completed)
-            if let dur {
-              Text(dur)
-                .font(.system(size: 10, design: .monospaced))
+      if !failing.isEmpty {
+        Section {
+          ForEach(failing) { row($0) }
+        } header: { ADEFlatSectionHeader("Failing", detail: "\(failing.count)") }
+      }
+      if !running.isEmpty {
+        Section {
+          ForEach(running) { row($0) }
+        } header: { ADEFlatSectionHeader("Running", detail: "\(running.count)") }
+      }
+      if !finished.isEmpty {
+        Section {
+          if passedExpanded {
+            ForEach(finished) { row($0) }
+          }
+        } header: {
+          Button {
+            withAnimation(.snappy(duration: 0.2)) { passedExpanded.toggle() }
+          } label: {
+            ADEFlatSectionHeader(isNotRun ? "Reported" : "Passed", detail: "\(finished.count)") {
+              Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(ADEColor.textMuted)
+                .rotationEffect(.degrees(passedExpanded ? 90 : 0))
             }
+            .contentShape(Rectangle())
           }
+          .buttonStyle(.plain)
+          .accessibilityValue(passedExpanded ? "Expanded" : "Collapsed")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .padding(.leading, 32)
+      }
+      if !missingRequired.isEmpty {
+        Section {
+          ForEach(missingRequired, id: \.self) { context in
+            HStack(spacing: 10) {
+              Circle()
+                .strokeBorder(ADEColor.textMuted, style: StrokeStyle(lineWidth: 1.3, dash: [2.2, 2.6]))
+                .frame(width: 13, height: 13)
+              Text(context).font(.subheadline).foregroundStyle(ADEColor.textPrimary).lineLimit(1)
+              Spacer(minLength: 8)
+              Text("never reported").font(.caption).foregroundStyle(ADEColor.textMuted)
+            }
+            .adeFlatRow()
+          }
+        } header: { ADEFlatSectionHeader("Required, missing", detail: "\(missingRequired.count)") }
+      }
+      if !deployments.isEmpty {
+        Section {
+          ForEach(deployments) { deployment in
+            PrDeploymentFlatRow(deployment: deployment).adeFlatRow()
+          }
+        } header: { ADEFlatSectionHeader("Deployments", detail: "\(deployments.count)") }
       }
     }
   }
+
+  private func row(_ check: PrCheck) -> some View {
+    NavigationLink {
+      PrCheckPage(check: check, match: prActionJob(for: check, in: actionRuns))
+    } label: {
+      PrCheckRow(check: check)
+    }
+    .adeFlatRow()
+  }
 }
 
-// MARK: - Deployments
+struct PrCheckRow: View {
+  let check: PrCheck
 
-private struct PrDeploymentRow: View {
+  var body: some View {
+    let glyph = prCheckGlyph(prCheckConclusionKind(check))
+    HStack(spacing: 10) {
+      Image(systemName: glyph.symbol)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(glyph.tint)
+        .frame(width: 18)
+      Text(check.name)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 8)
+      if let duration = prDurationText(startedAt: check.startedAt, completedAt: check.completedAt) {
+        Text(duration).font(.adeMono(11)).foregroundStyle(ADEColor.textMuted)
+      } else if check.status != "completed" {
+        ProgressView().controlSize(.mini)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(check.name), \(prCheckStatusLabel(check))")
+  }
+}
+
+private struct PrDeploymentFlatRow: View {
   let deployment: PrDeployment
 
-  private var stateTint: Color {
+  private var tint: Color {
     switch deployment.state.lowercased() {
     case "success", "active": return ADEColor.success
     case "failure", "error": return ADEColor.danger
     case "pending", "queued", "in_progress": return ADEColor.warning
-    default: return ADEColor.textSecondary
+    default: return ADEColor.textMuted
     }
   }
 
   var body: some View {
     HStack(spacing: 10) {
-      Image(systemName: "shippingbox.fill")
+      Image(systemName: "shippingbox")
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(stateTint)
-        .frame(width: 22, height: 22)
-        .background(stateTint.opacity(0.15), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(deployment.environment)
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(deployment.sha.prefix(7) + (deployment.description.map { " · \($0)" } ?? ""))
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-
+        .foregroundStyle(tint)
+        .frame(width: 18)
+      Text(deployment.environment).font(.subheadline).foregroundStyle(ADEColor.textPrimary).lineLimit(1)
+      Text(verbatim: String(deployment.sha.prefix(7))).font(.adeMono(11)).foregroundStyle(ADEColor.textMuted)
       Spacer(minLength: 8)
-
-      ADEStatusPill(text: deployment.state.uppercased(), tint: stateTint)
+      Text(deployment.state.lowercased()).font(.caption).foregroundStyle(tint)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      if let raw = deployment.environmentUrl ?? deployment.logUrl, let url = URL(string: raw) {
+        UIApplication.shared.open(url)
+      }
+    }
   }
 }
 
-// MARK: - Bottom actions
+/// One check: status, timing, the Actions job's steps when ADE has them, and
+/// the log on GitHub.
+struct PrCheckPage: View {
+  let check: PrCheck
+  let match: (run: PrActionRun, job: PrActionJob)?
 
-/// Outline-style "Rerun failed checks" button.
-private struct PrChecksRerunButton: View {
-  let canRerun: Bool
-  let onRerun: () -> Void
+  private var logURL: URL? {
+    if let raw = check.detailsUrl, let url = URL(string: raw) { return url }
+    if let match, let url = URL(string: match.run.htmlUrl) { return url }
+    return nil
+  }
 
   var body: some View {
-    Button {
-      ADEHaptics.success()
-      onRerun()
-    } label: {
-      HStack(spacing: 7) {
-        Image(systemName: "arrow.triangle.2.circlepath")
-          .font(.system(size: 12, weight: .semibold))
-        Text("Rerun failed checks")
-          .font(.system(size: 13, weight: .semibold))
-      }
-      .foregroundStyle(ADEColor.textSecondary)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 12)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(.ultraThinMaterial)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
-      )
-    }
-    .buttonStyle(.plain)
-    .disabled(!canRerun)
-    .opacity(canRerun ? 1 : 0.5)
-  }
-}
-
-// MARK: - Classification helper
-
-private enum PrCheckConclusionKind {
-  case success, failure, pending, neutral
-}
-
-private func prCheckConclusionKind(_ check: PrCheck) -> PrCheckConclusionKind {
-  if check.status != "completed" {
-    return .pending
-  }
-  switch check.conclusion {
-  case "success": return .success
-  case "failure", "timed_out", "cancelled", "action_required", "startup_failure":
-    return .failure
-  case "neutral", "skipped", "stale":
-    return .neutral
-  default:
-    return .neutral
-  }
-}
-
-// MARK: - Action run (kept from prior impl)
-
-struct PrActionRunRow: View {
-  let run: PrActionRun
-  @State private var expanded = false
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Button {
-        withAnimation(.snappy) {
-          expanded.toggle()
-        }
-      } label: {
-        HStack(alignment: .top, spacing: 10) {
-          Image(systemName: run.conclusion == "success" ? "checkmark.circle.fill" : run.status == "completed" ? "xmark.circle.fill" : "circle.dashed")
-            .foregroundStyle(run.conclusion == "success" ? ADEColor.success : run.status == "completed" ? ADEColor.danger : ADEColor.warning)
-          VStack(alignment: .leading, spacing: 4) {
-            Text(run.name)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text((run.conclusion ?? run.status).replacingOccurrences(of: "_", with: " ").uppercased())
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          Spacer(minLength: 0)
-          Image(systemName: expanded ? "chevron.up" : "chevron.down")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-      .buttonStyle(.plain)
-
-      if expanded {
-        ForEach(run.jobs) { job in
-          VStack(alignment: .leading, spacing: 6) {
-            HStack {
-              Text(job.name)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-              Spacer(minLength: 0)
-              Text((job.conclusion ?? job.status).uppercased())
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(job.conclusion == "success" ? ADEColor.success : ADEColor.textSecondary)
+    List {
+      Section {
+        VStack(alignment: .leading, spacing: 6) {
+          PrCheckRow(check: check)
+          HStack(spacing: 6) {
+            Text(prCheckStatusLabel(check))
+            if let started = check.startedAt {
+              Text("· started \(prRelativeTime(started))")
             }
-            ForEach(job.steps.prefix(6)) { step in
-              HStack(spacing: 8) {
-                Text("\(step.number)")
-                  .font(.caption2.monospacedDigit())
-                  .foregroundStyle(ADEColor.textMuted)
-                Text(step.name)
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.textSecondary)
-                Spacer(minLength: 0)
-                Text((step.conclusion ?? step.status).uppercased())
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.textMuted)
+          }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+        }
+        .adeFlatRow(separator: .hidden)
+      }
+      if let match {
+        Section {
+          ForEach(match.job.steps) { step in
+            HStack(spacing: 10) {
+              Text(verbatim: "\(step.number)")
+                .font(.adeMono(11))
+                .foregroundStyle(ADEColor.textMuted)
+                .frame(width: 22, alignment: .trailing)
+              let glyph = prCheckGlyph(prCheckConclusionKind(PrCheck(name: step.name, status: step.status, conclusion: step.conclusion)))
+              Image(systemName: glyph.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(glyph.tint)
+              Text(step.name).font(.footnote).foregroundStyle(ADEColor.textPrimary).lineLimit(2)
+              Spacer(minLength: 8)
+              if let duration = prDurationText(startedAt: step.startedAt, completedAt: step.completedAt) {
+                Text(duration).font(.adeMono(10.5)).foregroundStyle(ADEColor.textMuted)
               }
             }
+            .adeFlatRow()
           }
-          .adeInsetField(cornerRadius: 12, padding: 10)
+        } header: {
+          ADEFlatSectionHeader("Steps", detail: match.run.name)
         }
-
-        if let url = URL(string: run.htmlUrl), !run.htmlUrl.isEmpty {
-          Link(destination: url) {
-            Label("Open run", systemImage: "arrow.up.right.square")
-              .font(.caption.weight(.semibold))
+      }
+      if let logURL {
+        Section {
+          Link(destination: logURL) {
+            Label("Open log on GitHub", systemImage: "arrow.up.right.square")
+              .font(.subheadline.weight(.medium))
+              .foregroundStyle(ADEColor.accent)
           }
-          .foregroundStyle(ADEColor.accent)
+          .adeFlatRow(separator: .hidden)
         }
       }
     }
-    .adeInsetField(cornerRadius: 14, padding: 12)
+    .adeFlatList()
+    .navigationTitle(check.name)
+    .navigationBarTitleDisplayMode(.inline)
   }
-}
-
-// MARK: - details host helper
-
-private func detailsHost(for check: PrCheck) -> String {
-  guard let details = check.detailsUrl, let url = URL(string: details), let host = url.host else {
-    return ""
-  }
-  return host
 }

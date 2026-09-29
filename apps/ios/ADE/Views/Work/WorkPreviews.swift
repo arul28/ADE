@@ -1334,6 +1334,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   case settingsMachines = "settings-machines"
   /// One machine's page. See `SettingsMachinesPreviewHost`.
   case settingsMachinePage = "settings-machine-page"
+  /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
+  case prsList = "prs-list"
+  case prDetail = "pr-detail"
+  case prFiles = "pr-files"
+  case prDiff = "pr-diff"
+  case prChecks = "pr-checks"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1400,6 +1406,16 @@ struct ADEPreviewScreenHost: View {
       SettingsMachinesPreviewHost()
     case .settingsMachinePage:
       SettingsMachinesPreviewHost(showsPage: true)
+    case .prsList:
+      PrsListPreviewHost()
+    case .prDetail:
+      PrDetailPreviewHost(tab: .overview)
+    case .prFiles:
+      PrDetailPreviewHost(tab: .files)
+    case .prDiff:
+      PrDiffPreviewHost()
+    case .prChecks:
+      PrDetailPreviewHost(tab: .checks, state: "open")
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:

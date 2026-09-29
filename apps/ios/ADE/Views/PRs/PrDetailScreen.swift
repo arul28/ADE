@@ -54,7 +54,6 @@ struct PrDetailView: View {
   @State private var reviewerInput = ""
   @State private var commentInput = ""
   @State private var errorMessage: String?
-  @State private var actionMessage: String?
   @State private var cleanupChoice: PrCleanupChoice = .archive
   @State private var cleanupConfirmationPresented = false
   @State private var filesWorkspaceId: String?
@@ -62,9 +61,6 @@ struct PrDetailView: View {
   @State private var laneLinkItem: GitHubPrListItem?
   @State private var autoMapRequest: PrAutoMapRequest?
   @State private var editorSheet: PrDetailEditorSheet?
-  @State private var mergeMethodSheetPresented: Bool = false
-  @State private var actionsSheetPresented: Bool = false
-  @State private var nextStepSheetPresented: Bool = false
   /// Closing a PR from the actions sheet asks first, matching desktop. The
   /// inline merge rail has its own two-tap confirm; this covers the other entry
   /// point, which used to fire the moment the row was tapped.
@@ -72,38 +68,24 @@ struct PrDetailView: View {
   /// Raised while the actions sheet is still dismissing. Presenting the dialog
   /// in the same pass as the sheet teardown is the case SwiftUI drops on the
   /// floor, which would leave this path with no way to close a PR at all.
-  @State private var closeConfirmationPending = false
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
   @State private var hasSeededFromWarmCache = false
-  @State private var pendingTimelineScrollId: String?
-  @State private var timelineSectionMounted = false
-  @SceneStorage("ade.prs.expandedUnmappedPrIds")
-  private var expandedUnmappedPrIdsRaw = ""
-
-  // MARK: - Derived models (computed off the render path)
-  //
-  // The timeline and the synthesized fallback PR are rebuilt ONCE per data
-  // change (reload / warm-cache seed), never inside `body`. Rebuilding +
-  // re-sorting the timeline on every body evaluation was a primary source of
-  // scroll lag on long PRs.
-
   /// Fallback list item synthesized from the GitHub item + snapshot when the
   /// PR has no lane-PR row. Cached so `currentPr` stops allocating per access.
   @State private var synthesizedPr: PullRequestListItem?
-  /// Unified timeline, sorted ascending (oldest → newest, GitHub-style —
-  /// desktop parity). Fed to the Overview thread rows.
-  @State private var timelineEvents: [PrTimelineEvent] = []
-  /// Timeline folded for display: runs of consecutive same-author commits
-  /// collapse into a single group row (desktop `PrTimeline` parity).
-  @State private var timelineDisplayItems: [PrDigestDisplayItem] = []
-  /// Review threads split + sorted once per data change (most recent first).
-  @State private var unresolvedThreads: [PrReviewThread] = []
-  @State private var resolvedThreads: [PrReviewThread] = []
-
-  // Thread reply state (was owned by the removed PrUnifiedOverviewThread).
-  @State private var focusedThreadId: String?
-  @State private var replyDraft: [String: String] = [:]
+  /// The description with bot blocks and HTML comments removed.
+  @State private var cleanedDescription = ""
+  /// The Overview history (open threads, pushes, bot digests, people, events),
+  /// rebuilt once per data change, never inside `body`.
+  @State private var digest: PrConversationDigest = .empty
+  @State private var threadsById: [String: PrReviewThread] = [:]
+  @State private var toast: ADEToastMessage?
+  /// Merged PRs on archived lanes are left out of the bounded snapshot
+  /// hydration; the host sends their snapshot on request, once per visit.
+  @State private var didRequestSnapshotOnDemand = false
+  @State private var isRefreshingSnapshot = false
+  @State private var mergeAnywayConfirmationPresented = false
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -125,29 +107,6 @@ struct PrDetailView: View {
     syncService.prActionLabel(forKey: detailActionKey)
   }
   private var isDetailBusy: Bool { detailBusyLabel != nil }
-
-  private var localLaneOfferExpanded: Binding<Bool> {
-    Binding(
-      get: { expandedUnmappedPrIds.contains(prId) },
-      set: { expanded in
-        var ids = expandedUnmappedPrIds
-        if expanded {
-          ids.insert(prId)
-        } else {
-          ids.remove(prId)
-        }
-        expandedUnmappedPrIdsRaw = ids.sorted().joined(separator: "\n")
-      }
-    )
-  }
-
-  private var expandedUnmappedPrIds: Set<String> {
-    Set(
-      expandedUnmappedPrIdsRaw
-        .split(separator: "\n")
-        .map(String.init)
-    )
-  }
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -192,14 +151,6 @@ struct PrDetailView: View {
 
   private var canReopenCurrentPr: Bool {
     canRunPrActions && shouldShowReopenAction
-  }
-
-  private var canAttemptBlockedMerge: Bool {
-    guard canRunPrActions else { return false }
-    guard !isCurrentPrDraft else { return false }
-    guard let status = snapshot?.status else { return false }
-    let state = status.state.isEmpty ? currentPr.state : status.state
-    return state == "open" && !status.isMergeable && !status.mergeConflicts
   }
 
   private var routedPrNumber: Int? {
@@ -267,26 +218,6 @@ struct PrDetailView: View {
     if let githubItem { return githubItem.githubPrNumber }
     if let routedPrNumber { return routedPrNumber }
     return nil
-  }
-
-  private var detailHeaderAccessibilityLabel: String {
-    if let displayedPrNumber {
-      return "Pull request \(displayedPrNumber), \(currentPr.title)"
-    }
-    return "Pull request, \(currentPr.title)"
-  }
-
-  private var detailHeaderMetaText: String {
-    let number = displayedPrNumber.map { "#\($0)" }
-    // A lane name when there is one, and nothing at all when there is not — the
-    // absence of a lane is not a state worth naming in the header.
-    let lane = currentPr.laneName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let laneLabel = lane?.isEmpty == false ? lane : nil
-    let branchLabel = currentPr.headBranch.isEmpty ? nil : currentPr.headBranch
-    return [number, laneLabel, branchLabel]
-      .compactMap { $0 }
-      .filter { !$0.isEmpty }
-      .joined(separator: " · ")
   }
 
   private var currentPr: PullRequestListItem {
@@ -374,45 +305,18 @@ struct PrDetailView: View {
           snapshot: snapshot
         )
       : nil
-    let snap = snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: [])
-    // Ascending (oldest → newest), undated events sink to the end — mirrors
-    // desktop `stableSortByTs`.
-    // Bot blocks in the description become those bots' comments at PR creation.
-    let bodyBots = prSplitBodyBotSections(snap.detail?.body).sections.map { section in
-      PrTimelineEvent(
-        id: "\(prDescriptionBotEventPrefix)\(section.id)",
-        kind: .comment,
-        title: "\(section.login) commented",
-        author: section.login,
-        body: section.body,
-        timestamp: currentPr.createdAt,
-        metadata: nil
-      )
-    }
-    timelineEvents = (buildPullRequestTimeline(pr: currentPr, snapshot: snap, activity: activityEvents) + bodyBots)
-      .sorted { lhs, rhs in
-        let l = prParsedDate(lhs.timestamp) ?? .distantFuture
-        let r = prParsedDate(rhs.timestamp) ?? .distantFuture
-        if l != r { return l < r }
-        return lhs.id < rhs.id
-      }
-    // Triage layout (desktop digest parity): one section per push, one folded
-    // row per bot. GitHub's account flag rides along so GraphQL-style bot
-    // logins without `[bot]` still fold.
-    var botFlags: [String: Bool] = [:]
-    for review in snap.reviews where review.reviewerIsBot == true { botFlags[review.reviewer] = true }
-    for comment in snap.comments where comment.authorIsBot == true { botFlags[comment.author] = true }
-    for event in bodyBots { if let author = event.author { botFlags[author] = true } }
-    timelineDisplayItems = buildPrDigestDisplayItems(timelineEvents, botFlags: botFlags)
-    let sortedThreads = reviewThreads.sorted { lhs, rhs in
-      let l = prParsedDate(lhs.updatedAt ?? lhs.createdAt) ?? .distantPast
-      let r = prParsedDate(rhs.updatedAt ?? rhs.createdAt) ?? .distantPast
-      return l > r
-    }
-    unresolvedThreads = sortedThreads.filter { !$0.isResolved }
-    resolvedThreads = sortedThreads.filter { $0.isResolved }
+    let cleaned = prCleanBody(snapshot?.detail?.body)
+    cleanedDescription = cleaned.body
+    let inputs = prDigestInputs(
+      pr: currentPr,
+      snapshot: snapshot,
+      reviewThreads: reviewThreads,
+      activity: activityEvents,
+      bodySections: cleaned.sections
+    )
+    digest = buildPrConversationDigest(commits: inputs.commits, entries: inputs.entries, story: inputs.story)
+    threadsById = Dictionary(reviewThreads.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
-
   private var actionAvailability: PrActionAvailability {
     PrActionAvailability(prState: snapshot?.status?.state ?? currentPr.state)
   }
@@ -429,16 +333,6 @@ struct PrDetailView: View {
     reviewThreads.filter { !$0.isResolved }.count
   }
 
-  private var reviewsHave: Int {
-    (snapshot?.reviews ?? []).filter { $0.state == "approved" }.count
-  }
-
-  /// `PrDetail.requestedReviewers` is the current open review-request list;
-  /// treat that count as "needed" approvals. Falls back to 0 otherwise.
-  private var reviewsNeeded: Int {
-    snapshot?.detail?.requestedReviewers.count ?? 0
-  }
-
   private var isCurrentPrDraft: Bool {
     currentPr.state == "draft" || snapshot?.status?.state == "draft" || snapshot?.detail?.isDraft == true
   }
@@ -447,30 +341,6 @@ struct PrDetailView: View {
     currentPr.stack ?? githubItem?.stack
   }
 
-  private var mergeGateInfo: PrMergeGateInfo {
-    prComputeMergeGate(
-      status: snapshot?.status,
-      checks: snapshot?.checks ?? [],
-      summaryChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
-      reviewThreadsUnresolved: unresolvedThreadCount,
-      reviewsNeeded: reviewsNeeded,
-      reviewsHave: reviewsHave,
-      capabilities: capabilities,
-      isDraft: isCurrentPrDraft
-    )
-  }
-
-  private var showsStickyActionBar: Bool {
-    // The next step rides every tab: it is the one thing the screen answers.
-    // The Overview's composer scrolls above it (bottom content margin).
-    hasPrDetailData
-  }
-
-  /// Whether a local lane already tracks this PR's branch. Only decides whether
-  /// the "start local work" offer is worth showing — it gates no PR action.
-  private var hasLocalLane: Bool {
-    !currentPr.laneId.isEmpty
-  }
 
   private var canAutoMapCurrentPr: Bool {
     isLive && !isDetailBusy && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
@@ -488,305 +358,147 @@ struct PrDetailView: View {
   /// GitHub-style requirement checklist for the merge rail + merge sheet.
   /// Mirrors desktop's `buildMergeChecklist`, driven by the structured
   /// merge-state fields.
-  private var mergeChecklistItems: [PrMergeChecklistItem] {
-    PrMergeChecklist.build(
-      prState: snapshot?.status?.state ?? currentPr.state,
-      summaryReviewStatus: snapshot?.status?.reviewStatus ?? currentPr.reviewStatus,
-      status: snapshot?.status,
-      checks: snapshot?.checks ?? [],
-      reviews: snapshot?.reviews ?? [],
-      summaryChecksStatus: currentPr.checksStatus
-    )
-  }
 
-  /// The bypass toggle is shown ONLY when the viewer can bypass and the
-  /// merge-box state is `blocked` (branch protection). Mirrors desktop gating.
-  private var showsMergeBypassToggle: Bool {
-    canRunPrActions && PrMergeChecklist.showsBypassToggle(status: snapshot?.status, capabilities: capabilities)
-  }
 
-  /// How this PR shipped, and the lane it outlived. Prefers the GitHub list item (which
-  /// the host fills for repo PRs) and falls back to the mapped row.
-  private var shippedFacts: PrShippedFacts {
-    PrShippedFacts(
-      mergedByLogin: (githubItem?.mergedBy ?? pr?.mergedBy)?.login,
-      mergeMethod: githubItem?.mergeMethod ?? pr?.mergeMethod,
-      mergedAt: githubItem?.mergedAt ?? pr?.mergedAt,
-      createdAt: githubItem?.createdAt ?? pr?.createdAt,
-      commitCount: githubItem?.commitCount ?? pr?.commitCount,
-      changedFiles: githubItem?.changedFiles ?? pr?.changedFiles,
-      detached: githubItem?.detached ?? pr?.detached
-    )
-  }
-
-  private var behindBaseBy: Int {
-    snapshot?.status?.behindBaseBy ?? 0
-  }
-
-  /// Set of sub-tabs shown in the detail picker. The Activity tab is folded
-  /// into the unified Overview thread (desktop parity), so it no longer appears
-  /// as its own tab.
   private var visibleTabs: [PrDetailTab] {
     [.overview, .files, .checks]
   }
 
-  private func tabTitle(_ tab: PrDetailTab) -> String {
+  private func tabLabel(_ tab: PrDetailTab) -> String {
     switch tab {
-    case .overview: return "Overview"
-    case .checks: return "Checks"
-    case .activity: return "Activity"
-    case .files: return "Files"
+    case .files:
+      let count = snapshot?.files.count ?? 0
+      return count > 0 ? "Files \(count)" : "Files"
+    case .checks:
+      let count = snapshot?.checks.count ?? 0
+      return count > 0 ? "Checks \(count)" : "Checks"
+    default:
+      return "Overview"
     }
   }
 
-  /// Live count for the segmented tab pill. Returns nil when no count is
-  /// meaningful (Overview) or when data hasn't synced yet (zero hidden).
-  private func tabCount(_ tab: PrDetailTab) -> Int? {
-    switch tab {
-    case .overview:
-      return nil
-    case .files:
-      let count = snapshot?.files.count ?? 0
-      return count > 0 ? count : nil
-    case .checks:
-      // The live note beside the label carries the checks state instead.
-      return nil
-    case .activity:
-      let comments = snapshot?.comments.count ?? 0
-      let reviews = snapshot?.reviews.count ?? 0
-      let commits = snapshot?.commits?.count ?? 0
-      let events = activityEvents.count
-      let count = comments + reviews + commits + events
-      return count > 0 ? count : nil
-    }
+  private var displayedState: String {
+    isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state)
+  }
+
+  private var laneName: String? {
+    guard !currentPr.laneId.isEmpty else { return nil }
+    return currentPr.laneName ?? availableLanes.first(where: { $0.id == currentPr.laneId })?.name ?? currentPr.headBranch
+  }
+
+  private var stackLabel: String? {
+    if let stack = nativeStackMembership { return "Stack \(stack.position) of \(stack.size)" }
+    if currentPr.linkedGroupId != nil, !groupMembers.isEmpty { return "Stack of \(groupMembers.count)" }
+    return nil
   }
 
   var body: some View {
-    ScrollViewReader { scrollProxy in
-      List {
-      // Durable in-flight banner: reads the label from the service registry so
-      // a merge/close/comment started here keeps showing a spinner even if the
-      // user switches tabs and returns.
-      if let detailBusyLabel {
-        HStack(spacing: 10) {
-          ProgressView()
-            .tint(ADEColor.accent)
-          Text(detailBusyLabel)
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textSecondary)
-          Spacer(minLength: 0)
-        }
-        .adeGlassCard(cornerRadius: 12, padding: 12)
-        .prListRow()
-      }
-
-      if let actionMessage {
-        ADENoticeCard(
-          title: "PR action complete",
-          message: actionMessage,
-          icon: "checkmark.circle.fill",
-          tint: ADEColor.success,
-          actionTitle: nil,
-          action: nil
-        )
-        .prListRow()
-      }
-
-      if let errorMessage, !syncService.connectionState.isHostUnreachable {
-        ADENoticeCard(
-          title: "PR detail failed",
-          message: errorMessage,
-          icon: "exclamationmark.triangle.fill",
-          tint: ADEColor.danger,
-          actionTitle: "Retry",
-          action: { Task { await retryPrDetailLoad() } }
-        )
-        .prListRow()
-      }
-
-      if !unavailableDetailParts.isEmpty {
-        ADENoticeCard(
-          title: "Some PR data is unavailable",
-          message: "ADE could not refresh \(unavailableDetailParts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")). The visible data is partial, not a zero result.",
-          icon: "exclamationmark.arrow.triangle.2.circlepath",
-          tint: ADEColor.warning,
-          actionTitle: "Retry",
-          action: { Task { await retryPrDetailLoad() } }
-        )
-        .prListRow()
-      }
-
+    List {
       if isAwaitingInitialPrDetail {
-        PrDetailSummarySkeleton()
-          .prListRow()
+        Section {
+          PrFlatDetailHeaderSkeleton()
+            .adeFlatRow(separator: .hidden)
+        }
       } else if isPrDetailUnavailable {
-        ADENoticeCard(
-          title: "Pull request unavailable",
-          message: isLive
-            ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
-            : "Reconnect to your computer to load \(unavailablePrLabel).",
-          icon: "arrow.triangle.merge",
-          tint: ADEColor.warning,
-          actionTitle: "Retry",
-          action: { Task { await retryPrDetailLoad() } }
-        )
-        .prListRow()
+        Section {
+          ADEFlatInlineNotice(
+            message: isLive
+              ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
+              : "Reconnect to your computer to load \(unavailablePrLabel).",
+            retry: { Task { await retryPrDetailLoad() } }
+          )
+          .adeFlatRow(separator: .hidden)
+        }
       } else {
-        PrDetailHeaderCard(
-          pr: currentPr,
-          state: isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state),
-          authorLogin: snapshot?.detail?.author.login ?? githubItem?.author,
-          laneName: currentPr.laneName ?? availableLanes.first(where: { $0.id == currentPr.laneId })?.name,
-          laneMachineName: machineContext.machineName(forLaneId: currentPr.laneId),
-          onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane
-        )
-        .prListRow()
-
-        subTabPicker
-          .prListRow()
+        Section {
+          detailHeader
+            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16), separator: .hidden)
+          if let errorMessage, !syncService.connectionState.isHostUnreachable {
+            ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await retryPrDetailLoad() } })
+              .adeFlatRow(separator: .hidden)
+          }
+          if !unavailableDetailParts.isEmpty {
+            ADEFlatInlineNotice(
+              message: "Could not refresh \(unavailableDetailParts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")). This is partial, not empty.",
+              retry: { Task { await retryPrDetailLoad() } }
+            )
+            .adeFlatRow(separator: .hidden)
+          }
+          Picker("Section", selection: $selectedTab) {
+            ForEach(visibleTabs) { tab in
+              Text(tabLabel(tab)).tag(tab)
+            }
+          }
+          .pickerStyle(.segmented)
+          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
+        }
 
         switch selectedTab {
-      case .overview, .activity:
-        // Unified Overview thread — folds the former Activity tab in. `.activity`
-        // is routed here too so any persisted/legacy selection still renders.
-        // Emitted as SIBLING List rows (not one nested mega-row) so the List
-        // actually virtualizes offscreen thread content.
-        overviewThreadRows(scrollProxy: scrollProxy)
-      case .files:
-        PrFilesTab(
-          snapshot: snapshot,
-          // Files reads the focused machine only, so a lane of another
-          // machine cannot open there yet.
-          canOpenFiles: !currentPr.laneId.isEmpty && !isWorkRemoteLaneId(currentPr.laneId),
-          onOpenFile: { file in Task { await openFileInFiles(file) } },
-          onCopyPath: copyFilePath
-        )
-          .prListRow()
-      case .checks:
-        PrChecksTab(
-          checks: snapshot?.checks ?? [],
-          overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
-          checksReason: snapshot?.status?.checksReason ?? currentPr.checksReason,
-          missingRequired: snapshot?.status?.checksMissingRequired
-            ?? currentPr.checksMissingRequired
-            ?? [],
-          actionRuns: actionRuns,
-          deployments: deployments,
-          canRerunChecks: canRerunChecks,
-          isLive: canRunPrActions,
-          onRerun: rerunChecks
-        )
-        .prListRow()
+        case .overview, .activity:
+          PrOverviewSections(
+            description: cleanedDescription,
+            digest: digest,
+            threadsById: threadsById,
+            canAct: canRunPrActions,
+            onReply: { threadId, body in replyToThread(threadId: threadId, body: body) },
+            onResolve: { threadId, resolved in setThreadResolved(threadId: threadId, resolved: resolved) }
+          )
+        case .files:
+          PrFilesSections(
+            files: snapshot?.files ?? [],
+            isLoading: isRefreshingSnapshot || (!hasLoadedLiveSidecars && isLive),
+            // Files reads the focused machine only, so a lane of another
+            // machine cannot open there yet.
+            canOpenFiles: !currentPr.laneId.isEmpty && !isWorkRemoteLaneId(currentPr.laneId),
+            onOpenFile: { file in Task { await openFileInFiles(file) } },
+            onCopyPath: copyFilePath
+          )
+        case .checks:
+          PrChecksSections(
+            checks: snapshot?.checks ?? [],
+            overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
+            checksReason: snapshot?.status?.checksReason ?? currentPr.checksReason,
+            missingRequired: snapshot?.status?.checksMissingRequired ?? currentPr.checksMissingRequired ?? [],
+            actionRuns: actionRuns,
+            deployments: deployments,
+            canRerun: canRerunChecks && canRunPrActions,
+            onRerun: rerunChecks
+          )
         }
       }
     }
-      .listStyle(.plain)
-    .listRowSpacing(12)
-    .contentMargins(.bottom, 88, for: .scrollContent)
-    .scrollContentBackground(.hidden)
-    .background(prLiquidGlassBackdrop().ignoresSafeArea())
-    .adeNavigationGlass()
+    .adeFlatList()
+    .listSectionSpacing(.compact)
+    .contentMargins(.bottom, 16, for: .scrollContent)
     .adeAnalyticsScreen(.pullRequestDetail)
-    .safeAreaInset(edge: .top, spacing: 0) {
-      detailNavigationHeader
-    }
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar(.hidden, for: .navigationBar)
-    .safeAreaInset(edge: .bottom) {
-      if showsStickyActionBar {
-        stickyActionBar
+    .toolbar(.visible, for: .navigationBar)
+    .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        moreMenu
       }
     }
+    .safeAreaInset(edge: .bottom) {
+      if hasPrDetailData {
+        nextStepBar
+      }
+    }
+    .adeToast($toast)
     .refreshable {
       await reload(refreshRemote: true)
     }
     .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision)") {
-      // Seed from the warm cache first so an instant render is shown and, when
-      // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
-      // gate below evaluates. Doing this inside `.task` (rather than relying on
-      // `.onAppear` firing first) makes the ordering deterministic.
+      // Seed from the warm cache first so the first frame has content and, when
+      // the entry is fresh, the sidecar fan-out below is skipped.
       seedFromWarmCacheIfNeeded()
-      // Freshness gate: a FRESH warm-cache entry (loaded < detailFreshnessWindow
-      // ago) means this revision-driven reload skips the sidecar fan-out (8+
-      // network calls) and only refreshes the cheap local projection. Once the
-      // window lapses, the next projection bump re-fetches the sidecars too.
-      // That is what keeps review threads / activity / checks runs live while
-      // the screen is open: GitHub webhooks land on the host, the host performs
-      // one targeted reconciliation for the linked PRs, the changeset pump bumps
-      // `prsProjectionRevision` here, and this gate turns that into a throttled
-      // sidecar refresh instead of a one-shot load.
+      // Webhooks bump the projection revision; once the freshness window lapses
+      // that bump refreshes threads, activity and checks as well.
       let needLiveSidecars = shouldFetchPrDetailLiveSidecars(
         hasLoadedLiveSidecars: hasLoadedLiveSidecars,
         refreshRemote: false
       ) || !syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow)
       await reload(includeLiveSidecars: needLiveSidecars)
-    }
-    .onChange(of: pendingTimelineScrollId) { _, anchorId in
-      guard let anchorId else { return }
-      scrollPendingTimelineAnchorIfReady(anchorId: anchorId, scrollProxy: scrollProxy)
-    }
-    .sheet(isPresented: $cleanupConfirmationPresented) {
-      PrCleanupConfirmationSheet(
-        choice: cleanupChoice,
-        onConfirm: {
-          cleanupConfirmationPresented = false
-          Task { await performCleanup() }
-        },
-        onCancel: {
-          cleanupConfirmationPresented = false
-        }
-      )
-      .presentationDetents([.height(340)])
-      .presentationDragIndicator(.hidden)
-      .presentationBackground(.clear)
-    }
-    .sheet(isPresented: $mergeMethodSheetPresented) {
-      PrMergeStrategySheet(
-        selected: $mergeMethod,
-        checklist: mergeChecklistItems,
-        canAttemptBlockedMerge: canAttemptBlockedMerge,
-        showsBypassToggle: showsMergeBypassToggle,
-        prTitle: currentPr.title,
-        prNumber: currentPr.githubPrNumber,
-        headBranch: currentPr.headBranch,
-        repoOwner: currentPr.repoOwner,
-        commits: snapshot?.commits ?? [],
-        onMerge: { method, bypass, commitTitle, commitBody in
-          mergeMethod = method
-          mergeMethodSheetPresented = false
-          mergeCurrentPr(bypassRules: bypass, commitTitle: commitTitle, commitBody: commitBody)
-        },
-        onCancel: {
-          mergeMethodSheetPresented = false
-        }
-      )
-      .presentationDetents([.large])
-      .presentationDragIndicator(.hidden)
-      .presentationBackground(.clear)
-    }
-    .sheet(isPresented: $nextStepSheetPresented) {
-      PrNextStepSheet(
-        step: nextStep,
-        labelFor: nextStepLabel,
-        isAvailable: nextStepAvailable,
-        onAction: runNextStep,
-        onMergeAnyway: {
-          nextStepSheetPresented = false
-          presentMergeMethodPicker()
-        },
-        onChip: { chip in
-          nextStepSheetPresented = false
-          switch chip.id {
-          case "checks": selectedTab = .checks
-          case "threads", "review": selectedTab = .overview
-          default: break
-          }
-        },
-        onDismiss: { nextStepSheetPresented = false }
-      )
-      .presentationDetents([.medium, .large])
-      .presentationDragIndicator(.visible)
     }
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
@@ -811,6 +523,7 @@ struct PrDetailView: View {
       ) { laneId in
         runPrAction(
           "Linking pull request",
+          success: "Lane linked",
           action: {
             // A namespaced lane id makes the link on the lane's machine.
             try await syncService.linkPullRequestToLane(
@@ -831,590 +544,309 @@ struct PrDetailView: View {
       .presentationDragIndicator(.hidden)
       .presentationBackground(.clear)
     }
-    .sheet(isPresented: $actionsSheetPresented, onDismiss: {
-      guard closeConfirmationPending else { return }
-      closeConfirmationPending = false
-      closeConfirmationPresented = true
-    }) {
-      prActionsSheet
-        .presentationDetents([.height(560)])
-        .presentationDragIndicator(.hidden)
-        .presentationBackground(.clear)
-    }
-    .confirmationDialog(
-      closeConfirmationTitle,
-      isPresented: $closeConfirmationPresented,
-      titleVisibility: .visible
-    ) {
-      Button("Close pull request", role: .destructive) {
-        closeCurrentPr()
-      }
+    .confirmationDialog(closeConfirmationTitle, isPresented: $closeConfirmationPresented, titleVisibility: .visible) {
+      Button("Close pull request", role: .destructive) { closeCurrentPr() }
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(closeConfirmationMessage)
     }
+    .confirmationDialog(
+      cleanupChoice == .archive ? "Archive this lane?" : "Delete the lane and its branch?",
+      isPresented: $cleanupConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      Button(cleanupChoice == .archive ? "Archive lane" : "Delete lane and branch", role: .destructive) {
+        Task { await performCleanup() }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(cleanupChoice == .archive
+        ? "The lane leaves the Lanes list. Its chats stay in history."
+        : "Deletes the lane's worktree, its local branch and \(currentPr.headBranch.isEmpty ? "the remote branch" : currentPr.headBranch) on GitHub.")
+    }
+    .confirmationDialog("Merge anyway?", isPresented: $mergeAnywayConfirmationPresented, titleVisibility: .visible) {
+      ForEach(PrMergeMethodOption.allCases) { method in
+        Button(nextStep.mergeAnyway.bypass ? "\(method.title), bypassing rules" : method.title, role: .destructive) {
+          mergeMethod = method
+          mergeCurrentPr(bypassRules: nextStep.mergeAnyway.bypass)
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      let skips = nextStep.mergeAnyway.skips
+      Text(skips.isEmpty ? "GitHub merges this PR now." : "Merging now skips: \(skips.joined(separator: ", ")).")
+    }
     .sheet(item: $editorSheet) { sheet in
-      switch sheet {
-      case .title(let title):
-        PrSingleLineEditSheet(
-          title: "Edit title",
-          fieldTitle: "Title",
-          initialValue: title,
-          submitTitle: "Save"
-        ) { value in
-          runPrAction("Updating PR title") {
-            try await syncService.updatePullRequestTitle(prId: effectivePrId, title: value)
-          } onSuccess: {
-            editorSheet = nil
-          }
-        }
-      case .body(let body):
-        PrMultilineEditSheet(
-          title: "Edit description",
-          initialValue: body,
-          submitTitle: "Save"
-        ) { value in
-          runPrAction("Updating PR description") {
-            try await syncService.updatePullRequestBody(prId: effectivePrId, body: value)
-          } onSuccess: {
-            editorSheet = nil
-          }
-        }
-      case .labels(let labels):
-        PrSingleLineEditSheet(
-          title: "Set labels",
-          fieldTitle: "Labels",
-          initialValue: labels,
-          submitTitle: "Save"
-        ) { value in
-          let labels = value
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-          runPrAction("Updating labels") {
-            try await syncService.setPullRequestLabels(prId: effectivePrId, labels: labels)
-          } onSuccess: {
-            editorSheet = nil
-          }
-        }
-      case .review:
-        PrSubmitReviewSheet { event, body in
-          runPrAction("Submitting review") {
-            try await syncService.submitPullRequestReview(prId: effectivePrId, event: event.rawValue, body: body)
-          } onSuccess: {
-            editorSheet = nil
-          }
-        }
-      }
-    }
+      editorSheetView(sheet)
     }
   }
 
-  private var detailNavigationHeader: some View {
-    HStack(spacing: 8) {
-      Button {
-        dismiss()
-      } label: {
-        Image(systemName: "chevron.left")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 40, height: 40)
-          .contentShape(Rectangle())
+  @ViewBuilder
+  private func editorSheetView(_ sheet: PrDetailEditorSheet) -> some View {
+    switch sheet {
+    case .title(let title):
+      PrSingleLineEditSheet(title: "Edit title", fieldTitle: "Title", initialValue: title, submitTitle: "Save") { value in
+        runPrAction("Updating PR title", success: "Title updated") {
+          try await syncService.updatePullRequestTitle(prId: effectivePrId, title: value)
+        } onSuccess: { editorSheet = nil }
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Back to PRs")
-
-      VStack(alignment: .center, spacing: 2) {
-        Text(currentPr.title)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .adeMatchedGeometry(
-            id: transitionNamespace == nil ? nil : "pr-title-\(prId)",
-            in: transitionNamespace
-          )
-        Text(detailHeaderMetaText)
-          .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
+      .presentationDetents([.medium])
+    case .body(let body):
+      PrMultilineEditSheet(title: "Edit description", sectionTitle: "Description", initialValue: body, submitTitle: "Save") { value in
+        runPrAction("Updating PR description", success: "Description updated") {
+          try await syncService.updatePullRequestBody(prId: effectivePrId, body: value)
+        } onSuccess: { editorSheet = nil }
       }
-      .frame(maxWidth: .infinity)
-      .accessibilityElement(children: .combine)
-      .accessibilityLabel(detailHeaderAccessibilityLabel)
-
-      Button {
-        actionsSheetPresented = true
-      } label: {
-        Image(systemName: "ellipsis")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(width: 40, height: 40)
-          .contentShape(Rectangle())
+    case .labels(let labels):
+      PrSingleLineEditSheet(title: "Labels", fieldTitle: "Comma-separated labels", initialValue: labels, submitTitle: "Save") { value in
+        let labels = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        runPrAction("Updating labels", success: "Labels updated") {
+          try await syncService.setPullRequestLabels(prId: effectivePrId, labels: labels)
+        } onSuccess: { editorSheet = nil }
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Pull request actions")
-    }
-    .padding(.horizontal, 16)
-    .padding(.top, 2)
-    .padding(.bottom, 8)
-    .background {
-      ADEColor.pageBackground
-        .opacity(0.98)
-        .ignoresSafeArea(edges: .top)
-        .allowsHitTesting(false)
+      .presentationDetents([.medium])
+    case .reviewers:
+      PrSingleLineEditSheet(title: "Request review", fieldTitle: "GitHub logins, comma-separated", initialValue: "", submitTitle: "Request") { value in
+        reviewerInput = value
+        requestReviewers()
+        editorSheet = nil
+      }
+      .presentationDetents([.medium])
+    case .comment:
+      PrMultilineEditSheet(title: "Comment", sectionTitle: "Comment on the PR", initialValue: "", submitTitle: "Post") { value in
+        commentInput = value
+        submitComment()
+        editorSheet = nil
+      }
+      .presentationDetents([.medium, .large])
+    case .review:
+      PrSubmitReviewSheet { event, body in
+        runPrAction("Submitting review", success: "Review submitted") {
+          try await syncService.submitPullRequestReview(prId: effectivePrId, event: event.rawValue, body: body)
+        } onSuccess: { editorSheet = nil }
+      }
+      .presentationDetents([.medium, .large])
     }
   }
 
-  /// Draft and auto-merge, from the same repo setting the desktop menu reads.
-  private var prStateActionRows: [PrDetailExtraAction] {
-    var rows: [PrDetailExtraAction] = []
-    let state = isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state)
-    let canDraft = canRunPrActions && syncService.supportsRemoteAction("prs.setDraft")
-    if state == "open" {
-      rows.append(PrDetailExtraAction(id: "draft", title: "Convert to draft", symbol: "doc.badge.ellipsis", disabled: !canDraft) {
-        actionsSheetPresented = false
-        runPrAction("Converting to draft") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: true) }
-      })
-      let canAutoMerge = canRunPrActions && syncService.supportsRemoteAction("prs.setAutoMerge")
-      if snapshot?.status?.autoMergeEnabled == true {
-        rows.append(PrDetailExtraAction(id: "auto-merge-off", title: "Turn off auto-merge", symbol: "arrow.triangle.merge", tint: ADEColor.info, disabled: !canAutoMerge) {
-          actionsSheetPresented = false
-          runNextStep(.disableAutoMerge)
-        })
-      } else if snapshot?.status?.autoMergeAllowed != false {
-        rows.append(PrDetailExtraAction(id: "auto-merge-on", title: "Enable auto-merge", symbol: "arrow.triangle.merge", tint: ADEColor.info, disabled: !canAutoMerge) {
-          actionsSheetPresented = false
-          runNextStep(.enableAutoMerge)
-        })
-      } else if snapshot?.status?.canBypass == true {
-        rows.append(PrDetailExtraAction(id: "auto-merge-settings", title: "Auto-merge is off for this repo", symbol: "gearshape", tint: ADEColor.textSecondary) {
-          actionsSheetPresented = false
-          openGitHub(urlString: "https://github.com/\(currentPr.repoOwner)/\(currentPr.repoName)/settings")
-        })
-      }
-    } else if state == "draft" {
-      rows.append(PrDetailExtraAction(id: "ready", title: "Ready for review", symbol: "checkmark.circle", tint: ADEColor.success, disabled: !canDraft) {
-        actionsSheetPresented = false
-        runNextStep(.readyForReview)
-      })
-    }
-    return rows
-  }
-
-  private var prCopyActionRows: [PrDetailExtraAction] {
-    let copy: (String, String) -> Void = { value, message in
-      actionsSheetPresented = false
-      UIPasteboard.general.string = value
-      ADEHaptics.success()
-      actionMessage = message
-    }
-    return [
-      PrDetailExtraAction(id: "copy-number", title: "Copy PR number", symbol: "number") {
-        copy("#\(currentPr.githubPrNumber)", "PR number copied.")
-      },
-      PrDetailExtraAction(id: "copy-branch", title: "Copy branch name", symbol: "arrow.triangle.branch", disabled: currentPr.headBranch.isEmpty) {
-        copy(currentPr.headBranch, "Branch name copied.")
-      },
-      PrDetailExtraAction(id: "copy-checkout", title: "Copy checkout command", symbol: "terminal") {
-        copy("gh pr checkout \(currentPr.githubPrNumber) --repo \(currentPr.repoOwner)/\(currentPr.repoName)", "Checkout command copied.")
-      },
-    ]
-  }
-
-  private var prActionsSheet: some View {
-    PrDetailActionsSheet(
-      canUpdateMetadata: canUpdateCurrentPrMetadata,
-      canRunActions: canRunPrActions,
-      shouldShowClose: shouldShowCloseAction,
-      shouldShowReopen: shouldShowReopenAction,
-      canClose: canCloseCurrentPr,
-      canReopen: canReopenCurrentPr,
-      canOpenGitHub: canOpenCurrentPrInGitHub,
-      hasGitHubUrl: !currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      hasADELink: !currentPr.repoOwner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !currentPr.repoName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && currentPr.githubPrNumber > 0,
-      onDismiss: { actionsSheetPresented = false },
-      onEditTitle: {
-        actionsSheetPresented = false
-        editorSheet = .title(currentPr.title)
-      },
-      onEditDescription: {
-        actionsSheetPresented = false
-        editorSheet = .body(snapshot?.detail?.body ?? "")
-      },
-      onSetLabels: {
-        let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
-        actionsSheetPresented = false
-        editorSheet = .labels(labels)
-      },
-      onSubmitReview: {
-        actionsSheetPresented = false
-        editorSheet = .review
-      },
-      onClose: {
-        closeConfirmationPending = true
-        actionsSheetPresented = false
-      },
-      onReopen: {
-        actionsSheetPresented = false
-        reopenCurrentPr()
-      },
-      onOpenGitHub: {
-        actionsSheetPresented = false
-        openGitHub(urlString: currentPr.githubUrl)
-      },
-      onCopyUrl: {
-        actionsSheetPresented = false
-        UIPasteboard.general.string = currentPr.githubUrl
-        ADEHaptics.success()
-        actionMessage = "URL copied."
-      },
-      onCopyAdeLink: {
-        actionsSheetPresented = false
-        UIPasteboard.general.string = LaneDeeplinkHelpers.prLink(
-          repoOwner: currentPr.repoOwner,
-          repoName: currentPr.repoName,
-          number: currentPr.githubPrNumber
-        )
-        ADEHaptics.success()
-        actionMessage = "ADE link copied."
-      },
-      onRefresh: {
-        actionsSheetPresented = false
-        Task { await reload(refreshRemote: true) }
-      },
-      stateRows: prStateActionRows,
-      copyRows: prCopyActionRows
+  private var detailHeader: some View {
+    PrFlatDetailHeader(
+      number: displayedPrNumber ?? currentPr.githubPrNumber,
+      author: snapshot?.detail?.author.login ?? githubItem?.author,
+      authorIsBot: snapshot?.detail?.author.isBot ?? githubItem?.isBot,
+      createdAt: githubItem?.createdAt ?? currentPr.createdAt,
+      updatedAt: githubItem?.updatedAt ?? currentPr.updatedAt,
+      state: displayedState,
+      title: currentPr.title,
+      baseBranch: currentPr.baseBranch,
+      headBranch: currentPr.headBranch,
+      laneName: laneName,
+      ghostLaneName: (githubItem?.detached ?? pr?.detached)?.laneName,
+      machineName: machineContext.machineName(forLaneId: currentPr.laneId),
+      stackLabel: stackLabel,
+      onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane,
+      onOpenStack: currentPr.linkedGroupId.map { groupId in { openStack(groupId: groupId, groupName: currentPr.linkedGroupName) } }
+        ?? (nativeStackMembership != nil ? { openGitHub(urlString: currentPr.githubUrl) } : nil),
+      canCreateLane: canAutoMapCurrentPr && githubItem != nil,
+      canLinkLane: canMapCurrentPr,
+      onCreateLane: presentCreateLane,
+      onLinkLane: { if let githubItem { laneLinkItem = githubItem } }
     )
   }
 
-  // MARK: - Sub-tab picker
-
-  /// Compact tab labels used in the inactive state where we have less room.
-  /// Active tab gets the full label so the user always knows where they are.
-  private func compactTabTitle(_ tab: PrDetailTab) -> String {
-    switch tab {
-    case .checks: return "Checks"
-    default: return tabTitle(tab)
+  /// Creating a lane names its machine first when there is more than one.
+  private func presentCreateLane() {
+    if machineContext.createMachines.count > 1, let githubItem {
+      autoMapRequest = PrAutoMapRequest(item: githubItem)
+    } else {
+      autoMapCurrentPr(on: machineContext.createMachines.first)
     }
   }
 
-  private var subTabPicker: some View {
-    HStack(spacing: 4) {
-      ForEach(visibleTabs) { tab in
-        let active = selectedTab == tab
-        let count = tabCount(tab)
+  // MARK: - ⋯ menu
+
+  private var moreMenu: some View {
+    let state = displayedState
+    let isOpen = state == "open" || state == "draft"
+    let step = nextStep
+    let canDraft = canRunPrActions && syncService.supportsRemoteAction("prs.setDraft")
+    let canAutoMerge = canRunPrActions && syncService.supportsRemoteAction("prs.setAutoMerge")
+    return Menu {
+      if isOpen {
+        Section {
+          Button { editorSheet = .comment } label: { Label("Comment", systemImage: "text.bubble") }
+            .disabled(!canRunPrActions || !canAddComment)
+          Button { editorSheet = .review } label: { Label("Review…", systemImage: "checkmark.bubble") }
+            .disabled(!canRunPrActions)
+          Button { editorSheet = .reviewers } label: { Label("Request review…", systemImage: "person.badge.plus") }
+            .disabled(!canRunPrActions)
+        }
+        Section {
+          if state == "draft" {
+            Button { runNextStep(.readyForReview) } label: { Label("Ready for review", systemImage: "checkmark.circle") }
+              .disabled(!canDraft)
+          } else {
+            Button {
+              runPrAction("Converting to draft", success: "Converted to draft") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: true) }
+            } label: { Label("Convert to draft", systemImage: "doc.badge.ellipsis") }
+              .disabled(!canDraft)
+            if snapshot?.status?.autoMergeEnabled == true {
+              Button { runNextStep(.disableAutoMerge) } label: { Label("Turn off auto-merge", systemImage: "arrow.triangle.merge") }
+                .disabled(!canAutoMerge)
+            } else if snapshot?.status?.autoMergeAllowed != false {
+              Button { runNextStep(.enableAutoMerge) } label: { Label("Enable auto-merge", systemImage: "arrow.triangle.merge") }
+                .disabled(!canAutoMerge)
+            }
+          }
+          if step.mergeAnyway.visible && !step.mergeAnyway.blocked && nativeStackMembership == nil {
+            Button(role: step.mergeAnyway.bypass ? .destructive : nil) {
+              mergeAnywayConfirmationPresented = true
+            } label: {
+              Label(step.mergeAnyway.bypass ? "Bypass rules and merge…" : "Merge anyway…", systemImage: "arrow.triangle.merge")
+            }
+            .disabled(!canRunPrActions)
+          }
+          if canRerunChecks {
+            Button { rerunChecks() } label: { Label("Re-run checks", systemImage: "arrow.clockwise") }
+              .disabled(!canRunPrActions)
+          }
+          if !currentPr.laneId.isEmpty {
+            Button { triggerRebase() } label: { Label("Rebase lane", systemImage: "arrow.triangle.2.circlepath") }
+              .disabled(!canRunPrActions)
+          }
+        }
+      }
+      Section {
+        if currentPr.laneId.isEmpty {
+          if canAutoMapCurrentPr && githubItem != nil {
+            Button(action: presentCreateLane) { Label("Create lane from branch", systemImage: "plus.square.on.square") }
+          }
+          if canMapCurrentPr {
+            Button { if let githubItem { laneLinkItem = githubItem } } label: { Label("Link a lane…", systemImage: "link") }
+          }
+        } else {
+          Button(action: openCurrentLane) { Label("Open lane", systemImage: "arrow.triangle.branch") }
+          if !isOpen {
+            Button {
+              cleanupChoice = .archive
+              cleanupConfirmationPresented = true
+            } label: { Label("Archive lane…", systemImage: "archivebox") }
+            .disabled(!canRunPrActions)
+          }
+        }
+      }
+      Section {
+        Button { editorSheet = .title(currentPr.title) } label: { Label("Edit title", systemImage: "pencil") }
+          .disabled(!canUpdateCurrentPrMetadata)
+        Button { editorSheet = .body(snapshot?.detail?.body ?? "") } label: { Label("Edit description", systemImage: "text.alignleft") }
+          .disabled(!canUpdateCurrentPrMetadata)
         Button {
-          withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            selectedTab = tab
+          editorSheet = .labels(snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? "")
+        } label: { Label("Labels…", systemImage: "tag") }
+          .disabled(!canUpdateCurrentPrMetadata)
+      }
+      Section {
+        Button { openGitHub(urlString: currentPr.githubUrl) } label: { Label("Open in GitHub", systemImage: "arrow.up.right.square") }
+          .disabled(!canOpenCurrentPrInGitHub)
+        Button { copy(currentPr.githubUrl, "Link copied") } label: { Label("Copy link", systemImage: "link") }
+          .disabled(currentPr.githubUrl.isEmpty)
+        Menu {
+          Button { copy("#\(currentPr.githubPrNumber)", "PR number copied") } label: { Label("PR number", systemImage: "number") }
+          Button { copy(currentPr.headBranch, "Branch copied") } label: { Label("Branch name", systemImage: "arrow.triangle.branch") }
+            .disabled(currentPr.headBranch.isEmpty)
+          Button {
+            copy("gh pr checkout \(currentPr.githubPrNumber) --repo \(currentPr.repoOwner)/\(currentPr.repoName)", "Checkout command copied")
+          } label: { Label("Checkout command", systemImage: "terminal") }
+          Button {
+            copy(LaneDeeplinkHelpers.prLink(repoOwner: currentPr.repoOwner, repoName: currentPr.repoName, number: currentPr.githubPrNumber), "ADE link copied")
+          } label: { Label("ADE link", systemImage: "link.badge.plus") }
+            .disabled(currentPr.repoOwner.isEmpty || currentPr.repoName.isEmpty)
+        } label: {
+          Label("Copy…", systemImage: "doc.on.doc")
+        }
+        Button { Task { await reload(refreshRemote: true) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+      }
+      if shouldShowCloseAction || shouldShowReopenAction {
+        Section {
+          if shouldShowCloseAction {
+            Button(role: .destructive) { closeConfirmationPresented = true } label: { Label("Close pull request…", systemImage: "xmark.circle") }
+              .disabled(!canCloseCurrentPr)
+          } else if shouldShowReopenAction {
+            Button { reopenCurrentPr() } label: { Label("Reopen", systemImage: "arrow.uturn.backward.circle") }
+              .disabled(!canReopenCurrentPr)
+          }
+        }
+      }
+    } label: {
+      Image(systemName: "ellipsis")
+        .accessibilityLabel("Pull request actions")
+    }
+  }
+
+  private func copy(_ value: String, _ message: String) {
+    UIPasteboard.general.string = value
+    ADEHaptics.success()
+    toast = ADEToastMessage(text: message)
+  }
+
+  // MARK: - Next-step bar
+
+  private var nextStepBar: some View {
+    let step = nextStep
+    return PrNextStepFlatBar(
+      step: step,
+      isBusy: isDetailBusy,
+      busyLabel: detailBusyLabel,
+      onTapText: {
+        switch step.kind {
+        case .checksFailing, .checksPending: selectedTab = .checks
+        default: selectedTab = .overview
+        }
+      }
+    ) {
+      nextStepPrimary(step)
+    }
+  }
+
+  @ViewBuilder
+  private func nextStepPrimary(_ step: PrNextStep) -> some View {
+    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
+      Button("Stack on GitHub") { openGitHub(urlString: currentPr.githubUrl) }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+        .disabled(currentPr.githubUrl.isEmpty)
+    } else if let primary = step.primary, nextStepAvailable(primary) {
+      if primary == .merge {
+        // A merge always names its method: one tap opens the choice, a second
+        // commits to it.
+        Menu {
+          ForEach(PrMergeMethodOption.allCases) { method in
+            Button(method.title) {
+              mergeMethod = method
+              ADEHaptics.success()
+              mergeCurrentPr()
+            }
           }
         } label: {
-          HStack(spacing: 4) {
-            Text(active ? tabTitle(tab) : compactTabTitle(tab))
-              .font(.system(size: 12.5, weight: active ? .semibold : .medium))
-              .foregroundStyle(active ? ADEColor.textPrimary : ADEColor.textSecondary)
-              .lineLimit(1)
-              .minimumScaleFactor(0.85)
-            if tab == .checks {
-              PrChecksTabNote(checks: snapshot?.checks ?? [])
-            }
-            if let count {
-              Text("\(count)")
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(active ? ADEColor.tintPRs : ADEColor.textMuted)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1.5)
-                .background(
-                  Capsule(style: .continuous)
-                    .fill((active ? ADEColor.tintPRs : ADEColor.textMuted).opacity(0.16))
-                )
-            }
-          }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
-            .background {
-              if active {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                  .fill(PrGlassPalette.panelCard)
-                  .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                      .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.6)
-                  )
-              }
-            }
-            .contentShape(Rectangle())
+          Text("Merge").font(.subheadline.weight(.semibold))
         }
-        .buttonStyle(.plain)
-      }
-    }
-    .padding(4)
-    .frame(height: 40)
-    .background(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .fill(PrGlassPalette.threadCard)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
-    )
-    .padding(.horizontal, 2)
-    .padding(.top, 2)
-  }
-
-  // MARK: - Overview thread rows (desktop Timeline+Rails, stacked for mobile)
-  //
-  // Desktop reading order adapted to one column: description → chronological
-  // event feed → review threads → composer → merge rail →
-  // metadata cards (checks / commits / files / people / stack). Every card is
-  // its own List row.
-  @ViewBuilder
-  private func overviewThreadRows(scrollProxy: ScrollViewProxy) -> some View {
-    if !hasLocalLane {
-      PrLocalLaneOfferBanner(
-        canAutoMap: canAutoMapCurrentPr,
-        canMap: canMapCurrentPr,
-        isExpanded: localLaneOfferExpanded,
-        onAutoMap: {
-          // Creating a lane names its machine first when there is more than
-          // one (`PrAutoMapSheet`).
-          if machineContext.createMachines.count > 1, let githubItem {
-            autoMapRequest = PrAutoMapRequest(item: githubItem)
-          } else {
-            autoMapCurrentPr(on: machineContext.createMachines.first)
-          }
-        },
-        onMap: {
-          if let githubItem {
-            laneLinkItem = githubItem
-          }
-        },
-        onOpenInGitHub: { openGitHub(urlString: currentPr.githubUrl) }
-      )
-      .prListRow()
-    }
-
-    // Description (PR body) — the page itself, not a comment card.
-    let descriptionText = prSplitBodyBotSections(snapshot?.detail?.body).body
-    if !descriptionText.isEmpty {
-      PrThreadDescriptionCard(
-        author: snapshot?.detail?.author.login ?? githubItem?.author,
-        text: descriptionText
-      )
-      .prListRow()
-    }
-
-    // Needs attention: open review threads, pinned above the history.
-    if !unresolvedThreads.isEmpty {
-      PrNeedsAttentionHeader(count: unresolvedThreads.count)
-        .prListRow()
-      ForEach(unresolvedThreads) { thread in
-        PrReviewThreadCard(
-          thread: thread,
-          isLive: canRunPrActions,
-          isFocused: focusedThreadId == thread.id,
-          replyDraft: Binding(
-            get: { replyDraft[thread.id] ?? "" },
-            set: { replyDraft[thread.id] = $0 }
-          ),
-          onFocus: { focusedThreadId = thread.id },
-          onReply: { body in
-            replyToThread(threadId: thread.id, body: body)
-            replyDraft[thread.id] = ""
-          },
-          onResolve: { resolved in setThreadResolved(threadId: thread.id, resolved: resolved) }
-        )
-        .prListRow()
-      }
-    }
-
-    // History: one section per push, one folded row per bot.
-    ForEach(timelineDisplayItems) { item in
-      let anchorId = timelineAnchorId(for: item)
-      Group {
-        switch item {
-        case .event(let event):
-          PrTimelineEventRow(event: event)
-        case .push(_, let events):
-          PrPushDividerRow(events: events)
-        case .botGroup(_, let identity, let events):
-          PrBotGroupRow(identity: identity, events: events)
+        .menuStyle(.button)
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.success)
+        .disabled(isDetailBusy)
+      } else {
+        Button {
+          ADEHaptics.light()
+          runNextStep(primary)
+        } label: {
+          Text(nextStepLabel(primary)).font(.subheadline.weight(.semibold)).lineLimit(1)
         }
-      }
-        .id(anchorId)
-        .onAppear {
-          timelineSectionMounted = true
-          scrollPendingTimelineAnchorIfReady(anchorId: pendingTimelineScrollId, scrollProxy: scrollProxy)
-        }
-        .onDisappear {
-          if selectedTab != .overview && selectedTab != .activity {
-            timelineSectionMounted = false
-          }
-        }
-        .prListRow()
-    }
-
-    if !resolvedThreads.isEmpty {
-      PrCollapsibleResolvedSection(
-        threads: resolvedThreads,
-        isLive: canRunPrActions,
-        onReopen: { threadId in setThreadResolved(threadId: threadId, resolved: false) }
-      )
-      .prListRow()
-    }
-
-    // Comment composer. Commenting is a GitHub API call, so it is offered on
-    // every PR — a local lane has nothing to do with it.
-    VStack(alignment: .leading, spacing: 6) {
-      PrReplyComposer(
-        text: $commentInput,
-        placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
-        isLive: canRunPrActions && canAddComment,
-        onSend: {
-          if let focusedThreadId {
-            replyToThread(threadId: focusedThreadId, body: commentInput)
-            commentInput = ""
-          } else {
-            submitComment()
-          }
-        },
-        onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
-      )
-      if !canAddComment {
-        Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .prListRow()
-
-    // GitHub owns stack-wide review, rebase, and merge semantics. Keep ADE's
-    // native stack context visible, then hand the final action to GitHub.
-    if let stack = nativeStackMembership {
-      PrOverviewGitHubStackCard(
-        stack: stack,
-        prNumber: currentPr.githubPrNumber,
-        onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) }
-      )
-      .prListRow()
-    }
-
-    // Merge state lives in the bottom bar on every tab; checks, commits and
-    // files have their own tabs. What stays is who is on the PR.
-    if snapshot?.detail != nil {
-      PrOverviewPeopleCard(
-        detail: snapshot?.detail,
-        reviews: snapshot?.reviews ?? [],
-        authorLogin: snapshot?.detail?.author.login ?? githubItem?.author
-      )
-      .prListRow()
-    }
-    if !groupMembers.isEmpty, let groupId = currentPr.linkedGroupId {
-      PrOverviewStackCard(
-        groupMembers: groupMembers,
-        groupId: groupId,
-        laneName: currentPr.laneName,
-        isLive: canRunPrActions,
-        onOpenStack: openStack
-      )
-      .prListRow()
-    }
-    if currentPr.state == "merged" {
-      PrLaneCleanupBanner(
-        laneName: currentPr.laneName,
-        isLive: canRunPrActions,
-        onArchive: {
-          cleanupChoice = .archive
-          cleanupConfirmationPresented = true
-        },
-        onDeleteBranch: {
-          cleanupChoice = .deleteBranch
-          cleanupConfirmationPresented = true
-        }
-      )
-      .prListRow()
-    }
-
-  }
-
-  private func timelineAnchorId(for item: PrDigestDisplayItem) -> String {
-    "pr-timeline-\(item.id)"
-  }
-
-  private func focusCommitInTimeline(_ commit: PrCommit) {
-    let missingCommitMessage = "That commit is not in the loaded conversation timeline yet."
-    let timelineWasMounted = selectedTab == .overview || selectedTab == .activity
-    if !timelineWasMounted {
-      timelineSectionMounted = false
-    }
-    selectedTab = .overview
-    pendingTimelineScrollId = nil
-    guard let anchorId = timelineAnchorId(for: commit) else {
-      errorMessage = missingCommitMessage
-      return
-    }
-    if errorMessage == missingCommitMessage {
-      errorMessage = nil
-    }
-    ADEHaptics.light()
-    pendingTimelineScrollId = anchorId
-  }
-
-  private func timelineAnchorId(for commit: PrCommit) -> String? {
-    for item in timelineDisplayItems {
-      switch item {
-      case .event(let event):
-        if eventMatches(commit: commit, event: event) {
-          return timelineAnchorId(for: item)
-        }
-      case .push(_, let events):
-        if events.contains(where: { eventMatches(commit: commit, event: $0) }) {
-          return timelineAnchorId(for: item)
-        }
-      case .botGroup:
-        continue
-      }
-    }
-    return nil
-  }
-
-  private func eventMatches(commit: PrCommit, event: PrTimelineEvent) -> Bool {
-    guard event.kind == .commit else { return false }
-    let shortSha = commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
-    let fullSha = commit.sha
-    guard !shortSha.isEmpty || !fullSha.isEmpty else { return false }
-    let haystack = [
-      event.id,
-      event.title,
-      event.metadata ?? "",
-    ].joined(separator: " ")
-    return (!shortSha.isEmpty && haystack.localizedCaseInsensitiveContains(shortSha))
-      || (!fullSha.isEmpty && haystack.localizedCaseInsensitiveContains(fullSha))
-  }
-
-  private func scrollPendingTimelineAnchorIfReady(anchorId: String?, scrollProxy: ScrollViewProxy) {
-    guard let anchorId, timelineSectionMounted else { return }
-    Task { @MainActor in
-      let retryDelays: [UInt64] = [0, 80_000_000, 220_000_000]
-      for (index, delay) in retryDelays.enumerated() {
-        if delay == 0 {
-          await Task.yield()
-        } else {
-          try? await Task.sleep(nanoseconds: delay)
-        }
-        guard pendingTimelineScrollId == anchorId, timelineSectionMounted else { return }
-        withAnimation(.easeInOut(duration: 0.25)) {
-          scrollProxy.scrollTo(anchorId, anchor: .center)
-        }
-        if index == retryDelays.count - 1 {
-          pendingTimelineScrollId = nil
-        }
+        .buttonStyle(.glassProminent)
+        .tint(primary == .deleteBranch ? ADEColor.danger : ADEColor.accent)
+        .disabled(isDetailBusy)
       }
     }
   }
-
   // MARK: - Sticky action bar
 
   // MARK: - Next step (desktop Merge card parity)
@@ -1485,67 +917,36 @@ struct PrDetailView: View {
   }
 
   private func runNextStep(_ action: PrNextStepAction) {
-    nextStepSheetPresented = false
     switch action {
-    case .merge: presentMergeMethodPicker()
+    case .merge:
+      mergeCurrentPr()
     case .deleteBranch:
       cleanupChoice = .deleteBranch
       cleanupConfirmationPresented = true
     case .reopen: reopenCurrentPr()
     case .readyForReview:
-      runPrAction("Marking ready for review") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: false) }
+      runPrAction("Marking ready for review", success: "Ready for review") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: false) }
     case .enableAutoMerge:
-      runPrAction("Enabling auto-merge") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: true, method: mergeMethod.rawValue) }
+      runPrAction("Enabling auto-merge", success: "Auto-merge on") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: true, method: mergeMethod.rawValue) }
     case .disableAutoMerge:
-      runPrAction("Turning off auto-merge") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: false) }
+      runPrAction("Turning off auto-merge", success: "Auto-merge off") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: false) }
     case .updateBranch: triggerRebase()
     case .resolveConflicts:
       if currentPr.laneId.isEmpty { openGitHub(urlString: "\(currentPr.githubUrl)/conflicts") } else { triggerRebase() }
     case .fixChecks: selectedTab = .checks
     case .rerunChecks: rerunChecks()
     case .addressFeedback, .fixThreads: selectedTab = .overview
-    case .requestReview:
-      actionsSheetPresented = true
+    case .requestReview: editorSheet = .reviewers
     }
-  }
-
-  private var stickyActionBar: some View {
-    let step = nextStep
-    if nativeStackMembership != nil {
-      return AnyView(PrNextStepBar(
-        step: step,
-        primaryLabel: "Review stack on GitHub",
-        primaryEnabled: !currentPr.githubUrl.isEmpty,
-        isBusy: false,
-        onOpenSheet: { openGitHub(urlString: currentPr.githubUrl) },
-        onPrimary: { openGitHub(urlString: currentPr.githubUrl) }
-      ))
-    }
-    let primary = step.primary.flatMap { nextStepAvailable($0) ? $0 : nil }
-    return AnyView(PrNextStepBar(
-      step: step,
-      primaryLabel: primary.map(nextStepLabel),
-      primaryEnabled: primary != nil,
-      isBusy: isDetailBusy,
-      onOpenSheet: { nextStepSheetPresented = true },
-      onPrimary: {
-        ADEHaptics.success()
-        if let primary { runNextStep(primary) }
-      }
-    ))
-  }
-
-  private func presentMergeMethodPicker() {
-    mergeMethodSheetPresented = true
   }
 
   @MainActor
   private func triggerRebase() {
     guard !currentPr.laneId.isEmpty else {
-      errorMessage = "This PR has no linked lane — rebase is unavailable."
+      toast = ADEToastMessage(text: "This PR has no lane to rebase.", kind: .info)
       return
     }
-    runPrAction("Starting rebase") {
+    runPrAction("Starting rebase", success: "Rebase started") {
       try await syncService.startLaneRebase(laneId: currentPr.laneId)
     }
   }
@@ -1641,6 +1042,22 @@ struct PrDetailView: View {
 
       if let snapshotPrId {
         snapshot = try await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
+        // The phone hydrates snapshots only for open PRs and PRs whose lane is
+        // live; a merged PR on an archived lane has none (or one without its
+        // files) until it is asked for. The host sends it for `prs.refresh
+        // { prId }`, so ask once per visit.
+        if shouldFetchLiveSidecars, !refreshRemote, !didRequestSnapshotOnDemand,
+          snapshot == nil || snapshot?.detail == nil || snapshot?.files.isEmpty == true
+        {
+          didRequestSnapshotOnDemand = true
+          isRefreshingSnapshot = true
+          defer { isRefreshingSnapshot = false }
+          if (try? await syncService.refreshPullRequestSnapshots(prId: snapshotPrId)) != nil,
+            let fresh = try await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
+          {
+            snapshot = fresh
+          }
+        }
       } else {
         snapshot = nil
       }
@@ -1796,12 +1213,15 @@ struct PrDetailView: View {
   /// reload only run when the view is still alive — acceptable for ephemeral
   /// feedback; the durable part is the in-flight state and the work itself.
   @MainActor
-  private func runPrAction(_ label: String, action: @escaping () async throws -> Void, onSuccess: @escaping @MainActor () -> Void = {}) {
+  private func runPrAction(
+    _ label: String,
+    success: String? = nil,
+    action: @escaping () async throws -> Void,
+    onSuccess: @escaping @MainActor () -> Void = {}
+  ) {
     let service = syncService
     let key = detailActionKey
     let actionablePrId = effectivePrId
-    errorMessage = nil
-    actionMessage = nil
     service.runDurablePrAction(
       key: key,
       label: label,
@@ -1814,11 +1234,13 @@ struct PrDetailView: View {
       onSuccess: {
         onSuccess()
         Task { await reload(includeLiveSidecars: true) }
-        actionMessage = "\(label) finished."
+        ADEHaptics.success()
+        toast = ADEToastMessage(text: success ?? "\(label) done")
       },
       onFailure: { error in
         Task { await reload(includeLiveSidecars: true) }
-        errorMessage = error.localizedDescription
+        ADEHaptics.error()
+        toast = ADEToastMessage(text: error.localizedDescription, kind: .failure)
       }
     )
   }
@@ -1836,7 +1258,7 @@ struct PrDetailView: View {
     // rejects (409) if the head advanced while the sheet was open.
     let expectedHeadSha = snapshot?.status?.headSha
     let label = bypassRules ? "Merging (admin bypass)" : "Merging pull request"
-    runPrAction(label) {
+    runPrAction(label, success: "Merged") {
       try await syncService.mergePullRequest(
         prId: effectivePrId,
         method: mergeMethod.rawValue,
@@ -1849,11 +1271,11 @@ struct PrDetailView: View {
   }
 
   private func closeCurrentPr() {
-    runPrAction("Closing pull request") { try await syncService.closePullRequest(prId: effectivePrId) }
+    runPrAction("Closing pull request", success: "Pull request closed") { try await syncService.closePullRequest(prId: effectivePrId) }
   }
 
   private func reopenCurrentPr() {
-    runPrAction("Reopening pull request") { try await syncService.reopenPullRequest(prId: effectivePrId) }
+    runPrAction("Reopening pull request", success: "Pull request reopened") { try await syncService.reopenPullRequest(prId: effectivePrId) }
   }
 
   /// Auto-map the current (unmapped) PR: create a lane from its head branch via
@@ -1870,6 +1292,7 @@ struct PrDetailView: View {
     let onRemote = machine?.targetProjectId != nil
     runPrAction(
       "Creating lane from PR branch",
+      success: "Lane created",
       action: {
         let result: PrAutoMapCreateResult
         if let machine {
@@ -1910,13 +1333,14 @@ struct PrDetailView: View {
 
     runPrAction(
       "Requesting reviewers",
+      success: "Review requested",
       action: { try await syncService.requestReviewers(prId: effectivePrId, reviewers: reviewers) },
       onSuccess: { reviewerInput = "" }
     )
   }
 
   private func rerunChecks() {
-    runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: effectivePrId) }
+    runPrAction("Re-running checks", success: "Checks re-running") { try await syncService.rerunPullRequestChecks(prId: effectivePrId) }
   }
 
   private func submitComment() {
@@ -1925,6 +1349,7 @@ struct PrDetailView: View {
 
     runPrAction(
       "Posting comment",
+      success: "Comment posted",
       action: { try await syncService.addPullRequestComment(prId: effectivePrId, body: trimmed) },
       onSuccess: { commentInput = "" }
     )
@@ -1933,13 +1358,13 @@ struct PrDetailView: View {
   private func replyToThread(threadId: String, body: String) {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
-    runPrAction("Replying to review thread") {
+    runPrAction("Replying to review thread", success: "Reply posted") {
       try await syncService.replyToPullRequestReviewThread(prId: effectivePrId, threadId: threadId, body: trimmed)
     }
   }
 
   private func setThreadResolved(threadId: String, resolved: Bool) {
-    runPrAction(resolved ? "Resolving review thread" : "Reopening review thread") {
+    runPrAction(resolved ? "Resolving review thread" : "Reopening review thread", success: resolved ? "Thread resolved" : "Thread reopened") {
       try await syncService.setPullRequestReviewThreadResolved(prId: effectivePrId, threadId: threadId, resolved: resolved)
     }
   }
@@ -1955,8 +1380,6 @@ struct PrDetailView: View {
       label: choice == .archive ? "Archiving lane" : "Deleting lane and branch"
     )
     defer { syncService.endPrAction(key: detailActionKey, token: token) }
-    errorMessage = nil
-    actionMessage = nil
     do {
       switch choice {
       case .archive:
@@ -1964,9 +1387,9 @@ struct PrDetailView: View {
       case .deleteBranch:
         try await syncService.deleteLane(laneId, deleteBranch: true, deleteRemoteBranch: true)
       }
-      actionMessage = choice == .archive ? "Lane archived." : "Lane and branch cleanup requested."
+      toast = ADEToastMessage(text: choice == .archive ? "Lane archived" : "Lane and branch deleted")
     } catch {
-      errorMessage = error.localizedDescription
+      toast = ADEToastMessage(text: error.localizedDescription, kind: .failure)
     }
     await reload(refreshRemote: true)
   }
@@ -1984,7 +1407,7 @@ struct PrDetailView: View {
   private func openFileInFiles(_ file: PrFile) async {
     let laneId = currentPr.laneId
     guard !laneId.isEmpty else {
-      errorMessage = "This PR is not linked to a lane, so Files cannot open \(file.filename)."
+      toast = ADEToastMessage(text: "This PR has no lane, so Files cannot open it.", kind: .info)
       return
     }
 
@@ -1995,7 +1418,7 @@ struct PrDetailView: View {
       } else {
         let workspaces = try await syncService.listWorkspaces()
         guard let workspace = workspaces.first(where: { $0.laneId == laneId }) else {
-          errorMessage = "No Files workspace is cached for this PR lane."
+          toast = ADEToastMessage(text: "No Files workspace for this lane yet.", kind: .info)
           return
         }
         filesWorkspaceId = workspace.id
@@ -2007,19 +1430,17 @@ struct PrDetailView: View {
         laneId: laneId,
         relativePath: file.filename
       )
-      actionMessage = "Opening \(file.filename) in Files."
-      errorMessage = nil
+      toast = ADEToastMessage(text: "Opening \(prFileName(file.filename)) in Files", kind: .info)
     } catch {
       filesWorkspaceId = nil
       ADEHaptics.error()
-      errorMessage = error.localizedDescription
+      toast = ADEToastMessage(text: error.localizedDescription, kind: .failure)
     }
   }
 
   private func copyFilePath(_ file: PrFile) {
     UIPasteboard.general.string = file.filename
-    actionMessage = "Copied \(file.filename)."
-    errorMessage = nil
+    toast = ADEToastMessage(text: "Path copied")
   }
 }
 
@@ -2034,184 +1455,6 @@ func prLiquidGlassBackdrop() -> some View {
   PrGlassPalette.ink
 }
 
-private struct PrDetailActionsSheet: View {
-  let canUpdateMetadata: Bool
-  let canRunActions: Bool
-  let shouldShowClose: Bool
-  let shouldShowReopen: Bool
-  let canClose: Bool
-  let canReopen: Bool
-  let canOpenGitHub: Bool
-  let hasGitHubUrl: Bool
-  let hasADELink: Bool
-  let onDismiss: () -> Void
-  let onEditTitle: () -> Void
-  let onEditDescription: () -> Void
-  let onSetLabels: () -> Void
-  let onSubmitReview: () -> Void
-  let onClose: () -> Void
-  let onReopen: () -> Void
-  let onOpenGitHub: () -> Void
-  let onCopyUrl: () -> Void
-  let onCopyAdeLink: () -> Void
-  let onRefresh: () -> Void
-  /// Draft and auto-merge rows (desktop ⋯ menu parity).
-  var stateRows: [PrDetailExtraAction] = []
-  /// Copy PR number / branch / checkout command.
-  var copyRows: [PrDetailExtraAction] = []
-
-  var body: some View {
-    ZStack {
-      prLiquidGlassBackdrop().ignoresSafeArea()
-
-      VStack(spacing: 0) {
-        Capsule(style: .continuous)
-          .fill(ADEColor.textMuted.opacity(0.45))
-          .frame(width: 36, height: 5)
-          .padding(.top, 8)
-          .padding(.bottom, 8)
-
-        HStack {
-          Button("Done", action: onDismiss)
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(PrGlassPalette.purpleBright)
-          Spacer(minLength: 0)
-          Text("Pull request actions")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Spacer(minLength: 0)
-          Button(action: onRefresh) {
-            Image(systemName: "arrow.clockwise")
-              .font(.system(size: 14, weight: .semibold))
-          }
-          .accessibilityLabel("Refresh pull request")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .overlay(alignment: .bottom) {
-          Rectangle()
-            .fill(Color.white.opacity(0.06))
-            .frame(height: 0.5)
-        }
-
-        ScrollView {
-          VStack(spacing: 10) {
-            PrDetailActionRow(title: "Edit title", symbol: "pencil", disabled: !canUpdateMetadata, action: onEditTitle)
-            PrDetailActionRow(title: "Edit description", symbol: "text.alignleft", disabled: !canUpdateMetadata, action: onEditDescription)
-            PrDetailActionRow(title: "Set labels", symbol: "tag", disabled: !canUpdateMetadata, action: onSetLabels)
-            PrDetailActionRow(title: "Submit review", symbol: "checkmark.seal", disabled: !canRunActions, action: onSubmitReview)
-            ForEach(stateRows) { row in
-              PrDetailActionRow(title: row.title, symbol: row.symbol, tint: row.tint, disabled: row.disabled, action: row.action)
-            }
-            if shouldShowClose {
-              PrDetailActionRow(
-                title: "Close PR",
-                symbol: "xmark.circle",
-                tint: PrGlassPalette.danger,
-                disabled: !canClose,
-                isDestructive: true,
-                action: onClose
-              )
-            }
-            if shouldShowReopen {
-              PrDetailActionRow(
-                title: "Reopen PR",
-                symbol: "arrow.counterclockwise",
-                disabled: !canReopen,
-                action: onReopen
-              )
-            }
-            PrDetailActionRow(
-              title: "Open in GitHub",
-              symbol: "arrow.up.right.square",
-              disabled: !canOpenGitHub,
-              action: onOpenGitHub
-            )
-            PrDetailActionRow(
-              title: "Copy URL",
-              symbol: "doc.on.doc",
-              disabled: !hasGitHubUrl,
-              action: onCopyUrl
-            )
-            PrDetailActionRow(
-              title: "Copy ADE link",
-              symbol: "link",
-              disabled: !hasADELink,
-              action: onCopyAdeLink
-            )
-            ForEach(copyRows) { row in
-              PrDetailActionRow(title: row.title, symbol: row.symbol, tint: row.tint, disabled: row.disabled, action: row.action)
-            }
-            PrDetailActionRow(title: "Refresh", symbol: "arrow.clockwise", action: onRefresh)
-          }
-          .padding(16)
-        }
-      }
-    }
-  }
-}
-
-struct PrDetailExtraAction: Identifiable {
-  let id: String
-  let title: String
-  let symbol: String
-  var tint: Color = PrGlassPalette.textSecondary
-  var disabled: Bool = false
-  let action: () -> Void
-}
-
-private struct PrDetailActionRow: View {
-  let title: String
-  let symbol: String
-  let tint: Color
-  let disabled: Bool
-  let isDestructive: Bool
-  let action: () -> Void
-
-  init(
-    title: String,
-    symbol: String,
-    tint: Color = PrGlassPalette.textSecondary,
-    disabled: Bool = false,
-    isDestructive: Bool = false,
-    action: @escaping () -> Void
-  ) {
-    self.title = title
-    self.symbol = symbol
-    self.tint = tint
-    self.disabled = disabled
-    self.isDestructive = isDestructive
-    self.action = action
-  }
-
-  var body: some View {
-    let button = Button(role: isDestructive ? .destructive : nil, action: action) {
-      HStack(spacing: 12) {
-        Image(systemName: symbol)
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(tint)
-          .frame(width: 28, height: 28)
-          .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        Text(title)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(PrGlassPalette.textPrimary)
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(PrGlassPalette.textSecondary.opacity(0.7))
-      }
-      .padding(12)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .prGlassCard(cornerRadius: 14, shadow: false)
-      .opacity(disabled ? 0.45 : 1)
-    }
-    .buttonStyle(.plain)
-    .disabled(disabled)
-    .accessibilityLabel(title)
-
-    button
-  }
-}
 
 private struct PrSingleLineEditSheet: View {
   @Environment(\.dismiss) private var dismiss
@@ -2260,15 +1503,18 @@ private struct PrSingleLineEditSheet: View {
   }
 }
 
+
 private struct PrMultilineEditSheet: View {
   @Environment(\.dismiss) private var dismiss
   let title: String
+  let sectionTitle: String
   let submitTitle: String
   let onSubmit: (String) -> Void
   @State private var value: String
 
-  init(title: String, initialValue: String, submitTitle: String, onSubmit: @escaping (String) -> Void) {
+  init(title: String, sectionTitle: String, initialValue: String, submitTitle: String, onSubmit: @escaping (String) -> Void) {
     self.title = title
+    self.sectionTitle = sectionTitle
     self.submitTitle = submitTitle
     self.onSubmit = onSubmit
     _value = State(initialValue: initialValue)
@@ -2277,9 +1523,9 @@ private struct PrMultilineEditSheet: View {
   var body: some View {
     NavigationStack {
       Form {
-        Section("Description") {
+        Section(sectionTitle) {
           TextEditor(text: $value)
-            .frame(minHeight: 260)
+            .frame(minHeight: 180)
         }
       }
       .navigationTitle(title)
@@ -2289,9 +1535,8 @@ private struct PrMultilineEditSheet: View {
           Button("Cancel") { dismiss() }
         }
         ToolbarItem(placement: .confirmationAction) {
-          Button(submitTitle) {
-            onSubmit(value)
-          }
+          Button(submitTitle) { onSubmit(value) }
+            .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
       }
     }
@@ -2303,690 +1548,45 @@ private struct PrSubmitReviewSheet: View {
   let onSubmit: (PrReviewEventOption, String?) -> Void
   @State private var event: PrReviewEventOption = .comment
   @State private var reviewBody = ""
-  @FocusState private var bodyFocused: Bool
-
-  private var accentColor: Color {
-    switch event {
-    case .approve: return PrGlassPalette.success
-    case .requestChanges: return PrGlassPalette.danger
-    case .comment: return PrGlassPalette.blue
-    }
-  }
 
   private var submitDisabled: Bool {
     event != .approve && reviewBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   var body: some View {
-    PrDetailLiquidSheetShell(
-      title: "Submit review",
-      leadingLabel: "Cancel",
-      onLeading: { dismiss() },
-      trailingLabel: "Submit",
-      trailingTint: accentColor,
-      trailingDisabled: submitDisabled,
-      onTrailing: {
-        let trimmed = reviewBody.trimmingCharacters(in: .whitespacesAndNewlines)
-        onSubmit(event, trimmed.isEmpty ? nil : trimmed)
-      }
-    ) {
-      VStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 8) {
-          PrEyebrow(text: "Decision")
-            .padding(.horizontal, 2)
-
-          PrReviewDecisionPicker(selection: $event)
-        }
-
-        VStack(alignment: .leading, spacing: 8) {
-          PrEyebrow(text: "Review")
-            .padding(.horizontal, 2)
-
-          ZStack(alignment: .topLeading) {
-            if reviewBody.isEmpty {
-              Text("Leave a note with your review…")
-                .font(.system(size: 14))
-                .foregroundStyle(ADEColor.textMuted)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .allowsHitTesting(false)
-            }
-            TextEditor(text: $reviewBody)
-              .scrollContentBackground(.hidden)
-              .focused($bodyFocused)
-              .font(.system(size: 14))
-              .foregroundStyle(ADEColor.textPrimary)
-              .padding(.horizontal, 10)
-              .padding(.vertical, 6)
-              .frame(minHeight: 160)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .prGlassCard(cornerRadius: 14, shadow: false)
-          .onTapGesture { bodyFocused = true }
-        }
-
-        Text("Approvals can be submitted without a note, but comments and requests for changes need one.")
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 2)
-      }
-      .padding(16)
-    }
-  }
-}
-
-// MARK: - File-private liquid-glass sheet primitives (PR detail)
-
-/// Shared sheet shell mirroring the one on PrsRootScreen: deep-ink backdrop,
-/// 36x5 grab handle, title bar with leading (Cancel) and trailing (Submit).
-private struct PrDetailLiquidSheetShell<Content: View>: View {
-  let title: String
-  let leadingLabel: String
-  let onLeading: () -> Void
-  let trailingLabel: String
-  let trailingTint: Color
-  let trailingDisabled: Bool
-  let onTrailing: () -> Void
-  @ViewBuilder let content: () -> Content
-
-  var body: some View {
-    ZStack {
-      prLiquidGlassBackdrop().ignoresSafeArea()
-
-      VStack(spacing: 0) {
-        Capsule(style: .continuous)
-          .fill(ADEColor.textMuted.opacity(0.45))
-          .frame(width: 36, height: 5)
-          .padding(.top, 8)
-          .padding(.bottom, 8)
-
-        HStack {
-          Button(action: onLeading) {
-            Text(leadingLabel)
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(PrGlassPalette.purpleBright)
-          }
-          Spacer(minLength: 0)
-          Text(title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Spacer(minLength: 0)
-          Button(action: onTrailing) {
-            Text(trailingLabel)
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(trailingTint)
-              .opacity(trailingDisabled ? 0.35 : 1.0)
-          }
-          .disabled(trailingDisabled)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .overlay(alignment: .bottom) {
-          Rectangle()
-            .fill(Color.white.opacity(0.06))
-            .frame(height: 0.5)
-        }
-
-        ScrollView {
-          content()
-        }
-      }
-    }
-  }
-}
-
-/// 3-way tinted segmented picker for the review decision.
-private struct PrReviewDecisionPicker: View {
-  @Binding var selection: PrReviewEventOption
-
-  var body: some View {
-    HStack(spacing: 6) {
-      ForEach(PrReviewEventOption.allCases) { option in
-        PrReviewDecisionTab(
-          option: option,
-          isSelected: selection == option
-        ) {
-          withAnimation(.easeOut(duration: 0.15)) {
-            selection = option
-          }
-        }
-      }
-    }
-    .padding(4)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(.ultraThinMaterial)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-    )
-  }
-}
-
-private struct PrReviewDecisionTab: View {
-  let option: PrReviewEventOption
-  let isSelected: Bool
-  let onTap: () -> Void
-
-  private var tint: Color {
-    switch option {
-    case .approve: return PrGlassPalette.success
-    case .requestChanges: return PrGlassPalette.danger
-    case .comment: return PrGlassPalette.blue
-    }
-  }
-
-  var body: some View {
-    Button(action: onTap) {
-      Text(option.title)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(isSelected ? Color.white : ADEColor.textSecondary)
-        .frame(maxWidth: .infinity)
-        .frame(height: 34)
-        .background(
-          ZStack {
-            if isSelected {
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                  LinearGradient(
-                    colors: [tint.opacity(0.85), tint.opacity(0.55)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                  )
-                )
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(tint.opacity(0.65), lineWidth: 0.75)
+    NavigationStack {
+      Form {
+        Section {
+          Picker("Decision", selection: $event) {
+            ForEach(PrReviewEventOption.allCases) { option in
+              Text(option.title).tag(option)
             }
           }
-        )
-        .shadow(color: isSelected ? tint.opacity(0.45) : .clear, radius: 10, x: 0, y: 3)
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-/// Merge-strategy dialog (radio rows + Cancel + Merge).
-/// GitHub-style merge box: requirement checklist, method picker, editable
-/// commit title/body (squash & merge only), and an admin-bypass toggle gated
-/// on `showsBypassToggle`. `onMerge` returns the chosen method, bypass flag,
-/// and (when applicable) the edited commit title/body.
-private struct PrMergeStrategySheet: View {
-  @Binding var selected: PrMergeMethodOption
-  let checklist: [PrMergeChecklistItem]
-  /// True when ADE sees blockers but the merge can still be force-requested
-  /// (drives the warning tone + "Merge anyway" copy).
-  let canAttemptBlockedMerge: Bool
-  /// Whether the admin-bypass toggle is offered (canBypass && blocked).
-  let showsBypassToggle: Bool
-  let prTitle: String
-  let prNumber: Int
-  let headBranch: String
-  let repoOwner: String
-  let commits: [PrCommit]
-  let onMerge: (_ method: PrMergeMethodOption, _ bypass: Bool, _ commitTitle: String?, _ commitBody: String?) -> Void
-  let onCancel: () -> Void
-
-  @State private var bypassEnabled = false
-  @State private var commitTitle = ""
-  @State private var commitBody = ""
-  /// User edited the message — stop auto-overwriting on method changes.
-  @State private var commitMessageEdited = false
-  /// Suppresses edit-tracking while we set the fields programmatically.
-  @State private var applyingDefaults = false
-
-  /// Commit title/body editor is shown for squash & merge, hidden for rebase.
-  private var showsCommitEditor: Bool { selected != .rebase }
-
-  private var primaryTint: Color {
-    (canAttemptBlockedMerge || bypassEnabled) ? PrGlassPalette.warning : PrGlassPalette.purpleDeep
-  }
-
-  private var mergeButtonTitle: String {
-    if bypassEnabled { return "Merge with bypass" }
-    return canAttemptBlockedMerge ? "Merge anyway" : "Merge"
-  }
-
-  var body: some View {
-    ZStack {
-      Color.black.opacity(0.55)
-        .ignoresSafeArea()
-        .onTapGesture(perform: onCancel)
-
-      VStack(spacing: 0) {
-        // Grab handle.
-        Capsule(style: .continuous)
-          .fill(ADEColor.textMuted.opacity(0.45))
-          .frame(width: 36, height: 5)
-          .padding(.top, 10)
-          .padding(.bottom, 4)
-
-        ScrollView {
-          VStack(alignment: .leading, spacing: 16) {
-            header
-
-            if !checklist.isEmpty {
-              section(title: "Requirements") {
-                PrMergeChecklistView(items: checklist)
-              }
-            }
-
-            section(title: "Merge method") {
-              VStack(spacing: 8) {
-                ForEach(PrMergeMethodOption.allCases) { option in
-                  PrGlassRadioRow(
-                    title: option.title,
-                    subtitle: option.description,
-                    icon: iconFor(option),
-                    isSelected: selected == option
-                  ) {
-                    guard selected != option else { return }
-                    selected = option
-                    // Re-derive the default message for the newly chosen method
-                    // (GitHub regenerates it per method).
-                    commitMessageEdited = false
-                    syncCommitMessageForMethod()
-                  }
-                }
-              }
-            }
-
-            if showsCommitEditor {
-              section(title: "Commit message") {
-                commitEditor
-              }
-            }
-
-            if showsBypassToggle {
-              bypassRow
-            }
+          .pickerStyle(.segmented)
+        }
+        Section {
+          TextEditor(text: $reviewBody)
+            .frame(minHeight: 140)
+        } header: {
+          Text("Review")
+        } footer: {
+          Text("Approvals can go without a note; comments and requested changes need one.")
+        }
+      }
+      .navigationTitle("Submit review")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Submit") {
+            let trimmed = reviewBody.trimmingCharacters(in: .whitespacesAndNewlines)
+            onSubmit(event, trimmed.isEmpty ? nil : trimmed)
           }
-          .padding(.horizontal, 18)
-          .padding(.top, 10)
-          .padding(.bottom, 16)
-        }
-
-        // Sticky action footer.
-        HStack(spacing: 10) {
-          Button(action: onCancel) {
-            Text("Cancel")
-          }
-          .buttonStyle(PrDetailGlassOutlineButtonStyle())
-
-          Button {
-            onMerge(
-              selected,
-              bypassEnabled,
-              showsCommitEditor ? commitTitle : nil,
-              showsCommitEditor ? commitBody : nil
-            )
-          } label: {
-            Label(mergeButtonTitle, systemImage: "arrow.triangle.merge")
-          }
-          .buttonStyle(PrDetailGlassPrimaryButtonStyle(tint: primaryTint))
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 12)
-        .padding(.bottom, 18)
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-      .background {
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .fill(PrGlassPalette.ink)
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .fill(.ultraThinMaterial)
-      }
-      .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-      )
-      .overlay(alignment: .top) {
-        LinearGradient(
-          colors: [PrGlassPalette.purple.opacity(0.22), .clear],
-          startPoint: .top,
-          endPoint: .bottom
-        )
-        .frame(height: 80)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .allowsHitTesting(false)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 12)
-    }
-    .onAppear {
-      // Seed the commit message from the current method's GitHub-style default.
-      if !commitMessageEdited { syncCommitMessageForMethod() }
-    }
-  }
-
-  private var header: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      PrEyebrow(text: "Merge pull request", tint: PrGlassPalette.purple)
-      Text(canAttemptBlockedMerge ? "Force-request merge" : "Confirm merge")
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .tracking(-0.2)
-      Text(canAttemptBlockedMerge
-        ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject unless your account can bypass requirements."
-        : "Review the requirements below, then merge into the base branch.")
-        .font(.system(size: 11.5))
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private var commitEditor: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      VStack(alignment: .leading, spacing: 5) {
-        Text("Title")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        TextField("Commit title", text: $commitTitle)
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled(true)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .background(glassFieldBackground)
-          .onChange(of: commitTitle) { _, _ in if !applyingDefaults { commitMessageEdited = true } }
-      }
-
-      VStack(alignment: .leading, spacing: 5) {
-        Text("Description")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        TextEditor(text: $commitBody)
-          .font(.system(size: 12, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .scrollContentBackground(.hidden)
-          .frame(minHeight: 96, maxHeight: 160)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 6)
-          .background(glassFieldBackground)
-          .onChange(of: commitBody) { _, _ in if !applyingDefaults { commitMessageEdited = true } }
-      }
-    }
-  }
-
-  private var bypassRow: some View {
-    Toggle(isOn: $bypassEnabled) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Merge without waiting for requirements")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("Use your administrator bypass to merge despite branch protection rules.")
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-    .tint(PrGlassPalette.warning)
-    .padding(.horizontal, 12)
-    .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(PrGlassPalette.warning.opacity(0.10))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(PrGlassPalette.warning.opacity(0.34), lineWidth: 0.75)
-    )
-  }
-
-  private var glassFieldBackground: some View {
-    RoundedRectangle(cornerRadius: 12, style: .continuous)
-      .fill(Color.white.opacity(0.06))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
-      )
-  }
-
-  private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      PrEyebrow(text: title, tint: ADEColor.textSecondary)
-      content()
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  /// Recomputes the default commit message for the active method unless the user
-  /// has already edited it. Mirrors GitHub re-deriving the message on method change.
-  private func syncCommitMessageForMethod() {
-    guard !commitMessageEdited else { return }
-    let defaults = PrMergeChecklist.defaultCommitMessage(
-      method: selected,
-      prTitle: prTitle,
-      prNumber: prNumber,
-      headBranch: headBranch,
-      repoOwner: repoOwner,
-      commits: commits
-    )
-    // Set under the guard so the field `onChange` handlers don't mark these
-    // programmatic writes as user edits.
-    applyingDefaults = true
-    commitTitle = defaults.title
-    commitBody = defaults.body
-    DispatchQueue.main.async { applyingDefaults = false }
-  }
-
-  private func iconFor(_ option: PrMergeMethodOption) -> String {
-    switch option {
-    case .squash: return "square.stack.3d.down.right.fill"
-    case .merge: return "arrow.triangle.merge"
-    case .rebase: return "arrow.triangle.2.circlepath"
-    }
-  }
-}
-
-/// Centered cleanup confirmation sheet.
-private struct PrCleanupConfirmationSheet: View {
-  let choice: PrCleanupChoice
-  let onConfirm: () -> Void
-  let onCancel: () -> Void
-
-  private var isDestructive: Bool { choice == .deleteBranch }
-
-  private var title: String {
-    choice == .archive ? "Archive lane?" : "Delete lane and branch?"
-  }
-
-  private var message: String {
-    choice == .archive
-      ? "This keeps the lane for history but removes it from the active stack."
-      : "This removes the lane from ADE and asks the machine to delete the branch as part of cleanup. This cannot be undone."
-  }
-
-  private var confirmTitle: String { choice == .archive ? "Archive" : "Delete" }
-
-  var body: some View {
-    ZStack {
-      Color.black.opacity(0.55)
-        .ignoresSafeArea()
-        .onTapGesture(perform: onCancel)
-
-      VStack(spacing: 14) {
-        ZStack {
-          Circle()
-            .fill((isDestructive ? PrGlassPalette.danger : PrGlassPalette.warning).opacity(0.22))
-          Image(systemName: isDestructive ? "trash.fill" : "archivebox.fill")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(isDestructive ? PrGlassPalette.danger : PrGlassPalette.warning)
-        }
-        .frame(width: 44, height: 44)
-
-        Text(title)
-          .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .tracking(-0.2)
-          .multilineTextAlignment(.center)
-
-        Text(message)
-          .font(.system(size: 12))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, 4)
-
-        HStack(spacing: 10) {
-          Button(action: onCancel) {
-            Text("Cancel")
-          }
-          .buttonStyle(PrDetailGlassOutlineButtonStyle())
-
-          Button(action: onConfirm) {
-            Text(confirmTitle)
-          }
-          .buttonStyle(
-            PrDetailGlassPrimaryButtonStyle(
-              tint: isDestructive ? PrGlassPalette.danger : PrGlassPalette.purpleDeep
-            )
-          )
-        }
-        .padding(.top, 2)
-      }
-      .padding(20)
-      .frame(maxWidth: .infinity)
-      .background {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-          .fill(PrGlassPalette.ink)
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-          .fill(.ultraThinMaterial)
-      }
-      .overlay(
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-      )
-      .shadow(color: Color.black.opacity(0.55), radius: 28, x: 0, y: 10)
-      .padding(.horizontal, 28)
-    }
-  }
-}
-
-/// Radio row used in the merge strategy dialog.
-private struct PrGlassRadioRow: View {
-  let title: String
-  let subtitle: String
-  let icon: String
-  let isSelected: Bool
-  let onTap: () -> Void
-
-  var body: some View {
-    Button(action: onTap) {
-      HStack(alignment: .center, spacing: 12) {
-        ZStack {
-          if isSelected {
-            Circle()
-              .fill(PrGlassPalette.accentGradient)
-          } else {
-            Circle()
-              .fill(Color.white.opacity(0.06))
-          }
-          Image(systemName: icon)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(isSelected ? Color.white : ADEColor.textSecondary)
-        }
-        .frame(width: 32, height: 32)
-
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(subtitle)
-            .font(.system(size: 11))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-
-        Spacer(minLength: 0)
-
-        ZStack {
-          Circle()
-            .strokeBorder(
-              isSelected ? PrGlassPalette.purpleBright : Color.white.opacity(0.22),
-              lineWidth: isSelected ? 1.5 : 1
-            )
-            .frame(width: 18, height: 18)
-          if isSelected {
-            Circle()
-              .fill(PrGlassPalette.purpleBright)
-              .frame(width: 10, height: 10)
-              .shadow(color: PrGlassPalette.purpleBright.opacity(0.7), radius: 6)
-          }
+          .disabled(submitDisabled)
         }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .prGlassCard(
-        cornerRadius: 12,
-        tint: isSelected ? PrGlassPalette.purple.opacity(0.55) : nil,
-        strokeOpacity: isSelected ? 0.22 : 0.10,
-        shadow: false
-      )
     }
-    .buttonStyle(.plain)
-  }
-}
-
-private struct PrDetailGlassPrimaryButtonStyle: ButtonStyle {
-  @Environment(\.isEnabled) private var isEnabled
-  let tint: Color
-
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .font(.system(size: 14, weight: .semibold))
-      .foregroundStyle(Color.white)
-      .frame(maxWidth: .infinity)
-      .frame(height: 44)
-      .background(
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [tint.opacity(0.95), tint.opacity(0.70)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(
-              LinearGradient(
-                colors: [Color.white.opacity(0.45), Color.white.opacity(0.05)],
-                startPoint: .top,
-                endPoint: .bottom
-              ),
-              lineWidth: 1
-            )
-        }
-      )
-      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
-      .shadow(color: tint.opacity(isEnabled ? 0.45 : 0.0), radius: 14, x: 0, y: 5)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-  }
-}
-
-private struct PrDetailGlassOutlineButtonStyle: ButtonStyle {
-  @Environment(\.isEnabled) private var isEnabled
-
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .font(.system(size: 14, weight: .semibold))
-      .foregroundStyle(ADEColor.textPrimary)
-      .frame(maxWidth: .infinity)
-      .frame(height: 44)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(.ultraThinMaterial)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-      )
-      .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1.0) : 0.45)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
   }
 }
