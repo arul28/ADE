@@ -72,6 +72,7 @@ import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
 import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
+import { isImageArtifact } from "./useArtifactPreview";
 import { ProofCitationProvider } from "./ChatProofCitation";
 import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
@@ -4352,6 +4353,7 @@ function DoneTurnDivider({
   toolEntries,
   proofArtifacts,
   resolveProofThumbnailSrc,
+  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onNavigateSuggestion,
   onInsertDraft,
@@ -4399,6 +4401,7 @@ function DoneTurnDivider({
   turnDiffSummaries?: TurnDiffSummary[] | null;
   proofArtifacts?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
+  allowLocalProofArtifactProtocol?: boolean;
   onOpenProofDrawer?: () => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onInsertDraft?: (text: string) => void;
@@ -4559,6 +4562,7 @@ function DoneTurnDivider({
           <ChatProofFilmstrip
             artifacts={turnProof}
             resolveThumbnailSrc={resolveProofThumbnailSrc}
+            allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
             onOpenAll={onOpenProofDrawer}
             onOpenArtifact={onOpenProofDrawer}
           />
@@ -4771,6 +4775,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   /** Proof captured after this row but outside a completed turn window. */
   inlineProof?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
+  allowLocalProofArtifactProtocol?: boolean;
   onOpenProofDrawer?: () => void;
   /** This row is the trailing streaming assistant text row (paced reveal). */
   pacedTextReveal?: boolean;
@@ -4840,6 +4845,7 @@ const EventRow = React.memo(function EventRow({
   turnProof,
   inlineProof,
   resolveProofThumbnailSrc,
+  allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   pacedTextReveal,
   liveThinking = false,
@@ -4954,6 +4960,7 @@ const EventRow = React.memo(function EventRow({
           toolEntries={turnToolEntries}
           proofArtifacts={turnProof}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onNavigateSuggestion={onNavigateSuggestion}
           onInsertDraft={onInsertDraft}
@@ -4978,6 +4985,7 @@ const EventRow = React.memo(function EventRow({
           title="Proof added"
           defaultOpen={false}
           resolveThumbnailSrc={resolveProofThumbnailSrc}
+          allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenAll={onOpenProofDrawer}
           onOpenArtifact={onOpenProofDrawer}
         />
@@ -6376,15 +6384,20 @@ function AgentChatMessageListMain({
    * Bucketing is by wall clock because artifacts carry `createdAt`, not turnId.
    */
   /**
-   * Thumbnail source for inline proof. The stored `uri` is project-relative
+   * Picture source for inline proof. The stored `uri` is project-relative
    * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
    * exactly that against the chat's project root (named in the URL) — so a local project gets real
    * previews synchronously, with no per-tile IPC. A remote project has no such
-   * handler, so tiles fall back to their kind label and the drawer (which reads
-   * bytes over the runtime) stays the way to view them.
+   * handler, so picture tiles fall back to their kind label and the drawer
+   * (which reads bytes over the runtime) stays the way to view them.
+   *
+   * Only pictures come back. A recording is not an `<img>`, so the filmstrip
+   * resolves it through the same media-server preview the drawer uses (see
+   * `ChatProofFilmstrip`); returning its raw `.mp4` uri here is what drew a
+   * broken tile in the thread while the drawer played the same recording.
    */
   const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
-    if (!allowLocalProofArtifactProtocol) return null;
+    if (!allowLocalProofArtifactProtocol || !isImageArtifact(artifact)) return null;
     return artifactImageSrc(artifact.uri, chatScope.rootPath);
   }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
 
@@ -7699,6 +7712,7 @@ function AgentChatMessageListMain({
           onOpenTurnSources={onOpenTurnSources}
           inlineProof={inlineProof}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+          allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
           onCodexRecovery={onCodexRecovery}
@@ -7767,6 +7781,7 @@ function AgentChatMessageListMain({
         onOpenTurnSources={onOpenTurnSources}
         inlineProof={inlineProof}
         resolveProofThumbnailSrc={resolveProofThumbnailSrc}
+        allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
@@ -7818,7 +7833,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -7870,6 +7885,7 @@ function AgentChatMessageListMain({
         title="Proof added"
         defaultOpen={false}
         resolveThumbnailSrc={resolveProofThumbnailSrc}
+        allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
         onOpenAll={onOpenProofDrawer}
         onOpenArtifact={onOpenProofDrawer}
       />

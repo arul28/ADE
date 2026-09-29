@@ -499,9 +499,12 @@ runtime host's filesystem path. Desktop shows local images through the
 video, local or remote, plays from main's token-guarded loopback media server,
 which answers each Range read; a remote one is pulled in 2 MiB slices from that
 machine's broker. See
-[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip can resolve local
-project-relative artifacts synchronously; remote filmstrip tiles fall back to a
-kind label and open the drawer, which performs the bounded runtime read. iOS requests artifact content over its
+[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip resolves a local
+image synchronously and every recording through that same media-server preview —
+local or on a paired machine — so a recording shows its first frame behind a
+play badge just as the drawer does. A tile a caller cannot draw a picture for
+(a remote image, a trace, a log) falls back to its kind label and opens the
+drawer, which performs the bounded runtime read. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is
 unreachable or a desktop remote preview exceeds its bound, the artifact remains
 listed with an unavailable-preview state.

@@ -6,12 +6,15 @@ import {
   Cube,
   Prohibit,
   SpinnerGap,
+  VideoCamera,
   WarningCircle,
   XCircle,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { ComputerUseArtifactView } from "../../../shared/types";
+import { isImageArtifact, isVideoArtifact, useArtifactPreview } from "./useArtifactPreview";
+import { ProofVideoPoster } from "./ProofVideoPoster";
 
 /**
  * The chat transcript's card primitives.
@@ -377,8 +380,11 @@ export function ChatTurnRule({ label, children }: { label?: React.ReactNode; chi
  * scrollable thumbnail strip. Rendered inline at the point of capture — proof
  * is a chronological transcript row, not a thread footer.
  *
- * Exported for the proof drawer to reuse; it owns no artifact loading of its
- * own beyond the image `src` each caller supplies.
+ * Exported for the proof drawer to reuse. An image tile resolves from the
+ * image `src` each caller supplies; a video tile resolves through the same
+ * runtime preview the drawer uses, because a recording is not an `<img>`. Every
+ * non-image tile the caller cannot supply a picture for falls back to its kind
+ * label rather than a broken image.
  */
 export function ChatProofFilmstrip({
   artifacts,
@@ -387,14 +393,17 @@ export function ChatProofFilmstrip({
   onOpenAll,
   onOpenArtifact,
   resolveThumbnailSrc,
+  allowLocalArtifactProtocol = false,
 }: {
   artifacts: ComputerUseArtifactView[];
   title?: string;
   defaultOpen?: boolean;
   onOpenAll?: () => void;
   onOpenArtifact?: (artifact: ComputerUseArtifactView) => void;
-  /** Returns a renderable image URL, or null when the artifact has no preview. */
+  /** Returns a renderable image URL, or null when the artifact has no picture. */
   resolveThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
+  /** Local proof can stream through the artifact protocol and media server. */
+  allowLocalArtifactProtocol?: boolean;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   if (!artifacts.length) return null;
@@ -421,7 +430,17 @@ export function ChatProofFilmstrip({
         <div className="mt-2.5 flex gap-1.5 overflow-x-auto">
           {artifacts.map((artifact) => {
             const broken = artifact.availability != null && artifact.availability !== "available";
-            const src = broken ? null : (resolveThumbnailSrc?.(artifact) ?? null);
+            if (!broken && isVideoArtifact(artifact)) {
+              return (
+                <ProofFilmstripVideoTile
+                  key={artifact.id}
+                  artifact={artifact}
+                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
+                  onOpen={onOpenArtifact}
+                />
+              );
+            }
+            const src = broken || !isImageArtifact(artifact) ? null : (resolveThumbnailSrc?.(artifact) ?? null);
             return (
               <button
                 key={artifact.id}
@@ -464,6 +483,60 @@ export function ChatProofFilmstrip({
         </div>
       ) : null}
     </ChatCard>
+  );
+}
+
+/**
+ * One recorded proof in the filmstrip: the recording's first frame behind a
+ * play badge, resolved through the drawer's preview path (the media server on
+ * this computer, or the runtime on a paired one) so it shows the same poster
+ * the drawer shows. Until that resolves — and when it cannot — the tile shows
+ * the kind instead of a broken image. Clicking opens the drawer, which plays it.
+ */
+function ProofFilmstripVideoTile({
+  artifact,
+  allowLocalArtifactProtocol,
+  onOpen,
+}: {
+  artifact: ComputerUseArtifactView;
+  allowLocalArtifactProtocol: boolean;
+  onOpen?: (artifact: ComputerUseArtifactView) => void;
+}) {
+  const { containerRef, preview, failed, onMediaError } = useArtifactPreview<HTMLButtonElement>(
+    artifact,
+    allowLocalArtifactProtocol,
+  );
+  const label = artifact.kind.replace(/_/g, " ");
+  return (
+    <button
+      ref={containerRef}
+      type="button"
+      title={artifact.title || artifact.uri || artifact.id}
+      onClick={() => onOpen?.(artifact)}
+      data-chat-proof-video=""
+      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
+    >
+      {preview && !failed ? (
+        <ProofVideoPoster
+          artifact={artifact}
+          preview={preview}
+          badgeSize="sm"
+          interactive={false}
+          className="aspect-[16/10] w-full object-cover"
+          onError={onMediaError}
+        />
+      ) : (
+        <span
+          className={cn(
+            "flex aspect-[16/10] w-full flex-col items-center justify-center gap-1 px-1 text-center text-fg/35",
+            CHAT_CARD_MICRO_TEXT,
+          )}
+        >
+          <VideoCamera size={14} weight="duotone" aria-hidden />
+          {label}
+        </span>
+      )}
+    </button>
   );
 }
 
