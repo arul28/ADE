@@ -12647,8 +12647,8 @@ export function AgentChatPane({
         timestamp: new Date().toISOString(),
         event: {
           type: "user_message",
-          text: finalDisplayText || finalText,
-          ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+          text: optimisticDisplayText,
+          ...(selectedAttachmentsForOptimistic.length ? { attachments: selectedAttachmentsForOptimistic } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
           deliveryState: "queued",
         },

@@ -89,6 +89,7 @@ import {
   activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
+  hasPastedTextPromptAttachment,
   type HeicConversionErrorCode,
   isImageAttachmentPath,
   isHeicAttachment,
@@ -5380,12 +5381,12 @@ export function AgentChatComposer({
       modelReady: cloudModelReady,
       // Match the predicate of the path the send will actually take: a fresh
       // launch delivers text + issue context + file attachments, while a
-      // linked reply rides submit, which accepts composer context but not
-      // file-attachment-only payloads.
+      // linked reply rides submit, which accepts composer context and folded
+      // pasted prompts, but not ordinary file-only payloads.
       hasContent: cloudCanLaunch
         ? draft.trim().length > 0 || contextAttachmentCount > 0
           || (cloudFileAttachmentsDelivered && attachments.length > 0)
-        : hasComposerContextContent,
+        : hasComposerContextContent || hasPastedTextPromptAttachment(attachments),
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;

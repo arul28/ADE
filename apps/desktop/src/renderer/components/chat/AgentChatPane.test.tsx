@@ -7113,6 +7113,74 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("shows a folded pasted prompt as the optimistic first message in a new chat", async () => {
+    const onSessionCreated = vi.fn().mockImplementation(() => new Promise<void>(() => {}));
+    const { send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    seedDrawerStore();
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" forceNewSession onSessionCreated={onSessionCreated} />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    if (typeof Blob.prototype.arrayBuffer !== "function") {
+      Object.defineProperty(Blob.prototype, "arrayBuffer", {
+        configurable: true,
+        value(this: Blob) {
+          return new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsArrayBuffer(this);
+          });
+        },
+      });
+    }
+    const pastedTask = Array.from({ length: 200 }, (_, index) => `task line ${index}`).join("\n");
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      configurable: true,
+      value: {
+        files: [],
+        items: [],
+        getData: (type: string) => type === "text/plain" ? pastedTask : "",
+      },
+    });
+    fireEvent(textbox, pasteEvent);
+    await screen.findByText("pasted-text.txt");
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "",
+        attachments: [{
+          path: "/tmp/project-under-test/.ade/attachments/pasted-text.txt",
+          type: "file",
+          intent: "user_prompt",
+        }],
+      }), null);
+    });
+    const promptLabel = await screen.findByText("Pasted text prompt");
+    const messageCard = promptLabel.closest("[data-chat-user-message-card]");
+    expect(messageCard).toBeInstanceOf(HTMLElement);
+    expect(within(messageCard as HTMLElement).queryByTestId("chat-file-attachment-chip")).toBeNull();
+    await act(async () => resolveSend());
+  });
+
   it("copies a new chat prompt before session creation failures can lose it", async () => {
     const { writeClipboardText } = installAdeMocks({
       sessions: [],
@@ -7962,6 +8030,8 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "This first send will fail.",
       }), LOCAL_PROJECT_BINDING);
+    });
+    await waitFor(() => {
       expect(deleteChat).toHaveBeenCalledWith(
         { sessionId: "created-session" },
         LOCAL_PROJECT_BINDING,
