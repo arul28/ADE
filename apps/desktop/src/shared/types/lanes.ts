@@ -149,6 +149,33 @@ export type LaneLinearIssue = {
   branchName?: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The last change someone made to the issue in Linear after the lane linked
+   * it (kept live from Linear's webhooks). `moved_back` = the issue left a
+   * finished or started state for an earlier one.
+   */
+  remoteChange?: {
+    kind: "moved_back" | "completed" | "canceled" | "state" | "assigned";
+    at: string;
+    from: string | null;
+    to: string;
+    by: string | null;
+  } | null;
+};
+
+/** A change made in Linear, applied to every lane copy of the issue. */
+export type LinearIssueSnapshotPatch = {
+  id: string;
+  title?: string | null;
+  stateId?: string | null;
+  stateName?: string | null;
+  stateType?: string | null;
+  assigneeId?: string | null;
+  assigneeName?: string | null;
+  priority?: number | null;
+  priorityLabel?: LaneLinearIssue["priorityLabel"] | null;
+  updatedAt?: string | null;
+  actorName?: string | null;
 };
 
 export type LaneLinearIssueLinkRole = "primary" | "worked" | "referenced" | "inferred";

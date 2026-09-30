@@ -16150,9 +16150,85 @@ function buildLinearPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "create" || sub === "file" || sub === "follow-up") {
+    // Files a follow-up issue. By default it links to the session's attached
+    // issue (the one being worked on) as "related", in the same team/project,
+    // and refuses near-duplicates of open issues unless --allow-duplicate.
+    const title = requireValue(asString(readValue(args, ["--title", "-t"]) ?? firstPositional(args)), "--title");
+    const input: JsonObject = { title };
+    maybePut(input, "description", readValue(args, ["--description", "--body", "-d"]));
+    const sourceIssueId = readFlag(args, ["--standalone", "--no-link"])
+      ? null
+      : asString(readValue(args, ["--from", "--source", "--source-issue"])) ?? sessionLinearIssueId();
+    if (sourceIssueId) input.sourceIssueId = sourceIssueId;
+    const relationFlags: Array<[string[], string]> = [
+      [["--blocks"], "blocks"],
+      [["--blocked-by"], "blocked_by"],
+      [["--sub-issue", "--child"], "sub_issue"],
+      [["--duplicate"], "duplicate"],
+    ];
+    const relationFlag = relationFlags.find(([flags]) => readFlag(args, flags))?.[1];
+    if (relationFlag) input.relation = relationFlag;
+    const teamKey = asString(readValue(args, ["--team", "--team-key"]))
+      ?? (sourceIssueId?.match(/^([A-Za-z0-9]+)-\d+$/)?.[1]?.toUpperCase() ?? null);
+    input.teamKey = requireValue(teamKey, "--team (or a --from issue to take the team from)");
+    maybePut(input, "projectId", readValue(args, ["--project-id"]));
+    const priority = readNumberOption(args, ["--priority"]);
+    if (priority !== undefined) input.priority = priority;
+    if (readFlag(args, ["--allow-duplicate", "--force"])) input.allowDuplicate = true;
+    return {
+      kind: "execute",
+      label: "linear create",
+      steps: [actionStep("result", "linear_issue_tracker", "createFollowUpIssue", collectGenericObjectArgs(args, input))],
+    };
+  }
+  if (sub === "relate" || sub === "link") {
+    // `ade linear relate VER-2 --blocks VER-3` / `--blocked-by` / `--related` / `--duplicate-of`.
+    const issueId = requireValue(asString(readIssueIdFlag(args) ?? firstPositional(args)) ?? sessionLinearIssueId(), "issue id");
+    const pairs: Array<[string[], string]> = [
+      [["--blocks"], "blocks"],
+      [["--blocked-by"], "blocked_by"],
+      [["--related", "--related-to"], "related"],
+      [["--duplicate-of", "--duplicate"], "duplicate"],
+    ];
+    for (const [flags, type] of pairs) {
+      const relatedIssueId = asString(readValue(args, flags));
+      if (relatedIssueId) {
+        return {
+          kind: "execute",
+          label: "linear relate",
+          steps: [actionStep("result", "linear_issue_tracker", "createIssueRelation", { issueId, relatedIssueId, type })],
+        };
+      }
+    }
+    throw new CliUsageError("linear relate needs one of --blocks, --blocked-by, --related, --duplicate-of <issue>.");
+  }
+  if (sub === "project-update" || sub === "project-status") {
+    // Posts a project update (the status post on a Linear project).
+    const projectId = requireValue(asString(readValue(args, ["--project", "--project-id"]) ?? firstPositional(args)), "--project <project id>");
+    const body = requireValue(asString(readValue(args, ["--body", "-m", "--message"])), "--body");
+    const healthRaw = (asString(readValue(args, ["--health"])) ?? "").toLowerCase().replace(/[^a-z]/g, "");
+    const health = ({ ontrack: "onTrack", atrisk: "atRisk", offtrack: "offTrack" } as Record<string, string>)[healthRaw] ?? null;
+    return {
+      kind: "execute",
+      label: "linear project-update",
+      steps: [actionStep("result", "linear_issue_tracker", "createProjectUpdate", { projectId, body, ...(health ? { health } : {}) })],
+    };
+  }
+  if (sub === "inbox" || sub === "notifications") {
+    const input: JsonObject = {};
+    const first = readNumberOption(args, ["--first", "--limit"]);
+    if (first !== undefined) input.first = first;
+    if (readFlag(args, ["--all", "--include-read"])) input.includeRead = true;
+    return {
+      kind: "execute",
+      label: "linear inbox",
+      steps: [actionStep("result", "linear_issue_tracker", "listNotifications", collectGenericObjectArgs(args, input))],
+    };
+  }
   throw new CliUsageError(
     `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
-      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, graphql.`,
+      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, create, relate, inbox, project-update, graphql.`,
   );
 }
 

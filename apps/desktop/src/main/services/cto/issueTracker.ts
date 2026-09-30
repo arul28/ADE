@@ -1,9 +1,16 @@
 import type {
+  CtoCountLinearIssuesResult,
+  CtoGetLinearIssuePickerDataResult,
+  CtoLinearCustomView,
   CtoLinearProject,
   CtoLinearQuickView,
+  CtoUpdateLinearIssueArgs,
   LinearCatalogLabel,
   LinearCatalogState,
   LinearCatalogUser,
+  LinearInboxNotification,
+  LinearIssueCreateInput,
+  LinearIssueRelationKind,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 
@@ -17,7 +24,11 @@ export type IssueTrackerIssueSearchQuery = {
   projectSlug?: string | null;
   teamKey?: string | null;
   stateTypes?: string[];
+  stateIds?: string[];
   assigneeId?: string | null;
+  assignedToViewer?: boolean;
+  activeCycle?: boolean;
+  customViewId?: string | null;
   priority?: number | null;
   query?: string | null;
   first?: number;
@@ -31,7 +42,15 @@ export type IssueTrackerIssueSearchResult = {
     hasNextPage: boolean;
     endCursor: string | null;
   };
+  totalCount?: number | null;
 };
+
+export type IssueTrackerIssueCountQuery = {
+  queries: Record<string, IssueTrackerIssueSearchQuery>;
+  cap?: number;
+};
+
+export type IssueTrackerIssueUpdate = Omit<CtoUpdateLinearIssueArgs, "issueId">;
 
 export type IssueTrackerWorkpadResult = {
   commentId: string;
@@ -69,6 +88,18 @@ export type IssueTrackerWorkflowState = {
   teamKey: string;
 };
 
+export type IssueTrackerFollowUpInput = LinearIssueCreateInput & {
+  /** The issue being worked on; the new issue is linked to it. */
+  sourceIssueId?: string | null;
+  /** How the new issue relates to the source. Defaults to "related". */
+  relation?: LinearIssueRelationKind | "sub_issue" | null;
+  allowDuplicate?: boolean;
+};
+
+export type IssueTrackerFollowUpResult =
+  | { created: true; issue: NormalizedLinearIssue; relation: string | null }
+  | { created: false; reason: "duplicate"; duplicateOf: Pick<NormalizedLinearIssue, "id" | "identifier" | "title" | "url" | "stateName"> };
+
 export type IssueTracker = {
   runGraphQL(args: {
     query: string;
@@ -81,6 +112,10 @@ export type IssueTracker = {
   listUsers(): Promise<LinearCatalogUser[]>;
   listLabels(teamKey?: string | null): Promise<LinearCatalogLabel[]>;
   searchIssues(query: IssueTrackerIssueSearchQuery): Promise<IssueTrackerIssueSearchResult>;
+  /** Live issue counts per key; each key is one filter. */
+  countIssues(query: IssueTrackerIssueCountQuery): Promise<CtoCountLinearIssuesResult>;
+  /** The viewer's issue custom views whose saved filter can be applied. */
+  listCustomViews(): Promise<CtoLinearCustomView[]>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;
@@ -88,6 +123,9 @@ export type IssueTracker = {
   listWorkflowStates(teamKey?: string | null): Promise<LinearCatalogState[]>;
   updateIssueState(issueId: string, stateId: string): Promise<void>;
   updateIssueAssignee(issueId: string, assigneeId: string | null): Promise<void>;
+  updateIssuePriority(issueId: string, priority: number): Promise<void>;
+  /** One `issueUpdate` with every given field, then a fresh detail read. */
+  updateIssue(issueId: string, patch: IssueTrackerIssueUpdate): Promise<NormalizedLinearIssue | null>;
   createComment(issueId: string, body: string): Promise<IssueTrackerWorkpadResult>;
   updateComment(commentId: string, body: string): Promise<void>;
   addLabel(issueId: string, labelName: string): Promise<void>;
@@ -102,6 +140,24 @@ export type IssueTracker = {
     userName: string;
     userDisplayName: string;
   }>>;
+  createIssue(input: LinearIssueCreateInput): Promise<NormalizedLinearIssue>;
+  createIssueRelation(args: { issueId: string; relatedIssueId: string; type: LinearIssueRelationKind }): Promise<{ id: string }>;
+  /**
+   * Files a follow-up found while working on `sourceIssueId`: refuses when an
+   * open issue in the same team already has a very similar title (unless
+   * `allowDuplicate`), then creates it and links it to the source issue.
+   */
+  createFollowUpIssue(args: IssueTrackerFollowUpInput): Promise<IssueTrackerFollowUpResult>;
+  /** Projects, users, workflow states and labels for issue pickers; each list is empty when its read fails. */
+  getIssuePickerData(): Promise<CtoGetLinearIssuePickerDataResult>;
+  /**
+   * Moves the issue to its team's Canceled state. Reads the live issue first,
+   * so an issue that is already completed or canceled is left as it is.
+   */
+  cancelIssue(issueId: string): Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }>;
+  listNotifications(args?: { first?: number; includeRead?: boolean }): Promise<LinearInboxNotification[]>;
+  markNotification(args: { notificationId: string; action: "read" | "archive" }): Promise<void>;
+  createProjectUpdate(args: { projectId: string; body: string; health?: "onTrack" | "atRisk" | "offTrack" | null }): Promise<{ id: string; url: string | null }>;
   getConnectionStatus(): Promise<{
     connected: boolean;
     viewerId: string | null;

@@ -110,6 +110,82 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("exposes Linear agent and inbox actions through the paired web transport", async () => {
+    const actions = [
+      "linear_agent.getOverview",
+      "linear_agent.startInstall",
+      "linear_agent.getInstallSession",
+      "linear_agent.registerMember",
+      "linear_agent.unregisterMember",
+      "linear_agent.updateSettings",
+      "linear_agent.uninstall",
+      "linear_issue_tracker.listNotifications",
+      "linear_issue_tracker.markNotification",
+      "linear_issue_tracker.fetchIssueById",
+      "linear_issue_tracker.cancelIssue",
+    ];
+    fake.descriptors = descriptors(actions).map((descriptor) => ({ ...descriptor, scope: "runtime" }));
+    const overview = {
+      available: true,
+      message: null,
+      status: null,
+      rules: [{ id: "rule-1", name: "Delegations", enabled: true, triggerTypes: ["linear.agent_delegated"], modelId: null, laneMode: null }],
+      activeSessions: [],
+    };
+    const notifications = [{
+      id: "notification-1",
+      type: "issueMention",
+      createdAt: "2026-08-01T12:00:00.000Z",
+      readAt: null,
+      snoozedUntilAt: null,
+      actorName: "Ada",
+      actorAvatarUrl: null,
+      issueId: "issue-1",
+      issueIdentifier: "ADE-123",
+      issueTitle: "Agent delegation",
+      issueUrl: null,
+      issueStateName: "Todo",
+      issueStateType: "unstarted",
+      commentId: null,
+      commentBody: null,
+    }];
+    fake.commandResults.set("linear_agent.getOverview", overview);
+    fake.commandResults.set("linear_agent.startInstall", { sessionId: "install-1" });
+    fake.commandResults.set("linear_agent.getInstallSession", { status: "pending" });
+    fake.commandResults.set("linear_agent.registerMember", overview);
+    fake.commandResults.set("linear_agent.unregisterMember", overview);
+    fake.commandResults.set("linear_agent.updateSettings", overview);
+    fake.commandResults.set("linear_agent.uninstall", overview);
+    fake.commandResults.set("linear_issue_tracker.listNotifications", notifications);
+    fake.commandResults.set("linear_issue_tracker.markNotification", undefined);
+    fake.commandResults.set("linear_issue_tracker.fetchIssueById", { id: "issue-1", identifier: "ADE-123" });
+    fake.commandResults.set("linear_issue_tracker.cancelIssue", { canceled: true, issue: null });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.cto!.getLinearAgentOverview()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.startLinearAgentInstall()).resolves.toEqual({ sessionId: "install-1" });
+    await expect(adapter.ade.cto!.getLinearAgentInstallSession("install-1")).resolves.toEqual({ status: "pending" });
+    await expect(adapter.ade.cto!.registerLinearAgentMember({ replace: true })).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.unregisterLinearAgentMember()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.updateLinearAgentSettings({ fallbackMode: "runner", runner: "self" })).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.uninstallLinearAgent()).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.getLinearInbox({ first: 20, includeRead: true })).resolves.toEqual(notifications);
+    await expect(adapter.ade.cto!.markLinearNotification({ notificationId: "notification-1", action: "archive" })).resolves.toBeUndefined();
+    await expect(adapter.ade.cto!.getLinearIssueRelationsIssue("issue-1")).resolves.toMatchObject({ identifier: "ADE-123" });
+    await expect(adapter.ade.cto!.cancelLinearIssue("issue-1")).resolves.toEqual({ canceled: true, issue: null });
+
+    expect(fake.commandCalls.map(({ action }) => action)).toEqual(actions);
+    expect(fake.commandCalls.find(({ action }) => action === "linear_agent.updateSettings")?.args).toEqual({
+      args: { fallbackMode: "runner", runner: "self" },
+    });
+    expect(fake.commandCalls.find(({ action }) => action === "linear_issue_tracker.cancelIssue")?.args).toEqual({
+      argsList: ["issue-1"],
+    });
+
+    adapter.dispose();
+  });
+
   it("keeps distinct argument values in distinct stable cache keys", () => {
     const sparse: unknown[] = [];
     sparse.length = 1;

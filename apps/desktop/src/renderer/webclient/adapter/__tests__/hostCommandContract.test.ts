@@ -61,6 +61,20 @@ const KNOWN_UNSUPPORTED: Record<string, string> = {
   "chat.codex.resetMemory": "codex memory RPC is local to the app-server connection",
   "chat.codex.terminateBackgroundTerminal": "codex background terminals are local to the app-server connection",
   "cto.getLinearProjects": "not exposed remotely yet",
+  // Linear agent and issue-tracker actions use local ADE action services. The
+  // sync host has no matching remote command contract; the adapter reports the
+  // unavailable capability instead of treating fallback values as real data.
+  "linear_agent.getOverview": "Linear agent services are not exposed through the sync host command contract",
+  "linear_agent.startInstall": "Linear agent installation requires a host command contract",
+  "linear_agent.getInstallSession": "Linear agent installation requires a host command contract",
+  "linear_agent.registerMember": "Linear account routing requires a host command contract",
+  "linear_agent.unregisterMember": "Linear account routing requires a host command contract",
+  "linear_agent.updateSettings": "Linear agent settings require a host command contract",
+  "linear_agent.uninstall": "Linear agent installation requires a host command contract",
+  "linear_issue_tracker.listNotifications": "Linear inbox reads are not exposed through the sync host command contract",
+  "linear_issue_tracker.markNotification": "Linear inbox updates are not exposed through the sync host command contract",
+  "linear_issue_tracker.fetchIssueById": "Linear issue relations are not exposed through the sync host command contract",
+  "linear_issue_tracker.cancelIssue": "Linear issue cancellation is not exposed through the sync host command contract",
   "attention.acknowledgeMachine": "machine-local attention state",
   "rebase.dismiss": "machine-local rebase suggestion state",
   "terminal.reattachChatCli": "machine-local pty reattach",

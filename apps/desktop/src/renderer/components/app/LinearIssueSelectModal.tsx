@@ -14,7 +14,7 @@ export function LinearIssueSelectModal({
   selectedIssue,
   pinnedIssue,
   pinnedIssueLabel,
-  actionLabel = "Connect issue",
+  actionLabel = "Attach issue",
   actionBusyLabel,
   actionDisabled = false,
   showBranchPreview = true,

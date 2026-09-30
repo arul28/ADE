@@ -177,7 +177,7 @@ describe("linearIngressService", () => {
     expect(harness.client.createWebhook).toHaveBeenCalledWith(expect.objectContaining({
       url: "https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook",
       label: "ADE automations",
-      resourceTypes: ["Issue", "Comment", "IssueLabel"],
+      resourceTypes: ["Issue", "Comment", "IssueLabel", "ProjectUpdate", "InitiativeUpdate", "User"],
       allPublicTeams: true,
     }));
     expect(registeredSecret).toMatch(/^[0-9a-f]{64}$/);

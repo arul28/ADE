@@ -5,7 +5,7 @@ import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
 import { ToolLogo } from "../../terminals/ToolLogos";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
-import { LinearMark } from "../linearBrand";
+import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
 import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
@@ -346,14 +346,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             </span>
             <span className="min-w-0 flex-1" />
             <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} />
-            {lane.linearIssue ? (
-              <span
-                className="inline-flex shrink-0 opacity-60"
-                title={`${lane.linearIssue.identifier} · ${lane.linearIssue.title}`}
-              >
-                <LinearMark size={10} />
-              </span>
-            ) : null}
+            {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span
                 className="inline-flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums"
@@ -388,5 +381,33 @@ export function LaneSidebarCreatingRow({ name }: { name: string }) {
       </div>
       <div className="h-4 text-[11px] leading-4 text-muted-fg/70">Creating…</div>
     </div>
+  );
+}
+
+/** A change someone else made in Linear that the lane owner should notice. */
+const LINEAR_ALERT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
+function LaneLinearChip({ issue }: { issue: NonNullable<LaneSummary["linearIssue"]> }) {
+  const change = issue.remoteChange ?? null;
+  const recent = change ? Date.now() - Date.parse(change.at) < LINEAR_ALERT_WINDOW_MS : false;
+  const alert = recent && (change?.kind === "moved_back" || change?.kind === "canceled");
+  const changeLine = change && recent
+    ? `\n${change.by ?? "Someone"} ${change.kind === "assigned" ? `assigned it to ${change.to}` : `moved it ${change.from ? `from ${change.from} ` : ""}to ${change.to}`} · ${relativeTimeCompact(change.at)}`
+    : "";
+  return (
+    <span
+      className={cn("relative inline-flex shrink-0 items-center gap-0.5", alert ? "opacity-100" : "opacity-70")}
+      title={`${issue.identifier} · ${issue.title}\n${issue.stateName} in Linear${changeLine}`}
+      data-testid="lane-sidebar-linear-chip"
+    >
+      <LinearMark size={10} />
+      <LinearStateIcon stateType={issue.stateType} size={10} />
+      {alert ? (
+        <span
+          aria-label="Changed in Linear"
+          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[color:var(--color-warning)]"
+        />
+      ) : null}
+    </span>
   );
 }

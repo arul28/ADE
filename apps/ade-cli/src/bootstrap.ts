@@ -110,6 +110,10 @@ import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syn
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
+import { createLinearAgentRuntime, type LinearAgentRuntime } from "../../desktop/src/main/services/cto/linearAgentRuntime";
+import { createLinearInboxAttentionService } from "../../desktop/src/main/services/cto/linearInboxAttentionService";
+import { linearIssuePatchFromEvent } from "../../desktop/src/main/services/cto/linearLaneSync";
+import { createLinearProofPoster } from "../../desktop/src/main/services/cto/linearProofPoster";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
@@ -403,6 +407,7 @@ export type AdeRuntime = {
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
+  linearAgentRuntime?: LinearAgentRuntime | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   accountAuthService?: AccountAuthService | null;
@@ -1143,6 +1148,13 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
     );
+    const readSyncDeviceId = (): string | null => {
+      try {
+        return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+      } catch {
+        return null;
+      }
+    };
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
@@ -1850,13 +1862,7 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
-      getDeviceId: () => {
-        try {
-          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-        } catch {
-          return null;
-        }
-      },
+      getDeviceId: readSyncDeviceId,
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
@@ -1941,6 +1947,8 @@ export async function createAdeRuntime(args: {
     const modelRouter = sharedModelRouter.service;
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+    // Built after automations; chat events reach it through this late binding.
+    let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         runtimeBudget: chatRuntimeBudget,
@@ -1996,6 +2004,7 @@ export async function createAdeRuntime(args: {
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
           feedDemoTrackFromChatEvent(event);
+          linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -2233,6 +2242,71 @@ export async function createAdeRuntime(args: {
       pollIntervalMs: 30_000,
     });
     teardown.push(() => automationIngressService?.dispose());
+    const headlessLinearAccessToken = createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService);
+    const agentChat = agentChatService;
+    linearAgentRuntime = automationService && agentChat
+      ? createLinearAgentRuntime({
+        db,
+        logger,
+        automationService,
+        getLinearAccessToken: headlessLinearAccessToken,
+        getAccountAccessToken,
+        getAccountId: () => accountAuthService.getStatus().userId ?? null,
+        getMachineId: readSyncDeviceId,
+        projectId,
+        chat: {
+          sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
+          interrupt: (args) => agentChat.interrupt(args),
+          respondToInput: (args) => agentChat.respondToInput(args),
+          getAvailableModels: (args) => agentChat.getAvailableModels(args),
+        },
+        laneService,
+        fetchIssue: (issueId) => headlessLinearServices.linearClient.fetchIssueById(issueId),
+      })
+      : null;
+    teardown.push(() => linearAgentRuntime?.dispose());
+    // Linear inbox items about a lane's issue raise "needs you" on that lane.
+    // Skipped in an embedded runtime: the real brain owns attention.
+    const linearInboxAttention = embeddedRuntime
+      ? null
+      : createLinearInboxAttentionService({
+        logger,
+        kv: db,
+        isLinearConnected: () => headlessLinearServices.linearCredentialService.getStatus().tokenStored === true,
+        listNotifications: () => headlessLinearServices.linearClient.listNotifications({ first: 50 }),
+        listLanes: () => laneService.list({ includeArchived: false }),
+        latestSessionInLane: (laneId) => sessionService.list({ laneId, limit: 1 })[0]?.id ?? null,
+        requestAttention: (sessionId, message) => {
+          sessionService.requestAttention(sessionId, message, "linear");
+        },
+      });
+    linearInboxAttention?.start();
+    // A PR for a Linear issue carries the lane's proof onto the issue.
+    const postLinearProof = createLinearProofPoster({
+      logger,
+      kv: db,
+      listLaneProof: (laneId) => computerUseArtifactBrokerService.listArtifacts({ owner: { kind: "lane", id: laneId } }),
+      resolveFilePath: (artifact) => computerUseArtifactBrokerService.resolveArtifactFilePath(artifact),
+      uploadAttachment: (args) => headlessLinearServices.linearClient.uploadAttachment(args),
+      createComment: (issueId, body) => headlessLinearServices.linearClient.createComment(issueId, body),
+    });
+    headlessLinearServices.prService.setLinearPrPublishedHandler(async ({ lane, issueIds, prNumber, githubUrl }) => {
+      await postLinearProof({ laneId: lane.id, laneName: lane.name, issueIds, prNumber, githubUrl });
+    });
+    teardown.push(() => linearInboxAttention?.stop());
+    if (linearAgentRuntime) {
+      const agentRelay = linearAgentRuntime.relay;
+      linearOAuthService.setAgentTokenHandler(async (token) => {
+        await agentRelay.install(token);
+      });
+      // Joining the member map is what routes a person's own delegations to
+      // their own machines. Only a personal OAuth sign-in joins on its own (an
+      // API key may be shared), and it never takes over a mapping that routes
+      // to another ADE account; Settings asks before it does that.
+      if (headlessLinearServices.linearCredentialService.getStatus().authMode === "oauth") {
+        void agentRelay.registerMember().catch(() => {});
+      }
+    }
     const linearIngressService = automationService
       ? createLinearIngressService({
         db,
@@ -2241,17 +2315,35 @@ export async function createAdeRuntime(args: {
           secretsDir: path.join(paths.adeDir, "secrets"),
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
-        getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
+        getLinearAccessToken: headlessLinearAccessToken,
         getAccountAccessToken,
         cursorStore: createKvIngressCursorStore(db),
         hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
+        getAgentSubscribeTarget: () => linearAgentRuntime?.relay.subscribeTarget() ?? Promise.resolve(null),
+        // Linear-linked lanes stay in step with Linear even with no rules.
+        wantsLinearEvents: () => {
+          try {
+            return laneService.hasLinearLinkedLanes();
+          } catch {
+            return false;
+          }
+        },
         isAdeAppConnection: () => {
           const credentials = headlessLinearServices.linearCredentialService;
           return credentials.getStatus().authMode === "oauth"
             && credentials.getOAuthClientSource() === "ade-app";
         },
         dispatch: async (record) => {
+          const issuePatch = linearIssuePatchFromEvent(record);
+          if (issuePatch) {
+            try {
+              laneService.refreshLinearIssueSnapshots(issuePatch);
+            } catch (error) {
+              logger.warn("linear.lane_snapshot_refresh_failed", { eventId: record.eventId, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
           if (!automationService) return;
+          linearAgentRuntime?.dispatch(record);
           // Rule dispatch is awaited so the relay cursor only advances once
           // every trigger for the delivery has been handed to the engine; a
           // failing rule logs and never wedges polling.
@@ -2554,13 +2646,7 @@ export async function createAdeRuntime(args: {
         },
         getAccountMachineIdentity: () => {
           const { machineKey } = cloudRelayStore.getMachineIdentity();
-          let deviceId: string | null = null;
-          try {
-            deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-          } catch {
-            deviceId = null;
-          }
-          return { machineKey, deviceId };
+          return { machineKey, deviceId: readSyncDeviceId() };
         },
         activityRosterProvider: syncRuntimeOptions?.activityRosterProvider,
       };
@@ -2973,6 +3059,7 @@ export async function createAdeRuntime(args: {
       accountAuthService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
       linearOAuthService,
+      linearAgentRuntime,
       prService: headlessLinearServices.prService,
       prSummaryService,
       fileService: headlessLinearServices.fileService,

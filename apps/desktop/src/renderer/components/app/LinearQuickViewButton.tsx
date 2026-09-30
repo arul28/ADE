@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotch, Warning, X } from "@phosphor-icons/react";
+import { Warning } from "@phosphor-icons/react";
 
 import type {
   CtoLinearQuickView,
@@ -20,6 +20,7 @@ import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPaneModal } from "./LinearPaneModal";
 import {
   clearLinearQuickViewSelection,
   LinearIssueBrowser,
@@ -142,7 +143,8 @@ export function LinearQuickViewButton({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
   const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
-  const occludesNativeBrowser = open || batchModalOpen;
+  // The pane's own modal hides the native browser while it is open.
+  const occludesNativeBrowser = batchModalOpen && !open;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   // The machine each issue's batch went to, so "Retry failed" re-runs it there.
@@ -714,96 +716,36 @@ export function LinearQuickViewButton({
       {showTrigger ? trigger : null}
       {connectionPromptModal}
 
-      <Dialog
+      <LinearPaneModal
         open={open}
-        onOpenChange={(next) => {
-          if (!next) close();
-        }}
-        title="Linear quick view"
-        hideHeader
-        width={1760}
-        height="min(940px, calc(100dvh - 28px))"
-        maxHeight="calc(100dvh - 28px)"
-        bodyPadding={false}
-        scrollBody={false}
-        bodyStyle={{ display: "flex", flexDirection: "column" }}
-        // Nothing in the pane grabs focus on open; the panel holds it.
-        preventAutoFocus
-        panelStyle={{
-          background: "var(--ade-shell-surface, #121019)",
-          borderRadius: 12,
-          borderColor: "rgba(123, 138, 240, 0.55)",
-          boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
-        }}
+        ariaLabel="Linear quick view"
+        quickView={quickView}
+        loading={browserLoading}
+        onRefresh={() => setRefreshKey((key) => key + 1)}
+        onClose={close}
       >
-        <div
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-          style={{ background: LINEAR_BRAND.surface }}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-            >
-              <LinearMark size={14} />
-            </span>
-            <div className="min-w-0 truncate text-[12px] text-fg/90">
-              <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
-              <span className="text-muted-fg/45"> · </span>
-              <span className="text-muted-fg/65">
-                {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
-                {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
-              </span>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
-              data-variant="ghost"
-              onClick={() => setRefreshKey((key) => key + 1)}
-              disabled={browserLoading}
-              title="Refresh Linear"
-            >
-              {browserLoading ? <CircleNotch size={11} className="animate-spin" /> : null}
-              Refresh
-            </button>
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
-              data-variant="ghost"
-              onClick={close}
-              title="Close Linear"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <LinearIssueBrowser
-            projectRoot={project?.rootPath}
-            actionLabel="Create lane"
-            actionBusyLabel="Creating lane"
-            refreshKey={refreshKey}
-            onIssueAction={async () => undefined}
-            onConnectionVisibilityChange={setVisible}
-            onOpenLinearSettings={openLinearSettings}
-            requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
-            requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
-            onQuickViewChange={(data) => {
-              cachedQuickViewRef.current = data;
-              setQuickView(data);
-            }}
-            onLoadingChange={setBrowserLoading}
-            batchActions={{
-              onBatchLaunch: handleBatchLaunchOpen,
-              conflicts,
-              batchProgress,
-            }}
-          />
-        </div>
-      </Dialog>
+        <LinearIssueBrowser
+          projectRoot={project?.rootPath}
+          actionLabel="Create lane"
+          actionBusyLabel="Creating lane"
+          refreshKey={refreshKey}
+          onIssueAction={async () => undefined}
+          onConnectionVisibilityChange={setVisible}
+          onOpenLinearSettings={openLinearSettings}
+          requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
+          requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
+          onQuickViewChange={(data) => {
+            cachedQuickViewRef.current = data;
+            setQuickView(data);
+          }}
+          onLoadingChange={setBrowserLoading}
+          batchActions={{
+            onBatchLaunch: handleBatchLaunchOpen,
+            conflicts,
+            batchProgress,
+          }}
+        />
+      </LinearPaneModal>
 
       <BatchLaunchModal
         onOpenHarnessSettings={onOpenHarnessSettings}

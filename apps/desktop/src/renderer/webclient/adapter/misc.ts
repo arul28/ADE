@@ -888,8 +888,9 @@ type MiscCall = <T>(
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing
 // this namespace mechanically would hand any connected browser write access to
-// the host's Linear credential store. Only reads and the session ensure are
-// wired; identity/token writes stay with the fallback proxy.
+// the host's Linear credential store. Credential writes stay with the fallback
+// proxy; the agent and issue-tracker actions below use their scoped action
+// domains, whose policy explicitly controls their reads and writes.
 function createCtoNamespace(
   call: MiscCall,
 ): NonNullable<Window["ade"]["cto"]> {
@@ -931,6 +932,75 @@ function createCtoNamespace(
     getLinearQuickView: () => call("cto.getLinearQuickView", {}, null),
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
+    getLinearIssueComments: (args?: unknown) => call("cto.getLinearIssueComments", args, []),
+    getLinearIssue: (args?: unknown) => call("cto.getLinearIssue", args, null),
+    updateLinearIssue: (args?: unknown) => call("cto.updateLinearIssue", args, null),
+    cancelLinearIssue: (issueId: string) => call(
+      "linear_issue_tracker.cancelIssue",
+      { argsList: [issueId] },
+      unavailableOnHost("Linear issue cancellation is unavailable on the connected ADE host."),
+      false,
+    ),
+    countLinearIssues: (args?: unknown) => call("cto.countLinearIssues", args, { counts: {} }),
+    getLinearCustomViews: () => call("cto.getLinearCustomViews", {}, []),
+    getLinearAgentOverview: () => call("linear_agent.getOverview", {}, {
+      available: false,
+      message: "The ADE Linear agent is unavailable on the connected ADE host.",
+      status: null,
+      rules: [],
+      activeSessions: [],
+    }),
+    startLinearAgentInstall: () => call(
+      "linear_agent.startInstall",
+      {},
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearAgentInstallSession: (sessionId: string) => call(
+      "linear_agent.getInstallSession",
+      { args: { sessionId } },
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+    ),
+    registerLinearAgentMember: (args?: { replace?: boolean }) => call(
+      "linear_agent.registerMember",
+      { args: { replace: args?.replace === true } },
+      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      false,
+    ),
+    unregisterLinearAgentMember: () => call(
+      "linear_agent.unregisterMember",
+      {},
+      unavailableOnHost("Linear agent routing is unavailable on the connected ADE host."),
+      false,
+    ),
+    updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => call(
+      "linear_agent.updateSettings",
+      { args },
+      unavailableOnHost("Linear agent settings are unavailable on the connected ADE host."),
+      false,
+    ),
+    uninstallLinearAgent: () => call(
+      "linear_agent.uninstall",
+      {},
+      unavailableOnHost("Linear agent installation is unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => call(
+      "linear_issue_tracker.listNotifications",
+      { args: args ?? {} },
+      unavailableOnHost("Linear inbox reads are unavailable on the connected ADE host."),
+    ),
+    markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => call(
+      "linear_issue_tracker.markNotification",
+      { args },
+      unavailableOnHost("Linear inbox updates are unavailable on the connected ADE host."),
+      false,
+    ),
+    getLinearIssueRelationsIssue: (issueId: string) => call(
+      "linear_issue_tracker.fetchIssueById",
+      { argsList: [issueId] },
+      unavailableOnHost("Linear issue relations are unavailable on the connected ADE host."),
+    ),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 

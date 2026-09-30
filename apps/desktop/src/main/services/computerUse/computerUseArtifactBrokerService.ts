@@ -1489,6 +1489,11 @@ export function createComputerUseArtifactBrokerService(args: {
   };
 
   return {
+    /** The artifact's file on disk, confined to the artifacts directory; null for links or paths outside it. */
+    resolveArtifactFilePath(artifact: Pick<ComputerUseArtifactRecord, "storageKind" | "uri">): string | null {
+      return resolveArtifactFilePath(artifact);
+    },
+
     /**
      * Files proof that needs no file hashed here: ADE's own captures, text, and
      * copies (a copy is hashed as it is made). A file that would have to be

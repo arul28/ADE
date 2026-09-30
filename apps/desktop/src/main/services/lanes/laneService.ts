@@ -14,7 +14,7 @@ import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
-import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
+import { linearIssueBranchName, resolveLinearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   finalizeLaneLinearIssue,
   isLinkableLaneLinearIssue,
@@ -57,6 +57,7 @@ import type {
   LaneBranchSwitchResult,
   LaneGitHubIssue,
   LaneLinearIssue,
+  LinearIssueSnapshotPatch,
   LaneLinearIssueLink,
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
@@ -1624,6 +1625,93 @@ export function createLaneService({
     }
   };
 
+  const LINEAR_STATE_RANK: Record<string, number> = {
+    triage: 0, backlog: 1, unstarted: 2, started: 3, completed: 4, canceled: 4,
+  };
+  const REMOTE_CHANGE_KIND_BY_STATE_TYPE: Record<string, "completed" | "canceled"> = {
+    completed: "completed",
+    canceled: "canceled",
+  };
+
+  /**
+   * Applies a change made in Linear to every lane (and lane link) that holds a
+   * copy of the issue. Returns the lane ids it touched.
+   */
+  /** True when any lane in this project is linked to a Linear issue. */
+  const hasLinearLinkedLanes = (): boolean =>
+    Boolean(db.get<{ one: number }>(
+      `select 1 as one from lane_linear_issues where project_id = ?
+       union all select 1 as one from lane_linear_issue_links where project_id = ? limit 1`,
+      [projectId, projectId],
+    ));
+
+  const refreshLinearIssueSnapshots = (patch: LinearIssueSnapshotPatch): string[] => {
+    const touched = new Set<string>();
+    const merge = (current: LaneLinearIssue): LaneLinearIssue | null => {
+      // A late or replayed webhook must not roll the snapshot back.
+      if (patch.updatedAt && current.updatedAt && patch.updatedAt < current.updatedAt) return null;
+      const next: LaneLinearIssue = { ...current };
+      let changed = false;
+      const set = <K extends keyof LaneLinearIssue>(key: K, value: LaneLinearIssue[K] | null | undefined) => {
+        if (value === undefined || value === null || next[key] === value) return;
+        next[key] = value;
+        changed = true;
+      };
+      set("title", patch.title ?? undefined);
+      set("priority", patch.priority ?? undefined);
+      set("priorityLabel", patch.priorityLabel ?? undefined);
+      const stateChanged = Boolean(patch.stateId && patch.stateId !== current.stateId);
+      set("stateId", patch.stateId ?? undefined);
+      set("stateName", patch.stateName ?? undefined);
+      set("stateType", patch.stateType ?? undefined);
+      if (patch.assigneeId !== undefined && patch.assigneeId !== current.assigneeId) {
+        next.assigneeId = patch.assigneeId;
+        next.assigneeName = patch.assigneeName ?? null;
+        changed = true;
+      }
+      if (!changed) return null;
+      const at = patch.updatedAt ?? new Date().toISOString();
+      if (stateChanged && patch.stateType) {
+        const before = LINEAR_STATE_RANK[current.stateType] ?? 0;
+        const after = LINEAR_STATE_RANK[patch.stateType] ?? 0;
+        const kind = REMOTE_CHANGE_KIND_BY_STATE_TYPE[patch.stateType] ?? (after < before ? "moved_back" : "state");
+        next.remoteChange = {
+          kind,
+          at,
+          from: current.stateName,
+          to: patch.stateName ?? patch.stateType,
+          by: patch.actorName ?? null,
+        };
+      } else if (patch.assigneeId !== undefined && patch.assigneeId !== current.assigneeId) {
+        next.remoteChange = { kind: "assigned", at, from: current.assigneeName, to: patch.assigneeName ?? "nobody", by: patch.actorName ?? null };
+      }
+      next.updatedAt = at;
+      return next;
+    };
+    const now = new Date().toISOString();
+    for (const table of ["lane_linear_issues", "lane_linear_issue_links"] as const) {
+      const rows = db.all<{ id: string; lane_id: string; issue_json: string }>(
+        `select id, lane_id, issue_json from ${table} where project_id = ? and issue_id = ?`,
+        [projectId, patch.id],
+      );
+      for (const row of rows) {
+        const current = parseLaneLinearIssueJson(row.issue_json);
+        if (!current) continue;
+        const next = merge(current);
+        if (!next) continue;
+        db.run(`update ${table} set issue_json = ?, updated_at = ? where id = ?`, [JSON.stringify(next), now, row.id]);
+        touched.add(row.lane_id);
+      }
+    }
+    if (touched.size > 0) {
+      invalidateLaneListCache();
+      for (const laneId of touched) {
+        broadcastLifecycleEvent({ type: "lanes-invalidated", laneId, laneName: "" });
+      }
+    }
+    return [...touched];
+  };
+
   const getLaneLinearIssueLinks = (laneId: string): LaneLinearIssueLink[] => {
     try {
       return db.all<LaneLinearIssueLinkRow>(
@@ -2213,7 +2301,7 @@ export function createLaneService({
   }): Promise<string> => {
     const explicitBranch = args.branchName?.trim() ?? "";
     const linearBranch = !explicitBranch && args.linearIssue
-      ? linearIssueBranchName(args.linearIssue)
+      ? resolveLinearIssueBranchName(args.linearIssue)
       : "";
     const suggested = explicitBranch || linearBranch;
     const isCustomBranch = suggested.length > 0;
@@ -4722,6 +4810,9 @@ export function createLaneService({
     async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
       return await listLanes(args);
     },
+
+    refreshLinearIssueSnapshots,
+    hasLinearLinkedLanes,
 
     async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {
       const row = getLaneRow(laneId);

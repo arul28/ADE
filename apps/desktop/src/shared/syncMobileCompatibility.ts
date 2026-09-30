@@ -19,6 +19,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.completeLinearMobileOAuth",
   "cto.setLinearToken",
   "cto.clearLinearToken",
+  // Linear pane: live counts, custom views, detail read with relations, and
+  // inline issue edits. Optional: an older brain omits them and the phone
+  // keeps the read-only pane.
+  "cto.getLinearIssue",
+  "cto.updateLinearIssue",
+  "cto.countLinearIssues",
+  "cto.getLinearCustomViews",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from
   // every session roster, so the phone cannot derive this from its chat list —
   // it must ask. Optional so a phone on a newer build simply never lights the

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretRight, GitBranch, Rocket, WarningCircle } from "@phosphor-icons/react";
+import { CaretRight, GitBranch, Plus, Rocket, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
 import { useLaneMachineChoice } from "../lanes/useLaneMachineChoice";
-import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
+import { resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
@@ -169,6 +169,11 @@ export type BatchLaunchMachine = {
   pin: OpenProjectBinding | null;
 };
 
+function launchButtonLabel(laneOnly: boolean, count: number): string {
+  if (laneOnly) return count === 1 ? "Create lane" : `Create ${count} lanes`;
+  return count === 1 ? "Launch agent" : `Launch ${count} agents`;
+}
+
 export function BatchLaunchModal({
   open,
   projectRoot,
@@ -230,6 +235,8 @@ export function BatchLaunchModal({
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  // Per-issue override for the saved-default kickoff prompt's collapsed view.
+  const [promptExpanded, setPromptExpanded] = useState<Record<string, boolean>>({});
   const seedKeyRef = useRef<string | null>(null);
 
   const multiIssue = issues.length > 1;
@@ -318,6 +325,7 @@ export function BatchLaunchModal({
     if (open) return;
     setPerIssue({});
     setExpanded({});
+    setPromptExpanded({});
     seedKeyRef.current = null;
   }, [open]);
 
@@ -463,7 +471,7 @@ export function BatchLaunchModal({
             ? "Each issue gets its own lane and agent. The Default row drives every issue — override an individual one below if you need to."
             : "Configure the lane, branch, and kickoff prompt. Model settings below apply to this launch."
       }
-      icon={Rocket}
+      icon={laneOnly ? Plus : Rocket}
       width="min(960px, calc(100vw - 32px))"
     >
       {!laneOnly ? (
@@ -500,9 +508,13 @@ export function BatchLaunchModal({
           const conflict = conflicts.get(issue.id);
           const isExpanded = expanded[issue.id] === true;
           const skipped = state.include === false;
-          const branch = state.branchOverride.trim() || linearIssueBranchName(issue);
+          const branch = state.branchOverride.trim() || resolveLinearIssueBranchName(issue);
           const promptSavedAsDefault =
             state.kickoffPrompt.trim().length > 0 && projectDefaultPrompt === state.kickoffPrompt;
+          // A saved default starts as a one-line preview; editing it (or expanding
+          // it) shows the full textarea.
+          const promptOpen = !promptSavedAsDefault || promptExpanded[issue.id] === true;
+          const promptFirstLine = state.kickoffPrompt.split(/\r?\n/, 1)[0] ?? "";
           return (
             <div
               key={issue.id}
@@ -599,12 +611,30 @@ export function BatchLaunchModal({
                           ) : null}
                         </div>
                       </div>
-                      <textarea
-                        value={state.kickoffPrompt}
-                        onChange={(event) => patchIssue(issue.id, { kickoffPrompt: event.target.value })}
-                        rows={5}
-                        className="w-full resize-y rounded-md border border-white/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-white/[0.18] focus:outline-none"
-                      />
+                      {promptOpen ? (
+                        <textarea
+                          value={state.kickoffPrompt}
+                          onChange={(event) => patchIssue(issue.id, { kickoffPrompt: event.target.value })}
+                          rows={5}
+                          className="w-full resize-y rounded-md border border-white/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-white/[0.18] focus:outline-none"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-3 py-2">
+                          <span
+                            className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/70"
+                            title={state.kickoffPrompt}
+                          >
+                            {promptFirstLine}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setPromptExpanded((current) => ({ ...current, [issue.id]: true }))}
+                            className="shrink-0 rounded-md border border-white/[0.1] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg/70 transition-colors hover:border-white/[0.2] hover:text-fg/90"
+                          >
+                            Expand
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : null}
 
@@ -715,12 +745,12 @@ export function BatchLaunchModal({
               : "No connected machine has this repository open."}
           </span>
         ) : null}
-        <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <Button type="button" variant="outline" casing="sentence" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        <Button type="button" variant="primary" disabled={launchCount === 0 || !selectedMachineId} onClick={handleLaunch}>
-          <Rocket size={13} weight="fill" />
-          {laneOnly ? "Create" : "Launch"} {launchCount} {launchCount === 1 ? "lane" : "lanes"}
+        <Button type="button" variant="primary" casing="sentence" disabled={launchCount === 0 || !selectedMachineId} onClick={handleLaunch}>
+          {laneOnly ? <Plus size={13} weight="fill" /> : <Rocket size={13} weight="fill" />}
+          {launchButtonLabel(laneOnly, launchCount)}
         </Button>
       </div>
     </LaneDialogShell>

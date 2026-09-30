@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
+import { useSearchParams } from "react-router-dom";
 import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
@@ -141,6 +142,9 @@ export function AutomationsWorkspace({
   const [suites, setSuites] = useState<TestSuiteDefinition[]>([]);
   const [ingressStatus, setIngressStatus] = useState<AutomationIngressStatus | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  // `?rule=<id>` (from Settings → Linear → ADE agent) opens that rule once it loads.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedRuleId = searchParams.get("rule");
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
   const [simulationNotes, setSimulationNotes] = useState<string[]>([]);
@@ -354,6 +358,21 @@ export function AutomationsWorkspace({
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
   }, [entryByKey, selectedRuleId]);
+
+  useEffect(() => {
+    if (!requestedRuleId || entryByKey.size === 0) return;
+    const key = [...entryByKey.keys()].find((candidate) => candidate === requestedRuleId || candidate.endsWith(`::${requestedRuleId}`));
+    // The rule may live on a machine whose rules are still loading; wait for it.
+    if (!key && Object.values(foreignLoads).some((load) => load.status === "loading")) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("rule");
+    setSearchParams(next, { replace: true });
+    if (!key || key === selectedRuleId) return;
+    void (async () => {
+      if (isDirtyRef.current && !(await confirmDiscardIfDirty())) return;
+      setSelectedRuleId(key);
+    })();
+  }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, searchParams, selectedRuleId, setSearchParams]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.

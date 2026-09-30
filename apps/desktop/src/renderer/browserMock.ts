@@ -924,97 +924,206 @@ const MOCK_LINEAR_PROJECTS = [
     icon: null,
     color: "#5E6AD2",
   },
+  {
+    id: "mock-linear-project-sync",
+    name: "Sync reliability",
+    slug: "sync-reliability",
+    teamName: "ADE",
+    teamKey: "ADE",
+    icon: null,
+    color: "#4CB782",
+  },
 ];
 
-const MOCK_LINEAR_ISSUES = [
-  {
-    id: "mock-linear-issue-1",
-    identifier: "ADE-101",
-    title: "Polish Work tab header layout",
-    description: "Align tabs, tools toggle, and lane bands in the Work chrome.",
-    url: "https://linear.app/ade/issue/ADE-101/polish-work-tab-header-layout",
-    projectId: "mock-linear-project",
-    projectSlug: "desktop-polish",
-    projectName: "Desktop polish",
-    teamId: "mock-linear-team",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "mock-linear-state-started",
-    stateName: "In Progress",
-    stateType: "started",
-    priority: 2,
-    priorityLabel: "high",
-    labels: [],
-    metadataTags: [],
-    assigneeId: "mock-linear-user",
-    assigneeName: "Mock Linear User",
-    creatorId: "mock-linear-user",
-    creatorName: "Mock Linear User",
-    blockerIssueIds: [],
-    hasOpenBlockers: false,
-    dueDate: null,
-    estimate: 3,
-    archivedAt: null,
-    completedAt: null,
-    canceledAt: null,
-    startedAt: now,
-    createdAt: now,
-    updatedAt: now,
-    raw: {},
-  },
-  {
-    id: "mock-linear-issue-2",
-    identifier: "ADE-102",
-    title: "Chat actions drawer parity",
-    description: "Unify Proof, Agents, and Handoff into one tabbed drawer.",
-    url: "https://linear.app/ade/issue/ADE-102/chat-actions-drawer-parity",
-    projectId: "mock-linear-project",
-    projectSlug: "desktop-polish",
-    projectName: "Desktop polish",
-    teamId: "mock-linear-team",
-    teamKey: "ADE",
-    teamName: "ADE",
-    stateId: "mock-linear-state-todo",
-    stateName: "Todo",
-    stateType: "unstarted",
-    priority: 3,
-    priorityLabel: "medium",
-    labels: [],
-    metadataTags: [],
-    assigneeId: null,
-    assigneeName: null,
-    creatorId: "mock-linear-user",
-    creatorName: "Mock Linear User",
-    blockerIssueIds: [],
-    hasOpenBlockers: false,
-    dueDate: null,
-    estimate: 2,
-    archivedAt: null,
-    completedAt: null,
-    canceledAt: null,
-    startedAt: null,
-    createdAt: now,
-    updatedAt: now,
-    raw: {},
-  },
+const MOCK_LINEAR_STATES = [
+  { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-backlog", name: "Backlog", type: "backlog", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-done", name: "Done", type: "completed", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-canceled", name: "Canceled", type: "canceled", teamId: "mock-linear-team", teamKey: "ADE" },
 ];
+
+const MOCK_LINEAR_LABELS = [
+  { id: "mock-linear-label-bug", name: "Bug", color: "#EB5757", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-feature", name: "Feature", color: "#5E6AD2", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-perf", name: "Performance", color: "#F2C94C", teamId: null, teamKey: null },
+  { id: "mock-linear-label-ux", name: "UX", color: "#4CB782", teamId: null, teamKey: null },
+];
+
+const MOCK_LINEAR_USERS = [
+  { id: "mock-linear-user", name: "Mock Linear User", displayName: "Mock Linear User", email: "mock@example.com", avatarUrl: null, active: true },
+  { id: "mock-linear-user-2", name: "Riley Chen", displayName: "Riley Chen", email: "riley@example.com", avatarUrl: null, active: true },
+];
+
+type MockLinearIssueSeed = {
+  n: number;
+  title: string;
+  state: string;
+  priority: number;
+  labels?: string[];
+  assignee?: string | null;
+  project?: string;
+  cycle?: boolean;
+};
+
+const MOCK_LINEAR_SEEDS: MockLinearIssueSeed[] = [
+  { n: 101, title: "Polish Work tab header layout", state: "mock-linear-state-started", priority: 2, labels: ["mock-linear-label-ux"], assignee: "mock-linear-user", cycle: true },
+  { n: 102, title: "Chat actions drawer parity", state: "mock-linear-state-todo", priority: 3, labels: ["mock-linear-label-feature"], cycle: true },
+  { n: 103, title: "Sync reconnect drops the last changeset", state: "mock-linear-state-started", priority: 1, labels: ["mock-linear-label-bug", "mock-linear-label-perf"], assignee: "mock-linear-user-2", project: "mock-linear-project-sync" },
+  { n: 104, title: "Split header into reusable pane chrome", state: "mock-linear-state-todo", priority: 4, assignee: "mock-linear-user", cycle: true },
+  { n: 105, title: "Lane list flickers on project switch", state: "mock-linear-state-todo", priority: 2, labels: ["mock-linear-label-bug"], project: "mock-linear-project-sync" },
+  { n: 106, title: "Keyboard shortcuts for the Linear pane", state: "mock-linear-state-backlog", priority: 0, labels: ["mock-linear-label-feature", "mock-linear-label-ux", "mock-linear-label-perf"] },
+  { n: 107, title: "Retry budget for relay heartbeats", state: "mock-linear-state-backlog", priority: 3, project: "mock-linear-project-sync" },
+  { n: 108, title: "Settings search misses nested sections", state: "mock-linear-state-done", priority: 3, labels: ["mock-linear-label-bug"], assignee: "mock-linear-user-2" },
+  { n: 109, title: "Remove legacy toast host", state: "mock-linear-state-canceled", priority: 4 },
+];
+
+function mockLinearRef(issue: { id: string; identifier: string; title: string; stateId: string; stateName: string; stateType: string }) {
+  return { id: issue.id, identifier: issue.identifier, title: issue.title, stateId: issue.stateId, stateName: issue.stateName, stateType: issue.stateType };
+}
+
+function buildMockLinearIssue(seed: MockLinearIssueSeed) {
+  const state = MOCK_LINEAR_STATES.find((entry) => entry.id === seed.state)!;
+  const project = MOCK_LINEAR_PROJECTS.find((entry) => entry.id === (seed.project ?? "mock-linear-project"))!;
+  const assignee = MOCK_LINEAR_USERS.find((entry) => entry.id === seed.assignee) ?? null;
+  const labels = (seed.labels ?? []).map((id) => MOCK_LINEAR_LABELS.find((entry) => entry.id === id)!);
+  const identifier = `ADE-${seed.n}`;
+  const priorityLabel = (["none", "urgent", "high", "normal", "low"] as const)[seed.priority] ?? "none";
+  const slug = seed.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return {
+    id: `mock-linear-issue-${seed.n}`,
+    identifier,
+    title: seed.title,
+    description: `${seed.title}.\n\n- Reproduce in the Vite preview\n- Keep Windows parity`,
+    url: `https://linear.app/ade/issue/${identifier}/${slug}`,
+    branchName: `mock/${identifier.toLowerCase()}-${slug}`.slice(0, 60),
+    projectId: project.id,
+    projectSlug: project.slug,
+    projectName: project.name,
+    teamId: "mock-linear-team",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: state.id,
+    stateName: state.name,
+    stateType: state.type,
+    priority: seed.priority,
+    priorityLabel,
+    labels: labels.map((label) => label.name.toLowerCase()),
+    labelColors: labels.map((label) => ({ id: label.id, name: label.name, color: label.color })),
+    cycleId: seed.cycle ? "mock-linear-cycle" : null,
+    cycleName: seed.cycle ? "Cycle 12" : null,
+    metadataTags: [],
+    assigneeId: assignee?.id ?? null,
+    assigneeName: assignee?.displayName ?? null,
+    assigneeAvatarUrl: null,
+    creatorId: "mock-linear-user",
+    creatorName: "Mock Linear User",
+    childIssues: [] as ReturnType<typeof mockLinearRef>[],
+    parentIssue: null as ReturnType<typeof mockLinearRef> | null,
+    blockedByIssues: [] as ReturnType<typeof mockLinearRef>[],
+    blockingIssues: [] as ReturnType<typeof mockLinearRef>[],
+    relatedIssues: [] as ReturnType<typeof mockLinearRef>[],
+    blockerIssueIds: [] as string[],
+    hasOpenBlockers: false,
+    dueDate: null,
+    estimate: seed.priority === 0 ? null : 5 - seed.priority,
+    archivedAt: null,
+    completedAt: state.type === "completed" ? now : null,
+    canceledAt: state.type === "canceled" ? now : null,
+    startedAt: state.type === "started" ? now : null,
+    createdAt: new Date(Date.now() - seed.n * 3_600_000).toISOString(),
+    updatedAt: new Date(Date.now() - (seed.n - 100) * 1_800_000).toISOString(),
+    raw: {},
+  };
+}
+
+const MOCK_LINEAR_ISSUES = MOCK_LINEAR_SEEDS.map(buildMockLinearIssue);
+
+function relinkMockLinearIssues(): void {
+  const byNumber = (n: number) => MOCK_LINEAR_ISSUES.find((issue) => issue.identifier === `ADE-${n}`)!;
+  const [a, b, c, d, e] = [byNumber(101), byNumber(102), byNumber(103), byNumber(104), byNumber(105)];
+  a.childIssues = [mockLinearRef(d)];
+  d.parentIssue = mockLinearRef(a);
+  a.blockingIssues = [mockLinearRef(b)];
+  b.blockedByIssues = [mockLinearRef(a)];
+  c.relatedIssues = [mockLinearRef(e)];
+  e.relatedIssues = [mockLinearRef(c)];
+  for (const issue of MOCK_LINEAR_ISSUES) {
+    issue.blockerIssueIds = issue.blockedByIssues.map((ref) => ref.id);
+    issue.hasOpenBlockers = issue.blockedByIssues.some((ref) => ref.stateType !== "completed" && ref.stateType !== "canceled");
+  }
+}
+relinkMockLinearIssues();
+
+const MOCK_LINEAR_VIEWS = [
+  { id: "mock-linear-view-bugs", name: "Open bugs", description: "Bugs not done", icon: null, color: "#EB5757", teamKey: "ADE", shared: true },
+];
+
+type MockLinearSearchArgs = {
+  projectId?: string | null;
+  stateTypes?: string[];
+  stateIds?: string[];
+  assigneeId?: string | null;
+  assignedToViewer?: boolean;
+  activeCycle?: boolean;
+  customViewId?: string | null;
+  priority?: number | null;
+  query?: string | null;
+};
+
+function mockLinearMatches(issue: (typeof MOCK_LINEAR_ISSUES)[number], args: MockLinearSearchArgs = {}): boolean {
+  if (args.projectId && issue.projectId !== args.projectId) return false;
+  if (args.stateTypes?.length && !args.stateTypes.includes(issue.stateType)) return false;
+  if (args.stateIds?.length && !args.stateIds.includes(issue.stateId)) return false;
+  if (args.assigneeId && issue.assigneeId !== args.assigneeId) return false;
+  if (!args.assigneeId && args.assignedToViewer && issue.assigneeId !== "mock-linear-user") return false;
+  if (args.activeCycle && !issue.cycleId) return false;
+  if (args.customViewId === "mock-linear-view-bugs" && (!issue.labels.includes("bug") || issue.stateType === "completed" || issue.stateType === "canceled")) return false;
+  if (typeof args.priority === "number" && issue.priority !== args.priority) return false;
+  const query = args.query?.trim().toLowerCase();
+  if (query && !`${issue.identifier} ${issue.title} ${issue.description}`.toLowerCase().includes(query)) return false;
+  return true;
+}
+
+function mockLinearUpdate(args: {
+  issueId: string;
+  stateId?: string;
+  assigneeId?: string | null;
+  priority?: number;
+  addedLabelIds?: string[];
+  removedLabelIds?: string[];
+}) {
+  const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId);
+  if (!issue) throw new Error("Issue not found in browser preview.");
+  if (args.stateId) {
+    const state = MOCK_LINEAR_STATES.find((entry) => entry.id === args.stateId);
+    if (state) Object.assign(issue, { stateId: state.id, stateName: state.name, stateType: state.type });
+  }
+  if (args.assigneeId !== undefined) {
+    const user = MOCK_LINEAR_USERS.find((entry) => entry.id === args.assigneeId) ?? null;
+    Object.assign(issue, { assigneeId: user?.id ?? null, assigneeName: user?.displayName ?? null });
+  }
+  if (typeof args.priority === "number") {
+    issue.priority = args.priority;
+    issue.priorityLabel = (["none", "urgent", "high", "normal", "low"] as const)[args.priority] ?? "none";
+  }
+  const removed = new Set(args.removedLabelIds ?? []);
+  const kept = issue.labelColors.filter((label) => !removed.has(label.id));
+  const added = (args.addedLabelIds ?? [])
+    .map((id) => MOCK_LINEAR_LABELS.find((entry) => entry.id === id))
+    .filter((label): label is (typeof MOCK_LINEAR_LABELS)[number] => Boolean(label) && !kept.some((entry) => entry.id === label!.id))
+    .map((label) => ({ id: label.id, name: label.name, color: label.color }));
+  issue.labelColors = [...kept, ...added];
+  issue.labels = issue.labelColors.map((label) => label.name.toLowerCase());
+  issue.updatedAt = new Date().toISOString();
+  return { ...issue };
+}
 
 const MOCK_LINEAR_PICKER = {
   projects: MOCK_LINEAR_PROJECTS,
-  users: [
-    {
-      id: "mock-linear-user",
-      name: "Mock Linear User",
-      displayName: "Mock Linear User",
-      email: "mock@example.com",
-      avatarUrl: null,
-      active: true,
-    },
-  ],
-  states: [
-    { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team" },
-    { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team" },
-  ],
+  users: MOCK_LINEAR_USERS,
+  states: MOCK_LINEAR_STATES,
+  labels: MOCK_LINEAR_LABELS,
 };
 
 /** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
@@ -6654,10 +6763,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       getLinearIssuePickerData: resolvedArg(MOCK_LINEAR_PICKER),
-      searchLinearIssues: resolvedArg({
-        issues: MOCK_LINEAR_ISSUES,
+      searchLinearIssues: async (args: MockLinearSearchArgs = {}) => ({
+        issues: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, args)).map((issue) => ({ ...issue })),
         pageInfo: { hasNextPage: false, endCursor: null },
       }),
+      countLinearIssues: async (args: { queries?: Record<string, MockLinearSearchArgs> } = {}) => ({
+        counts: Object.fromEntries(Object.entries(args.queries ?? {}).map(([key, query]) => [
+          key,
+          { count: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, query)).length, capped: false },
+        ])),
+      }),
+      getLinearCustomViews: resolvedArg(MOCK_LINEAR_VIEWS),
+      getLinearIssue: async (args: { issueId: string }) => {
+        const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId);
+        return issue ? { ...issue } : null;
+      },
+      updateLinearIssue: async (args: Parameters<typeof mockLinearUpdate>[0]) => mockLinearUpdate(args),
+      getLinearIssueComments: resolvedArg([
+        {
+          id: "mock-linear-comment-1",
+          body: "Repro is stable on the preview build.",
+          createdAt: now,
+          userName: "riley",
+          userDisplayName: "Riley Chen",
+        },
+      ]),
       getLinearConnectionStatus: resolvedArg(MOCK_LINEAR_CONNECTION),
       setLinearToken: resolvedArg({
         ...MOCK_LINEAR_CONNECTION,

@@ -1970,15 +1970,10 @@ describe("TopBar", () => {
     });
     screen.getByRole("dialog", { name: /linear quick view/i });
 
-    // Single-issue flow now routes through the unified launch dock: select the
-    // issue row (a `div role="button"`), choose "Create lane only", then submit
-    // the launch-config modal. Lane-only submit creates the lane without an
-    // agent, so it still calls lanes.create directly.
-    const issueRow = (await screen.findAllByText("ADE-123"))[0]!.closest('[role="button"]');
-    expect(issueRow).toBeTruthy();
-    fireEvent.click(issueRow!);
-    fireEvent.click(await screen.findByRole("button", { name: /create lane only/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^create 1 lane$/i }));
+    // The quick view opens directly on this issue's detail and offers a
+    // lane-only action. Submit that action through the launch-config modal.
+    fireEvent.click(await screen.findByRole("button", { name: /lane only/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {
       // Lane-only launch leaves the branch override blank, so createLane is

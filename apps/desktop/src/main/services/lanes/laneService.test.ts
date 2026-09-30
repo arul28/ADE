@@ -630,6 +630,7 @@ describe("laneService createFromUnstaged", () => {
     });
 
     expect(links).toHaveLength(1);
+    expect(service.hasLinearLinkedLanes()).toBe(true);
     expect(links[0]?.issue).toEqual(expect.objectContaining({
       identifier: "ADE-45",
       projectId: "",
@@ -651,6 +652,20 @@ describe("laneService createFromUnstaged", () => {
         }),
       }),
     ]));
+    expect(service.refreshLinearIssueSnapshots({
+      id: "issue-projectless",
+      title: "Stale webhook title",
+      updatedAt: "2026-05-11T19:00:00.000Z",
+    })).toEqual([]);
+    expect((await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child")?.linearIssueLinks?.[0]?.issue.title)
+      .toBe("Run Cursor SDK audit");
+    expect(service.refreshLinearIssueSnapshots({
+      id: "issue-projectless",
+      title: "Fresh webhook title",
+      updatedAt: "2026-05-13T19:00:00.000Z",
+    })).toEqual(["lane-child"]);
+    expect((await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child")?.linearIssueLinks?.[0]?.issue.title)
+      .toBe("Fresh webhook title");
     expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
       lane: expect.objectContaining({ id: "lane-child" }),
       issue: expect.objectContaining({ identifier: "ADE-45" }),

@@ -3,14 +3,18 @@ import { cn } from "./cn";
 
 type Variant = "primary" | "outline" | "ghost" | "danger";
 type Size = "sm" | "md";
+/** "upper" is ADE's mono label style; "sentence" is for surfaces that match an
+ * external product's sentence-case UI, such as the Linear pane. */
+type Casing = "upper" | "sentence";
 
 export const Button = React.forwardRef<
   HTMLButtonElement,
-  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; casing?: Casing }
 >(function Button(
   {
     variant = "outline",
     size = "md",
+    casing = "upper",
     className,
     style: styleProp,
     ...rest
@@ -18,7 +22,11 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[1px] transition-all duration-100 disabled:opacity-40 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-2 transition-all duration-100 disabled:opacity-40 disabled:pointer-events-none";
+  const casings: Record<Casing, string> = {
+    upper: "font-mono text-[10px] font-bold uppercase tracking-[1px]",
+    sentence: "rounded-md text-[12px] font-medium",
+  };
 
   const sizes = size === "sm" ? "h-7 px-3" : "h-8 px-4";
 
@@ -43,7 +51,7 @@ export const Button = React.forwardRef<
   return (
     <button
       ref={ref}
-      className={cn(base, sizes, variants[variant], className)}
+      className={cn(base, casings[casing], sizes, variants[variant], className)}
       style={{ ...variantStyles[variant], ...styleProp }}
       {...rest}
     />

@@ -1203,11 +1203,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Lane management actions ---- */
 
+  /** Resolves true when the action succeeded. */
   const runLaneAction = async (
     fn: () => Promise<void>,
     status: string,
     kind: "delete" | "archive" = "delete",
-  ) => {
+  ): Promise<boolean> => {
     setLaneActionBusy(true);
     setLaneActionKind(kind);
     setLaneActionStatus(status);
@@ -1216,8 +1217,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       await fn();
       await refreshLanes();
       setManageOpen(false);
+      return true;
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
@@ -1230,8 +1233,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     // lane is only a fallback for callers that never set them.
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
-    if (actionable.length === 0) return;
-    await runLaneAction(async () => {
+    if (actionable.length === 0) return false;
+    return await runLaneAction(async () => {
       // A mixed selection is split per machine: each lane goes to its own
       // machine's pin; nothing foreign is ever sent unpinned.
       const errors: string[] = [];
@@ -2067,14 +2070,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     kind: "delete" | "archive",
     status: string,
     fn: (row: MachineLane & { pin: NonNullable<MachineLane["pin"]> }) => Promise<void>,
-  ) => {
+  ): Promise<boolean> => {
     const key = foreignManageKey;
     const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
-    if (!row || row.lane.laneType === "primary") return;
+    if (!row || row.lane.laneType === "primary") return false;
     const reason = machineBlockedReason(row);
     if (reason || !row.pin) {
       setLaneActionError(reason ?? `${row.machineName} is unavailable`);
-      return;
+      return false;
     }
     const target = { ...row, pin: row.pin };
     setLaneActionBusy(true);
@@ -2086,8 +2089,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       clearForeignSelection(row.key);
       setForeignManageKey(null);
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+      return true;
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
@@ -2501,7 +2506,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
         laneActionKind={laneActionKind}
-        onArchive={() => { archiveManagedLanes().catch(() => {}); }}
+        onArchive={() => archiveManagedLanes().catch(() => false)}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
         onAppearanceChanged={refreshLaneAppearance}
         onStackReorganized={() => { refreshLanes().catch(() => {}); }}
@@ -2524,7 +2529,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           laneActionStatus={laneActionStatus}
           laneActionError={laneActionError}
           laneActionKind={laneActionKind}
-          onArchive={() => { void archiveForeignLane(); }}
+          onArchive={archiveForeignLane}
           onDelete={() => { void deleteForeignLane(); }}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           onStackReorganized={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}

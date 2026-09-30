@@ -105,6 +105,85 @@ function mapLinearActionToTriggerType(
 }
 
 /**
+ * Dispatches for Linear activity that is not an issue change: comments,
+ * project and initiative updates, and new workspace members. Returns null when
+ * the event is an issue event (handled below) or not one ADE triggers on.
+ */
+function buildNonIssueDispatches(event: LinearIngressEventRecord): LinearAutomationDispatch[] | null {
+  const entity = (event.entityType ?? "").toLowerCase();
+  const payload = event.payload ?? null;
+  const data = readNested(payload, "data");
+  if (!data) return entity === "issue" ? null : [];
+  const created = event.action === "create";
+  const user = readNested(data, "user");
+  const authorName = readString(user, "displayName") ?? readString(user, "name");
+  const clip = (text: string | undefined, max = 400) => (text && text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+  if (entity === "comment") {
+    if (!created) return [];
+    // Comments the ADE agent or another app posts (bot actors, no user) must
+    // not trigger rules, or a rule that comments would trigger itself.
+    if (!user || readNested(data, "botActor") || readNested(payload, "botActor")) return [];
+    const issue = readNested(data, "issue");
+    const issueId = readString(issue, "id") ?? readString(data, "issueId");
+    const body = readString(data, "body");
+    const teamName = readString(readNested(issue, "team"), "name");
+    const projectName = readString(readNested(issue, "project"), "name");
+    const labels = readStringArray(issue, "labels") ?? readStringArray(readNested(issue, "labels"), "nodes");
+    return [{
+      source: "linear-relay",
+      eventKey: event.eventId,
+      triggerType: "linear.comment_created",
+      eventName: event.action,
+      summary: clip(body) ?? event.summary,
+      author: authorName ?? null,
+      labels,
+      rawPayload: payload,
+      linear: issueId
+        ? { issue: { id: issueId, title: readString(issue, "title"), team: teamName, project: projectName, labels } }
+        : null,
+      project: projectName ?? null,
+      team: teamName ?? null,
+    }];
+  }
+
+  if (entity === "projectupdate" || entity === "initiativeupdate") {
+    if (!created) return [];
+    const parentKey = entity === "projectupdate" ? "project" : "initiative";
+    const parent = readNested(data, parentKey);
+    const parentName = readString(parent, "name");
+    const health = readString(data, "health");
+    const body = readString(data, "body");
+    return [{
+      source: "linear-relay",
+      eventKey: event.eventId,
+      triggerType: entity === "projectupdate" ? "linear.project_update_posted" : "linear.initiative_update_posted",
+      eventName: event.action,
+      summary: clip([parentName, health ? `(${health})` : null, body].filter(Boolean).join(" — ")) ?? event.summary,
+      author: authorName ?? null,
+      rawPayload: payload,
+      project: entity === "projectupdate" ? parentName ?? null : null,
+    }];
+  }
+
+  if (entity === "user") {
+    if (!created) return [];
+    const name = readString(data, "displayName") ?? readString(data, "name");
+    return [{
+      source: "linear-relay",
+      eventKey: event.eventId,
+      triggerType: "linear.user_joined",
+      eventName: event.action,
+      summary: name ? `${name} joined the Linear workspace` : "A member joined the Linear workspace",
+      author: name ?? null,
+      rawPayload: payload,
+    }];
+  }
+
+  return entity === "issue" || entity === "issuelabel" ? null : [];
+}
+
+/**
  * Translate a Linear relay event into the automation ingress dispatches it
  * implies. Returns an empty array for events without a resolvable issue.
  *
@@ -117,6 +196,8 @@ function mapLinearActionToTriggerType(
  * own event alongside the labeled one.
  */
 export function buildLinearAutomationDispatches(event: LinearIngressEventRecord): LinearAutomationDispatch[] {
+  const nonIssue = buildNonIssueDispatches(event);
+  if (nonIssue) return nonIssue;
   if (!event.issueId) return [];
   const payload = event.payload ?? null;
   const data = readNested(payload, "data");

@@ -11,7 +11,7 @@ import {
   selectDefaultNewLaneBaseRef,
 } from "./newLaneBaseSource";
 import { resolveCreateLaneRequest } from "./lanePageModel";
-import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
+import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
@@ -756,9 +756,9 @@ export function CreateLaneDialogHost({
         ? {
           linearIssue: {
             ...createSelectedLinearIssue,
-            branchName: linearIssueBranchName(createSelectedLinearIssue),
+            branchName: resolveLinearIssueBranchName(createSelectedLinearIssue),
           },
-          branchName: linearIssueBranchName(createSelectedLinearIssue),
+          branchName: resolveLinearIssueBranchName(createSelectedLinearIssue),
         }
         : {};
       let lane: LaneSummary;

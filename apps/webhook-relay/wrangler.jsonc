@@ -5,6 +5,12 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  "vars": {
+    // Public (PKCE) client id of the ADE Linear app; refreshes Linear agent app tokens.
+    "LINEAR_APP_CLIENT_ID": "e552c738cd63ea5967f08bbc9c09b54c",
+    // The desktop app's public Clerk OAuth client (account tokens carry it as client_id).
+    "CLERK_EXTRA_OAUTH_CLIENT_IDS": "Az7TbviBocyXjZk1"
+  },
   "durable_objects": {
     "bindings": [
       {

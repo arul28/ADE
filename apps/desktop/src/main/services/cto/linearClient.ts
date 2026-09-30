@@ -1,31 +1,36 @@
 import fs from "node:fs";
 import path from "node:path";
-import { LinearClient as LinearSdkClient } from "@linear/sdk";
 import type { Logger } from "../logging/logger";
 import type {
-  CtoLinearQuickView,
-  CtoLinearQuickViewProject,
-  CtoLinearQuickViewTeam,
+  LinearIssueCreateInput,
+  LinearIssueRelationKind,
   CtoLinearProject,
   LinearCatalogLabel,
   LinearCatalogState,
   LinearCatalogUser,
-  LinearPriorityLabel,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { LinearCredentialService } from "./linearCredentialService";
-import type { IssueTrackerIssueAttachmentInput, IssueTrackerIssueSearchQuery, IssueTrackerIssueSearchResult } from "./issueTracker";
+import type {
+  IssueTrackerIssueAttachmentInput,
+  IssueTrackerIssueUpdate,
+} from "./issueTracker";
 import { isRecord, toOptionalString as asString, asArray, sleep, getErrorMessage } from "../shared/utils";
+import {
+  ISSUE_DETAIL_FIELDS_FRAGMENT,
+  ISSUE_FIELDS_FRAGMENT,
+  type LinearRateBudget,
+  type LinearRequestMeter,
+  priorityIsValid,
+  toNormalizedIssue,
+} from "./linearClientShared";
+import { createLinearIssueSearch } from "./linearIssueSearch";
+import { createLinearQuickView } from "./linearQuickView";
+import { createLinearInbox } from "./linearInbox";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
-
-function mapPriorityLabel(priority: number): LinearPriorityLabel {
-  if (priority === 1) return "urgent";
-  if (priority === 2) return "high";
-  if (priority === 3) return "normal";
-  if (priority === 4) return "low";
-  return "none";
-}
+const MAX_LINEAR_ID_LENGTH = 128;
+const MAX_LABEL_IDS_PER_UPDATE = 50;
 
 function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" | null | undefined): string {
   const trimmed = token.trim();
@@ -36,137 +41,6 @@ function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" 
     return trimmed.replace(/^bearer\s+/i, "");
   }
   return trimmed;
-}
-
-function toSdkTokenValue(token: string): string {
-  return token.trim().replace(/^bearer\s+/i, "");
-}
-
-function priorityIsValid(value: number | null | undefined): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 4;
-}
-
-function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue | null {
-  const id = asString(node.id);
-  const identifier = asString(node.identifier);
-  const title = asString(node.title);
-  if (!id || !identifier || !title) return null;
-
-  // Linear allows issues without a project (they live in a team only), so
-  // `project` is optional during normalization — falling through to empty
-  // strings keeps the existing display fallbacks (`projectName || projectSlug
-  // || teamKey`) intact. `team` and `state` remain required since every
-  // Linear issue has them.
-  const project = isRecord(node.project) ? node.project : null;
-  const team = isRecord(node.team) ? node.team : null;
-  const state = isRecord(node.state) ? node.state : null;
-  if (!team || !state) return null;
-
-  const projectId = project ? (asString(project.id) ?? "") : "";
-  const projectSlug = project ? (asString(project.slug) ?? asString(project.slugId) ?? "") : "";
-  const teamId = asString(team.id);
-  const teamKey = asString(team.key);
-  const stateId = asString(state.id);
-  const stateName = asString(state.name);
-  const stateType = asString(state.type);
-  if (!teamId || !teamKey || !stateId || !stateName || !stateType) return null;
-
-  const labelsNodes = isRecord(node.labels) ? asArray(node.labels.nodes) : [];
-  const labels = labelsNodes
-    .map((entry) => (isRecord(entry) ? asString(entry.name) : null))
-    .filter((entry): entry is string => entry != null)
-    .map((entry) => entry.toLowerCase());
-
-  const labelColors = labelsNodes
-    .filter((ln: unknown): ln is Record<string, unknown> => isRecord(ln))
-    .map((ln) => ({
-      name: asString(ln.name) ?? "",
-      color: asString(ln.color) ?? null,
-    }));
-
-  const cycle = isRecord(node.cycle) ? node.cycle : null;
-  const cycleId = cycle ? asString(cycle.id) : null;
-  const cycleName = cycle ? asString(cycle.name) : null;
-  const cycleStartsAt = cycle ? asString(cycle.startsAt) : null;
-  const cycleEndsAt = cycle ? asString(cycle.endsAt) : null;
-
-  const blockersNodes = isRecord(node.children) ? asArray(node.children.nodes) : [];
-  const blockerIssueIds = blockersNodes
-    .map((entry) => (isRecord(entry) ? asString(entry.id) : null))
-    .filter((entry): entry is string => entry != null);
-
-  const hasOpenBlockers = blockersNodes.some((entry) => {
-    if (!isRecord(entry)) return false;
-    const childState = isRecord(entry.state) ? asString(entry.state.type) : null;
-    return childState != null && childState !== "completed" && childState !== "canceled";
-  });
-
-  const childIssues = blockersNodes
-    .filter((c: unknown): c is Record<string, unknown> => isRecord(c))
-    .map((c) => {
-      const cs = isRecord(c.state) ? c.state : null;
-      return {
-        id: asString(c.id) ?? "",
-        identifier: asString(c.identifier) ?? "",
-        title: asString(c.title) ?? "",
-        stateId: cs ? asString(cs.id) ?? "" : "",
-        stateName: cs ? asString(cs.name) ?? "" : "",
-        stateType: cs ? asString(cs.type) ?? "" : "",
-      };
-    })
-    .filter((c) => c.id);
-
-  const assignee = isRecord(node.assignee) ? node.assignee : null;
-  const owner = isRecord(node.creator) ? node.creator : null;
-  const priority = Number(node.priority ?? 0);
-  const metadataRecord = isRecord(node.metadata) ? node.metadata : null;
-  const metadataTagsRaw = metadataRecord && Array.isArray(metadataRecord.tags)
-    ? (metadataRecord.tags as unknown[])
-    : [];
-  const metadataTags = metadataTagsRaw.filter((tag): tag is string => typeof tag === "string");
-
-  return {
-    id,
-    identifier,
-    title,
-    description: asString(node.description) ?? "",
-    url: asString(node.url),
-    projectId,
-    projectSlug,
-    projectName: project ? asString(project.name) : null,
-    teamId,
-    teamKey,
-    teamName: asString(team.name),
-    stateId,
-    stateName,
-    stateType,
-    priority: Number.isFinite(priority) ? priority : 0,
-    priorityLabel: mapPriorityLabel(Number.isFinite(priority) ? priority : 0),
-    labels,
-    labelColors,
-    cycleId,
-    cycleName,
-    cycleStartsAt,
-    cycleEndsAt,
-    childIssues,
-    metadataTags,
-    assigneeId: assignee ? asString(assignee.id) : null,
-    assigneeName: assignee ? (asString(assignee.displayName) ?? asString(assignee.name)) : null,
-    ownerId: owner ? asString(owner.id) : null,
-    creatorId: owner ? asString(owner.id) : null,
-    creatorName: owner ? (asString(owner.displayName) ?? asString(owner.name)) : null,
-    blockerIssueIds,
-    hasOpenBlockers,
-    dueDate: asString(node.dueDate),
-    estimate: typeof node.estimate === "number" && Number.isFinite(node.estimate) ? node.estimate : null,
-    archivedAt: asString(node.archivedAt),
-    completedAt: asString(node.completedAt),
-    canceledAt: asString(node.canceledAt),
-    startedAt: asString(node.startedAt),
-    createdAt: asString(node.createdAt) ?? new Date().toISOString(),
-    updatedAt: asString(node.updatedAt) ?? new Date().toISOString(),
-    raw: node,
-  };
 }
 
 export type LinearClientArgs = {
@@ -187,14 +61,6 @@ export type LinearWebhookSummary = {
 export function createLinearClient(args: LinearClientArgs) {
   const fetchImpl = args.fetchImpl ?? fetch;
 
-  const createSdkClient = () => {
-    const token = toSdkTokenValue(args.credentials.getTokenOrThrow());
-    const authMode = args.credentials.getStatus().authMode;
-    if (authMode === "oauth") return new LinearSdkClient({ accessToken: token });
-    if (authMode === "manual") return new LinearSdkClient({ apiKey: token });
-    throw new Error("Linear credential auth mode is missing or unknown.");
-  };
-
   const ensureFreshAuth = async (opts?: { force?: boolean }): Promise<void> => {
     try {
       await args.credentials.ensureFreshToken?.(opts);
@@ -204,11 +70,39 @@ export function createLinearClient(args: LinearClientArgs) {
     }
   };
 
+  // Latest rate-limit budget Linear reported (X-RateLimit-* headers). Null
+  // until a response carries the headers.
+  let rateBudget: LinearRateBudget | null = null;
+
+  const readRateHeaders = (res: Response, meter?: LinearRequestMeter): void => {
+    const read = (name: string): number | null => {
+      const raw = typeof res.headers?.get === "function" ? res.headers.get(name) : null;
+      const value = raw == null ? Number.NaN : Number(raw);
+      return Number.isFinite(value) ? value : null;
+    };
+    const complexity = read("x-complexity");
+    if (meter) {
+      meter.requests += 1;
+      if (complexity != null) meter.complexity += complexity;
+    }
+    const requestsRemaining = read("x-ratelimit-requests-remaining");
+    const complexityRemaining = read("x-ratelimit-complexity-remaining");
+    if (requestsRemaining == null && complexityRemaining == null) return;
+    rateBudget = {
+      requestsRemaining,
+      requestsLimit: read("x-ratelimit-requests-limit"),
+      complexityRemaining,
+      complexityLimit: read("x-ratelimit-complexity-limit"),
+      observedAt: Date.now(),
+    };
+  };
+
   const request = async <TData = Record<string, unknown>>(params: {
     query: string;
     variables?: Record<string, unknown>;
     operationName?: string | null;
     maxRetries?: number;
+    meter?: LinearRequestMeter;
   }): Promise<TData> => {
     // Proactively refresh an OAuth token that is at/near expiry before sending.
     await ensureFreshAuth();
@@ -245,6 +139,7 @@ export function createLinearClient(args: LinearClientArgs) {
         continue;
       }
 
+      readRateHeaders(res, params.meter);
       const payload = await res.json().catch(() => ({})) as {
         data?: TData;
         errors?: Array<{ message?: string; extensions?: { code?: string } }>;
@@ -285,6 +180,10 @@ export function createLinearClient(args: LinearClientArgs) {
       return payload.data;
     }
   };
+
+  const issueSearch = createLinearIssueSearch({ request, logger: args.logger, getRateBudget: () => rateBudget });
+  const quickView = createLinearQuickView({ request, searchIssues: issueSearch.searchIssues });
+  const inbox = createLinearInbox({ request });
 
   const getViewer = async (): Promise<{ id: string | null; name: string | null }> => {
     const data = await request<{ viewer?: { id?: string; name?: string; displayName?: string } }>({
@@ -443,6 +342,7 @@ export function createLinearClient(args: LinearClientArgs) {
               name
               displayName
               email
+              avatarUrl
               active
             }
           }
@@ -452,7 +352,7 @@ export function createLinearClient(args: LinearClientArgs) {
     });
 
     return asArray(data.users?.nodes)
-      .map((node) => {
+      .map((node): LinearCatalogUser | null => {
         if (!isRecord(node)) return null;
         const id = asString(node.id);
         const name = asString(node.name);
@@ -462,6 +362,7 @@ export function createLinearClient(args: LinearClientArgs) {
           name,
           displayName: asString(node.displayName),
           email: asString(node.email),
+          avatarUrl: asString(node.avatarUrl),
           active: node.active !== false,
         };
       })
@@ -516,38 +417,6 @@ export function createLinearClient(args: LinearClientArgs) {
       .filter((entry): entry is LinearCatalogLabel => entry != null)
       .sort((left, right) => left.name.localeCompare(right.name));
   };
-
-  const ISSUE_FIELDS_FRAGMENT = `
-    id
-    identifier
-    title
-    description
-    url
-    priority
-    createdAt
-    updatedAt
-    dueDate
-    estimate
-    archivedAt
-    completedAt
-    canceledAt
-    startedAt
-    project { id name slug: slugId }
-    team { id key name }
-    state { id name type }
-    assignee { id name displayName }
-    creator { id name displayName }
-    labels { nodes { id name color } }
-    cycle { id name startsAt endsAt }
-    children {
-      nodes {
-        id
-        identifier
-        title
-        state { id name type }
-      }
-    }
-  `;
 
   const fetchIssuesPage = async (projectSlug: string, stateTypes: string[], after: string | null) => {
     const data = await request<{
@@ -613,104 +482,12 @@ export function createLinearClient(args: LinearClientArgs) {
     return results.flat();
   };
 
-  const buildIssueSearchFilter = (params: IssueTrackerIssueSearchQuery): Record<string, unknown> => {
-    const filter: Record<string, unknown> = {};
-    const projectId = params.projectId?.trim();
-    const projectSlug = params.projectSlug?.trim();
-    const teamKey = params.teamKey?.trim();
-    const stateTypes = (params.stateTypes ?? []).map((entry) => entry.trim()).filter(Boolean);
-    const assigneeId = params.assigneeId?.trim();
-    const query = params.query?.trim();
-
-    if (projectId) {
-      filter.project = { id: { eq: projectId } };
-    } else if (projectSlug) {
-      filter.project = { slugId: { eq: projectSlug } };
-    }
-    if (teamKey) {
-      filter.team = { key: { eq: teamKey } };
-    }
-    if (stateTypes.length > 0) {
-      filter.state = { type: { in: stateTypes } };
-    }
-    if (assigneeId) {
-      filter.assignee = { id: { eq: assigneeId } };
-    }
-    if (priorityIsValid(params.priority)) {
-      filter.priority = { eq: params.priority };
-    }
-    if (query) {
-      const orClauses: Record<string, unknown>[] = [
-        { title: { containsIgnoreCase: query } },
-        { description: { containsIgnoreCase: query } },
-      ];
-      // Linear's IssueFilter has no `identifier` field (that filter is rejected by
-      // the API). Match by issue number when the query is a bare number ("122") or
-      // an identifier like "VER-122" — pull the trailing digits and filter on it.
-      const numberMatch = query.match(/(\d+)\s*$/);
-      if (numberMatch) {
-        const parsedNumber = Number.parseInt(numberMatch[1]!, 10);
-        if (Number.isFinite(parsedNumber)) {
-          orClauses.push({ number: { eq: parsedNumber } });
-        }
-      }
-      filter.or = orClauses;
-    }
-
-    return filter;
-  };
-
-  const searchIssues = async (params: IssueTrackerIssueSearchQuery): Promise<IssueTrackerIssueSearchResult> => {
-    const first = Math.min(100, Math.max(1, Math.floor(params.first ?? 50)));
-    const filter = buildIssueSearchFilter(params);
-    const data = await request<{
-      issues?: {
-        pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
-        nodes?: Array<Record<string, unknown>>;
-      };
-    }>({
-      query: `
-        query SearchIssues($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter) {
-          issues(
-            first: $first,
-            after: $after,
-            includeArchived: $includeArchived,
-            orderBy: updatedAt,
-            filter: $filter
-          ) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              ${ISSUE_FIELDS_FRAGMENT}
-            }
-          }
-        }
-      `,
-      variables: {
-        first,
-        after: params.after?.trim() || null,
-        includeArchived: params.includeArchived === true,
-        filter,
-      },
-      maxRetries: 2,
-    });
-
-    return {
-      issues: asArray(data.issues?.nodes)
-        .map((entry) => (isRecord(entry) ? toNormalizedIssue(entry) : null))
-        .filter((entry): entry is NormalizedLinearIssue => entry != null),
-      pageInfo: {
-        hasNextPage: Boolean(data.issues?.pageInfo?.hasNextPage),
-        endCursor: asString(data.issues?.pageInfo?.endCursor),
-      },
-    };
-  };
-
   const fetchIssueById = async (issueId: string): Promise<NormalizedLinearIssue | null> => {
     const data = await request<{ issue?: Record<string, unknown> }>({
       query: `
         query IssueById($id: String!) {
           issue(id: $id) {
-            ${ISSUE_FIELDS_FRAGMENT}
+            ${ISSUE_DETAIL_FIELDS_FRAGMENT}
           }
         }
       `,
@@ -718,131 +495,6 @@ export function createLinearClient(args: LinearClientArgs) {
       maxRetries: 2,
     });
     return data.issue && isRecord(data.issue) ? toNormalizedIssue(data.issue) : null;
-  };
-
-  const getQuickView = async (connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView> => {
-    await ensureFreshAuth();
-    const sdk = createSdkClient();
-    // Recent issues fetched via raw GraphQL (single request with ISSUE_FIELDS_FRAGMENT)
-    // to avoid the lazy-relation fan-out that the SDK normalizer triggers.
-    const recentIssuesPromise = searchIssues({ first: 12, includeArchived: false }).catch(() => null);
-    const [viewer, organization, projectsConnection, teamsConnection, recentIssuesResult] = await Promise.all([
-      sdk.viewer,
-      sdk.organization.catch(() => null),
-      sdk.projects({ first: 50, includeArchived: false } as never).catch(() => null),
-      sdk.teams({ first: 8, includeArchived: false } as never).catch(() => null),
-      recentIssuesPromise,
-    ]);
-
-    // Assigned issues also via raw GraphQL using the resolved viewer id.
-    const viewerId = asString(viewer.id);
-    const assignedIssuesResult = viewerId
-      ? await searchIssues({ first: 12, includeArchived: false, assigneeId: viewerId }).catch(() => null)
-      : null;
-
-    const projects: CtoLinearQuickViewProject[] = await Promise.all(
-      asArray(projectsConnection?.nodes).filter(isRecord).map(async (project) => {
-        const [status, lead, teams] = await Promise.all([
-          typeof project.status === "object" ? project.status : Promise.resolve(null),
-          typeof project.lead === "object" ? project.lead : Promise.resolve(null),
-          typeof project.teams === "function"
-            ? (project.teams as (args: { first: number }) => Promise<{ nodes?: unknown[] }>)({ first: 4 }).catch(() => null)
-            : Promise.resolve(null),
-        ]);
-        const teamNodes = asArray(isRecord(teams) ? teams.nodes : []).filter(isRecord);
-        const teamName = teamNodes
-          .map((team) => asString(team.name))
-          .find((entry): entry is string => Boolean(entry?.trim())) ?? "Unassigned";
-        const teamKey = teamNodes
-          .map((team) => asString(team.key))
-          .find((entry): entry is string => Boolean(entry?.trim())) ?? null;
-        return {
-          id: String(project.id ?? ""),
-          name: String(project.name ?? "Untitled project"),
-          slug: String(project.slugId ?? project.slug ?? ""),
-          teamName,
-          ...(teamKey ? { teamKey } : {}),
-          url: asString(project.url),
-          color: asString(project.color),
-          icon: asString(project.icon),
-          description: asString(project.description),
-          statusName: isRecord(status) ? asString(status.name) : null,
-          statusType: isRecord(status) ? asString(status.type) : null,
-          health: asString(project.health),
-          progress: typeof project.progress === "number" ? project.progress : null,
-          scope: typeof project.scope === "number" ? project.scope : null,
-          priority: typeof project.priority === "number" ? project.priority : null,
-          priorityLabel: asString(project.priorityLabel),
-          issueCount: Array.isArray(project.issueCountHistory) ? Number(project.issueCountHistory.at(-1) ?? 0) : null,
-          completedIssueCount: Array.isArray(project.completedIssueCountHistory)
-            ? Number(project.completedIssueCountHistory.at(-1) ?? 0)
-            : null,
-          startDate: asString(project.startDate),
-          targetDate: asString(project.targetDate),
-          leadName: isRecord(lead) ? (asString(lead.displayName) ?? asString(lead.name)) : null,
-          teamKeys: teamNodes.map((team) => asString(team.key)).filter((entry): entry is string => Boolean(entry)),
-        };
-      })
-    );
-
-    const teams: CtoLinearQuickViewTeam[] = asArray(teamsConnection?.nodes)
-      .filter(isRecord)
-      .map((team) => ({
-        id: String(team.id ?? ""),
-        key: String(team.key ?? ""),
-        name: String(team.name ?? "Team"),
-        displayName: String(team.displayName ?? team.name ?? "Team"),
-        color: asString(team.color),
-        issueCount: typeof team.issueCount === "number" ? team.issueCount : null,
-        cyclesEnabled: typeof team.cyclesEnabled === "boolean" ? team.cyclesEnabled : null,
-        private: typeof team.private === "boolean" ? team.private : null,
-      }));
-
-    const assignedIssues = assignedIssuesResult?.issues ?? [];
-    const recentIssues = recentIssuesResult?.issues ?? [];
-
-    return {
-      connection,
-      organization: isRecord(organization) ? {
-        id: String(organization.id ?? ""),
-        name: String(organization.name ?? "Linear"),
-        urlKey: asString(organization.urlKey),
-        logoUrl: asString(organization.logoUrl),
-        gitBranchFormat: asString(organization.gitBranchFormat),
-        createdIssueCount: typeof organization.createdIssueCount === "number" ? organization.createdIssueCount : null,
-        roadmapEnabled: typeof organization.roadmapEnabled === "boolean" ? organization.roadmapEnabled : null,
-        customersEnabled: typeof organization.customersEnabled === "boolean" ? organization.customersEnabled : null,
-        releasesEnabled: typeof organization.releasesEnabled === "boolean" ? organization.releasesEnabled : null,
-      } : null,
-      viewer: {
-        id: String(viewer.id ?? ""),
-        name: String(viewer.name ?? viewer.displayName ?? "Linear user"),
-        displayName: String(viewer.displayName ?? viewer.name ?? "Linear user"),
-        email: asString(viewer.email),
-        avatarUrl: asString(viewer.avatarUrl),
-        admin: typeof viewer.admin === "boolean" ? viewer.admin : null,
-        guest: typeof viewer.guest === "boolean" ? viewer.guest : null,
-        url: asString(viewer.url),
-      },
-      projects: projects.filter((project) => project.id && project.slug),
-      teams: teams.filter((team) => team.id && team.key),
-      assignedIssues: assignedIssues.filter((issue): issue is NormalizedLinearIssue => issue != null),
-      recentIssues: recentIssues.filter((issue): issue is NormalizedLinearIssue => issue != null),
-      fetchedAt: new Date().toISOString(),
-      sdk: {
-        packageName: "@linear/sdk",
-        surfaces: [
-          "viewer",
-          "organization",
-          "projects",
-          "teams",
-          "assignedIssues",
-          "issues",
-          "project.status",
-          "project.lead",
-        ],
-      },
-    };
   };
 
   const fetchIssuesByIds = async (issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>> => {
@@ -1017,6 +669,45 @@ export function createLinearClient(args: LinearClientArgs) {
     });
   };
 
+  const updateIssue = async (issueId: string, patch: IssueTrackerIssueUpdate): Promise<void> => {
+    const input: Record<string, unknown> = {};
+    if (typeof patch.stateId === "string" && patch.stateId.trim()) input.stateId = patch.stateId.trim();
+    // The patch can come straight from IPC; keep only well-formed ids.
+    if (patch.assigneeId === null) input.assigneeId = null;
+    else if (typeof patch.assigneeId === "string") input.assigneeId = patch.assigneeId.trim().slice(0, MAX_LINEAR_ID_LENGTH) || null;
+    if (priorityIsValid(patch.priority)) input.priority = patch.priority;
+    const readIds = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0 && entry.length <= MAX_LINEAR_ID_LENGTH)
+          .slice(0, MAX_LABEL_IDS_PER_UPDATE)
+        : [];
+    const added = readIds(patch.addedLabelIds);
+    const removed = readIds(patch.removedLabelIds);
+    if (added.length > 0) input.addedLabelIds = added;
+    if (removed.length > 0) input.removedLabelIds = removed;
+    if (Object.keys(input).length === 0) return;
+    const data = await request<{ issueUpdate?: { success?: boolean } }>({
+      query: `
+        mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success
+          }
+        }
+      `,
+      variables: { id: issueId, input },
+      maxRetries: 1,
+    });
+    if (data.issueUpdate?.success === false) throw new Error("Linear did not accept the issue update.");
+  };
+
+  const updateIssuePriority = async (issueId: string, priority: number): Promise<void> => {
+    if (!priorityIsValid(priority)) throw new Error("Linear priority must be an integer from 0 to 4.");
+    await updateIssue(issueId, { priority });
+  };
+
   const createComment = async (issueId: string, body: string): Promise<{ commentId: string }> => {
     const data = await request<{ commentCreate?: { success?: boolean; comment?: { id?: string } } }>({
       query: `
@@ -1047,6 +738,77 @@ export function createLinearClient(args: LinearClientArgs) {
       variables: { id: commentId, body },
       maxRetries: 2,
     });
+  };
+
+  const resolveTeamId = async (teamKeyOrId: string): Promise<string> => {
+    const value = teamKeyOrId.trim();
+    if (/^[0-9a-f-]{36}$/i.test(value)) return value;
+    const data = await request<{ teams?: { nodes?: Array<{ id?: string; key?: string }> } }>({
+      query: `query TeamByKey($key: String!) { teams(first: 1, filter: { key: { eqIgnoreCase: $key } }) { nodes { id key } } }`,
+      variables: { key: value },
+      maxRetries: 2,
+    });
+    const teamId = asString(data.teams?.nodes?.[0]?.id);
+    if (!teamId) throw new Error(`Linear team "${value}" was not found.`);
+    return teamId;
+  };
+
+  /** Creates an issue and returns it normalized. `teamKey` accepts a key ("VER") or a team id. */
+  const createIssue = async (params: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
+    const title = params.title.trim();
+    if (!title) throw new Error("A Linear issue needs a title.");
+    const input: Record<string, unknown> = {
+      teamId: await resolveTeamId(params.teamKey),
+      title,
+    };
+    if (params.description?.trim()) input.description = params.description.trim();
+    if (params.projectId?.trim()) input.projectId = params.projectId.trim();
+    if (params.parentId?.trim()) input.parentId = params.parentId.trim();
+    if (params.stateId?.trim()) input.stateId = params.stateId.trim();
+    if (params.assigneeId?.trim()) input.assigneeId = params.assigneeId.trim();
+    if (priorityIsValid(params.priority)) input.priority = params.priority;
+    if (params.labelIds?.length) input.labelIds = params.labelIds;
+    const data = await request<{ issueCreate?: { success?: boolean; issue?: Record<string, unknown> } }>({
+      query: `
+        mutation CreateIssue($input: IssueCreateInput!) {
+          issueCreate(input: $input) {
+            success
+            issue { ${ISSUE_FIELDS_FRAGMENT} }
+          }
+        }
+      `,
+      variables: { input },
+      maxRetries: 1,
+    });
+    const issue = isRecord(data.issueCreate?.issue) ? toNormalizedIssue(data.issueCreate.issue) : null;
+    if (!data.issueCreate?.success || !issue) throw new Error("Linear issueCreate did not return an issue.");
+    return issue;
+  };
+
+  /**
+   * Links two issues. `blocked_by` is stored by Linear as the inverse `blocks`
+   * relation (the other issue blocks this one).
+   */
+  const createIssueRelation = async (params: {
+    issueId: string;
+    relatedIssueId: string;
+    type: LinearIssueRelationKind;
+  }): Promise<{ id: string }> => {
+    const [issueId, relatedIssueId, type] = params.type === "blocked_by"
+      ? [params.relatedIssueId, params.issueId, "blocks"]
+      : [params.issueId, params.relatedIssueId, params.type];
+    const data = await request<{ issueRelationCreate?: { success?: boolean; issueRelation?: { id?: string } } }>({
+      query: `
+        mutation CreateIssueRelation($input: IssueRelationCreateInput!) {
+          issueRelationCreate(input: $input) { success issueRelation { id } }
+        }
+      `,
+      variables: { input: { issueId, relatedIssueId, type } },
+      maxRetries: 1,
+    });
+    const id = asString(data.issueRelationCreate?.issueRelation?.id);
+    if (!data.issueRelationCreate?.success || !id) throw new Error("Linear issueRelationCreate failed.");
+    return { id };
   };
 
   const addLabel = async (issueId: string, labelName: string): Promise<void> => {
@@ -1472,6 +1234,9 @@ export function createLinearClient(args: LinearClientArgs) {
   };
 
   return {
+    ...issueSearch,
+    ...quickView,
+    ...inbox,
     request,
     runGraphQL,
     getViewer,
@@ -1482,15 +1247,15 @@ export function createLinearClient(args: LinearClientArgs) {
     listWebhooks,
     createWebhook,
     deleteWebhook,
-    searchIssues,
     fetchCandidateIssues,
     fetchIssueById,
     fetchIssuesByIds,
-    getQuickView,
     fetchWorkflowStates,
     listWorkflowStates,
     updateIssueState,
     updateIssueAssignee,
+    updateIssuePriority,
+    updateIssue,
     createComment,
     updateComment,
     addLabel,
@@ -1499,6 +1264,8 @@ export function createLinearClient(args: LinearClientArgs) {
     uploadAttachment,
     createIssueAttachment,
     fetchIssueComments,
+    createIssue,
+    createIssueRelation,
   };
 }
 

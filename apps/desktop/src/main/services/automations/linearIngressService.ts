@@ -6,6 +6,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { LinearWebhookSummary } from "../cto/linearClient";
 import { ACCOUNT_RELAY_TOKEN_HEADER } from "../github/githubRelayConfig";
+import { createRelayWakeSocket, type RelayWakeSocket, type RelayWakeTarget } from "./relayWakeSocket";
 import {
   LINEAR_RELAY_LAST_ERROR_REF,
   LINEAR_RELAY_LAST_EVENT_AT_REF,
@@ -20,6 +21,8 @@ import {
 } from "./linearRelayConfig";
 
 const DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS = 45_000;
+// While a wake-up socket is connected, polling is only a safety net.
+const SUBSCRIBED_SAFETY_POLL_INTERVAL_MS = 5 * 60_000;
 const LINEAR_RELAY_PAGE_LIMIT = 500;
 const LINEAR_RELAY_MAX_PAGES_PER_POLL = 20;
 // Sentinel webhook id for workspaces whose events arrive through the ADE
@@ -52,7 +55,7 @@ function parseRelaySequence(cursor: string): number | null {
   const match = /^seq:(\d+)$/.exec(cursor.trim());
   return match ? Number(match[1]) : null;
 }
-const LINEAR_WEBHOOK_RESOURCE_TYPES = ["Issue", "Comment", "IssueLabel"];
+const LINEAR_WEBHOOK_RESOURCE_TYPES = ["Issue", "Comment", "IssueLabel", "ProjectUpdate", "InitiativeUpdate", "User"];
 const LINEAR_WEBHOOK_LABEL = "ADE automations";
 
 type LinearWebhookClient = {
@@ -74,6 +77,8 @@ type LinearRelayEvent = {
   action: string;
   createdAt: string;
   body: string;
+  /** Set by the relay for Linear agent sessions: the ADE account the session was routed to. */
+  routedAccountId?: string | null;
 };
 
 type LinearRelayEventsResponse = {
@@ -102,6 +107,13 @@ export type LinearIngressServiceDeps = {
   dispatch: (record: LinearIngressEventRecord) => void | Promise<void>;
   logger: Logger;
   hasEnabledLinearRules: () => boolean;
+  /**
+   * True when something besides automation rules needs Linear events on this
+   * machine (Linear-linked lanes, the ADE agent). Polls also run then.
+   */
+  wantsLinearEvents?: () => boolean;
+  /** WebSocket target for this account's Linear agent wake-ups (null = none). */
+  getAgentSubscribeTarget?: () => Promise<{ url: string; headers: Record<string, string> } | null>;
   /**
    * True when the project's Linear connection is an OAuth token issued to the
    * bundled ADE Linear app — its webhook is auto-provisioned by Linear, so
@@ -182,6 +194,7 @@ function mapRelayEventToRecord(event: LinearRelayEvent): LinearIngressEventRecor
     summary,
     payload,
     createdAt: parseCreatedAt(payload, event.createdAt),
+    ...(event.routedAccountId !== undefined ? { routedAccountId: event.routedAccountId } : {}),
   };
 }
 
@@ -200,7 +213,8 @@ function parseRelayEventsResponse(value: unknown): LinearRelayEventsResponse {
     if (!cursor || !eventId || !eventType || !action || !createdAt || body == null) {
       throw new Error("Linear relay returned an incomplete event.");
     }
-    return { cursor, eventId, eventType, action, createdAt, body };
+    const routedAccountId = entry.routedAccountId === null ? null : readString(entry, "routedAccountId") ?? undefined;
+    return { cursor, eventId, eventType, action, createdAt, body, ...(routedAccountId !== undefined ? { routedAccountId } : {}) };
   });
   return {
     events,
@@ -414,8 +428,10 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     return true;
   };
 
+  const wantsEvents = (): boolean => deps.hasEnabledLinearRules() || deps.wantsLinearEvents?.() === true;
+
   const poll = async (): Promise<void> => {
-    if (!deps.hasEnabledLinearRules()) return;
+    if (!wantsEvents()) return;
     let status = getStatus();
     if (
       deps.isAdeAppConnection?.()
@@ -499,8 +515,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     }
   };
 
+  // A wake-up that arrives while a poll is running may be for an event that poll
+  // already missed, so it asks for one more poll after the running one.
+  let repollRequested = false;
+
   const pollNow = async (): Promise<void> => {
-    if (pollInFlight) return pollInFlight;
+    if (pollInFlight) {
+      repollRequested = true;
+      return pollInFlight;
+    }
     pollInFlight = poll()
       .catch((error: unknown) => {
         if (stopped) return;
@@ -510,8 +533,59 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       })
       .finally(() => {
         pollInFlight = null;
+        if (repollRequested && !stopped) {
+          repollRequested = false;
+          void pollNow();
+        }
       });
     return pollInFlight;
+  };
+
+  // ---- wake-up sockets ----------------------------------------------------
+  // Two relay topics wake this machine: the account topic (Linear agent
+  // sessions routed to this person) and the organization topic (every Linear
+  // event in the workspace). Each frame only means "poll now"; the durable
+  // cursor and replay guard above stay the source of truth.
+  const wakeSockets: RelayWakeSocket[] = [];
+
+  const reschedulePolling = (): void => {
+    if (!pollTimer || stopped) return;
+    clearInterval(pollTimer);
+    const subscribed = wakeSockets.some((socket) => socket.connected());
+    pollTimer = setInterval(() => void pollNow(), subscribed ? Math.max(pollIntervalMs, SUBSCRIBED_SAFETY_POLL_INTERVAL_MS) : pollIntervalMs);
+    pollTimer.unref?.();
+  };
+
+  const createWakeSocket = (
+    name: string,
+    resolveTarget: () => Promise<RelayWakeTarget | null>,
+  ): RelayWakeSocket =>
+    createRelayWakeSocket({
+      resolveTarget: async () => (wantsEvents() ? await resolveTarget() : null),
+      frameType: "linear_delivery",
+      onWake: () => void pollNow(),
+      onConnectedChange: (connected) => {
+        reschedulePolling();
+        // The relay may hold events from while the socket was down.
+        if (connected) void pollNow();
+      },
+      onConnecting: () => deps.logger.debug?.("automations.linear_wake_socket_connecting", { name }),
+    });
+
+  const resolveOrgSubscribeTarget = async (): Promise<RelayWakeTarget | null> => {
+    const status = getStatus();
+    if (!status.organizationId) return null;
+    const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";
+    const accountAccessToken = await readAccountAccessToken();
+    if (!authorization && !accountAccessToken) return null;
+    const base = status.relayBaseUrl.replace(/^http/i, "ws");
+    return {
+      url: `${base}/linear/orgs/${encodeURIComponent(status.organizationId)}/subscribe`,
+      headers: {
+        ...(authorization ? { authorization } : {}),
+        ...(accountAccessToken ? { [ACCOUNT_RELAY_TOKEN_HEADER]: accountAccessToken } : {}),
+      },
+    };
   };
 
   const start = (): void => {
@@ -520,10 +594,13 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     void pollNow();
     pollTimer = setInterval(() => void pollNow(), pollIntervalMs);
     pollTimer.unref?.();
+    wakeSockets.push(createWakeSocket("org", resolveOrgSubscribeTarget));
+    if (deps.getAgentSubscribeTarget) wakeSockets.push(createWakeSocket("agent", deps.getAgentSubscribeTarget));
   };
 
   const stop = (): void => {
     stopped = true;
+    for (const socket of wakeSockets.splice(0)) socket.stop();
     if (!pollTimer) return;
     clearInterval(pollTimer);
     pollTimer = null;

@@ -483,7 +483,8 @@ export type TerminalSessionSummary = {
   cursorRuntime?: "local" | "cloud" | null;
 };
 
-export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
+/** `linear`: a Linear inbox item (mention, comment, assignment) about the lane's issue. */
+export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user" | "linear";
 
 /**
  * Result of a Work-board drag.

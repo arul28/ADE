@@ -113,36 +113,51 @@ struct LinearIssueDetailScreen: View {
       }
       LinearPropertyRow(
         label: "Branch",
-        value: linearIssueBranchName(identifier: issue.identifier, title: issue.title),
+        value: linearIssueBranchName(for: issue),
         monospaced: true
       )
       if issue.hasOpenBlockers == true {
-        LinearPropertyRow(label: "Blockers", value: "Has open blockers", tint: ADEColor.warning)
+        LinearPropertyRow(label: "Blocked", value: "Has open blockers", tint: ADEColor.warning)
       }
     }
     .adeGlassCard()
   }
 
-  // MARK: Sub-issues
+  // MARK: Relations
+
+  private var relationGroups: [(title: String, issues: [NormalizedLinearIssueChild])] {
+    [
+      ("Parent", issue.parentIssue.map { [$0] } ?? []),
+      ("Blocked by", issue.blockedByIssues ?? []),
+      ("Blocks", issue.blockingIssues ?? []),
+      ("Related", issue.relatedIssues ?? []),
+      ("Sub-issues", issue.childIssues ?? []),
+    ].filter { !$0.issues.isEmpty }
+  }
 
   @ViewBuilder
   private var subIssues: some View {
-    if let children = issue.childIssues, !children.isEmpty {
-      VStack(alignment: .leading, spacing: 8) {
-        Text("Sub-issues")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        ForEach(children) { child in
-          HStack(spacing: 8) {
-            LinearStateIcon(stateType: child.stateType, size: 13)
-            Text(child.identifier)
+    let groups = relationGroups
+    if !groups.isEmpty {
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(groups, id: \.title) { group in
+          VStack(alignment: .leading, spacing: 8) {
+            Text(group.title)
               .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-            Text(child.title)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-            Spacer()
+              .foregroundStyle(ADEColor.textSecondary)
+            ForEach(group.issues) { related in
+              HStack(spacing: 8) {
+                LinearStateIcon(stateType: related.stateType, size: 13)
+                Text(related.identifier)
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textMuted)
+                Text(related.title)
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                Spacer()
+              }
+            }
           }
         }
       }

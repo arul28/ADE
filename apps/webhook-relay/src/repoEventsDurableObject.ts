@@ -2,6 +2,20 @@ const BROADCAST_DEBOUNCE_MS = 1_000;
 const SUBSCRIPTION_LIFETIME_MS = 4 * 60 * 60_000;
 const SUBSCRIPTION_EXPIRED_CLOSE_CODE = 4401;
 const PENDING_BROADCAST_STORAGE_KEY = "pendingBroadcastRepo";
+const PENDING_TOPIC_FRAME_STORAGE_KEY = "pendingBroadcastTopicFrame";
+const MAX_TOPIC_LENGTH = 512;
+const MAX_TOPIC_FRAME_BYTES = 4 * 1024;
+
+/**
+ * Non-repo wake topics. Each object instance serves exactly one topic (the
+ * Worker derives the object id from it), so a topic never shares sockets with a
+ * repo. Repo names cannot contain ":", so these never collide with repo ids.
+ */
+function isValidTopic(topic: string): boolean {
+  return topic.length > 0
+    && topic.length <= MAX_TOPIC_LENGTH
+    && (topic.startsWith("linear-account:") || topic.startsWith("linear-org:"));
+}
 
 type SocketAttachment = {
   expiresAt: number;
@@ -22,7 +36,7 @@ function text(value: string, status = 200): Response {
 }
 
 /**
- * Hibernating, repo-scoped wake-up fanout. D1 cursors remain the durable event
+ * Hibernating, repo- or topic-scoped wake-up fanout. D1 cursors remain the durable event
  * stream; this object sends only a coalesced hint that clients should drain it.
  */
 export class RepoEventsDurableObject implements DurableObject {
@@ -44,14 +58,19 @@ export class RepoEventsDurableObject implements DurableObject {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return text("expected websocket", 426);
     }
+    const topic = url.searchParams.get("topic")?.trim() ?? "";
     const repo = url.searchParams.get("repo")?.trim() ?? "";
-    if (!repo.includes("/")) return json({ ok: false, error: "repo is required" }, { status: 400 });
+    if (topic) {
+      if (!isValidTopic(topic)) return json({ ok: false, error: "topic is invalid" }, { status: 400 });
+    } else if (!repo.includes("/")) {
+      return json({ ok: false, error: "repo is required" }, { status: 400 });
+    }
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     const expiresAt = Date.now() + SUBSCRIPTION_LIFETIME_MS;
-    this.state.acceptWebSocket(server, ["subscriber", `repo:${repo.toLowerCase()}`]);
+    this.state.acceptWebSocket(server, ["subscriber", topic ? `topic:${topic}` : `repo:${repo.toLowerCase()}`]);
     server.serializeAttachment({ expiresAt } satisfies SocketAttachment);
     await this.ensureAlarmBy(expiresAt);
     return new Response(null, { status: 101, webSocket: client });
@@ -60,14 +79,33 @@ export class RepoEventsDurableObject implements DurableObject {
   private async notify(request: Request): Promise<Response> {
     if (request.method !== "POST") return text("method not allowed", 405);
     let repo = "";
+    let topic = "";
+    let topicFrame: string | null = null;
     try {
       const body = await request.json() as unknown;
       if (body && typeof body === "object" && !Array.isArray(body)) {
-        const value = (body as Record<string, unknown>).repo;
+        const record = body as Record<string, unknown>;
+        const value = record.repo;
         repo = typeof value === "string" ? value.trim() : "";
+        topic = typeof record.topic === "string" ? record.topic.trim() : "";
+        const frame = record.frame;
+        if (frame && typeof frame === "object" && !Array.isArray(frame)) topicFrame = JSON.stringify(frame);
       }
     } catch {
       return json({ ok: false, error: "invalid json" }, { status: 400 });
+    }
+    if (topic) {
+      if (!isValidTopic(topic)) return json({ ok: false, error: "topic is invalid" }, { status: 400 });
+      if (!topicFrame || topicFrame.length > MAX_TOPIC_FRAME_BYTES) {
+        return json({ ok: false, error: "frame is required" }, { status: 400 });
+      }
+      const frame = topicFrame;
+      await this.state.storage.transaction(async (transaction) => {
+        const pending = await transaction.get<string>(PENDING_TOPIC_FRAME_STORAGE_KEY);
+        if (!pending) await transaction.put(PENDING_TOPIC_FRAME_STORAGE_KEY, frame);
+      });
+      await this.ensureAlarmBy(Date.now() + BROADCAST_DEBOUNCE_MS);
+      return json({ ok: true }, { status: 202 });
     }
     if (!repo.includes("/")) return json({ ok: false, error: "repo is required" }, { status: 400 });
 
@@ -91,15 +129,17 @@ export class RepoEventsDurableObject implements DurableObject {
   async alarm(): Promise<void> {
     // Atomically claim the pending broadcast so a notify racing this alarm
     // either lands in this frame or remains queued for the next one.
-    const repo = await this.state.storage.transaction(async (transaction) => {
+    const { repo, topicFrame } = await this.state.storage.transaction(async (transaction) => {
       const pending = await transaction.get<string>(PENDING_BROADCAST_STORAGE_KEY) ?? null;
       if (pending) await transaction.delete(PENDING_BROADCAST_STORAGE_KEY);
-      return pending;
+      const pendingTopicFrame = await transaction.get<string>(PENDING_TOPIC_FRAME_STORAGE_KEY) ?? null;
+      if (pendingTopicFrame) await transaction.delete(PENDING_TOPIC_FRAME_STORAGE_KEY);
+      return { repo: pending, topicFrame: pendingTopicFrame };
     });
 
     const now = Date.now();
     let earliestExpiry: number | null = null;
-    const frame = repo ? JSON.stringify({ t: "github_delivery", repo }) : null;
+    const frame = repo ? JSON.stringify({ t: "github_delivery", repo }) : topicFrame;
     for (const socket of this.state.getWebSockets("subscriber")) {
       const attachment = socket.deserializeAttachment() as SocketAttachment | null;
       if (!attachment || attachment.expiresAt <= now) {

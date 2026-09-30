@@ -311,6 +311,20 @@ webhooks keep working alongside. When creating the OAuth app in Linear
 URL above; data-change webhook categories require the app to request the
 `admin` scope.
 
+### Linear agent (optional)
+
+The ADE agent (Linear `actor=app`) needs one more Worker secret, a base64
+32-byte AES-GCM key that encrypts each workspace's app token at rest:
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put LINEAR_AGENT_TOKEN_KEY
+```
+
+`LINEAR_APP_CLIENT_ID` (a plain var in `wrangler.jsonc`) is the ADE Linear
+app's public PKCE client id; the relay uses it to refresh app tokens. Without
+the key, the `/linear/agent/*` routes answer 503 `agent_not_configured`.
+Migration `0009_linear_agent.sql` adds the install, member, and session tables.
+
 ## GitHub App setup
 
 Create or edit a GitHub App. Use the user-facing name `ADE`:

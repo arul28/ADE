@@ -5985,6 +5985,40 @@ function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegi
   });
 }
 
+
+function parseLinearIssueSearchPayload(payload: Record<string, unknown>) {
+  const projectId = asNullableTrimmedString(payload.projectId);
+  const projectSlug = asNullableTrimmedString(payload.projectSlug);
+  const teamKey = asNullableTrimmedString(payload.teamKey);
+  const stateTypes = asStringArray(payload.stateTypes);
+  const stateIds = asStringArray(payload.stateIds);
+  const assigneeId = asNullableTrimmedString(payload.assigneeId);
+  const assignedToViewer = asOptionalBoolean(payload.assignedToViewer);
+  const activeCycle = asOptionalBoolean(payload.activeCycle);
+  const customViewId = asNullableTrimmedString(payload.customViewId);
+  const priority = asOptionalNumber(payload.priority);
+  const searchQuery = asNullableTrimmedString(payload.query);
+  const first = asOptionalNumber(payload.first);
+  const after = asNullableTrimmedString(payload.after);
+  const includeArchived = asOptionalBoolean(payload.includeArchived);
+  return {
+    ...(projectId !== undefined ? { projectId } : {}),
+    ...(projectSlug !== undefined ? { projectSlug } : {}),
+    ...(teamKey !== undefined ? { teamKey } : {}),
+    ...(stateTypes.length ? { stateTypes } : {}),
+    ...(stateIds.length ? { stateIds } : {}),
+    ...(assigneeId !== undefined ? { assigneeId } : {}),
+    ...(assignedToViewer !== undefined ? { assignedToViewer } : {}),
+    ...(activeCycle !== undefined ? { activeCycle } : {}),
+    ...(customViewId !== undefined ? { customViewId } : {}),
+    ...(priority !== undefined ? { priority } : {}),
+    ...(searchQuery !== undefined ? { query: searchQuery } : {}),
+    ...(first !== undefined ? { first } : {}),
+    ...(after !== undefined ? { after } : {}),
+    ...(includeArchived !== undefined ? { includeArchived } : {}),
+  };
+}
+
 function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
@@ -6145,43 +6179,57 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getLinearIssuePickerData", { viewerAllowed: true }, async () => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
-      return { projects: [], users: [], states: [] };
+      return { projects: [], users: [], states: [], labels: [] };
     }
-    const [projects, users, states] = await Promise.all([
-      linearIssueTracker.listProjects().catch(() => []),
-      linearIssueTracker.listUsers().catch(() => []),
-      linearIssueTracker.listWorkflowStates().catch(() => []),
-    ]);
-    return { projects, users, states };
+    return await linearIssueTracker.getIssuePickerData();
   });
   register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) {
       return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
     }
-    const projectId = asNullableTrimmedString(payload.projectId);
-    const projectSlug = asNullableTrimmedString(payload.projectSlug);
-    const teamKey = asNullableTrimmedString(payload.teamKey);
-    const stateTypes = asStringArray(payload.stateTypes);
-    const assigneeId = asNullableTrimmedString(payload.assigneeId);
+    return linearIssueTracker.searchIssues(parseLinearIssueSearchPayload(payload));
+  });
+  register("cto.countLinearIssues", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker || !isRecord(payload.queries)) return { counts: {} };
+    const queries: Record<string, ReturnType<typeof parseLinearIssueSearchPayload>> = {};
+    for (const [key, value] of Object.entries(payload.queries)) {
+      if (isRecord(value)) queries[key] = parseLinearIssueSearchPayload(value);
+    }
+    const cap = asOptionalNumber(payload.cap);
+    return linearIssueTracker.countIssues({ queries, ...(cap !== undefined ? { cap } : {}) });
+  });
+  register("cto.getLinearCustomViews", { viewerAllowed: true }, async () => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return [];
+    return linearIssueTracker.listCustomViews();
+  });
+  register("cto.getLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const issueId = asTrimmedString(payload.issueId);
+    if (!issueId) return null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return null;
+    return linearIssueTracker.fetchIssueById(issueId);
+  });
+  register("cto.updateLinearIssue", { viewerAllowed: true }, async (payload) => {
+    const issueId = requireString(payload.issueId, "cto.updateLinearIssue requires issueId.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) throw new Error("Linear is not connected on this machine.");
+    const stateId = asTrimmedString(payload.stateId);
     const priority = asOptionalNumber(payload.priority);
-    const searchQuery = asNullableTrimmedString(payload.query);
-    const first = asOptionalNumber(payload.first);
-    const after = asNullableTrimmedString(payload.after);
-    const includeArchived = asOptionalBoolean(payload.includeArchived);
-    const query = {
-      ...(projectId !== undefined ? { projectId } : {}),
-      ...(projectSlug !== undefined ? { projectSlug } : {}),
-      ...(teamKey !== undefined ? { teamKey } : {}),
-      ...(stateTypes.length ? { stateTypes } : {}),
-      ...(assigneeId !== undefined ? { assigneeId } : {}),
+    const addedLabelIds = asStringArray(payload.addedLabelIds);
+    const removedLabelIds = asStringArray(payload.removedLabelIds);
+    return linearIssueTracker.updateIssue(issueId, {
+      ...(stateId ? { stateId } : {}),
+      // A phone cannot send JSON null in its arg dict; "" (or null) unassigns.
+      ...(Object.prototype.hasOwnProperty.call(payload, "assigneeId")
+        ? { assigneeId: asTrimmedString(payload.assigneeId) || null }
+        : {}),
       ...(priority !== undefined ? { priority } : {}),
-      ...(searchQuery !== undefined ? { query: searchQuery } : {}),
-      ...(first !== undefined ? { first } : {}),
-      ...(after !== undefined ? { after } : {}),
-      ...(includeArchived !== undefined ? { includeArchived } : {}),
-    };
-    return linearIssueTracker.searchIssues(query);
+      ...(addedLabelIds.length ? { addedLabelIds } : {}),
+      ...(removedLabelIds.length ? { removedLabelIds } : {}),
+    });
   });
   register("cto.getLinearIssueComments", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);

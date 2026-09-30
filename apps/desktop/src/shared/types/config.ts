@@ -588,6 +588,14 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "linear.issue_assigned",
   "linear.issue_status_changed",
   "linear.issue_labeled",
+  // Other Linear activity the ADE app's webhook delivers.
+  "linear.comment_created",
+  "linear.project_update_posted",
+  "linear.initiative_update_posted",
+  "linear.user_joined",
+  // The ADE Linear agent: someone delegated an issue to ADE, or @mentioned ADE.
+  "linear.agent_delegated",
+  "linear.agent_mentioned",
   "cursor.cloud_finished",
   "cursor.cloud_error",
   "github-webhook",

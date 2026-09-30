@@ -4,7 +4,8 @@
  * the gallery; the flagship subset is featured in the empty state.
  */
 
-import type { AutomationRuleDraft } from "../../../../shared/types";
+import type { AiPermissionSettings, AutomationRuleDraft, ModelConfig } from "../../../../shared/types";
+import { defaultKickoffPrompt } from "../../../lib/linearBatchLaunch";
 
 export type AutomationTemplate = {
   id: string;
@@ -202,6 +203,32 @@ export const TEMPLATES: AutomationTemplate[] = [
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:pr-comment-responder",
+      actions: [],
+    },
+  },
+  {
+    id: "weekly-linear-project-update",
+    name: "Weekly Linear project update",
+    description: "Every Friday afternoon, an agent writes a short status post on your Linear project from this week's lanes, PRs and merges.",
+    group: "Agent workflows",
+    triggerType: "schedule",
+    whatYouConfigure: ["Linear project id", "Schedule", "Model"],
+    draft: {
+      ...BASE,
+      name: "Weekly Linear project update",
+      triggers: [{ type: "schedule", cron: "0 16 * * 5" }],
+      trigger: { type: "schedule", cron: "0 16 * * 5" },
+      execution: { kind: "agent-session", session: { title: "Linear project update" } },
+      modelConfig: SONNET,
+      prompt: [
+        "Write this week's status update for the Linear project <PROJECT_ID>.",
+        "Use ADE's own record: lanes linked to that project's issues, their PRs, what merged, what is in review, and what is blocked (`ade lanes list`, `ade prs list`, `ade linear search-issues --project-id <PROJECT_ID>`).",
+        "Keep it short: Shipped, In review, Blocked, Next, each with issue ids and PR links. Choose a health: on-track, at-risk or off-track.",
+        "Post it with `ade linear project-update --project <PROJECT_ID> --health <health> --body \"<markdown>\"`.",
+      ].join("\n"),
+      toolPalette: ["repo", "git", "linear"],
+      guardrails: {},
+      billingCode: "auto:weekly-linear-project-update",
       actions: [],
     },
   },
@@ -420,3 +447,46 @@ export const TEMPLATE_GROUPS: Array<{ title: string; templates: AutomationTempla
 ).filter((group) => group.templates.length > 0);
 
 export const FLAGSHIP_TEMPLATES: AutomationTemplate[] = TEMPLATES.filter((t) => t.isFlagship);
+
+const LINEAR_AGENT_RULE_PROMPT = [
+  defaultKickoffPrompt(),
+  "",
+  "You were started from Linear. Keep the person who asked informed: when you need a decision, ask it as a question (they answer in Linear); when you finish, end with a short summary of what changed and the PR link.",
+].join("\n");
+
+/** The rule Settings → Linear → ADE agent creates for delegations or mentions. */
+export function buildLinearAgentRuleDraft(args: {
+  name: string;
+  trigger: "linear.agent_delegated" | "linear.agent_mentioned";
+  laneMode: "create" | "reuse";
+  modelConfig: ModelConfig;
+  permissionConfig: AiPermissionSettings | undefined;
+}): AutomationRuleDraft {
+  const trigger = { type: args.trigger } as const;
+  return {
+    name: args.name,
+    description: args.trigger === "linear.agent_delegated"
+      ? "Runs when a Linear delegation to ADE reaches this ADE."
+      : "Answers when an @ADE mention in Linear reaches this ADE.",
+    enabled: true,
+    mode: args.trigger === "linear.agent_delegated" ? "fix" : "monitor",
+    triggers: [trigger],
+    trigger,
+    execution: { kind: "agent-session", laneMode: args.laneMode, session: {} },
+    executor: { mode: "automation-bot" },
+    modelConfig: args.modelConfig,
+    ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
+    prompt: args.trigger === "linear.agent_delegated"
+      ? LINEAR_AGENT_RULE_PROMPT
+      : "Answer the question in the mention. Read code as needed, but do not change files unless they ask you to.",
+    reviewProfile: "quick",
+    toolPalette: ["repo", "git"],
+    contextSources: [],
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: "auto:linear-agent",
+    actions: [],
+    legacyActions: [],
+  };
+}

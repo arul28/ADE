@@ -33,6 +33,8 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
+import { LinearMark } from "./linearBrand";
+import { showToast } from "../app/toast/toastStore";
 import {
   LABEL_CLASS_NAME,
   INPUT_CLASS_NAME,
@@ -394,7 +396,8 @@ export function ManageLaneDialog({
   laneActionStatus: string | null;
   laneActionError: string | null;
   laneActionKind?: "delete" | "archive" | null;
-  onArchive: () => void;
+  /** Resolves true when every lane was archived. */
+  onArchive: () => Promise<boolean>;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
@@ -418,6 +421,32 @@ export function ManageLaneDialog({
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
+  // Archiving a lane whose Linear issue is still open can also cancel the issue.
+  const openLinearIssue = singleLane?.linearIssue
+    && singleLane.linearIssue.stateType !== "completed"
+    && singleLane.linearIssue.stateType !== "canceled"
+    ? singleLane.linearIssue
+    : null;
+  const [cancelLinearIssue, setCancelLinearIssue] = useState(false);
+  useEffect(() => {
+    setCancelLinearIssue(false);
+  }, [singleLaneId]);
+  // Runs only after the archive succeeded.
+  const cancelLinkedIssueIfAsked = async (): Promise<void> => {
+    if (!openLinearIssue || !cancelLinearIssue) return;
+    try {
+      const cancel = window.ade?.cto?.cancelLinearIssue;
+      if (!cancel) throw new Error("Linear is not available in this window.");
+      const result = await cancel(openLinearIssue.id);
+      if (result.canceled) showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
+    } catch (err) {
+      showToast({
+        tone: "warning",
+        title: `Could not cancel ${openLinearIssue.identifier}`,
+        message: err instanceof Error ? err.message : "Linear request failed. The lane was still archived.",
+      });
+    }
+  };
 
   const tabDefs = React.useMemo((): ManageLaneTabDef[] => {
     return [
@@ -523,6 +552,7 @@ export function ManageLaneDialog({
       await (runtimePin
         ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
         : window.ade.lanes.archiveAndReclaim(args));
+      void cancelLinkedIssueIfAsked();
       await onAppearanceChanged?.();
       onOpenChange(false);
     } catch (error) {
@@ -653,6 +683,21 @@ export function ManageLaneDialog({
               <p className="text-xs leading-relaxed text-muted-fg/75">
                 Choose whether to keep the local files or reclaim their disk space. Both choices keep the lane, branch, chats, and metadata.
               </p>
+              {openLinearIssue ? (
+                <label className="mt-3 flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-xs text-muted-fg/80">
+                  <input
+                    type="checkbox"
+                    checked={cancelLinearIssue}
+                    onChange={(event) => setCancelLinearIssue(event.target.checked)}
+                    disabled={laneActionBusy || reclaimBusy}
+                  />
+                  <LinearMark size={12} />
+                  <span>
+                    Also cancel <span className="font-mono text-fg/85">{openLinearIssue.identifier}</span> in Linear
+                    <span className="text-muted-fg/55"> · it is {openLinearIssue.stateName} now</span>
+                  </span>
+                </label>
+              ) : null}
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
                   <div className="flex items-center gap-2 text-sm font-semibold text-fg">
@@ -663,7 +708,15 @@ export function ManageLaneDialog({
                     Hides the lane from active work. Its worktree and generated files stay on disk.
                   </p>
                   <div className="mt-3">
-                    <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy || reclaimBusy} onClick={onArchive}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-tour="lanes.manageDialog.archive"
+                      disabled={laneActionBusy || reclaimBusy}
+                      onClick={() => {
+                        void onArchive().then((archived) => (archived ? cancelLinkedIssueIfAsked() : undefined));
+                      }}
+                    >
                       {isBatch ? `Archive ${lanes.length} lanes` : "Archive and keep files"}
                     </Button>
                   </div>
@@ -730,7 +783,7 @@ export function ManageLaneDialog({
                           || (reclaimRisk.dirty && !discardDirtyConfirmed)
                           || reclaimConfirm !== "RECLAIM"
                         }
-                        onClick={() => void archiveAndReclaim()}
+                        onClick={() => { void archiveAndReclaim(); }}
                       >
                         {reclaimBusy ? <CircleNotch size={13} className="animate-spin" /> : <FolderDashed size={13} />}
                         {reclaimBusy

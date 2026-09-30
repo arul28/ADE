@@ -91,7 +91,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const runLaneAction = useCallback(async (
     fn: () => Promise<void>,
     status: string,
-  ) => {
+  ): Promise<boolean> => {
     setLaneActionBusy(true);
     setLaneActionKind("archive");
     setLaneActionStatus(status);
@@ -100,8 +100,10 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       await fn();
       await refreshManagedLanes({ includeStatus: false });
       onClose();
+      return true;
     } catch (error) {
       setLaneActionError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
@@ -109,9 +111,9 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     }
   }, [onClose, refreshManagedLanes]);
 
-  const handleArchive = useCallback(() => {
-    if (!lane || lane.laneType === "primary") return;
-    void runLaneAction(async () => {
+  const handleArchive = useCallback(async (): Promise<boolean> => {
+    if (!lane || lane.laneType === "primary") return false;
+    return await runLaneAction(async () => {
       if (runtimePin) {
         await window.ade.lanes.archive({ laneId: lane.id }, runtimePin);
       } else {

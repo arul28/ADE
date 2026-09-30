@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowsLeftRight,
-  ArrowsClockwise,
   ArrowSquareOut,
+  CaretDown,
   CheckCircle,
   CircleNotch,
   Key,
-  Lightning,
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
@@ -16,9 +14,8 @@ import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTo
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
+import { LinearAgentSection } from "./LinearAgentSection";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -77,13 +74,6 @@ type GitHubAutolinkCandidate = {
   command: string;
   configured: boolean;
 };
-
-const FEATURES = [
-  { icon: ArrowsLeftRight, title: "Issue routing", desc: "Attach Linear issues to lanes, chats, and the work that happened there" },
-  { icon: Lightning, title: "PR linkage", desc: "Carry Linear refs, ADE links, and issue lists into GitHub PRs" },
-  { icon: ArrowsClockwise, title: "Linear timeline", desc: "Publish ADE lane and PR cards back onto the Linear issue" },
-  { icon: Plugs, title: "CTO workflows", desc: "Dispatch work directly from Linear and keep status context close" },
-];
 
 export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   // Linear connection, GitHub repo, and team keys are all scoped to the active
@@ -194,6 +184,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       return { ...candidate, configured, command };
     });
   }, [githubAutolinks, githubRepoSlug, teamKeys, workspaceUrlKey]);
+  const configuredAutolinkCount = autolinkCandidates.filter((candidate) => candidate.configured).length;
 
   /* ── Load helpers ── */
   const loadProjects = useCallback(async (requestIdArg?: number) => {
@@ -455,7 +446,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     <div style={{ maxWidth: embedded ? undefined : 780 }}>
       <SettingsManagerPage
         anchor="linear-connection"
-        title="Linear connection"
+        title="Linear"
         description={
           embedded
             ? undefined
@@ -495,70 +486,33 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           ) : null
         }
       >
-        {/* ── Connected State ── */}
+        {/* ── Connected: one workspace row, then the ADE agent ── */}
         {isConnected ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <SettingsManagerTable
-              columns={[
-                { label: "Workspace", width: "minmax(110px, 1.2fr)" },
-                { label: "Signed in as", width: "minmax(100px, 1fr)" },
-                { label: "Connection", width: "minmax(90px, 0.9fr)" },
-                { label: "Projects", width: "minmax(60px, 0.5fr)", align: "right" },
-              ]}
-              minWidth={440}
-            >
-              <SettingsManagerRow>
-                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                  <LinearWorkspaceAvatar
-                    organizationName={connection?.organizationName}
-                    logoUrl={connection?.organizationLogoUrl}
-                  />
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "block", fontWeight: 600, color: COLORS.textPrimary }}>
-                      {workspaceLabel ?? "Linear"}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+              <LinearWorkspaceAvatar
+                organizationName={connection?.organizationName}
+                logoUrl={connection?.organizationLogoUrl}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                  {workspaceLabel ?? "Linear"}
+                  {connection?.organizationUrlKey ? (
+                    <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                      {connection.organizationUrlKey}
                     </span>
-                    {connection?.organizationUrlKey ? (
-                      <span style={{ display: "block", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                        {connection.organizationUrlKey}
-                      </span>
-                    ) : null}
-                  </span>
-                </span>
-                <span style={{ color: COLORS.textSecondary }}>
-                  {connection?.viewerName ? `Signed in as ${connection.viewerName}` : "Signed in"}
-                </span>
-                <span style={{ color: COLORS.textSecondary }}>{authModeLabel ?? "Connected"}</span>
-                <span style={{ textAlign: "right", color: COLORS.textSecondary }}>
-                  {connection?.projectCount ?? projects.length}
-                </span>
-              </SettingsManagerRow>
-            </SettingsManagerTable>
-
-            {workspaceLabel ? (
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                To connect a different workspace, switch workspaces in Linear first, then reconnect here.
-              </div>
-            ) : null}
-
-            {/* Project list */}
-            {projects.length > 0 ? (
-              <div>
-                <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 8 }}>
-                  Projects ({projects.length})
+                  ) : null}
                 </div>
-                <SettingsManagerTable
-                  columns={[{ label: "Project" }, { label: "Team", align: "right" }]}
-                  minWidth={320}
-                >
-                  {projects.map((p) => (
-                    <SettingsManagerRow key={p.id}>
-                      <span style={{ color: COLORS.textPrimary }}>{p.name}</span>
-                      <span style={{ textAlign: "right", color: COLORS.textDim }}>{p.teamName}</span>
-                    </SettingsManagerRow>
-                  ))}
-                </SettingsManagerTable>
+                <div style={{ fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted, marginTop: 2 }}>
+                  {connection?.viewerName ? `Signed in as ${connection.viewerName}` : "Signed in"}
+                  {authModeLabel ? ` · ${authModeLabel}` : ""}
+                  {` · ${connection?.projectCount ?? projects.length} projects`}
+                </div>
               </div>
-            ) : null}
+            </div>
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 16 }}>
+              <LinearAgentSection connected={isConnected} />
+            </div>
           </div>
         ) : (
           /* ── Disconnected: Connection Methods ── */
@@ -712,8 +666,18 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           </div>
         )}
 
-        {/* ── GitHub reference links ── */}
-        <div>
+        {/* ── GitHub reference links (folded: set once, rarely revisited) ── */}
+        <details className="ade-linear-github-links" style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 12 }}>
+          <summary style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, cursor: "pointer", listStyle: "none" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>GitHub reference links</span>
+            <span style={{ display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+              {autolinkCandidates.length > 0 && configuredAutolinkCount === autolinkCandidates.length
+                ? "All set up"
+                : `${configuredAutolinkCount} of ${autolinkCandidates.length} set up`}
+              <CaretDown size={11} style={{ marginLeft: 6, flexShrink: 0 }} />
+            </span>
+          </summary>
+          <div style={{ marginTop: 12 }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
             <div>
               <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 6 }}>
@@ -815,7 +779,8 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
               {autolinkError}
             </div>
           ) : null}
-        </div>
+          </div>
+        </details>
 
         {/* ── Error ── */}
         {error ? (
@@ -830,39 +795,6 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           </div>
         ) : null}
 
-        {/* ── Feature Preview ── */}
-        <div>
-          <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 12 }}>
-            What the Linear integration adds
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-            {FEATURES.map(({ icon: Icon, title, desc }) => (
-              <div key={title} style={{
-                display: "flex", alignItems: "flex-start", gap: 10,
-                padding: "10px 12px",
-                background: `${LINEAR_BRAND}06`,
-                borderRadius: 10,
-                border: `1px solid ${LINEAR_BRAND}12`,
-              }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-                  background: `${LINEAR_BRAND}14`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  <Icon size={14} weight="duotone" style={{ color: LINEAR_BRAND }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary, marginBottom: 2 }}>
-                    {title}
-                  </div>
-                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                    {desc}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
       </SettingsManagerPage>
     </div>
   );
