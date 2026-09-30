@@ -1047,10 +1047,15 @@ export function LinearIssueBrowser({
   // Optimistic edit: patch every local copy, send one issueUpdate, then take
   // Linear's copy on success or restore the snapshot and toast on failure.
   const canEditIssues = typeof window !== "undefined" && typeof window.ade?.cto?.updateLinearIssue === "function";
+  const editSequenceRef = useRef(new Map<string, number>());
   const handleEditIssue = useCallback(async (issue: BrowserIssue, edit: LinearIssueEdit) => {
     const update = window.ade?.cto?.updateLinearIssue;
     if (!update) return;
     const issueId = issue.id;
+    // Two quick edits on one issue: only the newest one's result (or rollback) lands.
+    const sequence = (editSequenceRef.current.get(issueId) ?? 0) + 1;
+    editSequenceRef.current.set(issueId, sequence);
+    const isLatest = () => editSequenceRef.current.get(issueId) === sequence;
     const snapshot = {
       list: issues.find((entry) => entry.id === issueId) ?? null,
       detail: detailIssues.get(issueId) ?? null,
@@ -1074,6 +1079,7 @@ export function LinearIssueBrowser({
       const updated = await update({ issueId, ...edit });
       entry.searches.clear();
       entry.counts.clear();
+      if (!isLatest()) return;
       if (updated) {
         rememberDetail(updated);
         patchLocal(() => updated);
@@ -1082,6 +1088,12 @@ export function LinearIssueBrowser({
       }
       setCountsNonce((value) => value + 1);
     } catch (err) {
+      showToast({
+        tone: "error",
+        title: `Couldn't update ${issue.identifier}`,
+        message: err instanceof Error ? err.message : "Linear rejected the change.",
+      });
+      if (!isLatest()) return;
       setIssues((current) => current.map((entry) => (entry.id === issueId && snapshot.list ? snapshot.list : entry)));
       setDetailIssues((current) => {
         const next = new Map(current);
@@ -1090,17 +1102,15 @@ export function LinearIssueBrowser({
         return next;
       });
       setExternalIssue((current) => (current && current.id === issueId && snapshot.external ? snapshot.external : current));
-      showToast({
-        tone: "error",
-        title: `Couldn't update ${issue.identifier}`,
-        message: err instanceof Error ? err.message : "Linear rejected the change.",
-      });
     } finally {
-      setPendingEditIds((current) => {
-        const next = new Set(current);
-        next.delete(issueId);
-        return next;
-      });
+      if (isLatest()) {
+        editSequenceRef.current.delete(issueId);
+        setPendingEditIds((current) => {
+          const next = new Set(current);
+          next.delete(issueId);
+          return next;
+        });
+      }
     }
   }, [cacheKey, catalog, detailIssues, externalIssue, issues, rememberDetail]);
 

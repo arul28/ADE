@@ -161,11 +161,17 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       draft: buildLinearAgentRuleDraft({ name: "Linear agent — delegations", trigger: "linear.agent_delegated", laneMode: "create", modelConfig, permissionConfig }),
     });
     if (answerMentions) {
-      await automations.saveDraft({
-        draft: buildLinearAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
-      });
+      try {
+        await automations.saveDraft({
+          draft: buildLinearAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
+        });
+      } catch (err) {
+        // Show the saved delegations rule, so a retry does not add it twice.
+        await load();
+        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${err instanceof Error ? err.message : String(err)}. Add it in Automations.`);
+      }
     }
-  }), [answerMentions, effectiveModelId, effort, hasReasoning, permissionConfig, run]);
+  }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, run]);
 
   const handleRemove = useCallback(async () => {
     const orgName = overview?.status?.orgName ?? "this workspace";

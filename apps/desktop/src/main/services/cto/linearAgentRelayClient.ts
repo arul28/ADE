@@ -26,6 +26,9 @@ export type LinearAgentRelayClientDeps = {
   fetchImpl?: typeof fetch;
 };
 
+/** A hung relay must not hold a claim, an activity post, or an install open forever. */
+const RELAY_REQUEST_TIMEOUT_MS = 20_000;
+
 export class LinearAgentRelayError extends Error {
   constructor(message: string, readonly status: number, readonly code: string | null) {
     super(message);
@@ -56,6 +59,7 @@ export function createLinearAgentRelayClient(deps: LinearAgentRelayClientDeps) {
     const response = await fetchImpl(`${deps.getRelayBaseUrl().replace(/\/+$/, "")}${args.path}`, {
       method: args.method,
       headers,
+      signal: AbortSignal.timeout(RELAY_REQUEST_TIMEOUT_MS),
       ...(args.body !== undefined ? { body: JSON.stringify(args.body) } : {}),
     });
     const payload = await response.json().catch(() => ({})) as Record<string, unknown>;

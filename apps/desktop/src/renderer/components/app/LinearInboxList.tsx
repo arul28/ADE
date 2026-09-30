@@ -34,11 +34,10 @@ export function LinearInboxList({
       const next = await cto.getLinearInbox({ first: 50, includeRead });
       setItems(next);
       setError(null);
-      if (!includeRead) onUnreadCountChange?.(next.length);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load the Linear inbox.");
     }
-  }, [includeRead, onUnreadCountChange]);
+  }, [includeRead]);
 
   useEffect(() => {
     void load();
@@ -47,17 +46,21 @@ export function LinearInboxList({
   }, [load]);
 
   const mark = useCallback(async (item: LinearInboxNotification, action: "read" | "archive") => {
-    const previous = items;
+    // Optimistic: drop or mark the item now, and put it back if Linear refuses.
+    const removeFromUnread = action === "archive" || !includeRead;
     setItems((current) => {
       if (!current) return current;
-      if (action === "archive" || !includeRead) return current.filter((entry) => entry.id !== item.id);
+      if (removeFromUnread) return current.filter((entry) => entry.id !== item.id);
       return current.map((entry) => (entry.id === item.id ? { ...entry, readAt: new Date().toISOString() } : entry));
     });
     try {
       await window.ade?.cto?.markLinearNotification?.({ notificationId: item.id, action });
-      if (!includeRead) onUnreadCountChange?.(Math.max(0, (previous?.length ?? 1) - 1));
     } catch (err) {
-      setItems(previous);
+      setItems((current) => {
+        if (!current) return current;
+        if (removeFromUnread) return current.some((entry) => entry.id === item.id) ? current : [...current, item].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return current.map((entry) => (entry.id === item.id ? item : entry));
+      });
       showToast({
         tone: "error",
         icon: <LinearMark size={14} />,
@@ -65,6 +68,11 @@ export function LinearInboxList({
         message: err instanceof Error ? err.message : "Linear did not accept the change.",
       });
     }
+  }, [includeRead]);
+
+  // The unread count follows the list itself, so quick clicks never count from a stale copy.
+  useEffect(() => {
+    if (items && !includeRead) onUnreadCountChange?.(items.length);
   }, [includeRead, items, onUnreadCountChange]);
 
   const open = (item: LinearInboxNotification) => {

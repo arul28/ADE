@@ -138,12 +138,19 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
     },
 
     async createFollowUpIssue(input) {
+      // Resolve the source first: callers pass identifiers ("VER-404"),
+      // parent/relation inputs want the issue's id, and a follow-up with no
+      // team takes the source's team (the duplicate check needs it too).
+      const sourceRef = input.sourceIssueId?.trim() || null;
+      const source = sourceRef ? await args.client.fetchIssueById(sourceRef) : null;
+      if (sourceRef && !source) throw new Error(`Linear issue ${sourceRef} was not found.`);
+      const teamKey = input.teamKey?.trim() || source?.teamKey || "";
       if (!input.allowDuplicate) {
         // Two reads: full-text search ranks similar titles, and a direct title
         // filter sees issues filed seconds ago (the search index lags).
         const [ranked, direct] = await Promise.all([
-          args.client.searchIssues({ query: input.title, teamKey: input.teamKey, stateTypes: OPEN_ISSUE_STATE_TYPES, first: 10 }).catch(() => null),
-          args.client.findOpenIssuesByTitle(input.title, input.teamKey).catch(() => []),
+          args.client.searchIssues({ query: input.title, teamKey, stateTypes: OPEN_ISSUE_STATE_TYPES, first: 10 }).catch(() => null),
+          args.client.findOpenIssuesByTitle(input.title, teamKey).catch(() => []),
         ]);
         const duplicate = [...direct, ...(ranked?.issues ?? [])]
           .find((issue) => titleSimilarity(issue.title, input.title) >= FOLLOW_UP_DUPLICATE_THRESHOLD);
@@ -161,16 +168,11 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
           };
         }
       }
-      // Resolve the source first: callers pass identifiers ("VER-404"), and
-      // parent/relation inputs want the issue's id.
-      const sourceRef = input.sourceIssueId?.trim() || null;
-      const source = sourceRef ? await args.client.fetchIssueById(sourceRef) : null;
-      if (sourceRef && !source) throw new Error(`Linear issue ${sourceRef} was not found.`);
       const sourceIssueId = source?.id ?? null;
       const relation = input.relation ?? (sourceIssueId ? "related" : null);
       const issue = await args.client.createIssue({
         ...input,
-        teamKey: input.teamKey?.trim() || source?.teamKey || "",
+        teamKey,
         projectId: input.projectId ?? (source?.projectId || null),
         parentId: relation === "sub_issue" && sourceIssueId ? sourceIssueId : input.parentId,
       });

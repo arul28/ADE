@@ -362,11 +362,17 @@ export function AutomationsWorkspace({
   useEffect(() => {
     if (!requestedRuleId || entryByKey.size === 0) return;
     const key = [...entryByKey.keys()].find((candidate) => candidate === requestedRuleId || candidate.endsWith(`::${requestedRuleId}`));
-    if (key) setSelectedRuleId(key);
+    // The rule may live on a machine whose rules are still loading; wait for it.
+    if (!key && Object.values(foreignLoads).some((load) => load.status === "loading")) return;
     const next = new URLSearchParams(searchParams);
     next.delete("rule");
     setSearchParams(next, { replace: true });
-  }, [entryByKey, requestedRuleId, searchParams, setSearchParams]);
+    if (!key || key === selectedRuleId) return;
+    void (async () => {
+      if (isDirtyRef.current && !(await confirmDiscardIfDirty())) return;
+      setSelectedRuleId(key);
+    })();
+  }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, searchParams, selectedRuleId, setSearchParams]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.

@@ -29,6 +29,8 @@ import { createLinearQuickView } from "./linearQuickView";
 import { createLinearInbox } from "./linearInbox";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
+const MAX_LINEAR_ID_LENGTH = 128;
+const MAX_LABEL_IDS_PER_UPDATE = 50;
 
 function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" | null | undefined): string {
   const trimmed = token.trim();
@@ -670,10 +672,20 @@ export function createLinearClient(args: LinearClientArgs) {
   const updateIssue = async (issueId: string, patch: IssueTrackerIssueUpdate): Promise<void> => {
     const input: Record<string, unknown> = {};
     if (typeof patch.stateId === "string" && patch.stateId.trim()) input.stateId = patch.stateId.trim();
-    if (patch.assigneeId !== undefined) input.assigneeId = patch.assigneeId?.trim() || null;
+    // The patch can come straight from IPC; keep only well-formed ids.
+    if (patch.assigneeId === null) input.assigneeId = null;
+    else if (typeof patch.assigneeId === "string") input.assigneeId = patch.assigneeId.trim().slice(0, MAX_LINEAR_ID_LENGTH) || null;
     if (priorityIsValid(patch.priority)) input.priority = patch.priority;
-    const added = (patch.addedLabelIds ?? []).map((entry) => entry.trim()).filter(Boolean);
-    const removed = (patch.removedLabelIds ?? []).map((entry) => entry.trim()).filter(Boolean);
+    const readIds = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0 && entry.length <= MAX_LINEAR_ID_LENGTH)
+          .slice(0, MAX_LABEL_IDS_PER_UPDATE)
+        : [];
+    const added = readIds(patch.addedLabelIds);
+    const removed = readIds(patch.removedLabelIds);
     if (added.length > 0) input.addedLabelIds = added;
     if (removed.length > 0) input.removedLabelIds = removed;
     if (Object.keys(input).length === 0) return;

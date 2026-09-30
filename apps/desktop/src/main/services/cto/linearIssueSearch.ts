@@ -558,7 +558,8 @@ export function createLinearIssueSearch(args: {
       count: 0,
     })).slice(0, COUNT_ALIAS_BATCH * 3), 1).catch(() => new Map<string, CountPage | null>());
     return candidates
-      .filter((entry) => probes.get(entry.view.id) != null)
+      // Drop only views Linear rejected (probe = null); keep views not probed.
+      .filter((entry) => !probes.has(entry.view.id) || probes.get(entry.view.id) != null)
       .map((entry) => entry.view)
       .sort((left, right) => left.name.localeCompare(right.name));
   };
