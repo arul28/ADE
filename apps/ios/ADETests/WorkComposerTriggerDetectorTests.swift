@@ -1032,7 +1032,8 @@ final class WorkComposerSlashRegistryTests: XCTestCase {
       command("/plan", description: "Plan."),
     ]
     let suggestions = WorkComposerSlashRegistry.suggestions(from: registry, query: "re")
-    XCTAssertEqual(suggestions.map(\.title), ["/review", "/refactor"])
+    // Both are prefix hits; the shared ranker breaks the tie by name, like desktop.
+    XCTAssertEqual(suggestions.map(\.title), ["/refactor", "/review"])
   }
 
   func testEmptyQueryReturnsEveryCommand() {

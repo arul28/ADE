@@ -14,6 +14,12 @@
 // prompt text carries the expanded `<ade-mention kind="model">` block.
 
 import { compareChatMentionRanks, scoreChatMentionCandidate } from "./chatMentions";
+import {
+  defaultModelPermission,
+  modelPermissionLabel,
+  nativePermissionToCliMode,
+  resolveModelPermissionValue,
+} from "./modelPermissions";
 
 /** Permission modes a model chip can carry. Mirrors `--permissions` on `ade chat create`. */
 export const MODEL_MENTION_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto"] as const;
@@ -22,18 +28,24 @@ export type ModelMentionPermissionMode = (typeof MODEL_MENTION_PERMISSION_MODES)
 /** The mode a new chip starts on. */
 export const MODEL_MENTION_DEFAULT_PERMISSION: ModelMentionPermissionMode = "default";
 
-const PERMISSION_LABELS: Record<ModelMentionPermissionMode, string> = {
+/**
+ * Label for a stored permission value. `provider` selects the per-provider
+ * vocabulary (Claude's "Bypass", OpenCode's "Full auto"); without it the legacy
+ * generic labels are used.
+ */
+export function modelMentionPermissionLabel(mode: string | null | undefined, provider?: string | null): string {
+  if (provider) return modelPermissionLabel(provider, mode);
+  if (!mode) return "Default";
+  return isModelMentionPermissionMode(mode) ? LEGACY_PERMISSION_LABELS[mode] : mode;
+}
+
+const LEGACY_PERMISSION_LABELS: Record<ModelMentionPermissionMode, string> = {
   default: "Default",
   auto: "Auto",
   plan: "Plan",
   edit: "Edit",
   "full-auto": "Full access",
 };
-
-export function modelMentionPermissionLabel(mode: string | null | undefined): string {
-  if (!mode) return PERMISSION_LABELS.default;
-  return isModelMentionPermissionMode(mode) ? PERMISSION_LABELS[mode] : mode;
-}
 
 export function isModelMentionPermissionMode(value: string | null | undefined): value is ModelMentionPermissionMode {
   return typeof value === "string" && (MODEL_MENTION_PERMISSION_MODES as readonly string[]).includes(value);
@@ -153,12 +165,12 @@ export type ModelMentionModelInfo = {
   reasoningTiers: readonly string[];
 };
 
-/** Short chip label: `DeepSeek V4.1 Flash · High · Full access`. */
-export function modelMentionChipLabel(mention: ModelMention, displayName: string): string {
+/** Short chip label: `DeepSeek V4.1 Flash · High · Full auto`. */
+export function modelMentionChipLabel(mention: ModelMention, displayName: string, provider?: string | null): string {
   return [
     displayName,
     mention.effort ? modelMentionEffortLabel(mention.effort) : null,
-    modelMentionPermissionLabel(mention.permission),
+    modelMentionPermissionLabel(mention.permission, provider),
   ].filter(Boolean).join(" · ");
 }
 
@@ -193,21 +205,26 @@ export function buildModelMentionDetail(
     };
   }
   const effort = mention.effort && info.reasoningTiers.includes(mention.effort) ? mention.effort : null;
-  const permission = isModelMentionPermissionMode(mention.permission) ? mention.permission : null;
+  // The chip stores the provider's own mode (`bypassPermissions`, `auto-high`).
+  // `--permissions` speaks the generic vocabulary, so map it back for the flags.
+  const nativePermission = resolveModelPermissionValue(info.provider, mention.permission);
+  const cliPermission = nativePermissionToCliMode(info.provider, nativePermission);
   const flags = [
     `--provider ${shellQuote(info.provider)}`,
     `--model ${shellQuote(mention.modelId)}`,
     effort ? `--reasoning-effort ${shellQuote(effort)}` : null,
-    permission ? `--permissions ${shellQuote(permission)}` : null,
+    cliPermission ? `--permissions ${shellQuote(cliPermission)}` : null,
   ].filter(Boolean).join(" ");
   const handoffFlags = [
     `--model ${shellQuote(mention.modelId)}`,
     effort ? `--effort ${shellQuote(effort)}` : null,
-    permission ? `--permissions ${shellQuote(permission)}` : null,
+    cliPermission ? `--permissions ${shellQuote(cliPermission)}` : null,
   ].filter(Boolean).join(" ");
   const ignored: string[] = [];
   if (mention.effort && !effort) ignored.push(`thinking level "${mention.effort}" (this model does not accept it)`);
-  if (mention.permission && !permission) ignored.push(`permission mode "${mention.permission}" (unknown mode)`);
+  if (mention.permission && !nativePermission) {
+    ignored.push(`permission mode "${mention.permission}" (not a ${info.provider} mode)`);
+  }
   return {
     kind: "model",
     id: mention.modelId,
@@ -215,7 +232,7 @@ export function buildModelMentionDetail(
     attributes: [
       ["provider", info.provider],
       ["effort", effort ?? ""],
-      ["permissions", permission ?? ""],
+      ["permissions", nativePermission ?? ""],
     ],
     hint: [
       "The user picked this model, thinking level, and permission mode. Use these exact values when you start or hand off work to it:",
@@ -235,8 +252,20 @@ export type ComposerModelSuggestion = {
   title: string;
   /** Harness and route, e.g. "OpenCode · OpenCode Go". */
   subtitle: string;
+  /** Chat runtime provider that runs the model: claude, codex, opencode, … */
+  provider?: string;
   reasoningTiers: string[];
   defaultEffort: string | null;
+  /** The provider's default permission mode for a fresh chip. */
+  defaultPermission?: string;
+  // Marks for the `@` menu row (maker logo + harness/route logos).
+  modelFamily?: string;
+  cliCommand?: string;
+  providerModelId?: string;
+  openCodeProviderId?: string;
+  /** A distinct route key for the right-hand mark, or null when none. */
+  routeKey?: string | null;
+  routeLabel?: string | null;
 };
 
 const HARNESS_LABELS: Record<string, string> = {
@@ -278,11 +307,21 @@ const MAX_MODEL_MATCH_SCORE = 2;
 export function rankComposerModelSuggestions<T extends ComposerModelSuggestion>(
   models: T[],
   rawQuery: string,
+  limit = MAX_MODEL_RESULTS,
 ): { rows: T[]; bestScore: number | null } {
+  const { entries, bestScore } = rankComposerModelMatches(models, rawQuery);
+  return { rows: entries.slice(0, Math.max(0, limit)).map((entry) => entry.model), bestScore };
+}
+
+/** Ranked model matches with their scores, for the sectioned `@` menu. */
+export function rankComposerModelMatches<T extends ComposerModelSuggestion>(
+  models: T[],
+  rawQuery: string,
+): { entries: Array<{ model: T; score: number }>; bestScore: number | null } {
   const query = rawQuery.trim();
   const keyword = /^models?(?:[:\s]+|$)/i.exec(query);
   const effectiveQuery = keyword ? query.slice(keyword[0].length).trim() : query;
-  if (!keyword && effectiveQuery.length < MIN_MODEL_QUERY_LENGTH) return { rows: [], bestScore: null };
+  if (!keyword && effectiveQuery.length < MIN_MODEL_QUERY_LENGTH) return { entries: [], bestScore: null };
   const lowered = effectiveQuery.toLowerCase();
   const scored: Array<{ item: { id: string; model: T }; score: number; titlePrefixLength: number }> = [];
   for (const model of models) {
@@ -299,7 +338,7 @@ export function rankComposerModelSuggestions<T extends ComposerModelSuggestion>(
   }
   scored.sort(compareChatMentionRanks);
   return {
-    rows: scored.slice(0, MAX_MODEL_RESULTS).map((entry) => entry.item.model),
+    entries: scored.map((entry) => ({ model: entry.item.model, score: entry.score })),
     bestScore: scored[0]?.score ?? null,
   };
 }

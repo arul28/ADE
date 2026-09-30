@@ -5030,6 +5030,11 @@ export type AgentChatSlashCommand = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+  /** Menu classification. Providers that know it set it; else the menu infers. */
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  /** MCP server a prompt belongs to. */
+  server?: string;
 };
 
 export type AgentChatSlashCommandsArgs = {

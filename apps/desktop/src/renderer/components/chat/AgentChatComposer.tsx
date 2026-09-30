@@ -425,6 +425,9 @@ type SlashCommandEntry = {
   description: string;
   argumentHint?: string;
   source: "sdk" | "local";
+  kind?: "command" | "skill" | "mcp";
+  origin?: "project" | "user" | "plugin" | "provider";
+  server?: string;
 };
 
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
@@ -656,6 +659,9 @@ function buildSlashCommands(
       description: cmd.description || `Run ${name}`,
       argumentHint: cmd.argumentHint,
       source: cmd.source,
+      kind: cmd.kind,
+      origin: cmd.origin,
+      server: cmd.server,
     });
   }
 
@@ -2455,6 +2461,24 @@ export function AgentChatComposer({
     segment: ModelChipSegment;
     index: number;
   } | null>(null);
+  // Mirror of `modelChipEdit` for the catalog-refresh effect, so re-rendering a
+  // chip the user is actively editing does not clobber its active segment.
+  const modelChipEditRef = useRef<HTMLElement | null>(null);
+  modelChipEditRef.current = modelChipEdit?.chip ?? null;
+  // A model chip is built once with whatever the catalog knew at that moment.
+  // The runtime catalog (which carries reasoning tiers) usually arrives after
+  // the chip, so without this the chip showed no thinking level while the
+  // footer — which reads the catalog live — did. Re-render existing chips when
+  // the catalog scope or its model list changes.
+  useEffect(() => {
+    const editor = richEditorRef.current;
+    if (!editor) return;
+    editor.querySelectorAll<HTMLElement>("[data-composer-chip='model']").forEach((chip) => {
+      if (modelChipEditRef.current === chip) return;
+      const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+      if (mention) renderModelChip(chip, mention, describeChipModelRef.current(mention.modelId), null);
+    });
+  }, [modelMentionOptions, modelCatalogScopeKey]);
   // Set when a model is picked in the plain textarea: the chip only exists
   // after the switch to the rich editor, which then opens its first part.
   const pendingModelChipTokenRef = useRef<string | null>(null);
@@ -7013,6 +7037,9 @@ export function AgentChatComposer({
                 description: c.description,
                 argumentHint: c.argumentHint,
                 source: c.source,
+                kind: c.kind,
+                origin: c.origin,
+                server: c.server,
               }))}
               onFileSearch={onSearchAttachments}
               onMentionSearch={onSearchMentions}

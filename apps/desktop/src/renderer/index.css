@@ -4449,6 +4449,21 @@ button, [role="button"] {
   z-index: 1;
 }
 
+/*
+ * Opaque variant for chat menus that float over the transcript (the model chip's
+ * option list, the `@` / `/` command menu). The glass background is 88–92% alpha
+ * and its backdrop blur does not take effect in these portaled menus, so
+ * transcript text showed through. Flatten `--work-popover-bg` over `--color-bg`
+ * for an opaque plate that works in both themes; do not change the glass itself,
+ * other surfaces rely on it.
+ */
+.ade-chat-drawer-solid {
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* Row in a chat drawer — glass-on-glass avoidance: flat rows, accent on hover */
 .ade-chat-drawer-row {
   transition: background 140ms ease, color 140ms ease;

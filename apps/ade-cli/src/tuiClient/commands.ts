@@ -9,6 +9,7 @@ import {
   parseWorkSearchQuery,
   scoreWorkSearchTerms,
 } from "../../../desktop/src/shared/workSearch";
+import { rankSlashCommands } from "../../../desktop/src/shared/slashCommandSections";
 
 /**
  * Providers whose backend accepts this atomic active-turn dispatch mode, read
@@ -379,6 +380,13 @@ export function paletteCommands(
   const merged = [...byName.values()]
     .filter((command) => !(options.inlineSteerWithheld && slashCommandKey(command.name) === slashCommandKey("/steer send")));
   const queryTerms = parseWorkSearchQuery(queryToken).terms;
+  // A single-word `/` query uses the shared tiered ranker (exact > prefix >
+  // word-prefix > substring > scattered-only-if-nothing-better), so `/test`
+  // ranks `test` first instead of drowning in long names that merely contain
+  // those letters. Multi-word queries keep the token-AND search.
+  if (queryToken && queryTerms.length <= 1) {
+    return rankSlashCommands(merged, `/${queryToken}`).slice(0, 100);
+  }
   const filtered = queryTerms.length === 0
       ? merged
       : merged.filter((command) => {
