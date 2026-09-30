@@ -1152,6 +1152,12 @@ Runtime support files outside `services/sync/`:
   values. A source that stays pending or fails clears the runtime latch so a
   later vault-ready tick can retry it; completed sources stay protected by
   their receipts.
+- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — pulls
+  `project_secret` rows out of the vault on every vault-ready sync tick and on
+  the initial sync, deliberately outside the migration latch. A secret another
+  machine adds tomorrow still has to arrive, and the one-shot migration can
+  never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
+  Secrets > Pull from account) runs the same pull on demand.
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`) — how
   desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
@@ -4026,7 +4032,9 @@ feature is merged or because a deliberately isolated-port host is running.
   keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
   `linear_refresh_token` with a per-device `refreshOwner` so only one machine
   exchanges the rotating grant, and repository account secrets use `project_secret`
-  under the normalized repository scope. Local credential stores retain
+  under the normalized repository scope. The vault is not write-only: a
+  vault-ready sync tick pulls repository account secrets back down, so a secret
+  added on one machine reaches the other. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
   access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
   machine that owns them.

@@ -776,6 +776,7 @@ ade sync web --text                                # print the browser web-clien
 ade sync web --open                                # also open the pairing link in the default browser
 ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
+ade secrets pull --text                            # take account secrets out of the vault onto this machine
 ade secrets get STRIPE_API_KEY --text
 ade secrets set STRIPE_API_KEY --value sk_... --storage account
 ade secrets set LOCAL_TOKEN --value local-value --storage device

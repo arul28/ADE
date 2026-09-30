@@ -2579,11 +2579,16 @@ describe("AgentChatPane companion drawers", () => {
         } as AgentChatEventEnvelope);
       });
 
-      await waitFor(() => {
-        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      // Wait on the visibility itself. A region's `hidden` class is applied by a
+      // MutationObserver once its content arrives, so asserting the class right
+      // after the pane's existence reads the previous render — on a machine
+      // where the observer's callback lands later, the pane is there and its
+      // region is still hidden.
+      const regions = await waitFor(() => {
+        const visible = visibleRegions();
+        expect(visible).toHaveLength(1);
+        return visible;
       });
-      const regions = visibleRegions();
-      expect(regions).toHaveLength(1);
       expect(within(regions[0]!).getByTestId("chat-subagents-pane")).toBeTruthy();
       expectRegionScrollers();
     });

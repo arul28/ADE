@@ -34,6 +34,17 @@ Not every operational log belongs to the active project. The rule is the **subje
 
 `createFileLogger` backs other machine-scoped sinks for the same reason: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
 
+Account sync against this machine writes local lines only:
+`ai.api_key_removed_by_account` (with the provider name, content-free) when a
+provider key the account reports deleted is dropped here, and
+`project_secret.account_vault_pull` (added, updated and removed counts) when a
+pull changes something. Neither is a PostHog event. A pull
+is a sync tick, not a person, so it captures nothing — the same reason the
+runtime-workload exemption below does not: an event here would report
+engagement nobody generated. A credential removal the ACCOUNT performed must
+not be counted as one this user performed, which is why the sync path calls the
+internal removal rather than `removeApiCredential`.
+
 The brain's sync host and memory watchdog write their own local structured
 lines. `sync.host_start_failed` (signature, attempt, classified code, errno,
 the human-readable failure message — the redacted sentence for a classified

@@ -50,6 +50,8 @@ type CachedItem = {
   updatedAt: string;
   writerDeviceId: string | null;
   refreshOwner: string | null;
+  /** True on a tombstone: the key was deleted on some machine. */
+  deleted?: boolean;
 };
 
 type PendingWrite = {
@@ -97,7 +99,14 @@ function decodeCachedItem(value: unknown): CachedItem | null {
   const writerDeviceId = readNullableString(value.writerDeviceId);
   const refreshOwner = readNullableString(value.refreshOwner);
   if (!updatedAt || itemValue === undefined || writerDeviceId === undefined || refreshOwner === undefined) return null;
-  return { value: itemValue, updatedAt, writerDeviceId, refreshOwner };
+  if (value.deleted !== undefined && typeof value.deleted !== "boolean") return null;
+  return {
+    value: itemValue,
+    updatedAt,
+    writerDeviceId,
+    refreshOwner,
+    ...(value.deleted === true ? { deleted: true } : {}),
+  };
 }
 
 function decodePendingWrite(value: unknown): PendingWrite | null {
@@ -296,8 +305,20 @@ export function createAccountVaultStore(args: {
       return { rows: page.items, cursor: page.cursor, truncated: page.truncated };
     },
     toRow: (item, cached) => {
-      // A null value means the relay could not open its own stored bytes. Keep
-      // the row so the surface can say "ADE cannot read this"; do NOT let it
+      // A tombstone is the one row that DOES have to replace a readable local
+      // value: it says the credential was deleted on another machine, and the
+      // consumer has to hear it.
+      if (item.deleted) {
+        return {
+          value: null,
+          updatedAt: item.updatedAt,
+          writerDeviceId: item.writerDeviceId,
+          refreshOwner: item.refreshOwner,
+          deleted: true,
+        };
+      }
+      // Otherwise a row the relay could not open keeps its old value visible on
+      // the surface so it can say "ADE cannot read this"; do NOT let it
       // overwrite a value this machine still holds, or a key rotation on the
       // server would wipe a working local credential.
       if (item.value === null && cached?.value != null) return null;
@@ -326,6 +347,8 @@ export function createAccountVaultStore(args: {
       /** False when the relay could not open the stored bytes. */
       readable: boolean;
       refreshOwner: string | null;
+      /** True on a tombstone, so a consumer can drop its own copy of the key. */
+      deleted?: boolean;
     }> {
       const current = cache.readCache();
       const rows = [];
@@ -338,6 +361,7 @@ export function createAccountVaultStore(args: {
           updatedAt: item.updatedAt,
           readable: item.value !== null,
           refreshOwner: item.refreshOwner,
+          ...(item.deleted === true ? { deleted: true } : {}),
         });
       }
       return rows.sort((left, right) => left.key.localeCompare(right.key));
@@ -361,6 +385,7 @@ export function createAccountVaultStore(args: {
           ? (args.getDeviceId?.() ?? null)
           : null;
       return cache.mutate((current, queue) => {
+        // Writing the key again is what un-deletes it: the tombstone goes.
         current.rows[cacheKey(scope, kind, key)] = {
           value,
           updatedAt: new Date(now()).toISOString(),
@@ -378,7 +403,17 @@ export function createAccountVaultStore(args: {
       options?: AccountVaultWriteOptions,
     ): boolean {
       return cache.mutate((current, queue) => {
-        delete current.rows[cacheKey(scope, kind, key)];
+        // Keep a local tombstone rather than dropping the row. It is what stops
+        // a stale page from a cursor taken before this delete from resurrecting
+        // the key here, and it is what the pull hands to a consumer on another
+        // machine so it can drop its own copy too.
+        current.rows[cacheKey(scope, kind, key)] = {
+          value: null,
+          updatedAt: new Date(now()).toISOString(),
+          writerDeviceId: args.getDeviceId?.() ?? null,
+          refreshOwner: null,
+          deleted: true,
+        };
         queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
       }, { expectedAccountUserId: options?.expectedAccountUserId });
     },

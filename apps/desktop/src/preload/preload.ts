@@ -123,6 +123,7 @@ import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretPullResult,
   ProjectSecretsExportResult,
   ProjectSecretsImportArgs,
   ProjectSecretsImportPreview,
@@ -4935,6 +4936,10 @@ const adeBridge = {
     delete: async (args: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> =>
       callProjectRuntimeActionOr("project_secret", "delete", { args }, () =>
         ipcRenderer.invoke(IPC.projectSecretsDelete, args),
+      ),
+    pullFromAccount: async (): Promise<ProjectSecretPullResult> =>
+      callProjectRuntimeActionOr("project_secret", "pullFromAccount", {}, () =>
+        ipcRenderer.invoke(IPC.projectSecretsPullFromAccount),
       ),
     chooseEnvFile: async (): Promise<ProjectSecretsImportPreview | null> => {
       const file = await ipcRenderer.invoke(IPC.projectSecretsChooseEnvFile) as ProjectSecretEnvFile | null;

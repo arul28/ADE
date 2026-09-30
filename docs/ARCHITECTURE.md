@@ -543,7 +543,15 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
   bare `CREATE`, and `sweepOrphanedRepairStagingTables()` runs at open to clear
   orphans recovery could not reconcile — without these, a staging table left by a
   killed/aborted rebuild makes every retrofit throw "table already exists" and
-  wedges the sync host in an infinite repair loop. Durable JSON uses atomic
+  wedges the sync host in an infinite repair loop. The rewrite itself reads the
+  stored `CREATE TABLE` by clause (`state/sqliteDdl.ts`), not by line: a foreign
+  key written across lines must be dropped whole, and a line filter left its
+  `references …` behind as invalid SQL that aborted the open. A rewrite one table
+  rejects is contained to that table (`db.crr_repair_table_failed`) instead of
+  stopping every other table's repair — unless the rebuild could not roll its own
+  transaction back, which stops it. `ensureCrrTables` warns rather than throws
+  for a non-phone-critical table whose only refusal is a leftover non-PK unique
+  index; any other `crsql_as_crr` failure still aborts the open. Durable JSON uses atomic
   replace plus one `.lkg`; typed open failures flow through `lastFailureStore`
   and the brain-independent `projectRecoveryService`. See
   [Storage and recovery](./features/storage-and-recovery/README.md) and
@@ -1570,8 +1578,8 @@ a badge would materialize a primary lane. See
   ceiling; a bound caller that would otherwise resolve to `cto` is clamped to
   `agent` unless it explicitly declares a lower role.
 - API keys for provider-routed (non-CLI) models are stored via `apiKeyStore.ts`.
-- `apiKeyStore.ts` has two scopes. Project-scoped keys live in the project's `.ade/secrets` and carry account/device provenance: account-origin keys are mirrored to the encrypted account vault and hydrated or purged at the account boundary; device-only keys stay local. Machine-scoped keys live in this install's ADE home and back the CTO voice call's OpenAI key. The `ai` action domain carries the machine scope as `getMachineApiKeyStatus`, `storeMachineApiKey` and `deleteMachineApiKey`. The renderer routes those three to the local runtime, so the writer and the reader share one store. The two writes are CTO-only. The status read is not CTO-only, and it never returns the key. The desktop app, the `ade` CLI and the project runtime all share `~/.ade/secrets`. So the machine scope re-reads its cache whenever a `statSync` fingerprint shows the files changed on disk.
-- The account settings and vault action domains are `account_settings` and `account_vault`, with the latter's secret reads/writes restricted to the host/CTO policy.
+- `apiKeyStore.ts` has two scopes. Project-scoped keys live in the project's `.ade/secrets` and carry account/device provenance: account-origin keys are mirrored to the encrypted account vault and hydrated or purged at the account boundary; a key the account reports deleted is dropped here too, without re-issuing the account's own delete; device-only keys stay local. Machine-scoped keys live in this install's ADE home and back the CTO voice call's OpenAI key. The `ai` action domain carries the machine scope as `getMachineApiKeyStatus`, `storeMachineApiKey` and `deleteMachineApiKey`. The renderer routes those three to the local runtime, so the writer and the reader share one store. The two writes are CTO-only. The status read is not CTO-only, and it never returns the key. The desktop app, the `ade` CLI and the project runtime all share `~/.ade/secrets`. So the machine scope re-reads its cache whenever a `statSync` fingerprint shows the files changed on disk.
+- The account settings and vault action domains are `account_settings` and `account_vault`, with the latter's secret reads/writes restricted to the host/CTO policy. Both stores keep a delete as a tombstone rather than dropping the row, because the row is the only evidence a key was deleted on another machine — and the only thing a stale page from a pre-delete cursor loses against.
 - The brain is the sole refresh-token refresher. Desktop, `ade`, and ADE Code install a broker that asks the brain for access tokens; a local exchange is only the explicit fallback when the brain cannot be reached. This prevents rotating refresh credentials from being exchanged concurrently by multiple processes.
 
 ### 8.4 Sensitive-data handling

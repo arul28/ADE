@@ -76,7 +76,7 @@ export type InitApiKeyStoreOptions = {
   credentialStore?: ApiKeyCredentialStore | null;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
-  logger?: Pick<Logger, "warn"> | null;
+  logger?: Pick<Logger, "info" | "warn"> | null;
   /** Test seam; production resolves the machine ADE home. */
   launchHomeAdeDir?: string;
   /** Brain/main-owned product analytics; omitted by isolated store tests. */
@@ -135,7 +135,7 @@ const LEGACY_CREDENTIAL_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 
 let getAccountVault: (() => AccountVaultBridge | null | undefined) | null = null;
 let getAccountUserId: (() => string | null) | null = null;
-let vaultLogger: Pick<Logger, "warn"> | null = null;
+let vaultLogger: Pick<Logger, "info" | "warn"> | null = null;
 let productAnalytics: FeatureAnalytics | null = null;
 
 function logVaultFailure(operation: string, provider: string, detail: unknown): void {
@@ -1666,6 +1666,7 @@ function removeApiCredentialIn(
   scope: ApiKeyScopeState,
   provider: string,
   credentialId = DEFAULT_CREDENTIAL_ID,
+  options?: { notifyVault?: boolean },
 ): boolean {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedCredentialId = normalizeCredentialId(credentialId);
@@ -1710,7 +1711,14 @@ function removeApiCredentialIn(
     scope.launchHomeAdeDir ?? undefined,
     { logger: vaultLogger },
   );
-  if (scope === projectScope) {
+  // Only a credential that was here asks the vault to forget the name, and only
+  // when the vault does not already know. Queueing a delete for one this machine
+  // never held would re-stamp the account's tombstone on every hydration, and a
+  // fresh tombstone out-stamps a key another machine re-added — destroying it
+  // account-wide, with no way back. A removal the vault reported is already
+  // recorded there, so re-issuing it would only re-stamp that tombstone and
+  // out-date a key another machine re-adds.
+  if (scope === projectScope && existed && options?.notifyVault !== false) {
     fireAndForgetVaultWrite(
       { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
       "remove",
@@ -1794,6 +1802,36 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
     const parsed = parseCredentialStorageKey(item.key);
     if (!parsed) continue;
     const storageKey = credentialStorageKey(parsed.provider, parsed.credentialId);
+
+    if (item.deleted) {
+      // Deleted on another machine. The ACCOUNT's copy has to go with it, or
+      // "account-wide" stops being true: the key would keep working here while
+      // the account says it does not exist.
+      //
+      // Only a copy the account owns. A device-only value that happens to share
+      // the provider name is not the account's to delete, and removing it would
+      // destroy a credential with nothing to restore it from.
+      // `projectSecretService` draws the same line for a device-scoped secret,
+      // and `purgeAccountApiKeys` draws it on sign-out.
+      ensureStore(projectScope);
+      if (ensureProvenance(projectScope, [])[storageKey]?.source !== "account") continue;
+      //
+      // The internal removal, not `removeApiCredential`: that one captures a
+      // `credential_removed` product event, and a sync tick is not a person
+      // removing a credential. Reporting one would count engagement nobody
+      // generated. It also must not re-issue the account delete: the vault
+      // already reported it, and a fresh tombstone would out-stamp a re-add.
+      const removedLocally = removeApiCredentialIn(
+        projectScope,
+        parsed.provider,
+        parsed.credentialId,
+        { notifyVault: false },
+      );
+      if (removedLocally) {
+        vaultLogger?.info("ai.api_key_removed_by_account", { provider: parsed.provider });
+      }
+      continue;
+    }
 
     let value = typeof item.value === "string" ? item.value.trim() : "";
     if (!value.length) {

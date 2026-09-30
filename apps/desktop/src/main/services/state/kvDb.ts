@@ -10,6 +10,7 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
+import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -462,6 +463,29 @@ export type TableRebuildPlan = {
   indexSqlsToRecreate: string[];
 };
 
+/**
+ * Thrown when a table rebuild could not roll its own transaction back.
+ *
+ * The failed transaction may still be open on the connection, so every later
+ * statement would run inside it. That is not a per-table problem, and the repair
+ * loop must not swallow it and carry on.
+ */
+class RebuildRollbackFailedError extends Error {
+  /**
+   * The failure that stopped the rollback. Deliberately NOT part of `message`:
+   * `isReadonlyDatabaseError` matches on message text, so an "attempt to write a
+   * readonly database" from the rollback would make this error read as the
+   * benign skip the open path makes of readonly failures.
+   */
+  readonly rollbackError: unknown;
+
+  constructor(tableName: string, rollbackError: unknown) {
+    super(`Rollback failed while rebuilding ${tableName}.`);
+    this.name = "RebuildRollbackFailedError";
+    this.rollbackError = rollbackError;
+  }
+}
+
 export function rebuildTableInTransaction(
   db: DatabaseSyncType,
   plan: TableRebuildPlan,
@@ -523,8 +547,15 @@ export function rebuildTableInTransaction(
     if (transactionMayBeOpen) {
       try {
         runStatement(db, "rollback");
-      } catch {
-        // COMMIT may have succeeded before an injected failure was raised.
+      } catch (rollbackError) {
+        // "no transaction is active" means the COMMIT had in fact already
+        // succeeded before the failure was raised, which is benign. Anything
+        // else leaves the failed transaction open, so the caller must stop
+        // instead of running more statements inside it.
+        const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        if (!/no transaction is active/i.test(rollbackMessage)) {
+          throw new RebuildRollbackFailedError(plan.tableName, rollbackError);
+        }
       }
     }
     throw error;
@@ -534,6 +565,7 @@ export function rebuildTableInTransaction(
 function retrofitLegacyPrimaryKeyNotNullSchema(
   db: DatabaseSyncType,
   ambiguousTables: ReadonlySet<string> = new Set(),
+  logger?: Logger,
 ): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
@@ -571,70 +603,103 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
       if (rawHasTable(db, `${table.name}__crsql_clock`)) continue;
 
-      const tableInfo = allRows<{
-        name: string;
-        type: string;
-        notnull: number;
-        dflt_value: string | null;
-        pk: number;
-      }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`);
-
-      let nextSql = table.sql;
-      for (const column of tableInfo) {
-        const columnPattern = new RegExp(`(^|[,(])\\s*${escapeRegExp(column.name)}\\s+([^,\\n\\r)]+)`, "im");
-        const match = nextSql.match(columnPattern);
-        if (!match) continue;
-        let columnDefinition = match[0];
-        if (column.pk > 0 && !/\bnot\s+null\b/i.test(columnDefinition)) {
-          columnDefinition = columnDefinition.replace(/\bprimary\s+key\b/i, "not null primary key");
+      try {
+        if (retrofitTableLegacyPrimaryKey(db, table.name, table.sql)) changed = true;
+      } catch (error) {
+        // A connection left inside a failed transaction is not a per-table
+        // problem: every later statement would run inside it.
+        if (error instanceof RebuildRollbackFailedError) {
+          logger?.warn("db.crr_repair_rollback_failed", {
+            table: table.name,
+            error: error.rollbackError instanceof Error
+              ? error.rollbackError.message
+              : String(error.rollbackError),
+          });
+          throw error;
         }
-        if (column.notnull === 1 && column.dflt_value == null && !/\bdefault\b/i.test(columnDefinition)) {
-          columnDefinition = `${columnDefinition} default ${defaultLiteralForType(column.type)}`;
-        }
-        nextSql = nextSql.replace(match[0], columnDefinition);
+        // A rewrite SQLite rejects for ONE table must not wedge the database
+        // open for every other table, and with it the whole runtime. The
+        // rebuild rolls its own transaction back, so the table keeps the shape
+        // it had and the next open tries again.
+        logger?.warn("db.crr_repair_table_failed", {
+          table: table.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-
-      nextSql = nextSql
-        .split("\n")
-        .filter((line) => !line.trim().toLowerCase().startsWith("foreign key("))
-        .join("\n")
-        .replace(/,\s*unique\s*\([^)]*\)(?:\s+on\s+conflict\s+\w+)?/gi, "")
-        .replace(/\bunique\b(?:\s+on\s+conflict\s+\w+)?/gi, "")
-        .replace(/,\s*\)/g, "\n    )");
-
-      const indexes = allRows<{ name: string; unique: number; origin: string }>(db, `pragma index_list('${table.name.replace(/'/g, "''")}')`);
-      const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
-      if (nextSql === table.sql && !hasDisallowedUniqueIndices) {
-        continue;
-      }
-
-      const repairName = `__ade_crr_repair_${table.name}`;
-      const rewrittenSql = rewriteCreateTableName(nextSql, table.name, repairName);
-      const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
-      const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
-      const indexSqls = allRows<{ name: string; sql: string | null }>(
-        db,
-        "select name, sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
-        [table.name],
-      )
-        .filter((index) => nonUniqueIndexNames.has(index.name))
-        .map((index) => index.sql?.trim() ?? "")
-        .filter(Boolean);
-
-      rebuildTableInTransaction(db, {
-        tableName: table.name,
-        stagingName: repairName,
-        createStagingSql: rewrittenSql,
-        columnsSql,
-        indexSqlsToRecreate: indexSqls,
-      });
-      changed = true;
     }
   } finally {
     runStatement(db, "pragma foreign_keys = on");
   }
 
   return changed;
+}
+
+/**
+ * Rebuild one table that the legacy primary-key retrofit has to change.
+ *
+ * Returns true when the table was rebuilt and false when its stored schema is
+ * already correct. Throws when SQLite rejects the rewritten DDL; the caller
+ * isolates that per table so one schema it cannot express does not wedge the
+ * database open.
+ */
+function retrofitTableLegacyPrimaryKey(
+  db: DatabaseSyncType,
+  tableName: string,
+  tableSql: string,
+): boolean {
+  const tableInfo = allRows<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`);
+
+  let nextSql = tableSql;
+  for (const column of tableInfo) {
+    const columnPattern = new RegExp(`(^|[,(])\\s*${escapeRegExp(column.name)}\\s+([^,\\n\\r)]+)`, "im");
+    const match = nextSql.match(columnPattern);
+    if (!match) continue;
+    let columnDefinition = match[0];
+    if (column.pk > 0 && !/\bnot\s+null\b/i.test(columnDefinition)) {
+      columnDefinition = columnDefinition.replace(/\bprimary\s+key\b/i, "not null primary key");
+    }
+    if (column.notnull === 1 && column.dflt_value == null && !/\bdefault\b/i.test(columnDefinition)) {
+      columnDefinition = `${columnDefinition} default ${defaultLiteralForType(column.type)}`;
+    }
+    nextSql = nextSql.replace(match[0], columnDefinition);
+  }
+
+  nextSql = stripCrrUnsupportedTableConstraints(nextSql);
+
+  const indexes = allRows<{ name: string; unique: number; origin: string }>(
+    db,
+    `pragma index_list('${tableName.replace(/'/g, "''")}')`,
+  );
+  const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
+  if (nextSql === tableSql && !hasDisallowedUniqueIndices) return false;
+
+  const repairName = `__ade_crr_repair_${tableName}`;
+  const rewrittenSql = rewriteCreateTableName(nextSql, tableName, repairName);
+  const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
+  const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
+  const indexSqls = allRows<{ name: string; sql: string | null }>(
+    db,
+    "select name, sql from sqlite_master where type = 'index' and tbl_name = ? and sql is not null order by name asc",
+    [tableName],
+  )
+    .filter((index) => nonUniqueIndexNames.has(index.name))
+    .map((index) => index.sql?.trim() ?? "")
+    .filter(Boolean);
+
+  rebuildTableInTransaction(db, {
+    tableName,
+    stagingName: repairName,
+    createStagingSql: rewrittenSql,
+    columnsSql,
+    indexSqlsToRecreate: indexSqls,
+  });
+  return true;
 }
 
 /**
@@ -1716,21 +1781,56 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
   }
 }
 
+/** A non-PK unique index: what `crsql_as_crr` refuses a table for. */
+function hasBlockingUniqueIndexes(db: DatabaseSyncType, tableName: string): boolean {
+  return allRows<{ unique: number; origin: string }>(
+    db,
+    `pragma index_list('${tableName.replace(/'/g, "''")}')`,
+  ).some((index) => Number(index.unique) === 1 && index.origin !== "pk");
+}
+
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
   removeOrphanedCrrMetadata(db, logger);
   removeExcludedCrrMetadata(db, logger);
 
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
+  /**
+   * Turn one table into a CRR, or repair the triggers of one that already is.
+   *
+   * `crsql_as_crr` refuses a table that still carries a non-PK unique index — a
+   * table the schema retrofit could not strip, for instance. That must not abort
+   * the whole database open: this table loses replication and says so in the log,
+   * while a runtime that cannot start loses everything. A phone-critical table
+   * still throws, because a phone whose core tables silently stop replicating is
+   * worse than an open that fails loudly.
+   */
+  const convertToCrr = (tableName: string): void => {
+    try {
+      getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+    } catch (error) {
+      if (repairTargets.has(tableName)) throw error;
+      // Swallow the one refusal named above — a table still carrying a non-PK
+      // unique index, which the schema retrofit could not strip. An I/O error
+      // or a busy lock is not a one-table problem, and swallowing it would turn
+      // a loud failure into a table that silently stops replicating.
+      if (!hasBlockingUniqueIndexes(db, tableName)) throw error;
+      logger?.warn("db.crr_conversion_failed", {
+        tableName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   for (const tableName of listEligibleCrrTables(db)) {
     if (rawHasTable(db, `${tableName}__crsql_clock`)) {
       if (tableNeedsCrrTriggerRepair(db, tableName)) {
-        getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+        convertToCrr(tableName);
       }
       if (!repairTargets.has(tableName)) {
         continue;
       }
     } else {
-      getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+      convertToCrr(tableName);
     }
 
     if (!repairTargets.has(tableName)) {
@@ -4165,7 +4265,7 @@ export async function openKvDb(
 
     let retrofittedLegacyPrimaryKeySchema = false;
     try {
-      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables);
+      retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables, logger);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
