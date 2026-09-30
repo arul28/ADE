@@ -21,6 +21,11 @@ import {
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
 } from "../../../shared/chatMentions";
+import {
+  buildModelMentionDetail,
+  parseModelMentions,
+  type ModelMentionModelInfo,
+} from "../../../shared/modelMentions";
 import type {
   ChatMentionDetail,
   ChatMentionKind,
@@ -74,7 +79,15 @@ export type ChatMentionServiceDeps = {
    * actually gained expansion blocks. Carries identity only — never text.
    */
   onMentionsExpanded?: ((event: { sessionId: string | null }) => void) | null;
+  /**
+   * Optional: look up a model for an `@model:` chip. Absent means model chips
+   * expand as unavailable, which tells the agent to ask instead of guess.
+   */
+  describeModel?: ((modelId: string) => ModelMentionModelInfo | null) | null;
 };
+
+/** Cap on model blocks per message, like `CHAT_MENTION_MAX_PER_MESSAGE`. */
+const MODEL_MENTION_MAX_PER_MESSAGE = 6;
 
 function toEpoch(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -485,7 +498,8 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
    */
   const expandChatMentionsForSend = async (text: string): Promise<string> => {
     const targets = collectChatMentionTargets(text);
-    if (!targets.length) return text;
+    const modelBlocks = renderModelMentionBlocks(text);
+    if (!targets.length && !modelBlocks.length) return text;
     const details = await resolveChatMentionDetails(targets);
     const blocks = targets.map((target) => {
       const detail = details.get(`${target.kind}:${target.id}`);
@@ -493,7 +507,26 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ? renderChatMentionBlock(detail)
         : renderUnresolvedChatMentionBlock(target.kind, target.id);
     });
-    return appendChatMentionBlocks(text, blocks);
+    return appendChatMentionBlocks(text, [...blocks, ...modelBlocks]);
+  };
+
+  /** One block per distinct model chip. Needs no roster, only the model catalog. */
+  const renderModelMentionBlocks = (text: string): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const mention of parseModelMentions(text)) {
+      if (seen.has(mention.token)) continue;
+      seen.add(mention.token);
+      let info: ModelMentionModelInfo | null = null;
+      try {
+        info = deps.describeModel?.(mention.modelId) ?? null;
+      } catch (error) {
+        deps.logger?.warn?.("model mention lookup failed", { modelId: mention.modelId, error });
+      }
+      out.push(renderChatMentionBlock(buildModelMentionDetail(mention, info)));
+      if (out.length >= MODEL_MENTION_MAX_PER_MESSAGE) break;
+    }
+    return out;
   };
 
   /**

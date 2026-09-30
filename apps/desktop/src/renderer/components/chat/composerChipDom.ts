@@ -104,3 +104,59 @@ export function serializedComposerOffsetAt(
   }
   return matchingLength;
 }
+
+/**
+ * Return the DOM point for an offset in the serialized draft text.
+ *
+ * The inverse of `serializedComposerOffsetAt`, for the one case that needs it:
+ * the composer switches from the plain textarea to the rich editor and must put
+ * the caret back where it was. A chip counts as its serialized text, and an
+ * offset inside or at the end of a chip resolves to the point after the chip,
+ * because the caret cannot stand inside a contentEditable="false" node.
+ */
+export function composerDomPointAtSerializedOffset(
+  root: HTMLElement,
+  offset: number,
+): { node: Node; offset: number } {
+  let remaining = Math.max(0, offset);
+  let found: { node: Node; offset: number } | null = null;
+
+  const pointAfter = (node: Node): { node: Node; offset: number } => {
+    const parent = node.parentNode ?? root;
+    return { node: parent, offset: Array.prototype.indexOf.call(parent.childNodes, node) + 1 };
+  };
+
+  const visit = (node: Node) => {
+    if (found) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const length = node.textContent?.length ?? 0;
+      if (remaining <= length) {
+        found = { node, offset: remaining };
+        return;
+      }
+      remaining -= length;
+      return;
+    }
+    if (!(node instanceof HTMLElement)) return;
+    const chipText = node.dataset.composerChipText;
+    if (chipText != null) {
+      if (remaining <= chipText.length) {
+        found = pointAfter(node);
+        return;
+      }
+      remaining -= chipText.length;
+      return;
+    }
+    if (node.tagName === "BR") {
+      if (remaining === 0) {
+        found = { node: node.parentNode ?? root, offset: Array.prototype.indexOf.call((node.parentNode ?? root).childNodes, node) };
+        return;
+      }
+      remaining -= 1;
+      return;
+    }
+    node.childNodes.forEach(visit);
+  };
+  root.childNodes.forEach(visit);
+  return found ?? { node: root, offset: root.childNodes.length };
+}

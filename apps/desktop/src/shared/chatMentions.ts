@@ -197,7 +197,11 @@ function neutralizeMentionPreviewBody(body: string): string {
  * Render one `<ade-mention>` block. The closing tag is on its own line so a
  * multi-line preview can never be confused with the block boundary.
  */
-export function renderChatMentionBlock(detail: ChatMentionDetail): string {
+export function renderChatMentionBlock(
+  // A model chip renders through the same block with kind "model" (see
+  // modelMentions.ts), so the kind is widened to any string here.
+  detail: Omit<ChatMentionDetail, "kind"> & { kind: ChatMentionDetail["kind"] | "model" },
+): string {
   const attrs = [
     ["kind", detail.kind],
     ["id", detail.id],

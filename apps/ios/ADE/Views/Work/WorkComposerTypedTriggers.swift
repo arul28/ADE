@@ -95,6 +95,8 @@ struct WorkSmartLink: Equatable {
     case folder
     case artifact
     case webPage
+    /// A model with a thinking level and a permission mode (`@model:<id>?…`).
+    case model
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
     case adeLink
 
@@ -115,6 +117,7 @@ struct WorkSmartLink: Equatable {
       case .folder: return "📁"
       case .artifact: return "◈"
       case .webPage: return "↗"
+      case .model: return "✦"
       case .adeLink: return "A"
       }
     }
@@ -427,6 +430,314 @@ enum WorkChatMentionDetector {
   }
 }
 
+// MARK: - Model mentions
+
+/// Swift twin of the `@model:` grammar in
+/// `apps/desktop/src/shared/modelMentions.ts`.
+///
+/// A model chip names a model, a thinking level, and a permission mode in one
+/// token: `@model:<registry-id>?effort=<level>&perm=<mode>`. `effort` and
+/// `perm` are optional. The token is the canonical text; the label is display
+/// only, and the brain expands the token into exact CLI flags at send time.
+struct WorkModelMention: Equatable {
+  let modelId: String
+  let effort: String?
+  let permission: String?
+  /// The matched token text.
+  let token: String
+  let range: NSRange
+
+  /// `modelMentionChipLabel`: `DeepSeek V4.1 Flash · High · Full access`.
+  func chipLabel(displayName: String) -> String {
+    var parts = [displayName]
+    if let effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
+    parts.append(WorkModelMentionDetector.permissionLabel(permission))
+    return parts.joined(separator: " · ")
+  }
+
+  /// The catalog name when this device has seen the model, else the last
+  /// segment of the id, like `chipFromModelMention` on the desktop.
+  var displayName: String {
+    WorkModelMentionDirectory.shared.entry(for: modelId)?.title
+      ?? modelId.split(separator: "/").last.map(String.init)
+      ?? modelId
+  }
+}
+
+enum WorkModelMentionDetector {
+  /// `MODEL_MENTION_PERMISSION_MODES`, in menu order.
+  static let permissionModes = ["default", "auto", "plan", "edit", "full-auto"]
+  static let defaultPermission = "default"
+
+  private static let permissionLabels: [String: String] = [
+    "default": "Default",
+    "auto": "Auto",
+    "plan": "Plan",
+    "edit": "Edit",
+    "full-auto": "Full access",
+  ]
+
+  private static let effortLabels: [String: String] = [
+    "none": "None",
+    "minimal": "Minimal",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra high",
+    "max": "Max",
+    "ultra": "Ultra",
+    "ultracode": "Ultracode",
+  ]
+
+  static func permissionLabel(_ mode: String?) -> String {
+    guard let mode, !mode.isEmpty else { return "Default" }
+    return permissionLabels[mode] ?? mode
+  }
+
+  static func effortLabel(_ effort: String?) -> String {
+    guard let effort, !effort.isEmpty else { return "Default" }
+    return effortLabels[effort] ?? effort
+  }
+
+  /// Serialize one model mention into its chip/draft token form.
+  static func formatToken(modelId: String, effort: String?, permission: String?) -> String {
+    var params: [String] = []
+    if let effort, !effort.isEmpty { params.append("effort=\(effort)") }
+    if let permission, !permission.isEmpty { params.append("perm=\(permission)") }
+    return "@model:\(modelId)\(params.isEmpty ? "" : "?" + params.joined(separator: "&"))"
+  }
+
+  // Character-for-character the desktop's `MODEL_TOKEN_SOURCE`: registry ids
+  // take letters, digits, `.`, `_`, `/`, `:` and `-`; the query only simple
+  // `key=value` pairs. The word boundary keeps emails and URLs out.
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:^|[\\s(\\[{,])@model:([A-Za-z0-9._/:-]+)(?:\\?([A-Za-z0-9=&._-]+))?",
+    options: []
+  )
+  /// A sentence can end right after a chip; trailing dots, colons and dashes
+  /// belong to the prose (`TRAILING_PROSE_RE`).
+  private static let trailingProse = try! NSRegularExpression(pattern: "[.:-]+$", options: [])
+
+  private static func trimProse(_ value: String) -> String {
+    let ns = value as NSString
+    guard let match = trailingProse.firstMatch(in: value, range: NSRange(location: 0, length: ns.length)) else {
+      return value
+    }
+    return ns.substring(to: match.range.location)
+  }
+
+  /// Every model token in `text`, in document order.
+  static func mentions(in text: NSString) -> [WorkModelMention] {
+    guard text.length > 0, text.range(of: "@model:").location != NSNotFound else { return [] }
+    let full = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: full).compactMap { match in
+      guard match.numberOfRanges == 3 else { return nil }
+      var modelId = text.substring(with: match.range(at: 1))
+      let queryRange = match.range(at: 2)
+      var query: String? = queryRange.location == NSNotFound ? nil : text.substring(with: queryRange)
+      if let rawQuery = query {
+        query = trimProse(rawQuery)
+      } else {
+        modelId = trimProse(modelId)
+        guard !modelId.isEmpty else { return nil }
+      }
+      var effort: String?
+      var permission: String?
+      for pair in (query ?? "").split(separator: "&") {
+        let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2, !parts[1].isEmpty else { continue }
+        if parts[0] == "effort" { effort = parts[1] } else if parts[0] == "perm" { permission = parts[1] }
+      }
+      let token = "@model:\(modelId)\(query.map { $0.isEmpty ? "" : "?\($0)" } ?? "")"
+      let atLocation = text.range(of: "@model:", options: [], range: match.range).location
+      guard atLocation != NSNotFound else { return nil }
+      return WorkModelMention(
+        modelId: modelId,
+        effort: effort,
+        permission: permission,
+        token: token,
+        range: NSRange(location: atLocation, length: (token as NSString).length)
+      )
+    }
+  }
+
+  /// `selectSupportedReasoningEffort` without a preference: the advertised
+  /// default when the model accepts it, else medium, else the first level.
+  static func defaultEffort(tiers: [String], advertised: String?) -> String? {
+    guard !tiers.isEmpty else { return nil }
+    if let advertised, tiers.contains(advertised) { return advertised }
+    return tiers.contains("medium") ? "medium" : tiers.first
+  }
+
+  private static let harnessLabels: [String: String] = [
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "opencode": "OpenCode",
+    "cursor": "Cursor",
+    "droid": "Droid",
+    "pi": "Pi",
+    "qwen": "Qwen Code",
+    "kimi": "Kimi",
+    "grok": "Grok",
+    "copilot": "Copilot",
+    "devin": "Devin",
+  ]
+
+  /// "Harness · route", e.g. "OpenCode · OpenCode Go" (`modelMentionSubtitle`).
+  static func subtitle(groupKey: String, route: String?) -> String {
+    let harness = harnessLabels[groupKey] ?? groupKey
+    let trimmed = route?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty || trimmed == harness ? harness : "\(harness) · \(trimmed)"
+  }
+
+  private static func score(_ haystack: String, _ query: String, allowTrailingProse: Bool) -> (score: Int, prefix: Int)? {
+    let target = haystack.lowercased()
+    if target == query { return (0, 0) }
+    if allowTrailingProse, query.hasPrefix(target + " ") { return (1, target.count) }
+    if target.hasPrefix(query) { return (1, 0) }
+    if target.contains(query) { return (2, 0) }
+    var index = target.startIndex
+    for character in query {
+      guard let found = target[index...].firstIndex(of: character) else { return nil }
+      index = target.index(after: found)
+    }
+    return (3, 0)
+  }
+
+  /// `scoreChatMentionCandidate`: a subtitle hit is weaker than any title hit.
+  private static func score(title: String, subtitle: String?, query: String) -> (score: Int, prefix: Int)? {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if trimmed.isEmpty { return (0, 0) }
+    if let hit = score(title, trimmed, allowTrailingProse: true) { return hit }
+    guard let subtitle, let hit = score(subtitle, trimmed, allowTrailingProse: false) else { return nil }
+    return (hit.score + 4, 0)
+  }
+
+  private static let modelKeyword = try! NSRegularExpression(pattern: "^models?(?:[:\\s]+|$)", options: [.caseInsensitive])
+  private static let minQueryLength = 2
+  private static let maxMatchScore = 2
+  static let maxResults = 6
+
+  /// `rankComposerModelSuggestions`: a model shows only when the query names
+  /// it (word-prefix, prefix, or substring of the name, 2+ characters). A
+  /// query starting with "model" lists every model and filters by the rest.
+  static func rank(
+    _ models: [WorkModelMentionDirectory.Entry],
+    query rawQuery: String
+  ) -> (rows: [WorkModelMentionDirectory.Entry], bestScore: Int?) {
+    let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    let ns = query as NSString
+    let keyword = modelKeyword.firstMatch(in: query, range: NSRange(location: 0, length: ns.length))
+    let effective = keyword.map {
+      ns.substring(from: NSMaxRange($0.range)).trimmingCharacters(in: .whitespacesAndNewlines)
+    } ?? query
+    if keyword == nil && effective.count < minQueryLength { return ([], nil) }
+    let lowered = effective.lowercased()
+    var scored: [(entry: WorkModelMentionDirectory.Entry, score: Int, prefix: Int)] = []
+    for model in models {
+      // "opus" names "Claude Opus 5" as surely as "claude" does.
+      let wordPrefix = !lowered.isEmpty && model.title.lowercased()
+        .split(whereSeparator: { " /._-".contains($0) || $0.isWhitespace })
+        .contains { $0.hasPrefix(lowered) }
+      let match: (score: Int, prefix: Int)?
+      if wordPrefix {
+        match = (score: 1, prefix: 0)
+      } else {
+        match = score(title: model.title, subtitle: model.subtitle, query: effective)
+          ?? score(title: model.modelId, subtitle: nil, query: effective)
+      }
+      guard let match else { continue }
+      if keyword == nil && match.score > maxMatchScore { continue }
+      scored.append((model, match.score, match.prefix))
+    }
+    scored.sort { lhs, rhs in
+      if lhs.score != rhs.score { return lhs.score < rhs.score }
+      if lhs.prefix != rhs.prefix { return lhs.prefix > rhs.prefix }
+      return lhs.entry.modelId < rhs.entry.modelId
+    }
+    return (scored.prefix(maxResults).map { $0.entry }, scored.first?.score)
+  }
+}
+
+/// The models this device has seen in the host's catalog (`chat.modelCatalog`,
+/// the list the model picker shows). The `@` menu lists them, and chips read
+/// their names from here. Filled whenever the catalog is fetched; a chip for a
+/// model it has not seen falls back to the id's last segment.
+final class WorkModelMentionDirectory: @unchecked Sendable {
+  struct Entry: Equatable {
+    let modelId: String
+    let title: String
+    /// Harness and route, e.g. "OpenCode · OpenCode Go".
+    let subtitle: String
+    let reasoningTiers: [String]
+    let defaultEffort: String?
+    let isAvailable: Bool
+  }
+
+  static let shared = WorkModelMentionDirectory()
+
+  private let lock = NSLock()
+  private var entries: [Entry] = []
+  private var byId: [String: Entry] = [:]
+
+  func entry(for modelId: String) -> Entry? {
+    lock.lock()
+    defer { lock.unlock() }
+    return byId[modelId]
+  }
+
+  /// Models a chip can start, once each, in catalog order.
+  var availableEntries: [Entry] {
+    lock.lock()
+    defer { lock.unlock() }
+    return entries.filter(\.isAvailable)
+  }
+
+  func record(catalog: AgentChatModelCatalog) {
+    var next: [Entry] = []
+    var seen: [String: Entry] = [:]
+    for group in catalog.groups {
+      // The desktop names the route only where one harness fronts many services.
+      let routed = group.key == "opencode" || group.key == "pi"
+      for provider in group.providers {
+        for subsection in provider.subsections {
+          for model in subsection.models {
+            let existing = seen[model.id]
+            // A model can appear once per key; an available row wins.
+            if let existing, existing.isAvailable || !model.isAvailable { continue }
+            let tiers = (model.reasoningEfforts ?? []).map(\.effort)
+            let name = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entry = Entry(
+              modelId: model.id,
+              title: name.isEmpty ? model.id : name,
+              subtitle: WorkModelMentionDetector.subtitle(
+                groupKey: group.key,
+                route: routed ? provider.displayName : nil
+              ),
+              reasoningTiers: tiers,
+              defaultEffort: WorkModelMentionDetector.defaultEffort(
+                tiers: tiers,
+                advertised: model.defaultReasoningEffort
+              ),
+              isAvailable: model.isAvailable
+            )
+            if existing != nil {
+              next.removeAll { $0.modelId == model.id }
+            }
+            seen[model.id] = entry
+            next.append(entry)
+          }
+        }
+      }
+    }
+    guard !next.isEmpty else { return }
+    lock.lock()
+    entries = next
+    byId = seen
+    lock.unlock()
+  }
+}
+
 // MARK: - `@`-prefixed repo paths
 
 /// One `@`-prefixed file or folder path in a message body — the token the
@@ -548,6 +859,7 @@ struct WorkChip: Equatable {
     case mention(WorkChatMention)
     case link(WorkSmartLink)
     case path(WorkChipPath)
+    case model(WorkModelMention)
   }
 
   let kind: WorkSmartLink.Kind
@@ -580,6 +892,14 @@ struct WorkChip: Equatable {
     label = path.defaultLabel
     range = path.range
     origin = .path(path)
+  }
+
+  init(model: WorkModelMention) {
+    kind = .model
+    token = model.token
+    label = model.chipLabel(displayName: model.displayName)
+    range = model.range
+    origin = .model(model)
   }
 
   /// The plain text this chip serializes back to. Mention and link tokens are
@@ -615,6 +935,8 @@ enum WorkChipDetector {
     guard text.length > 0, limit > 0 else { return [] }
 
     var candidates: [WorkChip] = WorkChatMentionDetector.mentions(in: text).map(WorkChip.init(mention:))
+    // Model tokens follow chat mentions, the desktop's `parseChips` push order.
+    candidates.append(contentsOf: WorkModelMentionDetector.mentions(in: text).map(WorkChip.init(model:)))
     candidates.append(contentsOf: WorkSmartLinkDetector.links(in: text).prefix(limit).map(WorkChip.init(link:)))
     // Last, like the desktop: the sort below puts them in document order and
     // the `consumedTo` loop drops any that overlap a link, so a path that lives
@@ -830,7 +1152,8 @@ enum WorkComposerTriggerDetector {
     suggestion: WorkComposerSuggestion
   ) -> WorkComposerTriggerMatch {
     guard match.kind == .at else { return match }
-    let rawLabel = suggestion.insertText.hasPrefix("@")
+    // A model row's token is not what the user typed; its name is.
+    let rawLabel = suggestion.modelId == nil && suggestion.insertText.hasPrefix("@")
       ? String(suggestion.insertText.dropFirst())
       : suggestion.title
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -897,6 +1220,8 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   /// changes what commit does, because an iOS `@` commit splices text and
   /// stages nothing.
   var isDirectory: Bool = false
+  /// Set on `@` model rows: the registry id the inserted `@model:` token names.
+  var modelId: String? = nil
 }
 
 /// Minimal static fallback for the `/` trigger, ported from the retired
@@ -1082,6 +1407,16 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// first-responder state and selection survive the insertion.
   var onCommit: ((WorkComposerSuggestion, NSRange) -> Void)?
 
+  /// The model chip the caret sits on (or just after, as right after it was
+  /// inserted). Drives the thinking/permission menu above the field.
+  @Published private(set) var editingModelChip: WorkModelMention?
+  /// Wired by the text view: replaces one model token in the live draft.
+  var onRewriteModelChip: ((NSRange, String) -> Void)?
+  /// The last file rows, so model rows can be re-merged when the catalog lands.
+  private var lastFileRows: [WorkComposerSuggestion] = []
+  private var modelCatalogRequested = false
+  private var modelCatalogTask: Task<Void, Never>?
+
   private var fetchTask: Task<Void, Never>?
   private var cachedWorkspaceId: String?
   /// Bumped on every lane change; every post-await write in a fetch compares
@@ -1201,9 +1536,69 @@ final class WorkComposerSuggestionController: ObservableObject {
       isLoading = false
       refreshSlashSuggestions(query: match.query)
     case .at:
+      fetchModelCatalogIfNeeded()
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
     case .hash:
       schedulePrFetch(query: match.query)
+    }
+  }
+
+  func setEditingModelChip(_ chip: WorkModelMention?) {
+    if editingModelChip != chip { editingModelChip = chip }
+  }
+
+  /// Rewrite the chip being edited with a new thinking level or permission mode.
+  func rewriteEditingModelChip(effort: String?, permission: String?) {
+    guard let chip = editingModelChip else { return }
+    let token = WorkModelMentionDetector.formatToken(modelId: chip.modelId, effort: effort, permission: permission)
+    guard token != chip.token else { return }
+    onRewriteModelChip?(chip.range, token)
+  }
+
+  /// `@` rows for models the query names, from the catalog the model picker
+  /// uses. Pure over the directory so the ranking stays the shared one.
+  static func modelSuggestions(query: String) -> (rows: [WorkComposerSuggestion], bestScore: Int?) {
+    let ranked = WorkModelMentionDetector.rank(WorkModelMentionDirectory.shared.availableEntries, query: query)
+    let rows = ranked.rows.map { entry in
+      WorkComposerSuggestion(
+        id: "model:\(entry.modelId)",
+        kind: .at,
+        title: entry.title,
+        subtitle: entry.subtitle,
+        insertText: WorkModelMentionDetector.formatToken(
+          modelId: entry.modelId,
+          effort: entry.defaultEffort,
+          permission: WorkModelMentionDetector.defaultPermission
+        ),
+        modelId: entry.modelId
+      )
+    }
+    return (rows, ranked.bestScore)
+  }
+
+  /// File rows plus model rows. A name hit on a model (exact or prefix) leads,
+  /// so `@deep` offers the model first; weaker model hits follow the files.
+  private func mergedAtRows(files: [WorkComposerSuggestion]) -> [WorkComposerSuggestion] {
+    guard let query = activeMatch?.query else { return files }
+    let models = Self.modelSuggestions(query: query)
+    guard !models.rows.isEmpty else { return files }
+    return (models.bestScore ?? 99) <= 1 ? models.rows + files : files + models.rows
+  }
+
+  /// Load the host model catalog once, the same call the model picker makes,
+  /// so the `@` menu can offer models before the picker was ever opened.
+  private func fetchModelCatalogIfNeeded() {
+    guard !modelCatalogRequested, let syncService else { return }
+    modelCatalogRequested = true
+    if let cached = syncService.cachedChatModelCatalog() {
+      WorkModelMentionDirectory.shared.record(catalog: cached)
+      return
+    }
+    modelCatalogTask = Task { [weak self] in
+      _ = try? await syncService.getChatModelCatalog()
+      guard let self, !Task.isCancelled else { return }
+      guard self.activeMatch?.kind == .at, !self.isLoading else { return }
+      self.suggestions = self.mergedAtRows(files: self.lastFileRows)
     }
   }
 
@@ -1308,7 +1703,8 @@ final class WorkComposerSuggestionController: ObservableObject {
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
     isLoading = false
-    suggestions = items
+    lastFileRows = items
+    suggestions = mergedAtRows(files: items)
   }
 
   /// `#` rows come from the pull requests this project has ALREADY synced, so
@@ -1883,6 +2279,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
     }
+    controller.onRewriteModelChip = { [weak coordinator = context.coordinator] range, token in
+      coordinator?.rewriteModelChip(range: range, with: token)
+    }
 
     if !draftState.text.isEmpty {
       context.coordinator.setText(draftState.text, resetChips: true)
@@ -2016,6 +2415,16 @@ struct WorkComposerTextView: UIViewRepresentable {
       }
       return [
         .font: font,
+        .foregroundColor: tint,
+        .workComposerChipTint: tint,
+      ]
+    }
+
+    /// Model chips draw amber, like the desktop's model pill.
+    private var modelChipAttributes: [NSAttributedString.Key: Any] {
+      let tint = UIColor(ADEColor.warning)
+      return [
+        .font: UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold),
         .foregroundColor: tint,
         .workComposerChipTint: tint,
       ]
@@ -2166,6 +2575,7 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     private func detectTrigger() {
       guard let textView else { return }
+      defer { updateModelChipEditing() }
       guard textView.isFirstResponder else {
         applyPromptInputTraits(protectingTrigger: false)
         parent.controller.clear()
@@ -2186,7 +2596,10 @@ struct WorkComposerTextView: UIViewRepresentable {
         WorkComposerTriggerDetector.hasConfirmedChipPrefix(
           candidate,
           in: textView.text as NSString,
+          // Model tokens are self-identifying, so they close the trigger
+          // without a registered chip span.
           chipRanges: chips.map { $0.range }
+            + WorkModelMentionDetector.mentions(in: textView.text as NSString).map(\.range)
         ) ? nil : candidate
       }
       applyPromptInputTraits(protectingTrigger: resolvedMatch != nil)
@@ -2216,7 +2629,9 @@ struct WorkComposerTextView: UIViewRepresentable {
       // A `#` selection inserts a pull-request URL. `restyle()` already draws
       // every smart link and `atomicDeletionRange` already deletes one whole,
       // so registering a composer chip over the same range would double-own it.
-      if suggestion.kind != .hash {
+      // A model token is styled from its own grammar (see `restyle`) and
+      // rewritten in place by the chip menu, so it is not a registered span.
+      if suggestion.kind != .hash && suggestion.modelId == nil {
         let chipRange = NSRange(location: range.location, length: (chipText as NSString).length)
         next.append((chipRange, chipText))
       }
@@ -2235,6 +2650,66 @@ struct WorkComposerTextView: UIViewRepresentable {
       }
       updatePlaceholderVisibility()
       updateHeight()
+      updateModelChipEditing()
+    }
+
+    // MARK: Model chips
+
+    /// The model chip the caret is on, or just past (one space after it, where
+    /// the caret lands right after a model row is picked). Typing on moves the
+    /// caret away and the menu goes with it.
+    private func updateModelChipEditing() {
+      guard let textView, textView.selectedRange.length == 0, textView.markedTextRange == nil else {
+        parent.controller.setEditingModelChip(nil)
+        return
+      }
+      let text = textView.text as NSString
+      let caret = textView.selectedRange.location
+      let hit = WorkModelMentionDetector.mentions(in: text).first { mention in
+        let end = NSMaxRange(mention.range)
+        if caret > mention.range.location && caret <= end { return true }
+        return caret == end + 1 && end < text.length && text.character(at: end) == 0x20
+      }
+      parent.controller.setEditingModelChip(hit)
+    }
+
+    /// Replace one model token (new thinking level or permission mode). Chip
+    /// spans after it shift by the length change; the caret stays put relative
+    /// to the text around the token.
+    func rewriteModelChip(range: NSRange, with token: String) {
+      guard let textView else { return }
+      let full = textView.text as NSString
+      guard NSMaxRange(range) <= full.length,
+            full.substring(with: range).hasPrefix("@model:") else { return }
+      let delta = (token as NSString).length - range.length
+      let end = NSMaxRange(range)
+      chips = chips.compactMap { chip in
+        if NSIntersectionRange(chip.range, range).length > 0 { return nil }
+        if chip.range.location >= end {
+          return (NSRange(location: chip.range.location + delta, length: chip.range.length), chip.text)
+        }
+        return chip
+      }
+      let caret = textView.selectedRange.location
+      textView.textStorage.replaceCharacters(in: range, with: token)
+      restyle()
+      let nextCaret: Int
+      if caret > end {
+        nextCaret = caret + delta
+      } else if caret > range.location {
+        // On the chip: land at its new end.
+        nextCaret = range.location + (token as NSString).length
+      } else {
+        nextCaret = caret
+      }
+      textView.selectedRange = NSRange(location: max(0, min(nextCaret, textView.textStorage.length)), length: 0)
+      textView.typingAttributes = baseAttributes
+      if parent.draftState.text != textView.text {
+        parent.draftState.text = textView.text
+      }
+      updatePlaceholderVisibility()
+      updateHeight()
+      updateModelChipEditing()
     }
 
     // MARK: Styling
@@ -2251,6 +2726,9 @@ struct WorkComposerTextView: UIViewRepresentable {
         // file chips can style differently.
         let kind: WorkComposerTriggerKind = chip.text.hasPrefix("/") ? .slash : .at
         storage.addAttributes(chipAttributes(kind: kind), range: chip.range)
+      }
+      for mention in WorkModelMentionDetector.mentions(in: storage.string as NSString) {
+        storage.addAttributes(modelChipAttributes, range: mention.range)
       }
       for link in WorkSmartLinkDetector.links(in: storage.string as NSString) {
         var attributes = smartLinkAttributes
@@ -2374,6 +2852,9 @@ struct WorkComposerSuggestionStrip: View {
       .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
       .transition(.opacity.combined(with: .move(edge: .bottom)))
       .accessibilityIdentifier("Work.Chat.Composer.SuggestionStrip")
+    } else if let chip = controller.editingModelChip {
+      WorkModelChipEditorBar(controller: controller, chip: chip)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
   }
 
@@ -2387,7 +2868,7 @@ struct WorkComposerSuggestionStrip: View {
 
   private var headerTitle: String {
     switch controller.activeMatch?.kind {
-    case .at: return "Files"
+    case .at: return controller.suggestions.contains { $0.modelId != nil } ? "Files & models" : "Files"
     case .hash: return "Pull requests"
     default: return "Commands"
     }
@@ -2425,7 +2906,9 @@ struct WorkComposerSuggestionStrip: View {
 
   private func rowIcon(for suggestion: WorkComposerSuggestion) -> String {
     switch suggestion.kind {
-    case .at: return suggestion.isDirectory ? "folder" : "doc"
+    case .at:
+      if suggestion.modelId != nil { return "sparkles" }
+      return suggestion.isDirectory ? "folder" : "doc"
     case .hash: return "arrow.triangle.pull"
     case .slash: return "chevron.right.circle"
     }
@@ -2465,5 +2948,100 @@ struct WorkComposerSuggestionStrip: View {
     // floor rather than the text's intrinsic height.
     .frame(minHeight: 44)
     .contentShape(Rectangle())
+  }
+}
+
+/// The menu for the model chip the caret is on: its thinking level and its
+/// permission mode, the two parts a desktop chip edits in place. Picking one
+/// rewrites the chip's token in the draft.
+struct WorkModelChipEditorBar: View {
+  @ObservedObject var controller: WorkComposerSuggestionController
+  let chip: WorkModelMention
+
+  private var tiers: [String] {
+    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.reasoningTiers ?? []
+  }
+
+  private var currentPermission: String {
+    chip.permission ?? WorkModelMentionDetector.defaultPermission
+  }
+
+  private var summary: String {
+    var parts: [String] = []
+    if let effort = chip.effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
+    parts.append(WorkModelMentionDetector.permissionLabel(chip.permission))
+    return parts.joined(separator: " · ")
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "sparkles")
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.warning)
+        .accessibilityHidden(true)
+      Text(chip.displayName)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 4)
+      Menu {
+        if !tiers.isEmpty {
+          Section("Thinking") {
+            ForEach(tiers, id: \.self) { tier in
+              Button {
+                controller.rewriteEditingModelChip(effort: tier, permission: chip.permission)
+              } label: {
+                if tier == chip.effort {
+                  Label(WorkModelMentionDetector.effortLabel(tier), systemImage: "checkmark")
+                } else {
+                  Text(WorkModelMentionDetector.effortLabel(tier))
+                }
+              }
+            }
+          }
+        }
+        Section("Permissions") {
+          ForEach(WorkModelMentionDetector.permissionModes, id: \.self) { mode in
+            Button {
+              controller.rewriteEditingModelChip(effort: chip.effort, permission: mode)
+            } label: {
+              if mode == currentPermission {
+                Label(WorkModelMentionDetector.permissionLabel(mode), systemImage: "checkmark")
+              } else {
+                Text(WorkModelMentionDetector.permissionLabel(mode))
+              }
+            }
+          }
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Text(summary)
+            .font(.footnote.weight(.semibold))
+            .lineLimit(1)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.caption2.weight(.semibold))
+            .accessibilityHidden(true)
+        }
+        .foregroundStyle(ADEColor.warning)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.warning.opacity(0.12), in: Capsule(style: .continuous))
+      }
+      .accessibilityLabel("Model chip settings: \(summary)")
+      .accessibilityIdentifier("Work.Chat.Composer.ModelChipMenu")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .frame(minHeight: 44)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(.ultraThinMaterial)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
   }
 }

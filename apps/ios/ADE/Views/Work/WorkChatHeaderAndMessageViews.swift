@@ -584,6 +584,9 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   switch chip.origin {
   case .link(let link):
     return URL(string: link.url)
+  case .model:
+    // A model chip is an instruction, not a place: nothing to open.
+    return nil
   case .path:
     // Same reasoning as a terminal mention: the desktop routes a path chip to
     // its in-app Files view, and iOS has no counterpart to navigate to from a

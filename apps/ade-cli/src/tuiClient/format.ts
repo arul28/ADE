@@ -29,6 +29,7 @@ import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
 import { formatUserMessageTranscriptBody } from "./composerDrafts";
+import { renderModelMentionChipsInText } from "./promptSmartLinks";
 import { terminalReasonLabel } from "./terminalReason";
 
 export type { HighlightedToken } from "./highlightCache";
@@ -842,11 +843,11 @@ export function renderChatLines(args: {
       lines.push({
         id,
         tone: "user",
-        body: formatUserMessageTranscriptBody({
+        body: renderModelMentionChipsInText(formatUserMessageTranscriptBody({
           text: event.text,
           displayText: event.displayText,
           attachments: event.attachments,
-        }),
+        })),
       });
       // A completed resolution replaces the generic "turn ended first" line.
       // Until then, an unprocessed steer keeps the TUI recovery commands,

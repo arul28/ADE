@@ -12,6 +12,7 @@ import {
   modelSupportsFastMode,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
+  selectSupportedReasoningEffort,
 } from "../../../desktop/src/shared/modelRegistry";
 import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBaseResolution";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
@@ -44,6 +45,20 @@ import {
   type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
+import {
+  MODEL_MENTION_DEFAULT_PERMISSION,
+  MODEL_MENTION_PERMISSION_MODES,
+  formatModelMentionToken,
+  isModelMentionTokenBody,
+  modelMentionEffortLabel,
+  modelMentionHarnessLabel,
+  modelMentionPermissionLabel,
+  modelMentionSubtitle,
+  parseModelMentions,
+  rankComposerModelSuggestions,
+  type ComposerModelSuggestion,
+  type ModelMention,
+} from "../../../desktop/src/shared/modelMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -346,7 +361,7 @@ import {
   providerLabel,
 } from "./providerMetadata";
 import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
-import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
+import { MentionPalette, MENTION_PALETTE_ROWS, ModelChipOptionPalette } from "./components/MentionPalette";
 import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
@@ -2741,11 +2756,11 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
  * the renderer can style `@file` / `/command` chips. `rowStart` is the prompt
  * code-unit offset of `text[0]`; token ranges are in prompt coordinates.
  */
-type PromptRenderTokenKind = "plain" | "file" | "command" | "mention" | "link" | "image";
+type PromptRenderTokenKind = "plain" | "file" | "command" | "mention" | "link" | "image" | "model";
 
 type PromptRenderTokenRange =
   | ComposerTokenRange
-  | { kind: "link" | "image"; start: number; end: number };
+  | { kind: "link" | "image" | "model"; start: number; end: number };
 
 function segmentPromptLineText(
   text: string,
@@ -2804,6 +2819,110 @@ export function rankMentionSuggestions(
       || left.index - right.index
     ))
     .map(({ suggestion }) => suggestion);
+}
+
+/**
+ * Models the `@` palette can offer, from the same catalog the model picker
+ * uses. Only models this machine can start are listed, once each. Without a
+ * catalog yet, the active provider's list stands in.
+ */
+export function modelMentionSuggestionsFromCatalog(
+  catalog: AgentChatModelCatalog | null,
+  fallback: { models: readonly AgentChatModelInfo[]; group: string },
+): ComposerModelSuggestion[] {
+  const out: ComposerModelSuggestion[] = [];
+  const seen = new Set<string>();
+  const push = (args: {
+    id: string;
+    displayName: string;
+    reasoningEfforts?: Array<{ effort: string }>;
+    defaultReasoningEffort?: string | null;
+    group: string;
+    route: string | null;
+  }) => {
+    if (!args.id || seen.has(args.id)) return;
+    seen.add(args.id);
+    const descriptor = getModelById(args.id);
+    const tiers = args.reasoningEfforts?.map((entry) => entry.effort) ?? descriptor?.reasoningTiers ?? [];
+    out.push({
+      modelId: args.id,
+      title: args.displayName || descriptor?.displayName || args.id,
+      subtitle: modelMentionSubtitle(modelMentionHarnessLabel(args.group), args.route),
+      reasoningTiers: [...tiers],
+      defaultEffort: selectSupportedReasoningEffort({
+        tiers,
+        advertisedDefault: args.defaultReasoningEffort ?? descriptor?.defaultReasoningEffort ?? null,
+      }),
+    });
+  };
+  if (catalog?.groups.length) {
+    for (const group of catalog.groups) {
+      // Desktop names the route only where a harness fronts many services.
+      const routed = group.key === "opencode" || group.key === "pi";
+      for (const provider of group.providers) {
+        for (const subsection of provider.subsections) {
+          for (const model of subsection.models) {
+            if (!model.isAvailable) continue;
+            push({
+              id: model.id,
+              displayName: model.displayName,
+              reasoningEfforts: model.reasoningEfforts,
+              defaultReasoningEffort: model.defaultReasoningEffort,
+              group: group.key,
+              route: routed ? provider.displayName : null,
+            });
+          }
+        }
+      }
+    }
+    return out;
+  }
+  for (const model of fallback.models) {
+    push({
+      id: model.modelId ?? model.id,
+      displayName: model.displayName,
+      reasoningEfforts: model.reasoningEfforts,
+      defaultReasoningEffort: model.defaultReasoningEffort,
+      group: fallback.group,
+      route: null,
+    });
+  }
+  return out;
+}
+
+/** The two follow-up steps after a model chip is inserted. */
+export type ModelChipEditStep = "effort" | "perm";
+
+/** The model chip being edited right after insertion. */
+export type ModelChipEdit = {
+  /** The chip's token as it sits in the draft now. */
+  token: string;
+  /** Offset of the token in the draft. */
+  start: number;
+  mention: ModelMention;
+  title: string;
+  reasoningTiers: string[];
+  step: ModelChipEditStep;
+  index: number;
+};
+
+export function modelChipEditOptions(
+  step: ModelChipEditStep,
+  reasoningTiers: readonly string[],
+): Array<{ value: string; label: string }> {
+  return step === "perm"
+    ? MODEL_MENTION_PERMISSION_MODES.map((value) => ({ value, label: modelMentionPermissionLabel(value) }))
+    : reasoningTiers.map((value) => ({ value, label: modelMentionEffortLabel(value) }));
+}
+
+/** Open a step with the chip's current value lit. */
+function modelChipEditAtStep(
+  edit: Omit<ModelChipEdit, "step" | "index">,
+  step: ModelChipEditStep,
+): ModelChipEdit {
+  const current = step === "effort" ? edit.mention.effort : edit.mention.permission;
+  const index = modelChipEditOptions(step, edit.reasoningTiers).findIndex((option) => option.value === current);
+  return { ...edit, step, index: Math.max(0, index) };
 }
 
 type MentionRemoteCacheEntry = {
@@ -3780,6 +3899,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
+  // Set right after a model chip is inserted: the palette then asks for its
+  // thinking level and permission mode before the user goes on typing.
+  const [modelChipEdit, setModelChipEdit] = useState<ModelChipEdit | null>(null);
   const [attachmentFocusIndex, setAttachmentFocusIndex] = useState<number | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -5115,6 +5237,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // from the picker and /commands matching the known catalog. Rendered as
   // colored tokens in the prompt rows below.
   const promptSmartLinks = useMemo(() => findSmartLinks(prompt), [prompt]);
+  const promptModelMentions = useMemo(() => parseModelMentions(prompt), [prompt]);
   const promptTokenRanges = useMemo<PromptRenderTokenRange[]>(() => {
     if (!prompt) return [];
     const mentionTexts = new Set(selectedMentions.map((mention) => mention.insertText));
@@ -5128,11 +5251,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         isCommand: (body) => commandNames.has(body.toLowerCase()),
       }),
       ...promptSmartLinks.map(({ start, end }) => ({ kind: "link" as const, start, end })),
+      // Model chips are self-identifying (`@model:<id>?…`), like image tokens.
+      ...promptModelMentions.map(({ start, end }) => ({ kind: "model" as const, start, end })),
       // Inline image tokens are self-delimiting, so they paint straight from
       // the draft text without consulting the attachment registry.
       ...findImageTokens(prompt).map(({ start, end }) => ({ kind: "image" as const, start, end })),
     ].sort((left, right) => left.start - right.start);
-  }, [prompt, promptSmartLinks, selectedMentions, slashCommands]);
+  }, [prompt, promptModelMentions, promptSmartLinks, selectedMentions, slashCommands]);
   // Drives the "^B open image" composer hint: only offer the key when it has
   // something to act on.
   const promptCursorOnImageToken = useMemo(
@@ -5141,7 +5266,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   );
   const promptDisplay = promptDisplayRowsWithCursor(prompt, promptWrapWidth(promptPaneWidth), promptCursor, PROMPT_MAX_ROWS);
   const promptRows = promptDisplay.rows;
-  const smartLinkRows = promptSmartLinks.length > 0 ? 1 : 0;
+  const smartLinkRows = promptSmartLinks.length > 0 || promptModelMentions.length > 0 ? 1 : 0;
   // Header is the ADE wordmark row plus its bottom rule (2), then optional banners.
   const headerChromeRows = 2 + goalBannerRows + addModeRows;
   const sessionsPaneHeight = Math.max(8, rows - headerChromeRows);
@@ -5501,6 +5626,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       (mention) => mention.kind === "file" && mention.insertText === `@${body}`,
     );
     const confirmedMention = (body: string) => isChatMentionTokenBody(body)
+      || isModelMentionTokenBody(body)
       || selectedMentions.some(
         (mention) => mention.kind !== "file" && mention.insertText === `@${body}`,
       );
@@ -7949,6 +8075,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     [],
   );
 
+  const modelMentionOptions = useMemo(
+    () => modelMentionSuggestionsFromCatalog(modelCatalog, {
+      models,
+      group: runtimeProviderForUiProvider(modelState.provider),
+    }),
+    [modelCatalog, models, modelState.provider],
+  );
+
   useEffect(() => {
     const range = activeMentionRange;
     const conn = connectionRef.current;
@@ -7987,6 +8121,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const attachedSuggestions = (): MentionSuggestion[] => selectedMentions
       .filter((suggestion) => suggestion.attachment && suggestion.filePath)
       .filter(matchesMentionQuery);
+    // Models show only when the query names one (same rule as desktop), so a
+    // plain @ search is not flooded with the whole catalog.
+    const rankedModels = rankComposerModelSuggestions(modelMentionOptions, range.query);
+    const modelSuggestions: MentionSuggestion[] = rankedModels.rows.map((model) => ({
+      kind: "model" as const,
+      label: model.title,
+      insertText: formatModelMentionToken({
+        modelId: model.modelId,
+        effort: model.defaultEffort,
+        permission: MODEL_MENTION_DEFAULT_PERMISSION,
+      }),
+      detail: model.subtitle,
+      model,
+    }));
+    // A name hit (exact or prefix) leads, so `@deep` + Tab picks the model;
+    // weaker model hits follow the other references.
+    const modelsFirst = modelSuggestions.length > 0 && (rankedModels.bestScore ?? 99) <= 1;
 
     const publishSuggestions = (remote: MentionSuggestion[] = []) => {
       if (cancelled) return;
@@ -7998,10 +8149,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const fileRows = query ? 0 : Math.min(remote.filter((s) => s.kind === "file").length, MENTION_FILE_ROWS);
       const localBudget = Math.max(0, MENTION_MAX_ROWS - fileRows);
       const localCandidates = query ? local : local.slice(0, localBudget);
-      const next = rankMentionSuggestions(
+      const ranked = rankMentionSuggestions(
         [...localCandidates, ...remote, ...attachedSuggestions()],
         query,
-      ).slice(0, MENTION_MAX_ROWS);
+      );
+      const next = modelsFirst
+        ? [...modelSuggestions, ...ranked].slice(0, MENTION_MAX_ROWS)
+        : [...ranked.slice(0, Math.max(0, MENTION_MAX_ROWS - modelSuggestions.length)), ...modelSuggestions];
       setMentionSuggestions(next);
       setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
     };
@@ -8116,7 +8270,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, selectedMentions]);
+  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, modelMentionOptions, selectedMentions]);
 
   const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;
@@ -13893,6 +14047,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
     const detectedTrigger = detectComposerTrigger(prompt, promptCursorRef.current);
     if (detectedTrigger?.type !== "at") return;
+    if (suggestion.kind === "model" && suggestion.model) {
+      // A model chip is pure text: the token carries the model, the thinking
+      // level, and the permission mode. The follow-up steps rewrite it.
+      const model = suggestion.model;
+      const mention: ModelMention = {
+        modelId: model.modelId,
+        effort: model.defaultEffort,
+        permission: MODEL_MENTION_DEFAULT_PERMISSION,
+      };
+      const token = formatModelMentionToken(mention);
+      const trigger = composerTriggerForSelection(detectedTrigger, suggestion.label, "mention");
+      const next = replaceComposerTriggerSpan(prompt, trigger, `${token} `);
+      setPromptValue(next.text, next.caret);
+      setMentionSuggestions([]);
+      setMentionIndex(0);
+      setModelChipEdit(modelChipEditAtStep(
+        { token, start: trigger.start, mention, title: model.title, reasoningTiers: model.reasoningTiers },
+        model.reasoningTiers.length > 0 ? "effort" : "perm",
+      ));
+      return;
+    }
     const trigger = composerTriggerForSelection(
       detectedTrigger,
       suggestion.kind === "file" ? suggestion.filePath ?? suggestion.label : suggestion.label,
@@ -13907,6 +14082,41 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setMentionSuggestions([]);
     setMentionIndex(0);
   }, [prompt, setPromptValue]);
+
+  /**
+   * Pick an option in the model chip's current step: rewrite the chip's token
+   * in the draft, then move from thinking to permissions, or close.
+   */
+  const applyModelChipEditOption = useCallback((edit: ModelChipEdit, optionIndex: number) => {
+    const option = modelChipEditOptions(edit.step, edit.reasoningTiers)[optionIndex];
+    if (!option) return;
+    const mention: ModelMention = edit.step === "effort"
+      ? { ...edit.mention, effort: option.value }
+      : { ...edit.mention, permission: option.value };
+    const current = promptRef.current;
+    const start = current.startsWith(edit.token, edit.start) ? edit.start : current.indexOf(edit.token);
+    if (start < 0) {
+      // The user edited the chip away; nothing left to rewrite.
+      setModelChipEdit(null);
+      return;
+    }
+    const token = formatModelMentionToken(mention);
+    const tokenEnd = start + edit.token.length;
+    const cursor = promptCursorRef.current;
+    setPromptValue(
+      `${current.slice(0, start)}${token}${current.slice(tokenEnd)}`,
+      cursor >= tokenEnd ? cursor + token.length - edit.token.length : cursor,
+    );
+    setModelChipEdit(edit.step === "effort"
+      ? modelChipEditAtStep({ ...edit, token, start, mention }, "perm")
+      : null);
+  }, [setPromptValue]);
+
+  // A chip edit follows its token: once the token leaves the draft (send,
+  // chat switch, manual delete) the follow-up steps close.
+  useEffect(() => {
+    if (modelChipEdit && !prompt.includes(modelChipEdit.token)) setModelChipEdit(null);
+  }, [modelChipEdit, prompt]);
 
   const insertSlashCommandRow = useCallback((selected: { name: string; argumentHint?: string }) => {
     const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
@@ -15722,6 +15932,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
+    // The model chip's follow-up steps own ↑↓, Enter, Tab, and Esc while they
+    // are open. Any other key closes them (the chip keeps its values) and then
+    // does what it normally does, so the user can simply keep typing.
+    if (pane === "chat" && textInputActive && modelChipEdit) {
+      const optionCount = modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers).length;
+      if (key.upArrow && optionCount > 0) {
+        setModelChipEdit({ ...modelChipEdit, index: (modelChipEdit.index - 1 + optionCount) % optionCount });
+        return;
+      }
+      if (key.downArrow && optionCount > 0) {
+        setModelChipEdit({ ...modelChipEdit, index: (modelChipEdit.index + 1) % optionCount });
+        return;
+      }
+      if ((key.return || key.tab) && !key.shift) {
+        applyModelChipEditOption(modelChipEdit, modelChipEdit.index);
+        return;
+      }
+      if (key.escape) {
+        setModelChipEdit(null);
+        return;
+      }
+      setModelChipEdit(null);
+    }
+
     if (pane === "chat" && attachmentFocusIndex != null) {
       if (key.leftArrow) {
         setAttachmentFocusIndex((current) => {
@@ -17268,6 +17502,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showCommandPalette = commandPaletteOpen;
   const showMentionPalette = activeMentionRange != null;
+  const showModelChipPalette = !showMentionPalette && modelChipEdit != null && activePane === "chat";
   const showSlashPalette = slashComposerTrigger != null;
   const errorRows = error ? (!connection ? 2 : 1) : 0;
   const paletteBottomRows = 5
@@ -17282,7 +17517,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const slashPaletteHeightBudget = Math.max(8, Math.min(17, rows - paletteBottomRows - 4));
   const paletteOverlayRows = showCommandPalette
     ? COMMAND_PALETTE_ROWS
-    : showMentionPalette
+    : showMentionPalette || showModelChipPalette
       ? MENTION_PALETTE_ROWS
       : slashPaletteReservedRows(slashPaletteHeightBudget);
   const paletteOverlayTop = Math.max(1, rows - paletteBottomRows - paletteOverlayRows);
@@ -18452,9 +18687,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           flexDirection="column"
           width={promptPaneWidth}
         >
-          {promptSmartLinks.length > 0 ? (
+          {promptSmartLinks.length > 0 || promptModelMentions.length > 0 ? (
             <Text color={PURPLE} bold wrap="truncate-end">
-              {formatPromptSmartLinkStrip(promptSmartLinks)}
+              {formatPromptSmartLinkStrip(promptSmartLinks, promptModelMentions)}
             </Text>
           ) : null}
           {promptRows.map((line, index) => {
@@ -18472,7 +18707,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                     ? undefined
                     : segment.kind === "image"
                       ? theme.color.done
-                      : segment.kind === "command" || segment.kind === "link"
+                      : segment.kind === "model"
+                        ? theme.color.warning
+                        : segment.kind === "command" || segment.kind === "link"
                         ? PURPLE
                         : "cyan"}
                   bold={segment.kind !== "plain"}
@@ -18576,7 +18813,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             />
           </Box>
         ) : null}
-        {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
+        {!showCommandPalette && showModelChipPalette && modelChipEdit ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <ModelChipOptionPalette
+              modelTitle={modelChipEdit.title}
+              stepLabel={modelChipEdit.step === "effort" ? "Thinking" : "Permissions"}
+              options={modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers)}
+              selectedIndex={modelChipEdit.index}
+              currentValue={modelChipEdit.step === "effort" ? modelChipEdit.mention.effort : modelChipEdit.mention.permission}
+              width={paletteOverlayWidth}
+            />
+          </Box>
+        ) : null}
+        {!showCommandPalette && !showMentionPalette && !showModelChipPalette && showSlashPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <SlashPalette
               query={slashComposerTrigger ? `/${slashComposerTrigger.query}` : prompt}

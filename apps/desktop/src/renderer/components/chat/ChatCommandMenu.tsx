@@ -16,12 +16,14 @@ import {
   File,
   GitBranch,
   MagnifyingGlass,
+  Sparkle,
   SpinnerGap,
   Terminal as TerminalIcon,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { composerFileSearchQuery, type ComposerTrigger } from "../../../shared/composerTriggers";
 import { CHAT_MENTION_KINDS, CHAT_MENTION_MAX_PER_KIND, CHAT_MENTION_MAX_RESULTS } from "../../../shared/chatMentions";
+import { rankComposerModelSuggestions, type ComposerModelSuggestion } from "../../../shared/modelMentions";
 import { composerAtFileRankFields, rankComposerAtMenuItems } from "../../../shared/composerAtMenuRanking";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
@@ -36,7 +38,8 @@ export type ChatCommandMenuItem =
   | { type: "file"; path: string; isDirectory?: boolean }
   | { type: "command"; name: string }
   | { type: "mention"; mention: ChatMentionSuggestion }
-  | { type: "pr"; pr: ComposerPrSuggestion };
+  | { type: "pr"; pr: ComposerPrSuggestion }
+  | { type: "model"; model: ComposerModelSuggestion };
 
 /** One row in the `#` pull-request menu. */
 export type ComposerPrSuggestion = {
@@ -71,6 +74,12 @@ type ChatCommandMenuProps = {
    * and the character stays ordinary text.
    */
   onPrSearch?: (query: string) => Promise<ComposerPrSuggestion[]>;
+  /**
+   * Models this chat can start. The @ menu lists a model only when the query
+   * names it (prefix or substring), so an ordinary @ search is not flooded
+   * with the whole catalog. A query that starts with "model" lists them all.
+   */
+  modelOptions?: ComposerModelSuggestion[];
   /** Anchor position in viewport coordinates. */
   anchor: { top: number; left: number; bottom?: number } | null;
   /** Called when user selects an item. */
@@ -124,7 +133,6 @@ const VIEWPORT_GUTTER = 8;
 const MENU_GAP = 8;
 const DEBOUNCE_MS = 40;
 const QUERY_CACHE_MAX = 40;
-
 // ---------------------------------------------------------------------------
 // Async suggestion source (short debounce, provider-scoped cache, stale guard)
 // ---------------------------------------------------------------------------
@@ -298,7 +306,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu(
-    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, anchor, onSelect, onClose, onNoMatches },
+    { trigger, slashCommands, onFileSearch, onMentionSearch, onPrSearch, modelOptions, anchor, onSelect, onClose, onNoMatches },
     ref,
   ) {
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -381,6 +389,17 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       }
       const out: MenuSection[] = [];
       const mixed = rankComposerAtMenuItems(fileResults, mentionResults, atQuery, CHAT_MENTION_MAX_RESULTS);
+      const models = rankComposerModelSuggestions(modelOptions ?? [], atQuery);
+      const modelSection = (): MenuSection => ({
+        key: "models",
+        label: "Models",
+        Icon: Sparkle,
+        rows: withIndices(models.rows.map((model) => ({ type: "model" as const, model }))),
+      });
+      // A name hit on a model (exact or prefix) leads, so `@deep` + Tab picks
+      // the model; weaker model hits follow the file and chat matches.
+      const modelsFirst = models.rows.length > 0 && (models.bestScore ?? 99) <= 1;
+      if (modelsFirst) out.push(modelSection());
       if (mixed.length) {
         out.push({
           key: "at",
@@ -389,8 +408,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
           rows: withIndices(mixed),
         });
       }
+      if (!modelsFirst && models.rows.length > 0) out.push(modelSection());
       return out;
-    }, [trigger, filteredCommands, fileResults, mentionResults, prResults, atQuery]);
+    }, [trigger, filteredCommands, fileResults, mentionResults, prResults, atQuery, modelOptions]);
 
     const items: ChatCommandMenuItem[] = useMemo(
       () => sections.flatMap((section) => section.rows.map((row) => row.item)),
@@ -532,7 +552,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                 <>
                   <MagnifyingGlass size={12} weight="bold" className="text-violet-400/60" />
                   <span className="text-[10px] font-medium tracking-wide text-fg/46">
-                    {onMentionSearch ? "Best match · files, chats, lanes, terminals" : "File search"}
+                    {onMentionSearch ? "Best match · files, chats, lanes, terminals, models" : "File search"}
                   </span>
                 </>
               ) : isHashTrigger ? (
@@ -613,6 +633,22 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                           {item.pr.repo ? (
                             <span className="ml-auto max-w-[40%] shrink-0 truncate text-fg/34">{item.pr.repo}</span>
                           ) : null}
+                        </MenuRow>
+                      );
+                    }
+
+                    if (item.type === "model") {
+                      return (
+                        <MenuRow
+                          key={`model:${item.model.modelId}`}
+                          index={index}
+                          selected={isSelected}
+                          onHover={setSelectedIndex}
+                          onSelect={handleSelect}
+                        >
+                          <Sparkle size={13} weight="duotone" className={iconClass} />
+                          <span className={cn("truncate", labelClass)}>{item.model.title}</span>
+                          <span className="ml-auto max-w-[45%] shrink-0 truncate text-fg/34">{item.model.subtitle}</span>
                         </MenuRow>
                       );
                     }

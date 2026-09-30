@@ -28,6 +28,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../desktop/src/shared/types/externalSessions";
 import type { ModelWizardStep } from "./modelWizard";
+import type { ComposerModelSuggestion } from "../../../desktop/src/shared/modelMentions";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import type { PrLaneNextStep } from "../../../desktop/src/shared/prNextStep";
@@ -524,9 +525,11 @@ export type LocalNotice = {
 };
 
 export type MentionSuggestion = {
-  kind: "lane" | "chat" | "pr" | "file" | "commit";
+  kind: "lane" | "chat" | "pr" | "file" | "commit" | "model";
   label: string;
   insertText: string;
+  /** Model rows: the model the chip names, its thinking levels and default. */
+  model?: ComposerModelSuggestion;
   detail?: string;
   filePath?: string;
   attachment?: boolean;

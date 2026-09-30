@@ -5431,8 +5431,8 @@ export function AgentChatPane({
    * Routes "where should this chat go" to the matching modal. A running turn
    * does not refuse the choice: each modal says the turn is still going and
    * keeps its send off until it ends (the local view's banner, the
-   * cross-machine modal's `turnActive`). A chat that already lives on another
-   * machine opens the dialog that names that machine instead of the modal.
+   * cross-machine modal's `turnActive`). A chat on another machine opens the
+   * same modal: its source steps are pinned to that machine.
    */
   const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
     if (intent === "remote") {
@@ -15061,6 +15061,7 @@ export function AgentChatPane({
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
             // it (or picking a non-cursor model another way) restores the full list.
             availableModelIds={composerAvailableModelIds}
+            mentionModelIds={handoffAvailableModelIds}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
@@ -16431,16 +16432,15 @@ export function AgentChatPane({
         localOpen={localHandoffOpen}
         localContent={canShowHandoff ? handoffLocalView : null}
         onCloseLocal={() => setLocalHandoffOpen(false)}
-        remoteNoticeOpen={crossMachineHandoffOpen && isRemoteChat}
-        machineName={chatMachineName}
-        onCloseRemoteNotice={() => setCrossMachineHandoffOpen(false)}
       />
       {selectedSessionId && (selectedSession?.laneId ?? laneId) ? (
         <CrossMachineHandoffModal
-          open={crossMachineHandoffOpen && !isRemoteChat}
+          open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
           runtimePin={chatRuntimePin}
+          sourceMachineTargetId={chatEffectiveBinding?.kind === "remote" ? chatEffectiveBinding.targetId : null}
+          sourceMachineName={isRemoteChat ? chatMachineName : null}
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}

@@ -60304,6 +60304,15 @@ export function createAgentChatService(args: {
       : null,
     logger,
     onMentionsExpanded: onChatMentionsExpanded ?? null,
+    describeModel: (modelId) => {
+      const descriptor = getModelById(modelId);
+      if (!descriptor) return null;
+      return {
+        displayName: descriptor.displayName,
+        provider: resolveProviderGroupForModel(descriptor),
+        reasoningTiers: descriptor.reasoningTiers ?? [],
+      };
+    },
   });
 
   const listMentionSuggestions = (
