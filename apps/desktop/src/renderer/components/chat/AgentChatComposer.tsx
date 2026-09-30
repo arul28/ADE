@@ -83,7 +83,20 @@ import {
   shouldFoldPastedText,
 } from "../../../shared/composerPasteFolding";
 import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
-import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
+import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
+import {
+  composerModelInfo,
+  composerModelSuggestion,
+  createModelChipNode,
+  initialModelMention,
+  modelChipOptions,
+  modelChipSegments,
+  renderModelChip,
+  type ComposerModelInfo,
+  type ModelChipSegment,
+} from "./composerModelChip";
+import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
+import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
   activeTurnInlineAttachmentBlock,
@@ -1775,6 +1788,7 @@ export function AgentChatComposer({
   modelId,
   activeHarnessPresetId = null,
   availableModelIds,
+  mentionModelIds,
   constrainModelSelection = false,
   modelUnavailableMessage,
   providerAuthStatus,
@@ -1935,6 +1949,11 @@ export function AgentChatComposer({
    */
   activeHarnessPresetId?: string | null;
   availableModelIds?: string[];
+  /**
+   * Every model a new chat could start on, for `@` model chips. Wider than
+   * `availableModelIds`, which a running chat narrows to what it can switch to.
+   */
+  mentionModelIds?: string[];
   constrainModelSelection?: boolean;
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
@@ -2231,7 +2250,10 @@ export function AgentChatComposer({
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
   const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
-    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft) || parseChatMentions(draft).length > 0,
+    () => findSmartLinks(draft).length > 0
+      || hasChatOutputContext(draft)
+      || parseChatMentions(draft).length > 0
+      || parseModelMentions(draft).length > 0,
   );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   // The CTO identity session cannot queue: the host turns a queued delivery
@@ -2301,12 +2323,6 @@ export function AgentChatComposer({
   // atomic active-turn delivery handler. Everything else keeps the single queue
   // button.
   const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
-
-  useEffect(() => {
-    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0) {
-      setSmartLinkEditorEnabled(true);
-    }
-  }, [draft]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -2390,6 +2406,23 @@ export function AgentChatComposer({
   }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
+  // Switching from the textarea to the rich editor unmounts the node that holds
+  // the caret. When the user was typing, keep the caret's draft offset here so
+  // the rich editor can take focus and put the caret back at the same place.
+  const richPromotionCaretRef = useRef<number | null>(null);
+  const promoteToRichEditor = () => {
+    const textarea = textareaRef.current;
+    if (!smartLinkEditorEnabled && textarea && document.activeElement === textarea) {
+      richPromotionCaretRef.current = lastPlainSelectionRef.current ?? textarea.selectionStart ?? textarea.value.length;
+    }
+    setSmartLinkEditorEnabled(true);
+  };
+  useEffect(() => {
+    if (hasChatOutputContext(draft) || parseChatMentions(draft).length > 0 || parseModelMentions(draft).length > 0) {
+      promoteToRichEditor();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- promotion follows the draft only
+  }, [draft]);
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
@@ -2398,6 +2431,33 @@ export function AgentChatComposer({
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
   const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null =>
+    composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId)),
+  [modelCatalogScopeKey]);
+  // DOM callbacks (chip hydration) read the latest lookup without re-binding.
+  const describeChipModelRef = useRef(describeChipModel);
+  describeChipModelRef.current = describeChipModel;
+  const modelMentionOptions = useMemo(() => {
+    const ids = mentionModelIds ?? availableModelIds ?? [];
+    const out = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
+      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
+      seen.add(descriptor.id);
+      out.push(composerModelSuggestion(descriptor));
+    }
+    return out;
+  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey]);
+  // A model chip being edited: which chip, which part, which option is lit.
+  const [modelChipEdit, setModelChipEdit] = useState<{
+    chip: HTMLElement;
+    segment: ModelChipSegment;
+    index: number;
+  } | null>(null);
+  // Set when a model is picked in the plain textarea: the chip only exists
+  // after the switch to the rich editor, which then opens its first part.
+  const pendingModelChipTokenRef = useRef<string | null>(null);
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
@@ -3664,13 +3724,29 @@ export function AgentChatComposer({
     }
     for (const node of nodes) {
       const text = node.textContent ?? "";
-      const mentions = parseChatMentions(text).filter((mention) => labels.has(mention.token));
+      const mentions: Array<{ start: number; end: number; build: () => HTMLElement }> = [
+        ...parseChatMentions(text)
+          .filter((mention) => labels.has(mention.token))
+          .map((mention) => ({
+            start: mention.start,
+            end: mention.end,
+            build: () => createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)),
+          })),
+        // A model token needs no label table: the catalog names it. An unknown
+        // model still becomes a chip, drawn as unavailable.
+        ...parseModelMentions(text).map((mention) => ({
+          start: mention.start,
+          end: mention.end,
+          build: () => createModelChipNode(mention, describeChipModelRef.current(mention.modelId)),
+        })),
+      ].sort((a, b) => a.start - b.start);
       if (!mentions.length) continue;
       const fragment = document.createDocumentFragment();
       let offset = 0;
       for (const mention of mentions) {
+        if (mention.start < offset) continue;
         if (mention.start > offset) fragment.append(document.createTextNode(text.slice(offset, mention.start)));
-        fragment.append(createComposerTokenChipNode("mention", mention.token, labels.get(mention.token)));
+        fragment.append(mention.build());
         offset = mention.end;
       }
       if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
@@ -3758,6 +3834,7 @@ export function AgentChatComposer({
   const replaceRichTriggerWith = useCallback((insertion:
     | { text: string }
     | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string; triggerLabel?: string }
+    | { node: HTMLElement; triggerLabel: string }
   ): boolean => {
     const editor = richEditorRef.current;
     if (!editor) return false;
@@ -3774,7 +3851,7 @@ export function AgentChatComposer({
       ? composerTriggerForSelection(
         detectedContext.trigger,
         insertion.triggerLabel ?? "",
-        insertion.chipKind === "file" ? "file" : "mention",
+        "chipKind" in insertion && insertion.chipKind === "file" ? "file" : "mention",
       )
       : detectedContext.trigger;
     const context = trigger.query === detectedContext.trigger.query
@@ -3790,7 +3867,9 @@ export function AgentChatComposer({
       return true;
     }
     context.range.deleteContents();
-    const chip = createComposerTokenChipNode(insertion.chipKind, insertion.chipText, insertion.chipLabel);
+    const chip = "node" in insertion
+      ? insertion.node
+      : createComposerTokenChipNode(insertion.chipKind, insertion.chipText, insertion.chipLabel);
     context.range.insertNode(chip);
     const space = document.createTextNode(" ");
     chip.after(space);
@@ -3803,6 +3882,132 @@ export function AgentChatComposer({
     syncRichDraft();
     return true;
   }, [captureRichSelection, createComposerTokenChipNode, getRichTriggerContext, syncRichDraft]);
+
+  /** Put the caret in the text just after `chip`, adding a space when none follows. */
+  const placeCaretAfterChip = useCallback((chip: HTMLElement) => {
+    const editor = richEditorRef.current;
+    if (!editor || !editor.contains(chip)) return;
+    let next = chip.nextSibling;
+    if (!(next instanceof Text) || !/^[ \u00a0]/.test(next.textContent ?? "")) {
+      next = document.createTextNode(" ");
+      chip.after(next);
+    }
+    const range = document.createRange();
+    range.setStart(next, 1);
+    range.collapse(true);
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    richSelectionRef.current = range.cloneRange();
+  }, []);
+
+  /** Light up one part of a model chip and open its list. */
+  const openModelChipSegment = useCallback((chip: HTMLElement, segment: ModelChipSegment) => {
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    if (!mention) return;
+    const info = describeChipModelRef.current(mention.modelId);
+    const options = modelChipOptions(segment, info);
+    const current = segment === "effort" ? mention.effort : mention.permission;
+    const index = Math.max(0, options.findIndex((option) => option.value === current));
+    renderModelChip(chip, mention, info, segment);
+    placeCaretAfterChip(chip);
+    setModelChipEdit({ chip, segment, index });
+  }, [placeCaretAfterChip]);
+
+  /** Write one option into the chip's token and redraw it. */
+  const applyModelChipOption = useCallback((
+    chip: HTMLElement,
+    segment: ModelChipSegment,
+    index: number,
+    active: ModelChipSegment | null,
+  ) => {
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    if (!mention) return;
+    const info = describeChipModelRef.current(mention.modelId);
+    const option = modelChipOptions(segment, info)[index];
+    const next = option
+      ? { ...mention, ...(segment === "effort" ? { effort: option.value } : { permission: option.value }) }
+      : mention;
+    renderModelChip(chip, next, info, active);
+    syncRichDraft();
+  }, [syncRichDraft]);
+
+  const closeModelChipEdit = useCallback(() => {
+    setModelChipEdit((current) => {
+      if (current) {
+        const mention = parseModelMentionToken(current.chip.dataset.composerChipText ?? "");
+        if (mention) renderModelChip(current.chip, mention, describeChipModelRef.current(mention.modelId), null);
+      }
+      return null;
+    });
+  }, []);
+
+  /**
+   * Step to the next (or previous) part of the chip, or out of it. Leaving the
+   * last part puts the caret after the chip so typing just continues.
+   */
+  const stepModelChipEdit = useCallback((direction: 1 | -1) => {
+    if (!modelChipEdit) return;
+    const { chip, segment } = modelChipEdit;
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    const segments = modelChipSegments(mention ? describeChipModelRef.current(mention.modelId) : null);
+    const next = segments[segments.indexOf(segment) + direction];
+    if (next) {
+      openModelChipSegment(chip, next);
+      return;
+    }
+    closeModelChipEdit();
+    placeCaretAfterChip(chip);
+  }, [closeModelChipEdit, modelChipEdit, openModelChipSegment, placeCaretAfterChip]);
+
+  /** Keys while a chip part is open. Returns true when the key was used. */
+  const handleModelChipEditKey = (event: React.KeyboardEvent<HTMLElement>): boolean => {
+    if (!modelChipEdit) return false;
+    const { chip, segment, index } = modelChipEdit;
+    if (!richEditorRef.current?.contains(chip)) {
+      setModelChipEdit(null);
+      return false;
+    }
+    const mention = parseModelMentionToken(chip.dataset.composerChipText ?? "");
+    const options = modelChipOptions(segment, mention ? describeChipModelRef.current(mention.modelId) : null);
+    const move = (nextIndex: number) => {
+      const wrapped = (nextIndex + options.length) % options.length;
+      applyModelChipOption(chip, segment, wrapped, segment);
+      setModelChipEdit({ chip, segment, index: wrapped });
+    };
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (options.length) move(index + (event.key === "ArrowDown" ? 1 : -1));
+      return true;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      stepModelChipEdit(event.shiftKey ? -1 : 1);
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Escape") {
+      event.preventDefault();
+      closeModelChipEdit();
+      placeCaretAfterChip(chip);
+      return true;
+    }
+    // A letter jumps to the next option that starts with it ("f" → Full access).
+    if (event.key.length === 1 && /[a-z]/i.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const letter = event.key.toLowerCase();
+      for (let step = 1; step <= options.length; step += 1) {
+        const candidate = (index + step) % options.length;
+        if (options[candidate]!.label.toLowerCase().startsWith(letter)) {
+          event.preventDefault();
+          move(candidate);
+          return true;
+        }
+      }
+    }
+    // Anything else ends the edit and is typed as usual after the chip.
+    closeModelChipEdit();
+    return false;
+  };
 
   // Brief shimmer over the composer (CSS honors prefers-reduced-motion). Fired
   // both on the optimistic mic-down (recording start) and on transcript insert.
@@ -4092,11 +4297,35 @@ export function AgentChatComposer({
 
     tokenizeSmartLinksInEditor();
 
+    const promotionCaret = richPromotionCaretRef.current;
+    if (promotionCaret !== null) {
+      richPromotionCaretRef.current = null;
+      const point = composerDomPointAtSerializedOffset(editor, promotionCaret);
+      const range = document.createRange();
+      range.setStart(point.node, point.offset);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+    }
+
+    const pendingModelToken = pendingModelChipTokenRef.current;
+    if (pendingModelToken) {
+      pendingModelChipTokenRef.current = null;
+      const chips = Array.from(editor.querySelectorAll<HTMLElement>("[data-composer-chip='model']"))
+        .filter((chip) => chip.dataset.composerChipText === pendingModelToken);
+      const chip = chips[chips.length - 1];
+      const first = chip ? modelChipSegments(describeChipModelRef.current(chip.dataset.modelId ?? ""))[0] : null;
+      if (chip && first) openModelChipSegment(chip, first);
+    }
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, askQuestionActive, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
+  }, [appControlContextItems, askQuestionActive, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, hydrateMentionChipsInEditor, insertNodeAtTextOffset, iosElementContextItems, mentionLabels, onDraftChange, openModelChipSegment, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   // ── Chip selection highlight ─────────────────────────────────────────────
   // The native selection is not painted over contentEditable="false" chips, so
@@ -4725,6 +4954,7 @@ export function AgentChatComposer({
 
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
     const isPlainHistoryArrow =
       (event.key === "ArrowUp" || event.key === "ArrowDown")
@@ -5037,7 +5267,7 @@ export function AgentChatComposer({
     const next = `${draft.slice(0, start)}${payload.text}${draft.slice(end)}`;
     onDraftChange(next);
     restoreTextareaCaret(start + payload.text.length);
-    setSmartLinkEditorEnabled(true);
+    promoteToRichEditor();
     return true;
   };
 
@@ -5094,7 +5324,8 @@ export function AgentChatComposer({
           // composer to the rich editor and tokenize the pasted URL.
           window.requestAnimationFrame(() => {
             onDraftChange(node.value);
-            setSmartLinkEditorEnabled(true);
+            lastPlainSelectionRef.current = node.selectionStart ?? node.value.length;
+            promoteToRichEditor();
           });
         } else {
           window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
@@ -5193,6 +5424,26 @@ export function AgentChatComposer({
         onDraftChange(next.text);
         restoreTextareaCaret(next.caret);
       }
+    } else if (item.type === "model" && commandMenuTrigger) {
+      const mention = initialModelMention(item.model);
+      const token = formatModelMentionToken(mention);
+      if (useRichComposer) {
+        const chip = createModelChipNode(mention, describeChipModelRef.current(mention.modelId));
+        if (replaceRichTriggerWith({ node: chip, triggerLabel: item.model.title })) {
+          const first = modelChipSegments(describeChipModelRef.current(mention.modelId))[0];
+          if (first) openModelChipSegment(chip, first);
+        } else {
+          insertTextIntoRichEditor(`${token} `);
+        }
+      } else {
+        // The rich editor takes over once the draft holds the token; it then
+        // opens the chip's first part (see `pendingModelChipTokenRef`).
+        pendingModelChipTokenRef.current = token;
+        const trigger = composerTriggerForSelection(commandMenuTrigger, item.model.title, "mention");
+        const next = replaceComposerTriggerSpan(draft, trigger, `${token} `);
+        onDraftChange(next.text);
+        restoreTextareaCaret(next.caret);
+      }
     } else if (item.type === "mention" && commandMenuTrigger) {
       // A mention is a pointer, not an attachment: nothing is resolved or read
       // now. The token is expanded into an <ade-mention> block at send time.
@@ -5239,7 +5490,7 @@ export function AgentChatComposer({
       }
     }
     closeCommandMenu();
-  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, openModelChipSegment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -6729,6 +6980,31 @@ export function AgentChatComposer({
               registerAsDictationTarget();
             }}
           >
+            {modelChipEdit ? (() => {
+              const segmentNode = modelChipEdit.chip.querySelector<HTMLElement>(
+                `[data-model-segment='${modelChipEdit.segment}']`,
+              );
+              const mention = parseModelMentionToken(modelChipEdit.chip.dataset.composerChipText ?? "");
+              const options = modelChipOptions(
+                modelChipEdit.segment,
+                mention ? describeChipModel(mention.modelId) : null,
+              );
+              return segmentNode ? (
+                <ModelChipSegmentMenu
+                  anchor={segmentNode}
+                  segment={modelChipEdit.segment}
+                  options={options}
+                  activeIndex={modelChipEdit.index}
+                  onPick={(index) => {
+                    const { chip, segment } = modelChipEdit;
+                    applyModelChipOption(chip, segment, index, segment);
+                    setModelChipEdit({ chip, segment, index });
+                    stepModelChipEdit(1);
+                  }}
+                  onClose={closeModelChipEdit}
+                />
+              ) : null;
+            })() : null}
             <ChatCommandMenu
               ref={commandMenuRef}
               trigger={commandMenuTrigger}
@@ -6741,6 +7017,7 @@ export function AgentChatComposer({
               onFileSearch={onSearchAttachments}
               onMentionSearch={onSearchMentions}
               onPrSearch={onSearchPullRequests}
+              modelOptions={modelMentionOptions}
               anchor={commandMenuAnchor}
               onSelect={handleCommandMenuSelect}
               onClose={closeCommandMenu}
@@ -6807,9 +7084,18 @@ export function AgentChatComposer({
                   onBlur={() => {
                     cancelPromptHistorySequence();
                     captureRichSelection();
+                    closeModelChipEdit();
                   }}
                   onClick={(event) => {
                     const target = event.target as HTMLElement | null;
+                    const modelSegment = target?.closest?.("[data-model-segment]") as HTMLElement | null;
+                    const modelChip = modelSegment?.closest?.("[data-composer-chip='model']") as HTMLElement | null;
+                    if (modelSegment && modelChip) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openModelChipSegment(modelChip, modelSegment.dataset.modelSegment as ModelChipSegment);
+                      return;
+                    }
                     const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
                     if (smartLinkChip?.dataset.smartLinkUrl) {
                       event.preventDefault();

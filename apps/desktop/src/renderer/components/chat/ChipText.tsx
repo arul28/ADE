@@ -51,6 +51,8 @@ function openChip(chip: Chip): void {
     navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
     return;
   }
+  // A model chip names a setting, not a place; it has nothing to open.
+  if (source.origin === "model") return;
   if (source.mentionKind === "chat") {
     openAdeDeeplink(buildDeeplink({ kind: "session", sessionId: source.id }));
     return;
@@ -66,7 +68,7 @@ function isActionable(chip: Chip): boolean {
   // destination to open, and a pill that looks clickable and does nothing is
   // worse than one that plainly is not. iOS reaches the same answer for the
   // same reason (`workChipNavigationURL` returns nil for a path).
-  if (chip.kind === "folder") return false;
+  if (chip.kind === "folder" || chip.kind === "model") return false;
   return chip.source.origin !== "mention" || chip.source.mentionKind !== "terminal";
 }
 

@@ -34,6 +34,8 @@
 
 import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
+import { getModelById } from "./modelRegistry";
+import { modelMentionChipLabel, parseModelMentions, type ModelMention } from "./modelMentions";
 import { findSmartLinks, type SmartLinkPreview } from "./smartLinks";
 import type { ChatMentionKind } from "./types/chatMentions";
 
@@ -57,6 +59,8 @@ export type ChipKind =
   | "actions_run"
   | "linear_issue"
   | "web_page"
+  /** A model with a thinking level and a permission mode (`@model:<id>?…`). */
+  | "model"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
   | "ade_link";
 
@@ -69,7 +73,8 @@ export type ChipSource =
   | { origin: "mention"; mentionKind: ChatMentionKind; id: string }
   | { origin: "path"; path: string }
   | { origin: "deeplink"; url: string; target: DeeplinkTarget }
-  | { origin: "url"; url: string };
+  | { origin: "url"; url: string }
+  | { origin: "model"; mention: ModelMention };
 
 export type Chip = {
   kind: ChipKind;
@@ -111,6 +116,7 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   actions_run: "⚙",
   linear_issue: "L",
   web_page: "↗",
+  model: "✦",
   ade_link: "A",
 };
 
@@ -138,6 +144,7 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   actions_run: "r",
   linear_issue: "N",
   web_page: ">",
+  model: "M",
   ade_link: "A",
 };
 
@@ -192,6 +199,22 @@ export function chipFromMention(mentionKind: ChatMentionKind, id: string, label?
     token: formatChatMentionToken(mentionKind, id),
     label: label?.trim() || defaultMentionLabel(mentionKind, id),
     source: { origin: "mention", mentionKind, id },
+  };
+}
+
+/**
+ * A model chip. The label uses the registry's display name when this build
+ * knows the model, and the last segment of the id when it does not.
+ */
+export function chipFromModelMention(mention: ModelMention, token: string): Chip {
+  const displayName = getModelById(mention.modelId)?.displayName
+    ?? mention.modelId.split("/").pop()
+    ?? mention.modelId;
+  return {
+    kind: "model",
+    token,
+    label: modelMentionChipLabel(mention, displayName),
+    source: { origin: "model", mention },
   };
 }
 
@@ -378,6 +401,11 @@ export function parseChips(text: string, limit = 24): ChipMatch[] {
   for (const mention of parseChatMentions(text)) {
     const chip = chipFromMention(mention.kind, mention.id);
     matches.push({ ...chip, start: mention.start, end: mention.end });
+  }
+
+  for (const model of parseModelMentions(text)) {
+    const chip = chipFromModelMention(model, model.token);
+    matches.push({ ...chip, start: model.start, end: model.end });
   }
 
   for (const link of findSmartLinks(text, limit)) {

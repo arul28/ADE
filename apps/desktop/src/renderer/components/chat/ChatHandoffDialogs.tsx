@@ -57,17 +57,11 @@ export function ChatHandoffDialogs({
   localOpen,
   localContent,
   onCloseLocal,
-  remoteNoticeOpen,
-  machineName,
-  onCloseRemoteNotice,
 }: {
   localOpen: boolean;
   /** The local handoff form, or null when this chat cannot hand off. */
   localContent: ReactNode | null;
   onCloseLocal: () => void;
-  remoteNoticeOpen: boolean;
-  machineName: string;
-  onCloseRemoteNotice: () => void;
 }) {
   return (
     <>
@@ -85,21 +79,6 @@ export function ChatHandoffDialogs({
             </button>
           </div>
         )}
-      </HandoffDialog>
-      <HandoffDialog
-        open={remoteNoticeOpen}
-        onClose={onCloseRemoteNotice}
-        title="Handoff to remote machine"
-        className="w-[min(420px,94vw)] px-5 py-4"
-      >
-        <p className="font-sans text-[13px] leading-5 text-fg/75">
-          This chat runs on {machineName}. Open that machine&rsquo;s project to start a cross-machine handoff.
-        </p>
-        <div className="mt-4 flex justify-end">
-          <button type="button" className={CLOSE_BUTTON_CLASS} onClick={onCloseRemoteNotice}>
-            Close
-          </button>
-        </div>
       </HandoffDialog>
     </>
   );

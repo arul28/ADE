@@ -96,11 +96,27 @@ import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
 
+/**
+ * A machine can take a handoff when it is connected, serves projects, and is new
+ * enough for the storage preflight. The source chat's own machine never can.
+ */
+function isEligibleHandoffConnection(
+  connection: RemoteRuntimeConnectionStatus,
+  sourceMachineTargetId: string | null,
+): boolean {
+  return connection.state === "connected"
+    && connection.target.id !== sourceMachineTargetId
+    && connection.capabilities?.projects === true
+    && connection.capabilities.machineProjects.handoffStoragePreflight === true;
+}
+
 export function CrossMachineHandoffModal({
   open,
   sourceSessionId,
   sourceLaneId,
   runtimePin = null,
+  sourceMachineTargetId = null,
+  sourceMachineName = null,
   sourceProvider,
   target,
   modelId,
@@ -130,6 +146,14 @@ export function CrossMachineHandoffModal({
    * dispatch already routes by target id and is unaffected.
    */
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * The remote target the source chat runs on, when this window reaches it as a
+   * remote machine. That machine cannot be its own destination, so it is left
+   * out of the machine list.
+   */
+  sourceMachineTargetId?: string | null;
+  /** Display name of that source machine, for the empty machine list. */
+  sourceMachineName?: string | null;
   /** Source chat provider; drives whether forking history is offered. */
   sourceProvider?: AgentChatProvider | null;
   target: AgentChatCrossMachineTargetConfig;
@@ -298,12 +322,8 @@ export function CrossMachineHandoffModal({
     [connections, selectedTargetId],
   );
   const eligibleConnections = useMemo(
-    () => connections.filter((connection) =>
-      connection.state === "connected"
-      && connection.capabilities?.projects === true
-      && connection.capabilities.machineProjects.handoffStoragePreflight === true,
-    ),
-    [connections],
+    () => connections.filter((connection) => isEligibleHandoffConnection(connection, sourceMachineTargetId)),
+    [connections, sourceMachineTargetId],
   );
   /**
    * A stable identity for "which machines are eligible". `eligibleConnections`
@@ -317,6 +337,7 @@ export function CrossMachineHandoffModal({
   );
   const incompatibleConnectedCount = connections.filter((connection) =>
     connection.state === "connected"
+    && connection.target.id !== sourceMachineTargetId
     && connection.capabilities?.machineProjects.handoffStoragePreflight !== true,
   ).length;
 
@@ -401,9 +422,7 @@ export function CrossMachineHandoffModal({
       ]);
       setConnections(snapshot.connections);
       const eligible = snapshot.connections.filter((connection) =>
-        connection.state === "connected"
-        && connection.capabilities?.projects === true
-        && connection.capabilities.machineProjects.handoffStoragePreflight === true,
+        isEligibleHandoffConnection(connection, sourceMachineTargetId),
       );
       setSelectedTargetId((current) => current && eligible.some((item) => item.target.id === current)
         ? current
@@ -413,7 +432,7 @@ export function CrossMachineHandoffModal({
     } finally {
       setLoading(false);
     }
-  }, [inspectSource]);
+  }, [inspectSource, sourceMachineTargetId]);
 
   useEffect(() => {
     if (!open) return;
@@ -1163,7 +1182,11 @@ export function CrossMachineHandoffModal({
                     <div className="rounded-xl border border-dashed border-white/[0.09] px-4 py-6 text-center">
                       <Desktop size={22} className="mx-auto text-fg/28" />
                       <div className="mt-2 text-[11px] font-semibold text-fg/62">No eligible connected machines</div>
-                      <div className="mt-1 text-[10px] leading-4 text-fg/40">Connect another ADE machine, then reopen this setup.</div>
+                      <div className="mt-1 text-[10px] leading-4 text-fg/40">
+                        {sourceMachineTargetId
+                          ? `This chat runs on ${sourceMachineName ?? "another machine"}. Connect a different ADE machine to this Mac, then reopen this setup.`
+                          : "Connect another ADE machine, then reopen this setup."}
+                      </div>
                     </div>
                   ) : null}
                   {incompatibleConnectedCount > 0 ? (

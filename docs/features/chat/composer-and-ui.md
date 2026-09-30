@@ -23,7 +23,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/renderer/lib/chatHandoffIntent.ts` | Module-local one-shot bridge between a handoff entry point outside the pane (the session context menu's **Hand off…** submenu, in `components/terminals/SessionContextMenu.tsx`) and `AgentChatPane`, which owns both handoff dialogs and the cross-machine modal. The menu records a destination (`"local"` \| `"remote"`) with `openChatHandoff` and selects the row; only the active tile drains it, live when the session is already selected or from the single-slot queue when it mounts a render later, then opens the matching surface. A transient command, not store state. |
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
 | `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | Modal state and user flow for **Continue on another machine**. It takes a `runtimePin` naming the machine the *source* chat runs on (`null` = this tab's bound machine), and every source-side call is pinned to it: the lane list, `git.getSyncStatus`, `git.getOriginRemote`, `git.push`, `git.pull`, `agentChat.prepareCrossMachineHandoff`, `validateCrossMachineSource`, and `markCrossMachineHandoff`. Destination dispatch already routes by target id and is unaffected. The pin is held in a ref and **frozen once per operation** so every await inside one handoff reaches the same runtime — reading it fresh after an await could cross a lane-index change and split one handoff across two machines. It verifies the source lane on the pinned machine, follows live remote connection snapshots, lets the user pick brief or full-history fork (fork defaults on for fork-capable providers and constrains the model picker to the same provider), lets the user set the destination chat's model, reasoning effort, fast mode, and permission mode with the same shared pills the composer uses, handles existing-project versus confirmed-clone setup, offers a destination-run fast-forward when the target lane is clean and strictly behind the source commit, decodes destination responses at the renderer boundary, binds acceptance to the route kind present at send time, and exposes retryable source-marker failures after destination success. Source blockers render through `BlockedReasons` / `BlockedActionButton` instead of silently disabling Continue. The pure half — stage/mode types, `SourceCheck`, branch/route/repo-readiness copy, permission tone and icon maps, send-step labels, `CheckRow` — lives in `crossMachineHandoffPresentation.tsx` so it is assertable without mounting the stateful modal. Once destination acceptance is dispatched, a runtime timeout or connection interruption produces an amber unknown-outcome notice: the destination chat may still appear, the user should check that machine before retrying, and the modal never reports a truthful cancellation that the runtime did not perform. A fork that the destination can't accept (older ADE with no `forkHandoffSupport`, oversize history, or an unforkable provider file) surfaces a plain reason and a one-click **send as brief** that re-runs prepare + preflight; the insecure-route notice is informational and fork-aware (a fork discloses that the full history is sent exactly as recorded, a brief that only the summary is sent), and Send is the confirmation. |
-| `ChatHandoffDialogs.tsx` | The two handoff dialogs on Radix Dialog: **Local handoff** (the local fork/brief form, or "Handoff is not available for this chat.") and **Handoff to remote machine** (the notice for a chat that already runs on another machine). Radix gives Escape, outside-click dismiss, and focus trapping. The dialog content is the `PortalContainerContext` value, so popovers inside it stay clickable; Escape closes an open lane list before it closes the dialog. |
+| `ChatHandoffDialogs.tsx` | The **Local handoff** dialog on Radix Dialog (the local fork/brief form, or "Handoff is not available for this chat."). Cross-machine handoff opens `CrossMachineHandoffModal` for every chat, so there is no separate notice for a remote chat. Radix gives Escape, outside-click dismiss, and focus trapping. The dialog content is the `PortalContainerContext` value, so popovers inside it stay clickable; Escape closes an open lane list before it closes the dialog. |
 | `CursorRuntimeNotice.tsx` | The dismissible pill over the transcript when a Cursor chat has no Cursor runtime. It links to the Cursor provider settings. While it applies, the amber CLI runtime banner is not shown for that chat. Dismissal resets when the runtime block clears. |
 | `ChatRuntimeScope.tsx` | Which machine THIS chat is on, and what its lane looks like there — the single derivation every chat-scoped panel reads instead of a global store selector. `useChatRuntimeScope()` returns `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }` from context, `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` derives the same from a pin passed as a prop (for surfaces mounted outside a chat pane), `useChatScopeDerivation({...})` answers it from a *session* for `AgentChatPane`, and `ChatRuntimeScopeProvider` carries the resolved scope down the panel/drawer subtree. `pin === null` means, and only means, "this chat lives on the tab's binding". ESLint bans `useAppStore` / `useRootAppStore` reads of `projectBinding` / `lanes`, `project.rootPath` reads, and `selectActiveProjectRoot` imports inside `components/chat/**` so no panel can quietly go back to reading the tab's machine. Full contract in the chat [README](README.md#source-file-map). |
 | `AgentChatMessageList.tsx` | Virtualized message list. The virtualizer is **hand-rolled**, not `@tanstack/react-virtual`: a `measuredHeights` row-key → height `Map` feeds top/bottom spacer divs around the rendered window, and each rendered row is wrapped in `MeasuredEventRow`, whose `ResizeObserver` reports its real height through `handleMeasure` → `reconcileMeasuredScrollTop` so a height correction above the viewport does not shift what the reader is looking at. Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` rows (from `SubagentActivityCards.tsx`) for real subagents and compact `BackgroundJobRunRow` rows for runs of backgrounded shell commands, and accepts stable row-key jump requests from the compact while-you-were-away card and the spawn/result jump affordances. Keeps sticky-bottom sessions pinned across streamed row growth, late virtual-height measurements, and a shrinking transcript viewport (a growing composer must not unstick the thread). A Claude `queue_recovery: available` row renders one eight-second Undo card; later `restored`/`expired` rows settle the same recovery id so history replay cannot show a stale action. The last text block of a multi-block assistant turn exposes Copy turn, which joins only that turn's assistant text blocks with blank lines; legacy rows without a turn id and single-block turns keep only the normal block copy. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; terminal provider capacity/usage-limit errors render `ProviderFailureRecoveryCard` with same-thread retry and model-selection actions. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. `WorkingIndicator` is the in-flight turn's status line — `<activity> · working for <elapsed>`, plus a `taking longer than usual` marker past `LONG_RUNNING_TURN_SECONDS`. The activity half comes from `resolveWorkingIndicatorLabel`: `ACTIVITY_LABELS` is keyed against the `activity` union in `shared/types/chat.ts` so a new runtime value is a compile error rather than a raw `web_searching` on screen, and an `editing_file` activity is named with its target (`Editing laneService.ts`) by walking back to the most recent unfinished write entry in the turn — `activity` events carry the tool name, not the file. Its elapsed is written imperatively (`textContent` on a ref) rather than through state, so the once-per-second tick never commits a render on the message list. The line swaps a bare `<span>` for an expander `<button>` the instant the turn's first tool entry arrives, which remounts the timer node, so the ref is a **callback** ref: it repaints the counter in the same commit it attaches, and the ticker re-reads the ref every tick. An element captured once when the ticker started would be detached by that swap and the display would sit frozen at `0s` while the long-running marker still appeared. `ChatInfoHostContext` also lives here — a boolean context reporting whether the *owning host* listens for `ade:chat:open-info`. `AgentChatPane` provides `true` (it owns the chat actions pane); `PersonalChatsPage` mounts the same transcript without it, so the background-job `open` button is absent there rather than dispatching into nothing. It must stay a context rather than a module-level registry: `App` renders every `ProjectSurface` and only toggles `active`, so each `AgentChatPane` stays mounted while Personal Chats is open, and a global "is any host alive" flag would read true on exactly the surface that has no pane. |
@@ -1554,6 +1554,38 @@ why the `test-ios` CI gate watches `apps/desktop/src/shared/__fixtures__/` as
 well as `apps/ios/**`: a desktop-only PR that adds a chip case must run the
 Swift suite, or the divergence lands on main silently.
 
+### Model chips
+
+A model chip names a model, a thinking level, and a permission mode in one
+pill, so a user can write "start an agent in this lane with <chip>" instead of
+spelling out the model id and the flags.
+
+- **Token.** `@model:<registry-id>?effort=<level>&perm=<mode>`
+  (`shared/modelMentions.ts`). Both query keys are optional. `perm` is one of
+  `default | auto | plan | edit | full-auto`, the same values as
+  `ade chat create --permissions`.
+- **Menu.** The `@` menu lists models in a "Models" section
+  (`rankComposerModelSuggestions`). A model shows only when the query names it
+  (an exact, prefix, word-prefix, or substring hit on the display name, two
+  characters or more), so an ordinary `@` search is not flooded. A query that
+  starts with `model` lists every model. A name hit puts the section first, so
+  `@deep` + Tab picks the model. The list is every model a new chat could start
+  on (`mentionModelIds`), not the narrower list the running chat can switch to.
+- **Editing.** The chip has a fixed name part and two editable parts
+  (`composerModelChip.ts`). After insertion the thinking part opens with the
+  model's default level. Tab moves thinking → permission → out of the chip,
+  Shift+Tab moves back, the arrow keys change the value, a letter jumps to the
+  first value that starts with it, and Enter or Escape leaves the chip. A
+  click on a part opens it again. A model with no thinking levels skips that
+  part. The list above the part is `ModelChipSegmentMenu` on `AnchoredMenu`.
+- **Send.** `chatMentionService` expands each distinct model token into an
+  `<ade-mention kind="model">` block with the exact `ade chat create` and
+  `ade chat handoff` flags. An unknown model expands as `resolved="false"` and
+  tells the agent to ask, not guess. A thinking level the model does not accept
+  is dropped from the flags and named in the block.
+- **Transcript.** `chips.ts` parses the token into a `model` chip whose label
+  is `Display name · Level · Mode`. It is a label, not a link.
+
 ### Chips are pointers, so pointers need hover cards
 
 A chip is deliberately compact — `#1237` or `Lane 25f280a4` says nothing about
@@ -2053,9 +2085,9 @@ send disabled until the turn ends.
   source publication, lets the user choose an eligible connected runtime,
   brief or fork mode, and an optional continuation note, explains
   clone/storage/model/route failures, and shows what the capsule includes and
-  excludes before final confirmation. For a chat that already runs on another
-  machine, it opens the **Handoff to remote machine** dialog instead, which
-  names that machine.
+  excludes before final confirmation. It opens for every chat, including one
+  that already runs on another machine; that machine is left out of the
+  destination list (see below).
 - **Auto handoff…** opens `AutoHandoffModal`, hosted by `SessionContextMenu`.
 
 `ChatHandoffDialogs` uses Radix Dialog, so Escape, a click outside, and focus
@@ -2073,13 +2105,17 @@ chat's model, when the catalog has one. The model catalog can arrive first with
 only the source model and then grow, so the form keeps choosing until an
 alternative is available or the user picks a model.
 
-Eligibility is a fact about the **chat's** machine, not the active tab.
-`AgentChatPane` decides it from `chatEffectiveBinding` (`isRemoteChat`), so a
-local chat viewed from a remote-bound tab can still hand off, and a chat pinned
-to a remote machine cannot — regardless of which project the tab has open. When
-it is blocked the dialog names the machine (`This chat runs on <machine>. Open
-that machine's project to start a cross-machine handoff.`) rather than talking
-about the tab. `CrossMachineHandoffModal` receives that same `chatRuntimePin` as
+Any chat can start a cross-machine handoff, including a chat that runs on
+another machine than the window's (a MacBook window showing a Mac Studio chat).
+Every source step already goes to the chat's own machine through the pin, and
+every destination step goes to a connected machine by target id, so the window
+only coordinates. The one rule is that the chat's own machine is never a
+destination: `AgentChatPane` passes `sourceMachineTargetId` (the remote target
+of `chatEffectiveBinding`) and the modal leaves that connection out of the
+machine list. When no other machine is connected, the empty list names the
+chat's machine and asks for a different one. This window's own machine is not a
+destination yet: the destination steps run through remote connections only.
+`CrossMachineHandoffModal` receives that same `chatRuntimePin` as
 its `runtimePin` and pins every source-side call — lane list, sync status,
 origin remote, push, pull, prepare, validate, and the source marker — to it,
 freezing the pin once per operation so one handoff cannot straddle two runtimes.
