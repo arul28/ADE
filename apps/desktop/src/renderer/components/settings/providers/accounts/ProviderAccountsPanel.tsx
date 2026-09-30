@@ -40,6 +40,7 @@ import type {
 import {
   accountAccent,
   accountIdentityLine,
+  accountSignedOut,
   accountUsageLine,
   accentTint,
   providerHasFiveHourWindow,
@@ -180,6 +181,7 @@ function AccountRow({
   instance,
   brandColor,
   usageLine,
+  signedOut,
   onAction,
   onSignIn,
   renaming,
@@ -191,6 +193,8 @@ function AccountRow({
   instance: ProviderInstance;
   brandColor: string;
   usageLine: string | null;
+  /** The saved login no longer works, even when the config home names an email. */
+  signedOut: boolean;
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   renaming: boolean;
@@ -300,9 +304,9 @@ function AccountRow({
             whiteSpace: "nowrap",
           }}
         >
-          {accountIdentityLine(instance)}
+          {accountIdentityLine(instance, signedOut)}
         </span>
-        {instance.signedIn ? null : (
+        {!signedOut ? null : (
           <button
             type="button"
             onClick={() => onSignIn(instance)}
@@ -549,6 +553,7 @@ export function ProviderAccountsPanel({
           instance={instance}
           brandColor={brandColor}
           usageLine={usageByInstance.get(instance.id) ?? null}
+          signedOut={accountSignedOut(snapshot, provider, instance)}
           onAction={onAction}
           onSignIn={(target) => setSheet({ existing: target })}
           renaming={renamingId === instance.id}

@@ -143,10 +143,26 @@ export function providerHasFiveHourWindow(
   );
 }
 
+/**
+ * True when the account's saved login no longer works.
+ *
+ * `instance.signedIn` only says the config home still names an email, and the
+ * email stays after the CLI clears a broken login. The usage poller reads the
+ * login itself, so its `signed_out` outranks the email.
+ */
+export function accountSignedOut(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+): boolean {
+  if (!instance.signedIn) return true;
+  return usageAccountFor(snapshot, provider, instance)?.login === "signed_out";
+}
+
 /** `email · plan`, whichever halves exist, or the not-signed-in sentence. */
-export function accountIdentityLine(instance: ProviderInstance): string {
+export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
   if (!instance.signedIn) return "Not signed in";
-  const parts = [instance.account?.email, instance.account?.plan].filter(
+  const parts = [instance.account?.email, signedOut ? "Signed out" : instance.account?.plan].filter(
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );
   return parts.length ? parts.join(" · ") : "Signed in";
