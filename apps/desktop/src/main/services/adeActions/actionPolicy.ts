@@ -903,6 +903,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "forceRefresh",
     "getAdeUsageStats",
     "getModelRoutes",
+    "getRouterEfficiency",
     "getRouterShadowSummary",
     "getTurnUsageSummary",
     "getUsageSnapshot",

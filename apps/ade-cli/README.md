@@ -794,6 +794,7 @@ ade usage turns --group-by provider --recent 20 --text  # group by provider (def
 ade router routes --provider codex --limit 20 --text  # rated routes (harness × model × effort) with score, cost, and who bills it
 ade router pick "fix the parser bug" --provider codex --model gpt-6-sol --kind light_edit --text  # dry-run the route the router would pick for one task
 ade router shadow --days 7 --text                     # what the shadow router would have changed for recent subagents (changes no turn)
+ade router efficiency --days 7 --text                 # what it would have saved across every chat thread (turn-ledger replay) and subagent, at list prices
 ade router refresh --text                             # fetch the newest model registry (signed-in accounts)
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs

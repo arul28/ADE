@@ -3543,7 +3543,7 @@ type UsageTrackingDependencies = UsageLedgerScannerOverrides & {
   /**
    * The machine-wide model router (shadow mode). When present, the router
    * actions read it: `getModelRoutes`, `previewModelRoute`,
-   * `getRouterShadowSummary`, `refreshModelRegistry`.
+   * `getRouterShadowSummary`, `getRouterEfficiency`, `refreshModelRegistry`.
    */
   modelRouter?: ModelRouterService | null;
   scanGitHubStats?: (range: ResolvedAdeUsageRange, projectRoot?: string | null) => Promise<GitHubActivityStats>;
@@ -4481,6 +4481,8 @@ export function createUsageTrackingService({
   const previewModelRoute = (args: RouterPreviewArgs) => requireModelRouter().preview(args);
   /** What the shadow router would have changed over the last days. */
   const getRouterShadowSummary = (args: { days?: number } = {}) => requireModelRouter().shadowSummary(args);
+  /** What the router would have saved against what ran: ledger threads replayed, plus shadow-logged subagents. */
+  const getRouterEfficiency = (args: { days?: number } = {}) => requireModelRouter().efficiency(args);
   const refreshModelRegistry = (args: { force?: boolean } = {}) => requireModelRouter().refreshRegistry(args);
 
   function cachedCostResult(): { costs: CostSnapshot[]; adeCosts: CostSnapshot[] } {
@@ -5540,6 +5542,7 @@ export function createUsageTrackingService({
       getModelRoutes,
       previewModelRoute,
       getRouterShadowSummary,
+      getRouterEfficiency,
       refreshModelRegistry,
       getUsageRollup,
       resolveBalancedInstance,
@@ -5578,6 +5581,7 @@ export function createUsageTrackingService({
     getModelRoutes,
     previewModelRoute,
     getRouterShadowSummary,
+    getRouterEfficiency,
     refreshModelRegistry,
     getUsageRollup,
     resolveBalancedInstance,

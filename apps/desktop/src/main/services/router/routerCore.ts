@@ -22,7 +22,11 @@ import type { AdeQuotaBurnRate } from "../../../shared/types/turnUsage";
 import type { ModelRoute, RouteBilling } from "./routeCatalog";
 import { registryFamilyForModelId } from "./routeCatalog";
 
-export type RouterTaskKind = "read_only" | "review" | "test_run" | "light_edit" | "heavy_edit" | "unknown";
+/**
+ * `lead` is a main chat thread: it plans, delegates, and edits, so it keeps
+ * the strictest tolerance. The keyword classifier never returns it.
+ */
+export type RouterTaskKind = "read_only" | "review" | "test_run" | "light_edit" | "heavy_edit" | "lead" | "unknown";
 
 /** How far below the reference's expected score a kind may go, on the 0 to 1 agent scale. */
 export const ROUTER_QUALITY_TOLERANCE: Record<RouterTaskKind, number> = {
@@ -31,6 +35,7 @@ export const ROUTER_QUALITY_TOLERANCE: Record<RouterTaskKind, number> = {
   review: 0.05,
   light_edit: 0.05,
   heavy_edit: 0.02,
+  lead: 0.02,
   unknown: 0.02,
 };
 
