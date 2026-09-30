@@ -123,10 +123,26 @@ export const DEFAULT_HARNESS_PRESET_LOGO: HarnessPresetLogo = { kind: "ade" };
 /** "Same as main" — the subagent model follows whatever the preset's model is. */
 export const HARNESS_PRESET_SUBAGENT_INHERIT = "inherit";
 
+/**
+ * The account-settings key the preset list travels under.
+ *
+ * One name, three consumers: the renderer's sync registry, the main-process
+ * bridge that reports preset changes, and anything that has to answer "does the
+ * brain hold this preset yet" before a launch reads it.
+ */
+export const HARNESS_PRESETS_SETTING_KEY = "harnessPresets";
+
 /** "Follows subagents" — a built-in agent takes the subagent model. */
 export const HARNESS_PRESET_AGENT_FOLLOWS = "follows";
 
-/** The built-in agents a Claude preset can pin to a specific model. */
+/**
+ * The subagent roles a preset can name.
+ *
+ * These are the SEMANTIC roles, not any one harness's spelling: each writer
+ * maps them onto its own words (`general-purpose` in Claude Code and Grok,
+ * `general` in OpenCode). Keeping the preset's vocabulary stable is what lets
+ * one preset shape describe four harnesses without a per-harness schema.
+ */
 export const HARNESS_PRESET_AGENT_KEYS = ["explore", "plan", "generalPurpose"] as const;
 export type HarnessPresetAgentKey = (typeof HARNESS_PRESET_AGENT_KEYS)[number];
 
@@ -137,6 +153,138 @@ export const HARNESS_PRESET_AGENT_LABELS: Record<HarnessPresetAgentKey, string> 
 };
 
 export type HarnessPresetAgentOverrides = Partial<Record<HarnessPresetAgentKey, string>>;
+export type HarnessPresetAgentEfforts = Partial<Record<HarnessPresetAgentKey, string>>;
+
+/** One named subagent type a harness exposes by name. */
+export type HarnessSubagentAgentType = { key: HarnessPresetAgentKey; label: string };
+
+/**
+ * What a harness lets a preset say about its subagents.
+ *
+ * Two independent knobs, because no harness has both for free: Claude Code and
+ * Codex take a model and a thinking level for subagents, Grok and OpenCode take
+ * a model only, and the rest take neither. `reason` carries the sentence a
+ * surface shows instead of a dead control — never a silent absence, which reads
+ * as a missing feature rather than a harness that has none.
+ *
+ * Every entry here was read off the harness or its pinned SDK, never guessed:
+ * - claude — `AgentDefinition.effort` and `.model` in `@anthropic-ai/claude-agent-sdk`
+ *   0.3.284 (`sdk.d.ts`), plus `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)`.
+ * - codex — the `agents` table of codex-cli 0.155.1's own config schema
+ *   (`default_subagent_model`, `default_subagent_reasoning_effort`) and
+ *   `AgentRoleToml { description, config_file, nickname_candidates }`.
+ * - grok — `~/.grok/docs/user-guide/16-subagents.md` and `26-config-reference.md`:
+ *   `subagents.models.<type>` pins a model; a subagent otherwise inherits the
+ *   parent, and no per-subagent effort key exists.
+ * - opencode — `opencode agent list` reports `explore (subagent)` and
+ *   `general (subagent)`, and `opencode agent create --mode subagent -m
+ *   provider/model` writes a per-agent model.
+ */
+export type HarnessSubagentSupport = {
+  /** A subagent can run on a model of its own. */
+  model: boolean;
+  /** A subagent's thinking level can differ from the main thread's. */
+  effort: boolean;
+  /** Named types this harness lets a preset pin individually. */
+  agentTypes: readonly HarnessSubagentAgentType[];
+  /** Why the missing half is missing, in the user's words. Null when both are there. */
+  reason: string | null;
+};
+
+function subagentTypes(...keys: HarnessPresetAgentKey[]): readonly HarnessSubagentAgentType[] {
+  return keys.map((key) => ({ key, label: HARNESS_PRESET_AGENT_LABELS[key] }));
+}
+
+const SUBAGENT_MODEL_ONLY = "OpenCode pins a subagent's model in its own agent config; the thinking level is not a per-agent setting there.";
+
+export const HARNESS_SUBAGENT_SUPPORT: Record<HarnessPresetBody, HarnessSubagentSupport> = {
+  claude: {
+    model: true,
+    effort: true,
+    agentTypes: subagentTypes("explore", "plan", "generalPurpose"),
+    reason: null,
+  },
+  codex: {
+    model: true,
+    effort: true,
+    agentTypes: [],
+    reason: null,
+  },
+  grok: {
+    model: true,
+    effort: false,
+    agentTypes: subagentTypes("explore", "plan", "generalPurpose"),
+    reason: "Grok takes a model per subagent type and no thinking level, so its subagents keep the main thread's effort.",
+  },
+  opencode: {
+    model: true,
+    effort: false,
+    agentTypes: subagentTypes("explore", "generalPurpose"),
+    reason: SUBAGENT_MODEL_ONLY,
+  },
+  droid: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Droid resolves its subagents from droid definitions ADE does not manage, so it runs them on the main model.",
+  },
+  qwen: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Qwen Code runs subagents on the main model.",
+  },
+  pi: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Pi runs subagents on the main model.",
+  },
+  kimi: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Kimi runs subagents on the main model.",
+  },
+  copilot: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "GitHub Copilot runs subagents on the main model.",
+  },
+  cursor: {
+    model: false,
+    effort: false,
+    agentTypes: [],
+    reason: "Cursor runs subagents on the main model.",
+  },
+};
+
+/** The knobs one harness exposes, never undefined. */
+export function harnessSubagentSupport(harness: HarnessPresetBody): HarnessSubagentSupport {
+  return HARNESS_SUBAGENT_SUPPORT[harness];
+}
+
+/**
+ * What to show where a subagent model or effort control would be.
+ *
+ * One sentence, harness-named, so the reader learns which harness has the
+ * capability rather than that ADE lacks a button.
+ */
+export function harnessSubagentInheritNote(
+  harness: HarnessPresetBody,
+  knob: "model" | "effort",
+): string {
+  const support = harnessSubagentSupport(harness);
+  if (knob === "model" ? support.model : support.effort) return "";
+  return support.reason
+    ?? `${harnessBodyLabel(harness)} runs subagents on the main model.`;
+}
+
+/** "Subagents run on the main model" — the value a surface shows when unsupported. */
+export function harnessSubagentSameAsMain(harness: HarnessPresetBody): string {
+  return `${harnessBodyLabel(harness)} runs subagents on the main model`;
+}
 
 /**
  * The sentence shown when a built-in agent is pinned to a specific model.
@@ -172,8 +320,12 @@ export type HarnessPreset = {
   reasoningEffort?: string;
   /** `"inherit"` = same as main. Otherwise a model id. */
   subagentModel: string;
+  /** The subagent thinking level, where the harness takes one. Absent = runtime default. */
+  subagentEffort?: string;
   /** Per-built-in-agent pins. `"follows"` = follows the subagent model. */
   agentOverrides: HarnessPresetAgentOverrides;
+  /** Per-built-in thinking levels, where the harness takes them. Absent = follows. */
+  agentEfforts: HarnessPresetAgentEfforts;
   /**
    * No permission mode lives here on purpose. A permission tier belongs to the
    * harness and is chosen at launch in the composer, exactly as it is for every
@@ -314,6 +466,19 @@ function normalizeAgentOverrides(value: unknown): HarnessPresetAgentOverrides {
   return out;
 }
 
+function normalizeAgentEfforts(value: unknown): HarnessPresetAgentEfforts {
+  if (!value || typeof value !== "object") return {};
+  const raw = value as Record<string, unknown>;
+  const out: HarnessPresetAgentEfforts = {};
+  for (const key of HARNESS_PRESET_AGENT_KEYS) {
+    const entry = raw[key];
+    // Any non-empty level is kept: a gateway's spelling is not ADE's to police,
+    // exactly as it is for the preset's own `reasoningEffort`.
+    if (isNonEmptyString(entry)) out[key] = entry.trim();
+  }
+  return out;
+}
+
 function normalizeSource(value: unknown): HarnessPresetSource | null {
   if (validateSource(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -380,7 +545,9 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
     model: raw.model.trim(),
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
+    ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
+    agentEfforts: normalizeAgentEfforts(raw.agentEfforts),
     accentColor,
     logo: normalizeLogo(raw.logo),
     createdAt,
@@ -480,7 +647,9 @@ export type HarnessPresetExport = {
     model: string;
     reasoningEffort?: string;
     subagentModel: string;
+    subagentEffort?: string;
     agentOverrides: HarnessPresetAgentOverrides;
+    agentEfforts: HarnessPresetAgentEfforts;
     accentColor: string;
     logo: HarnessPresetLogo;
   };
@@ -551,7 +720,9 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
       model: preset.model,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
       subagentModel: preset.subagentModel,
+      ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
       agentOverrides: normalizeAgentOverrides(preset.agentOverrides),
+      agentEfforts: normalizeAgentEfforts(preset.agentEfforts),
       accentColor: preset.accentColor,
       logo,
     },
@@ -656,7 +827,9 @@ export function importHarnessPreset(
     model: raw.model.trim(),
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
+    ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
+    agentEfforts: normalizeAgentEfforts(raw.agentEfforts),
     accentColor:
       typeof raw.accentColor === "string" && HARNESS_PRESET_ACCENT_PATTERN.test(raw.accentColor)
         ? raw.accentColor.toLowerCase()

@@ -20,6 +20,11 @@ import {
 import { getModelById } from "../../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { providerColor } from "../../usage/providerColors";
+import {
+  harnessSubagentInheritNote,
+  harnessSubagentSupport,
+  type HarnessPresetAgentKey,
+} from "../../../../shared/harnessPresets";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { HarnessChipRow, ReachableModelList } from "../../shared/ModelPicker/ReachableModelList";
@@ -75,9 +80,36 @@ export function emptyCustomProviderDraft(harness: HarnessPresetBody = "claude"):
     model: "",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
+    agentEfforts: {},
     accentColor: normalizeHex(providerColor(harness)),
     logo: { kind: "ade" },
   };
+}
+
+/**
+ * The pins a harness still means something by, after switching to `harness`.
+ *
+ * A pin names a role; each harness spells its roles its own way, and one with
+ * no such role would silently keep a setting nothing reads. Dropping them is
+ * the same answer the model reset gives when a harness cannot reach a model.
+ */
+function keepAgentKeys<T extends Partial<Record<HarnessPresetAgentKey, unknown>>>(
+  pins: T,
+  harness: HarnessPresetBody,
+): T {
+  const kept = {} as T;
+  for (const agent of harnessSubagentSupport(harness).agentTypes) {
+    const value = pins[agent.key];
+    if (value !== undefined) (kept as Record<string, unknown>)[agent.key] = value;
+  }
+  return kept;
+}
+
+/** One sentence for a save that threw, rather than a form that froze. */
+function saveFailureText(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  return detail.trim()
+    || "The save could not be completed. Try again.";
 }
 
 function normalizeHex(value: string): string {
@@ -94,6 +126,7 @@ export function CustomProviderDialog({
   reach,
   onClose,
   onSave,
+  onRetryAccountSync,
 }: {
   open: boolean;
   initialDraft: HarnessPresetDraft;
@@ -104,12 +137,31 @@ export function CustomProviderDialog({
   status: AiSettingsStatus | null;
   reach: HarnessReach;
   onClose: () => void;
-  onSave: (draft: HarnessPresetDraft) => void;
+  /**
+   * Save, and answer what the account said. A non-null string is the reason the
+   * brain has not confirmed the write; the dialog stays open and shows it,
+   * because a preset the launch resolver cannot see yet is worth knowing about
+   * before the first launch, not after it.
+   */
+  onSave: (draft: HarnessPresetDraft) => Promise<string | null>;
+  /** Push the saved list to the account again, without writing anything locally. */
+  onRetryAccountSync: () => Promise<string | null>;
 }) {
   const [draft, setDraft] = useState<HarnessPresetDraft>(initialDraft);
   const [query, setQuery] = useState("");
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  /**
+   * The local write has happened.
+   *
+   * The dialog stays open when the account has not confirmed the write, so the
+   * primary action becomes Retry — which only re-pushes. Without this, pressing
+   * Save again after a successful retry would write a SECOND preset, because
+   * the first Save really did save.
+   */
+  const [written, setWritten] = useState(false);
   const [generating, setGenerating] = useState(false);
   const objectUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -148,10 +200,20 @@ export function CustomProviderDialog({
       return {
         ...prev,
         harness,
-        ...(keeps ? {} : { model: "", reasoningEffort: undefined, subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT }),
-        // Advanced only exists for Claude; pins left on another harness would
-        // save settings nothing reads.
-        agentOverrides: harness === "claude" ? prev.agentOverrides : {},
+        ...(keeps ? {}
+          : {
+            model: "",
+            reasoningEffort: undefined,
+            subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
+            subagentEffort: undefined,
+          }),
+        // Pins are keyed by role, and each harness spells its roles its own
+        // way, so a pin (or a level) left on a harness that has no such role
+        // would save a setting nothing reads.
+        ...(keeps ? {} : {
+          agentOverrides: keepAgentKeys(prev.agentOverrides, harness),
+          agentEfforts: keepAgentKeys(prev.agentEfforts, harness),
+        }),
         accentColor: accentTouchedRef.current ? prev.accentColor : normalizeHex(providerColor(harness)),
       };
     });
@@ -170,7 +232,25 @@ export function CustomProviderDialog({
           : {}),
         // Subagents run on the same endpoint as main, so a pick from another
         // source cannot survive a source change.
-        ...(sameGroup ? {} : { subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT, agentOverrides: {} }),
+        ...(sameGroup
+          ? {}
+          : {
+            subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
+            subagentEffort: undefined,
+            agentOverrides: {},
+            agentEfforts: {},
+          }),
+        // A subagent level belongs to the SUBAGENT's model. Clearing it against
+        // the model just picked for the main thread would drop a level that is
+        // still offered where it applies — pinning a subagent model that takes
+        // `max` and then switching the main model to one that does not used to
+        // clear it. Only an inheriting subagent (`Same as main`, or a reset
+        // because the source changed) follows the main model's tiers.
+        ...(prev.subagentEffort
+          && (sameGroup || prev.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT)
+          && !(model.reasoningTiers ?? []).includes(prev.subagentEffort)
+          ? { subagentEffort: undefined }
+          : {}),
       };
     });
   }, [selected?.group.key]);
@@ -233,6 +313,23 @@ export function CustomProviderDialog({
     : null;
 
   const subagentChoices = selected?.group.models ?? [];
+  const subagentSupport = harnessSubagentSupport(draft.harness);
+  // The subagent's own model decides which levels exist, exactly as the main
+  // model's does — a level the model does not advertise is refused at launch.
+  const subagentTiersFor = useCallback((model: string): readonly string[] => {
+    const listed = subagentChoices.find((choice) => choice.id === model || choice.launchModelId === model);
+    return listed?.reasoningTiers ?? getModelById(model)?.reasoningTiers ?? [];
+  }, [subagentChoices]);
+  // "Same as main" means the level menu belongs to the main model.
+  const subagentEffortTiers = draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
+    ? (selected?.model.reasoningTiers ?? [])
+    : subagentTiersFor(draft.subagentModel);
+  const agentEffortTiers = useCallback(
+    (value: string): readonly string[] => (
+      value === ADVANCED_FOLLOWS ? subagentEffortTiers : subagentTiersFor(value)
+    ),
+    [subagentEffortTiers, subagentTiersFor],
+  );
   const registryTiers = draft.model ? getModelById(draft.model)?.reasoningTiers ?? [] : [];
   const listedTiers = selected?.model.reasoningTiers ?? [];
   // A model that is not in the list anymore (an import, a key removed since)
@@ -278,17 +375,76 @@ export function CustomProviderDialog({
         ) : undefined}
         actions={[
           { label: "Cancel", variant: "secondary", onClick: onClose },
-          {
-            label: editingPresetId ? "Save" : "Create",
-            variant: "solid",
-            disabled: !canSave,
-            onClick: () => {
-              if (canSave) onSave(finalDraft);
-            },
-          },
+          accountError
+            ? {
+                label: saving ? "Retrying…" : "Retry",
+                variant: "solid",
+                disabled: saving,
+                onClick: () => {
+                  if (saving) return;
+                  setSaving(true);
+                  void onRetryAccountSync()
+                    .then((error) => {
+                      setAccountError(error);
+                      // Confirmed: there is nothing left to do here, and
+                      // leaving Save on screen would invite a second write.
+                      if (!error) onClose();
+                    })
+                    // A rejected push is reported like a refused one. Letting
+                    // it escape would leave the warning cleared and the form
+                    // frozen with nothing on screen to explain either.
+                    .catch((error: unknown) => setAccountError(saveFailureText(error)))
+                    .finally(() => setSaving(false));
+                },
+              }
+            : written
+              ? { label: "Close", variant: "solid", onClick: onClose }
+              : {
+                  label: editingPresetId ? "Save" : "Create",
+                  variant: "solid",
+                  disabled: !canSave || saving,
+                  onClick: () => {
+                    if (!canSave || saving) return;
+                    setSaving(true);
+                    setWritten(true);
+                    void onSave(finalDraft)
+                      .then((error) => setAccountError(error))
+                      .catch((error: unknown) => setAccountError(saveFailureText(error)))
+                      .finally(() => setSaving(false));
+                  },
+                },
         ]}
       >
-        <div data-custom-provider-editor="" style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT, minWidth: 0 }}>
+        {/* A frozen form after a write.
+            The local save really happened, so what the account will receive is
+            what is on screen NOW. Letting the fields keep moving while the
+            warning shows would let someone rename a preset, press Retry, and
+            watch a confirmation for the name they just replaced. */}
+        <fieldset
+          disabled={written}
+          data-custom-provider-editor=""
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 18,
+            fontFamily: SANS_FONT,
+            minWidth: 0,
+            margin: 0,
+            padding: 0,
+            border: "none",
+          }}
+        >
+          {accountError ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "custom-provider-account-sync",
+                tone: "warning",
+                title: "Saved on this computer, but not on your ADE account yet",
+                detail: `${accountError} Until it reaches the account, a chat launched on it now falls back to the harness's own sign-in. Retry to send it again.`,
+              }}
+            />
+          ) : null}
           {missing.length > 0 ? (
             <Banner
               layout="inline"
@@ -424,7 +580,7 @@ export function CustomProviderDialog({
                   <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Model default</span>
                 )}
               </div>
-              {draft.harness === "claude" ? (
+              {subagentSupport.model ? (
                 <>
                   <div style={rowStyle}>
                     <label htmlFor="custom-provider-subagents" style={rowLabelStyle}>Subagents</label>
@@ -436,45 +592,94 @@ export function CustomProviderDialog({
                         { value: HARNESS_PRESET_SUBAGENT_INHERIT, label: "Same as main" },
                         ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
                       ]}
-                      onChange={(value) => patch({ subagentModel: value })}
+                      onChange={(value) => patch({
+                        subagentModel: value,
+                        ...(value === HARNESS_PRESET_SUBAGENT_INHERIT ? { subagentEffort: undefined } : {}),
+                      })}
                     />
                   </div>
-                  <SettingsDisclosure summary="Advanced" gap={10}>
-                    {HARNESS_PRESET_AGENT_KEYS.map((agent) => {
-                      const value = draft.agentOverrides[agent] ?? ADVANCED_FOLLOWS;
-                      return (
-                        <div key={agent} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          <div style={rowStyle}>
-                            <label htmlFor={`custom-provider-agent-${agent}`} style={rowLabelStyle}>
-                              {HARNESS_PRESET_AGENT_LABELS[agent]}
-                            </label>
-                            <SettingsSelect
-                              id={`custom-provider-agent-${agent}`}
-                              ariaLabel={`${HARNESS_PRESET_AGENT_LABELS[agent]} model`}
-                              value={value}
-                              options={[
-                                { value: ADVANCED_FOLLOWS, label: "Follows subagents" },
-                                ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
-                              ]}
-                              onChange={(next) => {
-                                const overrides = { ...draft.agentOverrides };
-                                if (next === ADVANCED_FOLLOWS) delete overrides[agent];
-                                else overrides[agent] = next;
-                                patch({ agentOverrides: overrides });
-                              }}
-                            />
+                  {subagentSupport.effort ? (
+                    <div style={rowStyle}>
+                      <span style={rowLabelStyle}>Subagent effort</span>
+                      {subagentEffortTiers.length > 0 ? (
+                        <EffortPills
+                          tiers={subagentEffortTiers}
+                          value={draft.subagentEffort ?? ""}
+                          onChange={(value) => patch({ subagentEffort: value || undefined })}
+                        />
+                      ) : (
+                        <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Model default</span>
+                      )}
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+                      {harnessSubagentInheritNote(draft.harness, "effort")}
+                    </p>
+                  )}
+                  {subagentSupport.agentTypes.length > 0 ? (
+                    <SettingsDisclosure summary="Subagent naming" gap={10}>
+                      {subagentSupport.agentTypes.map(({ key, label }) => {
+                        const value = draft.agentOverrides[key] ?? ADVANCED_FOLLOWS;
+                        const effort = draft.agentEfforts[key] ?? "";
+                        return (
+                          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                            <div style={rowStyle}>
+                              <label htmlFor={`custom-provider-agent-${key}`} style={rowLabelStyle}>
+                                {label}
+                              </label>
+                              <SettingsSelect
+                                id={`custom-provider-agent-${key}`}
+                                ariaLabel={`${label} model`}
+                                value={value}
+                                options={[
+                                  { value: ADVANCED_FOLLOWS, label: "Follows subagents" },
+                                  ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
+                                ]}
+                                onChange={(next) => {
+                                  const overrides = { ...draft.agentOverrides };
+                                  if (next === ADVANCED_FOLLOWS) delete overrides[key];
+                                  else overrides[key] = next;
+                                  const efforts = { ...draft.agentEfforts };
+                                  if (next === ADVANCED_FOLLOWS) delete efforts[key];
+                                  patch({ agentOverrides: overrides, agentEfforts: efforts });
+                                }}
+                              />
+                            </div>
+                            {subagentSupport.effort && value !== ADVANCED_FOLLOWS ? (
+                              <div style={rowStyle}>
+                                <span style={{ ...rowLabelStyle, color: COLORS.textMuted }}>Effort</span>
+                                {agentEffortTiers(value).length > 0 ? (
+                                  <EffortPills
+                                    tiers={agentEffortTiers(value)}
+                                    value={effort}
+                                    onChange={(next) => {
+                                      const efforts = { ...draft.agentEfforts };
+                                      if (next) efforts[key] = next;
+                                      else delete efforts[key];
+                                      patch({ agentEfforts: efforts });
+                                    }}
+                                  />
+                                ) : (
+                                  <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Follows subagents</span>
+                                )}
+                              </div>
+                            ) : null}
+                            {value !== ADVANCED_FOLLOWS ? (
+                              <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+                                {harnessPresetAgentOverrideNote(key)}
+                              </p>
+                            ) : null}
                           </div>
-                          {value !== ADVANCED_FOLLOWS ? (
-                            <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-                              {harnessPresetAgentOverrideNote(agent)}
-                            </p>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </SettingsDisclosure>
+                        );
+                      })}
+                    </SettingsDisclosure>
+                  ) : null}
                 </>
-              ) : null}
+              ) : (
+                <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+                  {harnessSubagentInheritNote(draft.harness, "model")}
+                </p>
+              )}
             </section>
           ) : null}
 
@@ -572,7 +777,7 @@ export function CustomProviderDialog({
             />
             {logoError ? <FieldError>{logoError}</FieldError> : null}
           </section>
-        </div>
+        </fieldset>
       </Dialog>
 
       {cropSrc ? (

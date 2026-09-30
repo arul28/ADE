@@ -23,6 +23,7 @@ import { Z_LAYERS } from "../../ui/zLayers";
 import { confirmDialog, promptDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
+import { saveHarnessPresetsToAccount } from "../../../lib/harnessPresetAccountSync";
 import { HelpHint } from "../primitives/HelpHint";
 import { SettingsManagerPage } from "../primitives/SettingsManagerPage";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
@@ -64,7 +65,9 @@ function draftOf(preset: HarnessPreset): HarnessPresetDraft {
     model: preset.model,
     ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
     subagentModel: preset.subagentModel,
+    ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
     agentOverrides: preset.agentOverrides,
+    agentEfforts: preset.agentEfforts,
     accentColor: preset.accentColor,
     logo: preset.logo,
   };
@@ -82,6 +85,15 @@ export function CustomProvidersSection({
   const { pin } = useSettingsMachineScope();
   const credentialPin = useApiCredentialsPin();
   const { presets, createPreset, updatePreset, duplicatePreset, deletePreset } = useHarnessPresets();
+
+  // Every list mutation now answers whether the ACCOUNT confirmed it. A row
+  // action keeps its ordinary success toast either way (the change really did
+  // happen on this computer) and adds this one when it did not reach the
+  // account, so a preset a launch may not resolve is never silently trusted.
+  const warnUnconfirmedAccountWrite = useCallback((error: string | null) => {
+    if (!error) return;
+    showToast({ tone: "warning", title: "Not on your ADE account yet", message: error });
+  }, []);
   const reach = useHarnessReach({ enabled: true, pin });
   const [dialog, setDialog] = useState<DialogState>({ mode: "closed" });
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -111,14 +123,16 @@ export function CustomProvidersSection({
   }, []);
 
   const createFromStarter = useCallback((starter: StarterSuggestion) => {
-    const saved = createPreset({
+    void createPreset({
       ...emptyCustomProviderDraft(starter.harness),
       name: starter.name,
       source: starter.group.source,
       model: starter.model.id,
+    }).then(({ preset, accountError }) => {
+      if (preset) showToast({ tone: "success", title: `Created ${presetLabel(preset)}`, message: "Pick it from any model picker." });
+      warnUnconfirmedAccountWrite(accountError);
     });
-    if (saved) showToast({ tone: "success", title: `Created ${presetLabel(saved)}`, message: "Pick it from any model picker." });
-  }, [createPreset]);
+  }, [createPreset, warnUnconfirmedAccountWrite]);
 
   const handleExport = useCallback((preset: HarnessPreset) => {
     try {
@@ -179,9 +193,10 @@ export function CustomProvidersSection({
           : null,
     });
     if (name === null || !name.trim()) return;
-    const saved = updatePreset(preset.id, { ...draftOf(preset), name: name.trim() });
+    const { preset: saved, accountError } = await updatePreset(preset.id, { ...draftOf(preset), name: name.trim() });
     if (saved) showToast({ tone: "success", title: `Renamed to ${presetLabel(saved)}` });
-  }, [updatePreset]);
+    warnUnconfirmedAccountWrite(accountError);
+  }, [updatePreset, warnUnconfirmedAccountWrite]);
 
   const handleDelete = useCallback(async (preset: HarnessPreset) => {
     const confirmed = await confirmDialog({
@@ -191,9 +206,10 @@ export function CustomProvidersSection({
       destructive: true,
     });
     if (!confirmed) return;
-    deletePreset(preset.id);
+    const { accountError } = await deletePreset(preset.id);
     showToast({ tone: "success", title: `Deleted ${presetLabel(preset)}` });
-  }, [deletePreset]);
+    warnUnconfirmedAccountWrite(accountError);
+  }, [deletePreset, warnUnconfirmedAccountWrite]);
 
   const handleCopyLauncher = useCallback((preset: HarnessPreset) => {
     const line = buildTerminalLauncher({
@@ -278,8 +294,10 @@ export function CustomProvidersSection({
               onEdit={() => setDialog({ mode: "edit", presetId: preset.id, draft: draftOf(preset) })}
               onRename={() => void handleRename(preset)}
               onDuplicate={() => {
-                const copy = duplicatePreset(preset.id);
-                if (copy) showToast({ tone: "success", title: `Duplicated as ${presetLabel(copy)}` });
+                void duplicatePreset(preset.id).then(({ preset: copy, accountError }) => {
+                  if (copy) showToast({ tone: "success", title: `Duplicated as ${presetLabel(copy)}` });
+                  warnUnconfirmedAccountWrite(accountError);
+                });
               }}
               onExport={() => handleExport(preset)}
               onCopyLauncher={() => handleCopyLauncher(preset)}
@@ -298,16 +316,27 @@ export function CustomProvidersSection({
           status={status}
           reach={reach}
           onClose={() => setDialog({ mode: "closed" })}
-          onSave={(draft) => {
-            if (dialog.mode === "edit") {
-              const saved = updatePreset(dialog.presetId, draft);
-              if (saved) showToast({ tone: "success", title: `Saved ${presetLabel(saved)}` });
-            } else {
-              const saved = createPreset(draft);
-              if (saved) showToast({ tone: "success", title: `Created ${presetLabel(saved)}`, message: "Pick it from any model picker." });
+          onSave={async (draft) => {
+            const { preset: saved, accountError } = dialog.mode === "edit"
+              ? await updatePreset(dialog.presetId, draft)
+              : await createPreset(draft);
+            if (!accountError) {
+              if (saved) {
+                showToast({
+                  tone: "success",
+                  title: `${dialog.mode === "edit" ? "Saved" : "Created"} ${presetLabel(saved)}`,
+                  message: "Pick it from any model picker.",
+                });
+              }
+              setDialog({ mode: "closed" });
+              return null;
             }
-            setDialog({ mode: "closed" });
+            // The account has not confirmed the write. Keep the dialog open so
+            // the reason sits next to the thing it is about, and so Retry is
+            // one click away; the preset itself is already saved here.
+            return accountError;
           }}
+          onRetryAccountSync={async () => (await saveHarnessPresetsToAccount()).message}
         />
       ) : null}
     </SettingsManagerPage>

@@ -200,13 +200,11 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "chatFontSizePx",
       value: 14,
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
@@ -249,26 +247,120 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "dark",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
   });
 
-  it("A1: writes a local change with the expected account owner", async () => {
-    const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });
-    const api = createApi();
-    const stop = startAccountSettingsSync(
-      baseOptions({ store, getApi: () => api, isSignedIn: () => true }),
+  it("A1: fences a write with the REAL account id, and with no id when there is none", async () => {
+    // A boolean-only sign-in has no id to fence with. Sending the engine's own
+    // namespace placeholder instead is a claim that is always wrong: the
+    // brain compares it against the owner it really holds and refuses, and the
+    // key stays dirty for as long as the placeholder is what gets sent.
+    const anonymous = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const anonymousApi = createApi();
+    const stopAnonymous = startAccountSettingsSync(
+      baseOptions({ store: anonymous.store, getApi: () => anonymousApi, isSignedIn: () => true }),
     );
     await settle();
-    state.setTheme("light");
+    anonymous.state.setTheme("light");
+    expect(anonymousApi.set).toHaveBeenCalledWith({ scope: "all", key: "theme", value: "light" });
+    stopAnonymous();
+
+    // With a real id, the fence is sent — that is what makes the write's
+    // "ownership changed" answer meaningful.
+    const owned = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const stop = startAccountSettingsSync(
+      baseOptions({
+        store: owned.store,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => "user_1",
+      }),
+    );
+    await settle();
+    owned.state.setTheme("light");
     expect(api.set).toHaveBeenCalledWith({
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
+      expectedAccountUserId: "user_1",
     });
     stop();
+  });
+
+  it("A1c: does not report a write confirmed after the account changed", async () => {
+    // The acknowledgement belongs to the account the request was sent as. If
+    // someone signs in as another account while it is in flight, that "ok" says
+    // nothing about the account signed in now — so it must not be handed back
+    // as a confirmation a caller can act on, and the value stays queued under
+    // the account it was written for.
+    const { store } = createStore({ theme: "dark" });
+    const storage = createStorage();
+    // Held as a list because a `let` the callback writes is narrowed to `null`
+    // by the time the test calls it (control-flow analysis cannot see the
+    // callback run). The LAST entry is this test's `flushKey` write: the
+    // hydrator's own seeding pushes run before it and are never awaited.
+    const acknowledged: Array<(value: { ok: true; value: null }) => void> = [];
+    const api = createApi();
+    api.set.mockImplementation(async () => await new Promise((resolve) => {
+      acknowledged.push(resolve as (value: { ok: true; value: null }) => void);
+    }));
+    let userId = "user_1";
+    const sync = startAccountSettingsSync(
+      baseOptions({
+        store,
+        storage,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => userId,
+      }),
+    );
+    await settle();
+
+    const pending = sync.flushKey("theme");
+    await settle();
+    // The account switches before the write is acknowledged.
+    userId = "user_2";
+    acknowledged.at(-1)?.({ ok: true, value: null });
+
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]"))
+      .toContain("user_1\u0000theme");
+    sync();
+  });
+
+  it("A1b: flushKey pushes the current value and answers what the brain said", async () => {
+    const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
+    const api = createApi();
+    const sync = startAccountSettingsSync(
+      baseOptions({ store, getApi: () => api, isSignedIn: () => true, getAccountUserId: () => "user_1" }),
+    );
+    await settle();
+    api.set.mockClear();
+
+    // Nothing changed locally, and the write still goes: a caller awaiting
+    // `flushKey` is saying "make the machine's copy mine before something else
+    // reads it", and a value that is not dirty would never be pushed otherwise.
+    const confirmed = await sync.flushKey("theme");
+    expect(confirmed.ok).toBe(true);
+    expect(api.set).toHaveBeenCalledWith({
+      scope: "all",
+      key: "theme",
+      value: "dark",
+      expectedAccountUserId: "user_1",
+    });
+
+    api.set.mockImplementation(async () => ({
+      ok: false as const,
+      unavailable: true as const,
+      message: "no brain",
+    }));
+    const refused = await sync.flushKey("theme");
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.message).toContain("no brain");
+    sync();
   });
 
   it("A2: keeps the dirty key and local stamp when the account write is rejected", async () => {
@@ -325,7 +417,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "repo:github.com/ade-dev/ade",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
     stop();
 
@@ -401,7 +492,6 @@ describe("accountSettingsSync (renderer)", () => {
       scope: "all",
       key: "theme",
       value: "light",
-      expectedAccountUserId: "__signed-in__",
     });
 
     // The server's copy predates the local edit: a pull must leave it alone.

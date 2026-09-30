@@ -190,6 +190,19 @@ export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, Claud
 };
 
 /**
+ * One SDK `agents` entry. `effort` is the named level the pinned SDK's
+ * `AgentDefinition` takes (`low`…`max`, or an integer); omitted when the preset
+ * names no level, which leaves the agent on its own default.
+ */
+export type ClaudeBuiltinAgentOverride = {
+  description: string;
+  prompt: string;
+  model: string;
+  effort?: string;
+  disallowedTools?: string[];
+};
+
+/**
  * Build the SDK `agents` entries for a preset's pins.
  *
  * `follows` (the {@link HARNESS_PRESET_AGENT_FOLLOWS} token) is not a model —
@@ -197,19 +210,28 @@ export const CLAUDE_BUILTIN_AGENT_TEMPLATES: Record<HarnessPresetAgentKey, Claud
  * here. An entry whose resolved model is empty is skipped rather than sent with
  * an undefined model, because an `agents` entry with no model still replaces
  * the built-in prompt and would fork the agent for no benefit.
+ *
+ * `efforts` is the parallel map of thinking levels, and it only ever ADDS a
+ * field to an entry the pin already earned: the SDK's entry needs a model, so a
+ * level whose role has none is skipped rather than sent half-formed. The caller
+ * is what makes an effort-only pin complete — it gives that role the subagent
+ * model (or the preset's own) before calling here.
  */
 export function buildClaudeBuiltinAgentOverrides(
   pins: Partial<Record<HarnessPresetAgentKey, string | null | undefined>>,
-): Record<string, { description: string; prompt: string; model: string; disallowedTools?: string[] }> {
-  const agents: Record<string, { description: string; prompt: string; model: string; disallowedTools?: string[] }> = {};
+  efforts: Partial<Record<HarnessPresetAgentKey, string | null | undefined>> = {},
+): Record<string, ClaudeBuiltinAgentOverride> {
+  const agents: Record<string, ClaudeBuiltinAgentOverride> = {};
   for (const key of HARNESS_PRESET_AGENT_KEYS) {
     const model = pins[key]?.trim();
+    const effort = efforts[key]?.trim();
     if (!model) continue;
     const template = CLAUDE_BUILTIN_AGENT_TEMPLATES[key];
     agents[template.agentType] = {
       description: template.description,
       prompt: template.prompt,
       model,
+      ...(effort ? { effort } : {}),
       ...(template.disallowedTools ? { disallowedTools: [...template.disallowedTools] } : {}),
     };
   }

@@ -9,12 +9,14 @@
  */
 
 import {
+  DEFAULT_HARNESS_PRESET_ACCENT,
   presetLabel,
   type HarnessPreset,
   type HarnessPresetBody,
   type HarnessPresetLogo,
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
+import { PROVIDER_CHAT_ACCENTS, PROVIDER_GROUP_COLORS } from "../../../../shared/providerColors";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../../shared/harnessRoutes";
 import { encodeOpenCodeRegistryId } from "../../../../shared/modelRegistry";
 import { harnessModelLabel } from "./harnessModels";
@@ -32,8 +34,42 @@ export type HarnessLaunchTarget = {
   /** Trigger copy: the preset's name, or "DeepSeek V4.1 Flash · Claude Code" for a route. */
   name: string;
   logo: HarnessPresetLogo;
+  /**
+   * The ring the mark is drawn with, everywhere the mark is drawn.
+   *
+   * A saved preset's own accent. An ad-hoc route has no preset to carry one, so
+   * it wears its harness's brand colour — the same colour the transcript uses
+   * for that harness, which is what makes "this is a Claude Code chat" readable
+   * at a glance instead of being the mark's own colours on a purple ring.
+   */
+  accentColor: string;
   adHoc: boolean;
 };
+
+/** The accent a harness body wears where no preset supplies one. */
+export function harnessAccentColor(harness: HarnessPresetBody | string): string {
+  return (PROVIDER_GROUP_COLORS as Record<string, string | undefined>)[harness]
+    ?? DEFAULT_HARNESS_PRESET_ACCENT;
+}
+
+/**
+ * The mark a source wears — who the model actually comes from.
+ *
+ * An opencode source names its provider id (`opencode-go`, `opencode-zen`);
+ * every other kind names the provider the credential or subscription belongs
+ * to. Both are the same vocabulary `ProviderLogo` and the preset wizard's
+ * source rows already use.
+ */
+export function sourceLogoFamily(source: HarnessPresetSource): string {
+  return source.kind === "opencode" ? source.providerId : source.provider;
+}
+
+/** The accent a source wears. Its brand colour where there is one, else the harness's. */
+function sourceAccentColor(source: HarnessPresetSource, harness: HarnessPresetBody): string {
+  const family = sourceLogoFamily(source);
+  const branded = (PROVIDER_CHAT_ACCENTS as Record<string, string | undefined>)[family];
+  return branded ?? harnessAccentColor(harness);
+}
 
 export function resolveHarnessLaunchTarget(
   presetId: string | null | undefined,
@@ -53,7 +89,12 @@ export function resolveHarnessLaunchTarget(
       launchModelId: launchModelIdFor(spec.harness, spec.source, spec.model),
       ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
       name: `${routeModelLabel(spec.source, spec.model, catalogScopeKey)} · ${harnessShortLabel(spec.harness)}`,
-      logo: { kind: "provider", providerId: spec.harness },
+      // The SOURCE's mark, not the harness's: an ad-hoc route is a saved
+      // provider in everything but name, and the harness is the half the person
+      // picked for convenience rather than the half that identifies the model.
+      // The harness stays in the name and in the tooltip every row carries.
+      logo: { kind: "provider", providerId: sourceLogoFamily(spec.source) },
+      accentColor: sourceAccentColor(spec.source, spec.harness),
       adHoc: true,
     };
   }
@@ -68,6 +109,7 @@ export function resolveHarnessLaunchTarget(
     ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
     name: presetLabel(preset),
     logo: preset.logo,
+    accentColor: preset.accentColor,
     adHoc: false,
   };
 }

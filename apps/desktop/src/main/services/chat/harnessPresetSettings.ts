@@ -16,7 +16,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { normalizeHarnessPresetList, type HarnessPreset } from "../../../shared/harnessPresets";
+import {
+  HARNESS_PRESETS_SETTING_KEY,
+  normalizeHarnessPresetList,
+  type HarnessPreset,
+} from "../../../shared/harnessPresets";
 
 const ACCOUNT_SETTINGS_CACHE_FILE = "account-settings.json";
 /**
@@ -32,7 +36,7 @@ const ACCOUNT_SETTINGS_CACHE_FILE = "account-settings.json";
  */
 const ACCOUNT_SETTINGS_ROWS_FIELD = "settings";
 const ACCOUNT_SETTINGS_PRESET_SCOPE = "all";
-const ACCOUNT_SETTINGS_PRESET_KEY = "harnessPresets";
+const ACCOUNT_SETTINGS_PRESET_KEY = HARNESS_PRESETS_SETTING_KEY;
 /** The settings cache keys `<scope>` and `<key>` with a NUL, which neither can contain. */
 const ACCOUNT_SETTINGS_KEY_SEPARATOR = "\u0000";
 

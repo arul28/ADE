@@ -7,6 +7,16 @@
  * `harnessPresets`, registered in `accountSettingsSync.ts`), so a save here
  * lands on localStorage immediately and reaches the account on the next sync
  * tick; there is no separate store to keep in step.
+ *
+ * WHAT EACH MUTATION AWAITS: not the account's eventual convergence, but the
+ * brain's own answer about THIS write. The brain is what resolves a launch, and
+ * it reads the same `account-settings.json` this writes, so "saved" used to
+ * mean "saved here, maybe there" — a save followed straight away by a launch
+ * could miss by seconds and report the preset as gone. Each mutation now
+ * resolves once the brain has confirmed it, and says so when it has not:
+ * `accountError` is a sentence for the user, never a thrown save. The preset is
+ * kept either way — the local copy is the user's work — and stays queued for
+ * the ordinary retry.
  */
 
 import { useCallback } from "react";
@@ -17,6 +27,7 @@ import {
   type HarnessPreset,
   type HarnessPresetDraft,
 } from "../../../../shared/harnessPresets";
+import { saveHarnessPresetsToAccount } from "../../../lib/harnessPresetAccountSync";
 
 /** Ids are opaque and local: nothing outside this list resolves them. */
 function mintPresetId(): string {
@@ -27,15 +38,28 @@ function mintPresetId(): string {
   return `hp_${random}`;
 }
 
+/**
+ * What one write did.
+ *
+ * `preset` is what the local list holds now (null when nothing was written).
+ * `accountError` is set when the account has not confirmed it yet — the write
+ * is queued and retried, but the user has to know before they launch on it.
+ */
+export type HarnessPresetWriteResult = {
+  preset: HarnessPreset | null;
+  accountError: string | null;
+};
+
 export type HarnessPresetsApi = {
   presets: HarnessPreset[];
-  /** Create from a draft. Returns the saved preset, id and timestamps included. */
-  createPreset: (draft: HarnessPresetDraft) => HarnessPreset | null;
-  /** Replace one preset's settings, stamping `updatedAt`. */
-  updatePreset: (id: string, draft: HarnessPresetDraft) => HarnessPreset | null;
+  /** Create from a draft, once the account has confirmed it. */
+  createPreset: (draft: HarnessPresetDraft) => Promise<HarnessPresetWriteResult>;
+  /** Replace one preset's settings, stamping `updatedAt`, once confirmed. */
+  updatePreset: (id: string, draft: HarnessPresetDraft) => Promise<HarnessPresetWriteResult>;
   /** Copy a preset under a free name, placed right after the original. */
-  duplicatePreset: (id: string) => HarnessPreset | null;
-  deletePreset: (id: string) => void;
+  duplicatePreset: (id: string) => Promise<HarnessPresetWriteResult>;
+  /** Remove one. Resolves once the account has confirmed the removal. */
+  deletePreset: (id: string) => Promise<{ accountError: string | null }>;
   presetById: (id: string) => HarnessPreset | null;
 };
 
@@ -50,41 +74,52 @@ export function useHarnessPresets(): HarnessPresetsApi {
   const presets = useRootAppStore((state) => state.harnessPresets);
   const setHarnessPresets = useRootAppStore((state) => state.setHarnessPresets);
 
+  /** One confirmed push after a local write, as a result the caller can show. */
+  const confirmAccountWrite = useCallback(async (): Promise<string | null> => {
+    const outcome = await saveHarnessPresetsToAccount();
+    return outcome.ok ? null : outcome.message;
+  }, []);
+
   const createPreset = useCallback(
-    (draft: HarnessPresetDraft): HarnessPreset | null => {
+    async (draft: HarnessPresetDraft): Promise<HarnessPresetWriteResult> => {
       const now = new Date().toISOString();
       const candidate = normalizeHarnessPreset({ ...draft, id: mintPresetId(), createdAt: now, updatedAt: now });
-      if (!candidate) return null;
-      setHarnessPresets((prev) => [
-        ...prev,
-        { ...candidate, name: uniqueHarnessPresetName(candidate.name, prev.map((entry) => entry.name)) },
-      ]);
-      return candidate;
+      if (!candidate) return { preset: null, accountError: null };
+      // Named against the list as it is now, and returned under that name: the
+      // caller announces what it was handed, and a colliding name is renamed on
+      // the way in — so returning the un-renamed candidate announced a preset
+      // the list does not have.
+      const stored: HarnessPreset = {
+        ...candidate,
+        name: uniqueHarnessPresetName(candidate.name, presets.map((entry) => entry.name)),
+      };
+      setHarnessPresets((prev) => [...prev, stored]);
+      return { preset: stored, accountError: await confirmAccountWrite() };
     },
-    [setHarnessPresets],
+    [confirmAccountWrite, presets, setHarnessPresets],
   );
 
   const updatePreset = useCallback(
-    (id: string, draft: HarnessPresetDraft): HarnessPreset | null => {
+    async (id: string, draft: HarnessPresetDraft): Promise<HarnessPresetWriteResult> => {
       const existing = presets.find((entry) => entry.id === id);
-      if (!existing) return null;
+      if (!existing) return { preset: null, accountError: null };
       const candidate = normalizeHarnessPreset({
         ...draft,
         id,
         createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
       });
-      if (!candidate) return null;
+      if (!candidate) return { preset: null, accountError: null };
       setHarnessPresets((prev) => prev.map((entry) => (entry.id === id ? candidate : entry)));
-      return candidate;
+      return { preset: candidate, accountError: await confirmAccountWrite() };
     },
-    [presets, setHarnessPresets],
+    [confirmAccountWrite, presets, setHarnessPresets],
   );
 
   const duplicatePreset = useCallback(
-    (id: string): HarnessPreset | null => {
+    async (id: string): Promise<HarnessPresetWriteResult> => {
       const existing = presets.find((entry) => entry.id === id);
-      if (!existing) return null;
+      if (!existing) return { preset: null, accountError: null };
       const now = new Date().toISOString();
       const copy: HarnessPreset = {
         ...existing,
@@ -98,16 +133,17 @@ export function useHarnessPresets(): HarnessPresetsApi {
         if (index < 0) return [...prev, copy];
         return [...prev.slice(0, index + 1), copy, ...prev.slice(index + 1)];
       });
-      return copy;
+      return { preset: copy, accountError: await confirmAccountWrite() };
     },
-    [presets, setHarnessPresets],
+    [confirmAccountWrite, presets, setHarnessPresets],
   );
 
   const deletePreset = useCallback(
-    (id: string) => {
+    async (id: string): Promise<{ accountError: string | null }> => {
       setHarnessPresets((prev) => prev.filter((entry) => entry.id !== id));
+      return { accountError: await confirmAccountWrite() };
     },
-    [setHarnessPresets],
+    [confirmAccountWrite, setHarnessPresets],
   );
 
   const presetById = useCallback(

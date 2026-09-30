@@ -46,7 +46,7 @@ import {
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
@@ -66,6 +66,12 @@ import {
   type SessionHoverCardRow,
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
+import { HarnessLogo } from "../shared/HarnessLogo";
+import { harnessBodyLabel } from "../../../shared/harnessPresets";
+import {
+  resolveHarnessLaunchTarget,
+  type HarnessLaunchTarget,
+} from "../settings/harnesses/harnessLaunchTarget";
 import { cursorCloudAgentWebUrl } from "../../lib/cursorCloudUtils";
 import { openExternalUrl } from "../../lib/openExternal";
 import { readImportedFrom } from "./importSessions/contract";
@@ -333,6 +339,37 @@ function modelHandoffProviderSequence(session: TerminalSessionSummary): string[]
   return providers;
 }
 
+/**
+ * A Custom provider's own mark — and nothing else.
+ *
+ * A row used to show the harness alone, which said "Claude Code" for a chat the
+ * person had deliberately pointed at another vendor's model: the one fact about
+ * that row they chose, and the one the mark did not carry. The preset's (or the
+ * route's) own mark, at the preset's own accent, replaces it.
+ *
+ * No second glyph for the harness. Two marks in one row is a badge cluster
+ * competing with the title for a fact the tooltip already carries, and the
+ * harness is the *less* surprising half of the pairing — the person picked the
+ * Custom provider.
+ */
+function CustomProviderMark({
+  target,
+  size,
+}: {
+  target: HarnessLaunchTarget;
+  size: number;
+}) {
+  return (
+    <span
+      data-session-custom-provider={target.presetId}
+      title={`${target.name} · ${harnessBodyLabel(target.harness)}`}
+      className="inline-flex shrink-0 items-center opacity-90"
+    >
+      <HarnessLogo logo={target.logo} size={size} accentColor={target.accentColor} />
+    </span>
+  );
+}
+
 function SessionProviderLogoStack({
   session,
   size,
@@ -340,9 +377,21 @@ function SessionProviderLogoStack({
   session: TerminalSessionSummary;
   size: number;
 }) {
+  // The saved Custom provider (or ad-hoc route) this row runs on, resolved from
+  // the same account-scoped list every other surface reads: a store read rather
+  // than a projected field, so the mark follows a rename or a re-logo without
+  // the row being relisted. The ROOT store, because a project store only ever
+  // holds the seed copy it was created with (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  const customTarget = React.useMemo(
+    () => resolveHarnessLaunchTarget(session.presetId, harnessPresets),
+    [harnessPresets, session.presetId],
+  );
   const providers = modelHandoffProviderSequence(session);
   if (providers.length < 2) {
-    return <ToolLogo toolType={session.toolType} size={size} className="shrink-0 opacity-75" />;
+    return customTarget
+      ? <CustomProviderMark target={customTarget} size={size} />
+      : <ToolLogo toolType={session.toolType} size={size} className="shrink-0 opacity-75" />;
   }
 
   const visibleProviders = providers.slice(-MAX_VISIBLE_MODEL_HANDOFF_LOGOS);
@@ -373,11 +422,15 @@ function SessionProviderLogoStack({
             zIndex: visibleProviders.length - index,
           }}
         >
-          <ToolLogo
-            toolType={chatToolTypeForProvider(provider)}
-            size={size}
-            className={index === 0 ? "block shrink-0" : "block shrink-0 opacity-60"}
-          />
+          {index === 0 && customTarget ? (
+            <CustomProviderMark target={customTarget} size={size} />
+          ) : (
+            <ToolLogo
+              toolType={chatToolTypeForProvider(provider)}
+              size={size}
+              className={index === 0 ? "block shrink-0" : "block shrink-0 opacity-60"}
+            />
+          )}
         </span>
       ))}
     </span>

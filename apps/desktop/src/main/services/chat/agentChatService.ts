@@ -10039,6 +10039,23 @@ export function createAgentChatService(args: {
   const sessionLaunchPlanCache = new Map<string, { key: string; plan: HarnessPresetLaunchPlan | null }>();
   const launchPlanNoticeBySession = new Map<string, string>();
 
+  /**
+   * The thinking level a saved preset carries, without building its environment.
+   *
+   * A dry resolve (`writeConfig: false`) so nothing is written for a question
+   * about one field, and a failure is simply "no level": the caller keeps the
+   * runtime default, which is where a missing preset lands anyway.
+   */
+  const presetReasoningEffort = (provider: string, presetId: string): string | undefined => {
+    try {
+      const plan = resolveLaunchBrain({ provider, presetId }, { writeConfig: false });
+      const effort = plan?.status === "ready" ? plan.reasoningEffort?.trim() : undefined;
+      return effort || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const resolveSessionLaunchPlan = (managed: ManagedChatSession): HarnessPresetLaunchPlan | null => {
     const presetId = managed.session.presetId?.trim() ?? "";
     const credentialId = managed.session.credentialId?.trim() ?? "";
@@ -39823,11 +39840,22 @@ export function createAgentChatService(args: {
     if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
     const selectedInstanceId = balancedInstance?.instanceId ?? requestedInstanceId?.trim();
 
+    /* A Custom provider's thinking level is part of the preset, and the preset
+       is what the user picked — so a chat created on one adopts that level
+       unless the caller named a level of its own. The composer writes the
+       pick's level into `reasoningEffort` too; this covers every other caller
+       (the CLI, a batch launch, an SDK embedder) that only passes `presetId`.
+       The value still goes through the same validation below, so a tier this
+       model does not advertise is clamped rather than refused. */
+    const presetLaunchEffort = !normalizeReasoningEffort(reasoningEffort) && requestedPresetId?.trim()
+      ? presetReasoningEffort(effectiveProvider, requestedPresetId.trim())
+      : undefined;
+    const requestedEffort = normalizeReasoningEffort(reasoningEffort) ?? presetLaunchEffort;
     const rawEffort = effectiveProvider === "codex"
-      ? normalizeReasoningEffort(reasoningEffort)
+      ? requestedEffort
         ?? resolvedDescriptor?.defaultReasoningEffort
         ?? DEFAULT_REASONING_EFFORT
-      : normalizeReasoningEffort(reasoningEffort);
+      : requestedEffort;
     const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid" || effectiveProvider === "pi"
       ? validateRuntimeReasoningEffortForDescriptor(rawEffort, resolvedDescriptor)
       : validateReasoningEffortForDescriptor(

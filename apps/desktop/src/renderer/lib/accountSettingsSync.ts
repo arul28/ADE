@@ -44,6 +44,7 @@ import type {
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../shared/types/accountSettings";
+import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
 import type { AdeTheme } from "../../shared/theme";
@@ -148,7 +149,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // unchanged: the whole list is one value under one key, so the newer-wins
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
-  pref("harnessPresets", (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,
@@ -192,6 +193,27 @@ export type AccountSettingsApi = {
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
   sync(): Promise<AccountSettingsResult<null>>;
+};
+
+/**
+ * The live engine's handle.
+ *
+ * Still a plain function — `useEffect(() => stop)` and every existing test
+ * depend on that — with one extra method attached: {@link flushKey} pushes one
+ * preference NOW and answers what the brain said. A save that must not be
+ * followed by a launch reading a stale copy awaits it; everything else keeps
+ * the fire-and-forget path.
+ */
+export type AccountSettingsSyncHandle = (() => void) & {
+  /**
+   * Push this key's current local value and await the brain's answer.
+   *
+   * Unlike the ordinary write-through, this pushes whether or not the key is
+   * dirty, so it is also the way a caller says "make sure the machine's copy is
+   * the one I am holding" before reading it somewhere else (a launch resolver
+   * reads the same file).
+   */
+  flushKey(key: string): Promise<AccountSettingsResult<null>>;
 };
 
 type AccountSettingsSyncOptionsBase<State> = {
@@ -285,6 +307,32 @@ function sameValue(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * The answer a write gives when nothing reached the brain.
+ *
+ * `unavailable` rather than `rejected`: the caller's local value is intact and
+ * still queued, which is what makes a retry correct and what keeps a caller
+ * from rolling back a change the user can still see.
+ */
+function unsyncedResult(
+  signedOut: boolean,
+  error?: unknown,
+  override?: string,
+): AccountSettingsResult<null> {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return {
+    ok: false,
+    unavailable: true,
+    message: override || detail || (signedOut
+      ? "Sign in to ADE to sync this setting to your account."
+      : "This computer could not reach ADE's account settings service."),
+  };
+}
+
+/** The account changed while this write was in flight; it stays queued. */
+const IDENTITY_CHANGED_MESSAGE =
+  "The signed-in account changed while this was being saved. It will be sent again under the account signed in now.";
+
+/**
  * Starts hydrating from, and writing through to, the account settings store.
  *
  * Returns a stop function. Safe to call with no bridge, no account, and no
@@ -292,7 +340,7 @@ function sameValue(left: unknown, right: unknown): boolean {
  */
 export function startAccountSettingsSync<State = AccountSyncedState>(
   options: AccountSettingsSyncOptions<State>,
-): () => void {
+): AccountSettingsSyncHandle {
   const settings = (options.settings
     ?? (ACCOUNT_SYNCED_SETTINGS as readonly AccountSyncedSetting<State>[])).filter((entry) =>
     isAccountScope(entry.scope),
@@ -307,12 +355,29 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
 
   let stopped = false;
   let applying = false;
+  /**
+   * The REAL account id, or null.
+   *
+   * Never synthesised. The brain fences a settings write against the owner it
+   * holds (`accountCacheStore.mutate` refuses a mutation whose
+   * `expectedAccountUserId` differs from its own), so a placeholder sent as that
+   * fence is not "I don't know" — it is a claim that is always wrong, and the
+   * write stays dirty forever while the poll retries it with the same wrong
+   * value. A caller that has no id sends no fence and lets the store's own
+   * signed-in check decide.
+   */
+  const realAccountUserId = (): string | null => {
+    if (!options.isSignedIn()) return null;
+    return options.getAccountUserId?.()?.trim() || null;
+  };
   const resolveAccountUserId = (): string | null => {
     if (!options.isSignedIn()) return null;
     // The fallback keeps the standalone engine compatible with older test and
-    // hosted-web callers that only exposed a boolean status. The desktop hook
-    // always supplies the real user id, which is what namespaces credentials.
-    return options.getAccountUserId?.()?.trim() || "__signed-in__";
+    // hosted-web callers that only exposed a boolean status. It namespaces this
+    // machine's stamps and dirty keys only; it is never sent as the owner fence
+    // (see `realAccountUserId`). The desktop hook always supplies the real user
+    // id, which is what namespaces credentials.
+    return realAccountUserId() || "__signed-in__";
   };
   let accountUserId = resolveAccountUserId();
   let identityGeneration = 0;
@@ -425,7 +490,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       if (!scopeKey) continue;
       const key = stampKey(scopeKey, entry.key);
       if (seenRemoteKeys.has(key) || stamps[key]) continue;
-      push(entry, entry.read(localState));
+      void push(entry, entry.read(localState));
     }
   };
 
@@ -465,45 +530,75 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     entry: AccountSyncedSetting<State>,
     value: unknown,
     existingDirtyKey = dirtyKey(accountUserId, entry.key),
-  ): void {
+  ): Promise<AccountSettingsResult<null>> {
     const api = options.getApi();
     const scopeKey = scopeKeyFor(entry);
     const userIdAtQueue = accountUserId;
     if (!scopeKey || !api || !options.isSignedIn() || !userIdAtQueue) {
       markDirtyKey(existingDirtyKey);
-      return;
+      return Promise.resolve(unsyncedResult(true));
     }
     try {
       const generationAtQueue = identityGeneration;
       if (resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return;
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
+      const owner = realAccountUserId();
       // Calling set is the queue boundary. Do not move the stamp earlier: a
       // signed-out edit must remain dirty and must not suppress its next pull.
       const pending = api.set({
         scope: scopeKey,
         key: entry.key,
         value,
-        expectedAccountUserId: userIdAtQueue,
+        // Only ever a real id. See `realAccountUserId`.
+        ...(owner ? { expectedAccountUserId: owner } : {}),
       });
       if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return;
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
       stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
       dirtyKeys.delete(existingDirtyKey);
       persistStamps();
       persistDirtyKeys();
-      void Promise.resolve(pending).then((result) => {
-        if (!result || result.ok !== true) markDirtyKey(existingDirtyKey);
-      }).catch(() => {
+      return Promise.resolve(pending).then((result) => {
+        // The account can change while the request is in flight, and an
+        // acknowledgement that belongs to the account it was sent as says
+        // nothing about the one signed in now. Reported as unavailable rather
+        // than as success, so the caller retries it under the new owner instead
+        // of trusting a confirmation it cannot use.
+        if (
+          identityGeneration !== generationAtQueue
+          || resolveAccountUserId() !== userIdAtQueue
+          || accountUserId !== userIdAtQueue
+        ) {
+          markDirtyKey(existingDirtyKey);
+          return unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE);
+        }
+        if (result?.ok === true) return result;
+        // Still dirty: the local value is the newest one this machine holds and
+        // a later tick, sign-in or `flushKey` retries it.
         markDirtyKey(existingDirtyKey);
+        return result ?? unsyncedResult(true);
+      }).catch((error: unknown) => {
+        markDirtyKey(existingDirtyKey);
+        return unsyncedResult(true, error);
       });
-    } catch {
+    } catch (error) {
       markDirtyKey(existingDirtyKey);
+      return Promise.resolve(unsyncedResult(true, error));
     }
   }
+
+  /** One key's value as this machine holds it, pushed now and awaited. */
+  const flushKey = async (key: string): Promise<AccountSettingsResult<null>> => {
+    const entry = settings.find((candidate) => candidate.key === key);
+    if (!entry) {
+      return { ok: false, unavailable: true, message: `This build does not sync '${key}'.` };
+    }
+    return await push(entry, entry.read(options.store.getState()));
+  };
 
   const flushDirty = (): void => {
     if (!options.isSignedIn() || !accountUserId || !options.getApi()) return;
@@ -512,7 +607,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const accountDirtyKey = dirtyKey(accountUserId, entry.key);
       const signedOutDirtyKey = dirtyKey(null, entry.key);
       if (!dirtyKeys.has(accountDirtyKey) && !dirtyKeys.has(signedOutDirtyKey)) continue;
-      push(entry, entry.read(state), dirtyKeys.has(accountDirtyKey) ? accountDirtyKey : signedOutDirtyKey);
+      void push(entry, entry.read(state), dirtyKeys.has(accountDirtyKey) ? accountDirtyKey : signedOutDirtyKey);
     }
   };
 
@@ -523,7 +618,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const value = entry.read(state);
       if (sameValue(value, lastSeen.get(entry.key))) continue;
       lastSeen.set(entry.key, value);
-      push(entry, value);
+      void push(entry, value);
     }
   };
 
@@ -552,10 +647,14 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     void pullThenHydrate();
   }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
 
-  return () => {
+  const stop = (): void => {
     stopped = true;
     unsubscribeStore();
     unsubscribeAccount?.();
     unschedule(timer);
   };
+  // One function, one extra method: a caller that must not read a stale copy
+  // awaits `flushKey`; every existing caller keeps treating this as the stop
+  // function it has always been.
+  return Object.assign(stop, { flushKey });
 }
