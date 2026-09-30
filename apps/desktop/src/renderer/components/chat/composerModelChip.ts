@@ -17,11 +17,12 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   formatModelMentionToken,
+  modelMentionHarnessLabel,
   modelMentionSubtitle,
   type ComposerModelSuggestion,
   type ModelMention,
 } from "../../../shared/modelMentions";
-import { modelPermissionLabel, defaultModelPermission } from "../../../shared/modelPermissions";
+import { modelPermissionLabel, defaultModelPermission, resolveModelPermissionValue } from "../../../shared/modelPermissions";
 import {
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
@@ -57,7 +58,7 @@ export type ComposerModelInfo = {
   subtitle: string;
   /** Chat runtime provider: claude, codex, opencode, cursor, … */
   provider: string;
-  /** The harness's own mark (Claude Code, Codex, OpenCode, …). */
+  /** The harness's display label (Claude Code, OpenCode, …) for the hover title. */
   harness: string;
   /** A distinct sub-provider route, or null when the route repeats the harness. */
   routeKey: string | null;
@@ -105,7 +106,7 @@ export function modelChipLogos(info: ComposerModelInfo | null): { maker: string;
     openCodeProviderId: info.openCodeProviderId,
     size: 12,
   }));
-  const harness = markHtml(createElement(ProviderLogo, { family: info.harness, size: 11 }));
+  const harness = markHtml(createElement(ProviderLogo, { family: info.provider, size: 11 }));
   const route = info.routeKey
     ? markHtml(createElement(ProviderLogo, { family: info.routeKey, size: 11 }))
     : "";
@@ -187,7 +188,8 @@ export function renderModelChip(
       if (info) part.style.color = reasoningEffortToneColor(mention.effort, info.reasoningTiers);
     } else {
       const options = modelChipOptions("perm", info);
-      const selected = options.find((option) => option.value === mention.permission) ?? options[0];
+      const resolvedPermission = resolveModelPermissionValue(info?.provider, mention.permission);
+      const selected = options.find((option) => option.value === resolvedPermission) ?? options[0];
       part.title = `Permissions: ${modelPermissionLabel(info?.provider, mention.permission)}`;
       if (selected?.icon) {
         part.appendChild(logoGroup(markHtml(createElement(PermissionModeGlyph, {
@@ -218,7 +220,7 @@ export function modelChipHoverTitle(mention: ModelMention, info: ComposerModelIn
 
 /** "Harness · route" for a model, e.g. "OpenCode · OpenCode Go". */
 export function composerModelSubtitle(descriptor: ModelDescriptor): string {
-  const harness = resolveProviderGroupForModel(descriptor);
+  const harness = modelMentionHarnessLabel(resolveProviderGroupForModel(descriptor));
   return modelMentionSubtitle(harness, subProviderLabel(descriptor));
 }
 
@@ -241,7 +243,7 @@ export function composerModelInfo(descriptor: ModelDescriptor | null | undefined
     title: descriptor.displayName,
     subtitle: composerModelSubtitle(descriptor),
     provider: harness,
-    harness,
+    harness: modelMentionHarnessLabel(harness),
     routeKey,
     routeLabel,
     reasoningTiers: descriptor.reasoningTiers ?? [],
@@ -259,7 +261,7 @@ export function composerModelSuggestion(descriptor: ModelDescriptor): ComposerMo
   return {
     modelId: descriptor.id,
     title: descriptor.displayName,
-    subtitle: modelMentionSubtitle(harness, subProviderLabel(descriptor)),
+    subtitle: modelMentionSubtitle(modelMentionHarnessLabel(harness), subProviderLabel(descriptor)),
     provider: harness,
     reasoningTiers: tiers,
     defaultEffort: selectSupportedReasoningEffort({ tiers, advertisedDefault: descriptor.defaultReasoningEffort ?? null }),

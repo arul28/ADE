@@ -585,11 +585,14 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       [sections],
     );
 
-    // ---- Reset selection + expansion when the query or trigger changes ----
+    // ---- Reset selection when items change; collapse sections on a new query ----
+    useEffect(() => {
+      setSelectedIndex((prev) => (items.length ? Math.min(prev, items.length - 1) : 0));
+    }, [items.length]);
     useEffect(() => {
       setSelectedIndex(0);
       setExpandedSections(new Set());
-    }, [items.length, trigger?.query, trigger?.type]);
+    }, [trigger?.query, trigger?.type]);
 
     // ---- Scroll selected item into view ----
     useEffect(() => {
@@ -598,7 +601,8 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       // Section headers are interleaved with rows, so index by data attribute
       // rather than by child position.
       const el = container.querySelector<HTMLElement>(`[data-menu-index="${selectedIndex}"]`);
-      el?.scrollIntoView({ block: "nearest" });
+      // jsdom (tests) has no scrollIntoView; a real browser always does.
+      if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
     }, [selectedIndex, sections]);
 
     // ---- Imperative handle for keyboard navigation ----
