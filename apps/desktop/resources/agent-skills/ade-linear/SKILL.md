@@ -99,6 +99,32 @@ Notes:
   commands. It still routes through ADE's saved Linear OAuth/API key; do not ask
   for or print token material.
 
+## Filing follow-up issues and linking issues
+
+File a follow-up when you find a real, separate problem that is outside the
+scope of your issue. Do not file one for work you can finish inside your issue,
+for style nits, or for guesses you did not check.
+
+```bash
+ade linear create --title "Share page leaks OG metadata" --description "…evidence, file:line…"
+ade linear create --title "…" --blocked-by        # the new issue waits on your issue
+ade linear create --title "…" --blocks            # your issue waits on the new one
+ade linear create --title "…" --sub-issue         # a child of your issue
+ade linear create --title "…" --standalone --team VER   # not linked to your issue
+ade linear relate VER-12 --blocks VER-13          # link two existing issues
+ade linear relate --related VER-40                 # link your issue to VER-40
+ade linear inbox                                   # the connected user's unread Linear inbox
+```
+
+Rules:
+- `create` links the new issue to your attached issue as `related` by default,
+  in the same team and project. It refuses when an open issue in that team has
+  a near-identical title and prints that issue; link to it with `relate`
+  instead. Pass `--allow-duplicate` only when you checked it is different.
+- File at most a few follow-ups per task. Put the evidence (what you saw, the
+  file and line, how to reproduce) in `--description`.
+- After filing, add one comment on your own issue that names the new issue.
+
 ## ADE deeplinks in Linear comments
 
 ADE posts its own Linear attachments/cards for lane, chat, and PR flows. The

@@ -1931,6 +1931,14 @@ struct NormalizedLinearIssue: Codable, Hashable, Identifiable {
   var createdAt: String?
   var updatedAt: String?
   var childIssues: [NormalizedLinearIssueChild]?
+  /// Linear's suggested git branch (`issue.branchName`, from the workspace
+  /// branch format). Older brains omit it.
+  var branchName: String?
+  var parentIssue: NormalizedLinearIssueChild?
+  /// Open or closed issues this one is blocked by (inverse `blocks` relations).
+  var blockedByIssues: [NormalizedLinearIssueChild]?
+  var blockingIssues: [NormalizedLinearIssueChild]?
+  var relatedIssues: [NormalizedLinearIssueChild]?
 }
 
 struct LinearIssueSearchResultPageInfo: Codable, Hashable {

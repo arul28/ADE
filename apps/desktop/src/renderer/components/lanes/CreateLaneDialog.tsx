@@ -17,7 +17,7 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
 import { BranchPickerView } from "./BranchPickerView";
 import { formatRelativeTime } from "./branchPickerSearch";
-import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
+import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -302,7 +302,7 @@ export function CreateLaneDialog({
   else if (allBranches.length === 0) branchPickerPlaceholder = "No branches found";
   else branchPickerPlaceholder = "Pick a branch…";
 
-  const selectedLinearBranchName = selectedLinearIssue ? linearIssueBranchName(selectedLinearIssue) : "";
+  const selectedLinearBranchName = selectedLinearIssue ? resolveLinearIssueBranchName(selectedLinearIssue) : "";
   const selectedLinearBranchConflict = selectedLinearIssue
     ? branchExistsForLinearIssue(selectedLinearBranchName, createBranches)
     : false;

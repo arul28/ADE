@@ -1,6 +1,7 @@
 import type {
   AgentChatSessionSummary,
   DeviceMarker,
+  SessionAttentionSource,
   LaneListSnapshot,
   LaneRuntimeSummary,
   LaneStateSnapshotSummary,
@@ -109,7 +110,7 @@ function sessionStatusBucket(args: {
   settleOverride?: "settled" | "active" | null;
   attentionRequestedAt?: string | null;
   pendingInputItemId?: string | null;
-  attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+  attentionSource?: SessionAttentionSource | null;
   pendingInputWaiting?: boolean;
   lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
@@ -143,7 +144,7 @@ function summarizeLaneRuntime(
     runtimeState?: string | null;
     toolType?: string | null;
     pendingInputItemId?: string | null;
-    attentionSource?: "agent_explicit" | "provider_structured" | "user" | null;
+    attentionSource?: SessionAttentionSource | null;
     pendingInputWaiting?: boolean;
   }>,
 ): LaneRuntimeSummary {

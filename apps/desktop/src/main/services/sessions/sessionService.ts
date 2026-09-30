@@ -193,7 +193,7 @@ function isResumeProvider(value: unknown): value is TerminalResumeProvider {
 }
 
 function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
-  return value === "agent_explicit" || value === "provider_structured" || value === "user"
+  return value === "agent_explicit" || value === "provider_structured" || value === "user" || value === "linear"
     ? value
     : null;
 }

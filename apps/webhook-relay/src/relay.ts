@@ -26,12 +26,23 @@ export type RelayEnv = {
    * in D1). Optional until the ADE Linear app exists.
    */
   LINEAR_APP_WEBHOOK_SECRET?: string;
+  /** Signing secret of a second Linear OAuth app whose deliveries are also accepted. */
+  LINEAR_APP_WEBHOOK_SECRET_ALT?: string;
+  /** Comma-separated public Clerk OAuth client ids accepted besides CLERK_OAUTH_CLIENT_ID. */
+  CLERK_EXTRA_OAUTH_CLIENT_IDS?: string;
   /**
    * Optional worker-level Cursor Cloud webhook signing secret. Tried before
    * per-account secrets registered in D1. Cursor signs with HMAC-SHA256 of the
    * raw body as `X-Webhook-Signature: sha256=<hex>`.
    */
   CURSOR_WEBHOOK_SECRET?: string;
+  /**
+   * Base64 32-byte AES-GCM key that encrypts Linear agent (actor=app) tokens
+   * at rest. Without it the Linear agent routes answer 503 agent_not_configured.
+   */
+  LINEAR_AGENT_TOKEN_KEY?: string;
+  /** Public (PKCE) client id of the ADE Linear app, used to refresh app tokens. */
+  LINEAR_APP_CLIENT_ID?: string;
 };
 
 type GitHubEventRow = {
@@ -57,6 +68,7 @@ type LinearEventRow = {
   action: string;
   received_at: string;
   body: string;
+  routed_account_id?: string | null;
 };
 
 type LinearOrganizationRow = {
@@ -459,6 +471,15 @@ function routeLinearOrganizationEvents(pathname: string): { organizationId: stri
   return organizationId ? { organizationId } : null;
 }
 
+function routeLinearOrganizationSubscription(pathname: string): { organizationId: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length !== 4 || parts[0] !== "linear" || parts[1] !== "orgs" || parts[3] !== "subscribe") {
+    return null;
+  }
+  const organizationId = decodeURIComponent(parts[2] ?? "").trim();
+  return organizationId ? { organizationId } : null;
+}
+
 function routeRepoEvents(pathname: string): { owner: string; name: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "events") {
@@ -531,14 +552,22 @@ function audienceIncludes(audience: JWTPayload["aud"], expected: string): boolea
   return typeof audience === "string" ? audience === expected : Array.isArray(audience) && audience.includes(expected);
 }
 
-function isAllowedAccountToken(payload: JWTPayload, oauthClientId: string): boolean {
-  return audienceIncludes(payload.aud, oauthClientId) || payload.azp === oauthClientId;
+function isAllowedAccountToken(payload: JWTPayload, oauthClientIds: string[]): boolean {
+  // Clerk OAuth access tokens name their client in `client_id` (RFC 9068), not
+  // in `aud`/`azp`; checking only those rejected every desktop account token.
+  const clientId = typeof (payload as Record<string, unknown>).client_id === "string"
+    ? String((payload as Record<string, unknown>).client_id)
+    : null;
+  return oauthClientIds.some((id) =>
+    audienceIncludes(payload.aud, id) || payload.azp === id || clientId === id);
 }
 
 type ClerkAccountTokenConfig = {
   issuer: string;
   jwksUrl: string;
   oauthClientId: string;
+  /** More public OAuth client ids accepted for this issuer (`CLERK_EXTRA_OAUTH_CLIENT_IDS`). */
+  extraClientIds?: string[];
 };
 
 function readClerkAccountTokenConfigs(env: RelayEnv): ClerkAccountTokenConfig[] {
@@ -550,6 +579,11 @@ function readClerkAccountTokenConfigs(env: RelayEnv): ClerkAccountTokenConfig[] 
   if (!primary.issuer || !primary.jwksUrl || !primary.oauthClientId) {
     throw new Error("Clerk authentication is not configured");
   }
+  const extraClientIds = (env.CLERK_EXTRA_OAUTH_CLIENT_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (extraClientIds.length > 0) (primary as ClerkAccountTokenConfig).extraClientIds = extraClientIds;
 
   const secondary = {
     issuer: env.CLERK_SECONDARY_ISSUER?.trim() ?? "",
@@ -575,7 +609,9 @@ async function verifyAccountTokenWithConfig(
     requiredClaims: ["sub", "exp"],
   });
   if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("Token subject is required");
-  if (!isAllowedAccountToken(payload, config.oauthClientId)) throw new Error("Token audience is not allowed");
+  if (!isAllowedAccountToken(payload, [config.oauthClientId, ...(config.extraClientIds ?? [])])) {
+    throw new Error("Token audience is not allowed");
+  }
   return payload.sub;
 }
 
@@ -2592,7 +2628,7 @@ async function pruneOldLinearEvents(env: RelayEnv): Promise<void> {
     .run();
 }
 
-async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Response> {
+async function handleLinearWebhook(request: Request, env: RelayEnv, ctx?: ExecutionContext): Promise<Response> {
   if (request.method !== "POST") return text("method not allowed", 405);
   if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_WEBHOOK_BODY_BYTES)) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
@@ -2626,13 +2662,34 @@ async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Res
   // deliveries need no prior per-org registration).
   const signature = request.headers.get("linear-signature")?.trim() ?? "";
   const appSecret = env.LINEAR_APP_WEBHOOK_SECRET?.trim() || null;
+  // A second OAuth app (e.g. a workspace-owned "ADE" app next to the bundled
+  // one) signs with its own secret; accept either.
+  const appSecrets = [appSecret, env.LINEAR_APP_WEBHOOK_SECRET_ALT?.trim() || null].filter((value): value is string => Boolean(value));
   const signedByOrganization = organization
     ? await verifyLinearSignature(organization.webhook_secret, body, signature)
     : false;
-  const signedByApp = !signedByOrganization && appSecret
-    ? await verifyLinearSignature(appSecret, body, signature)
-    : false;
+  let signedByApp = false;
+  if (!signedByOrganization) {
+    for (const candidate of appSecrets) {
+      if (await verifyLinearSignature(candidate, body, signature)) {
+        signedByApp = true;
+        break;
+      }
+    }
+  }
   if (!signedByOrganization && !signedByApp) {
+    // Which secret was tried and missed, never the secrets themselves.
+    console.warn("linear_webhook.signature_rejected", {
+      organizationId,
+      organizationRegistered: Boolean(organization),
+      appSecretConfigured: Boolean(appSecret),
+      signaturePresent: signature.length > 0,
+      signatureHexShaped: /^[0-9a-f]{64}$/i.test(signature),
+      // First 8 hex of sha256(secret): lets an operator compare the configured
+      // secret with the one Linear shows, without revealing either.
+      appSecretFingerprints: await Promise.all(appSecrets.map(async (candidate) => (await sha256Hex(candidate)).slice(0, 8))),
+      eventType: request.headers.get("linear-event"),
+    });
     if (!organization) {
       // Indistinguishable from an accepted delivery so unauthenticated callers
       // cannot probe which organizations have registered ADE ingestion. Nothing
@@ -2668,14 +2725,48 @@ async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Res
       .first<AccountMappingRow>()
     : null;
   const receivedAt = new Date().toISOString();
+
+  // Agent sessions belong to the person who started them, not to whichever
+  // account owns the org mapping: route first, then store under that account.
+  const agentRoute = eventType === "AgentSessionEvent"
+    ? await routeLinearAgentSessionEvent(env, organizationId, action, payload, receivedAt)
+    : null;
+  const storedAccountId = agentRoute
+    ? (agentRoute.routed ? agentRoute.accountId : null)
+    : accountMapping?.account_id ?? null;
   await env.DB
     .prepare(`
-      insert or ignore into linear_events(org_id, event_id, event_type, action, received_at, body, account_id)
-      values (?, ?, ?, ?, ?, ?, ?)
+      insert or ignore into linear_events(org_id, event_id, event_type, action, received_at, body, account_id, routed_account_id)
+      values (?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .bind(organizationId, eventId, eventType, action, receivedAt, rawBody, accountMapping?.account_id ?? null)
+    .bind(
+      organizationId,
+      eventId,
+      eventType,
+      action,
+      receivedAt,
+      rawBody,
+      storedAccountId,
+      agentRoute?.routed ? agentRoute.accountId : null,
+    )
     .run();
   await pruneOldLinearEvents(env);
+
+  // Linear retries unless it sees a 2xx within 5 s, and the first agent
+  // activity must land within 10 s of `created`: acknowledgements and wake-ups
+  // run after the response when the runtime offers waitUntil.
+  await runAfterResponse(ctx, async () => {
+    const tasks: Promise<unknown>[] = [
+      notifyLinearTopic(env, `linear-org:${organizationId}`, { t: "linear_delivery", orgId: organizationId }),
+    ];
+    if (agentRoute?.routed) {
+      tasks.push(notifyLinearTopic(env, `linear-account:${agentRoute.accountId}`, { t: "linear_delivery" }));
+    }
+    if (agentRoute?.acknowledgement) {
+      tasks.push(postLinearAgentAcknowledgement(env, organizationId, agentRoute.acknowledgement));
+    }
+    await Promise.all(tasks);
+  });
 
   return json({ ok: true, duplicate: false, eventId });
 }
@@ -2689,6 +2780,7 @@ function linearRowToEvent(row: LinearEventRow): Record<string, unknown> {
     action: row.action,
     createdAt: row.received_at,
     body: row.body,
+    routedAccountId: row.routed_account_id ?? null,
   };
 }
 
@@ -2697,15 +2789,24 @@ function nextLinearCursor(rows: LinearEventRow[], fallback: string): string | nu
   return latest > 0 ? `seq:${latest}` : fallback || null;
 }
 
-async function handleListLinearEvents(
+type LinearEventsReadAuthorization =
+  | { authorized: true; accountId: string | null; routedOnly: boolean }
+  | { authorized: false; response: Response };
+
+/**
+ * Org-wide reads: a Linear token with webhook authority for the org, or the ADE
+ * account that owns the org mapping (scoped to its own rows). With
+ * `allowAgentMembers`, an account registered as a Linear agent member of the org
+ * may also read, scoped to the agent-session events routed to it.
+ */
+async function authorizeLinearEventsRead(
   request: Request,
   env: RelayEnv,
   organizationId: string,
-): Promise<Response> {
-  if (request.method !== "GET") return text("method not allowed", 405);
+  allowAgentMembers: boolean,
+): Promise<LinearEventsReadAuthorization> {
   const auth = await verifyLinearViewerOrganization(request, env);
   let legacyError: Response | null = null;
-  let accountId: string | null = null;
   if (!auth.authorized) {
     legacyError = auth.response;
   } else if (auth.organizationId !== organizationId) {
@@ -2717,17 +2818,34 @@ async function handleListLinearEvents(
     const authority = await verifyLinearWebhookAuthority(request, env);
     if (!authority.authorized) legacyError = authority.response;
   }
-  if (legacyError) {
-    accountId = await authenticateAccount(request, env);
-    if (!accountId || !await linearOrganizationAccountMatches(env, organizationId, accountId)) {
-      return legacyError;
-    }
+  if (!legacyError) return { authorized: true, accountId: null, routedOnly: false };
+
+  const accountId = await authenticateAccount(request, env);
+  if (accountId && await linearOrganizationAccountMatches(env, organizationId, accountId)) {
+    return { authorized: true, accountId, routedOnly: false };
   }
+  if (accountId && allowAgentMembers && await linearAgentMemberAccountMatches(env, organizationId, accountId)) {
+    return { authorized: true, accountId, routedOnly: true };
+  }
+  return { authorized: false, response: legacyError };
+}
+
+async function handleListLinearEvents(
+  request: Request,
+  env: RelayEnv,
+  organizationId: string,
+): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const authorization = await authorizeLinearEventsRead(request, env, organizationId, true);
+  if (!authorization.authorized) return authorization.response;
+  const { accountId, routedOnly } = authorization;
 
   const url = new URL(request.url);
   const limit = parseLimit(url);
   const after = url.searchParams.get("after")?.trim() || "";
-  const accountPredicate = accountId ? " and account_id = ?" : "";
+  const accountPredicate = accountId
+    ? (routedOnly ? " and routed_account_id = ?" : " and account_id = ?")
+    : "";
   const accountBinding = accountId ? [accountId] : [];
   let rows: LinearEventRow[];
   let cursorExpired = false;
@@ -2741,7 +2859,7 @@ async function handleListLinearEvents(
       // backlog without gaps.
       rows = (await env.DB
         .prepare(`
-          select rowid as event_seq, event_id, event_type, action, received_at, body
+          select rowid as event_seq, event_id, event_type, action, received_at, body, routed_account_id
             from linear_events
            where org_id = ?${accountPredicate} and rowid > ?
            order by rowid asc
@@ -2757,7 +2875,7 @@ async function handleListLinearEvents(
       if (cursor) {
         rows = (await env.DB
           .prepare(`
-            select rowid as event_seq, event_id, event_type, action, received_at, body
+            select rowid as event_seq, event_id, event_type, action, received_at, body, routed_account_id
               from linear_events
              where org_id = ?${accountPredicate} and rowid > ?
              order by rowid asc
@@ -2769,7 +2887,7 @@ async function handleListLinearEvents(
         cursorExpired = true;
         rows = (await env.DB
           .prepare(`
-            select rowid as event_seq, event_id, event_type, action, received_at, body
+            select rowid as event_seq, event_id, event_type, action, received_at, body, routed_account_id
               from linear_events
              where org_id = ?${accountPredicate}
              order by rowid desc
@@ -2782,7 +2900,7 @@ async function handleListLinearEvents(
   } else {
     rows = (await env.DB
       .prepare(`
-        select rowid as event_seq, event_id, event_type, action, received_at, body
+        select rowid as event_seq, event_id, event_type, action, received_at, body, routed_account_id
           from linear_events
          where org_id = ?${accountPredicate}
          order by rowid desc
@@ -2797,6 +2915,1272 @@ async function handleListLinearEvents(
     nextCursor: nextLinearCursor(rows, after),
     cursorExpired,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Linear agent (actor=app). The relay holds each workspace's app token, routes
+// every agent session to the ADE account of the person who started it, posts
+// the first acknowledgement inside Linear's window, and proxies the routed
+// account's activity writes. D1 stays the durable event stream; the topic
+// Durable Objects only carry wake-up hints.
+// ---------------------------------------------------------------------------
+
+type LinearAgentInstallRow = {
+  org_id: string;
+  org_name: string | null;
+  app_user_id: string;
+  access_token_enc: string | null;
+  refresh_token_enc: string | null;
+  expires_at: string | null;
+  installed_by_account_id: string | null;
+  installed_by_linear_user_id: string | null;
+  fallback_mode: string;
+  runner_account_id: string | null;
+  installed_at: string;
+  updated_at: string;
+};
+
+type LinearAgentMemberRow = {
+  linear_user_id: string;
+  account_id: string;
+  display_name: string | null;
+  registered_at: string;
+  last_seen_at: string;
+};
+
+type LinearAgentSessionRow = {
+  session_id: string;
+  org_id: string;
+  issue_id: string | null;
+  issue_identifier: string | null;
+  routed_account_id: string | null;
+  claimed_by_machine_id: string | null;
+  claimed_at: string | null;
+  created_at: string;
+};
+
+type LinearViewerIdentity = {
+  linearUserId: string;
+  displayName: string;
+  organizationId: string;
+  organizationName: string;
+};
+
+type LinearAgentCaller = { accountId: string; viewer: LinearViewerIdentity };
+
+type LinearAgentActivityInput = {
+  content: Record<string, unknown>;
+  ephemeral: boolean;
+  signal: string | null;
+  signalMetadata: Record<string, unknown> | null;
+};
+
+type LinearAgentAcknowledgement = { sessionId: string; content: Record<string, unknown> };
+
+type LinearAgentSessionRoute =
+  | { routed: true; accountId: string; acknowledgement: LinearAgentAcknowledgement | null }
+  | { routed: false; acknowledgement: LinearAgentAcknowledgement | null };
+
+type LinearAgentFailure = { ok: false; status: number; error: string };
+type LinearAgentResult<T> = ({ ok: true } & T) | LinearAgentFailure;
+type LinearAgentToken = { accessToken: string; install: LinearAgentInstallRow };
+
+const MAX_LINEAR_AGENT_BODY_BYTES = 64 * 1024;
+const MAX_LINEAR_AGENT_TEXT_BYTES = 20 * 1024;
+const MAX_LINEAR_AGENT_TOKEN_LENGTH = 4096;
+const MAX_LINEAR_AGENT_ID_LENGTH = 200;
+const MAX_LINEAR_AGENT_PLAN_STEPS = 50;
+const MAX_LINEAR_AGENT_EXTERNAL_URLS = 20;
+const MAX_LINEAR_AGENT_URL_LENGTH = 2048;
+const MAX_LINEAR_AGENT_LABEL_LENGTH = 200;
+const MAX_LINEAR_AGENT_MEMBERS = 500;
+const LINEAR_AGENT_CLAIM_STALE_MS = 15 * 60_000;
+const LINEAR_AGENT_REFRESH_WINDOW_MS = 10 * 60_000;
+const LINEAR_AGENT_SESSION_RETENTION_DAYS = 90;
+const LINEAR_AGENT_ACK_BODY = "On it — ADE is starting a lane for this issue.";
+const LINEAR_AGENT_ACTIVITY_TYPES = new Set(["thought", "action", "elicitation", "response", "error"]);
+const LINEAR_AGENT_EPHEMERAL_TYPES = new Set(["thought", "action"]);
+// Linear accepts only these agent-to-human signals (select takes options of { label, value }).
+const LINEAR_AGENT_ELICITATION_SIGNALS = new Set(["select", "auth"]);
+const LINEAR_AGENT_PLAN_STATUSES = new Set(["pending", "inProgress", "completed", "canceled"]);
+const LINEAR_AGENT_SETTLED_STATE_TYPES = new Set(["started", "completed", "canceled"]);
+const linearViewerIdentityByTokenHash = new Map<string, LinearViewerIdentity & { expiresAt: number }>();
+
+function linearAgentError(status: number, error: string): Response {
+  return json({ ok: false, error }, { status });
+}
+
+function linearAgentFailureResponse(failure: LinearAgentFailure): Response {
+  return linearAgentError(failure.status, failure.error);
+}
+
+function utf8Length(value: string): number {
+  return encoder.encode(value).byteLength;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/** WebCrypto wants an ArrayBuffer-backed view, not a possibly shared buffer. */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+function normalizeOAuthToken(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/^Bearer\s+/i, "") : "";
+}
+
+function linearOAuthTokenUrl(env: RelayEnv): string {
+  return new URL("/oauth/token", linearGraphqlUrl(env)).toString();
+}
+
+function linearTopicObject(env: RelayEnv, topic: string): DurableObjectStub {
+  return env.REPO_EVENTS.get(env.REPO_EVENTS.idFromName(topic));
+}
+
+/** Wake-ups are hints; a dropped one is recovered by the subscriber's safety poll. */
+async function notifyLinearTopic(env: RelayEnv, topic: string, frame: Record<string, unknown>): Promise<void> {
+  try {
+    const response = await linearTopicObject(env, topic).fetch("https://repo-events.internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ topic, frame }),
+    });
+    if (!response.ok) throw new Error(`Topic Durable Object returned HTTP ${response.status}`);
+  } catch (error) {
+    console.warn(JSON.stringify({
+      kind: "linear_topic_notify_failed",
+      topicKind: topic.slice(0, topic.indexOf(":")),
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
+}
+
+async function runAfterResponse(ctx: ExecutionContext | undefined, task: () => Promise<unknown>): Promise<void> {
+  const guarded = task().catch((error: unknown) => {
+    console.warn(JSON.stringify({
+      kind: "linear_background_task_failed",
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  });
+  if (ctx) {
+    ctx.waitUntil(guarded);
+    return;
+  }
+  await guarded;
+}
+
+async function readLinearAgentJsonBody(
+  request: Request,
+): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+  if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_AGENT_BODY_BYTES)) {
+    return { ok: false, response: linearAgentError(413, "payload too large") };
+  }
+  const raw = await request.arrayBuffer();
+  if (raw.byteLength > MAX_LINEAR_AGENT_BODY_BYTES) {
+    return { ok: false, response: linearAgentError(413, "payload too large") };
+  }
+  if (raw.byteLength === 0) return { ok: true, body: {} };
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown;
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    return { ok: true, body: parsed };
+  } catch {
+    return { ok: false, response: linearAgentError(400, "invalid json") };
+  }
+}
+
+// --- Token encryption -------------------------------------------------------
+
+async function importLinearAgentTokenKey(env: RelayEnv): Promise<CryptoKey | null> {
+  const raw = env.LINEAR_AGENT_TOKEN_KEY?.trim();
+  if (!raw) return null;
+  let bytes: ArrayBuffer;
+  try {
+    bytes = toArrayBuffer(base64ToBytes(raw.replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+  if (bytes.byteLength !== 32) return null;
+  return await crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+/** Binds each ciphertext to its org so a row copied to another org cannot decrypt. */
+function linearAgentTokenAad(organizationId: string): ArrayBuffer {
+  return toArrayBuffer(encoder.encode(`ade-linear-agent:${organizationId}`));
+}
+
+async function encryptLinearAgentToken(key: CryptoKey, organizationId: string, token: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: linearAgentTokenAad(organizationId) },
+    key,
+    encoder.encode(token),
+  );
+  return `v1.${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(ciphertext))}`;
+}
+
+async function decryptLinearAgentToken(key: CryptoKey, organizationId: string, value: string): Promise<string | null> {
+  const [version, ivPart, ciphertextPart] = value.split(".");
+  if (version !== "v1" || !ivPart || !ciphertextPart) return null;
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: toArrayBuffer(base64ToBytes(ivPart)), additionalData: linearAgentTokenAad(organizationId) },
+      key,
+      toArrayBuffer(base64ToBytes(ciphertextPart)),
+    );
+    return new TextDecoder().decode(plaintext);
+  } catch {
+    return null;
+  }
+}
+
+// --- Linear GraphQL -----------------------------------------------------------
+
+function isLinearAuthenticationError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const extensions = readNested(error, "extensions");
+  const type = readString(extensions, "type").toLowerCase();
+  const code = readString(extensions, "code").toUpperCase();
+  return type === "authentication error" || code === "AUTHENTICATION_ERROR";
+}
+
+async function linearGraphqlRequest(
+  env: RelayEnv,
+  authorization: string,
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<LinearAgentResult<{ data: Record<string, unknown> }>> {
+  let response: Response;
+  try {
+    response = await fetch(linearGraphqlUrl(env), {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify(variables ? { query, variables } : { query }),
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Linear request failed" };
+  }
+  const payload = await response.json().catch(() => null) as unknown;
+  const record = isRecord(payload) ? payload : null;
+  const errors = Array.isArray(record?.errors) ? record.errors : [];
+  if (response.status === 401 || response.status === 403 || errors.some(isLinearAuthenticationError)) {
+    return { ok: false, status: 401, error: "Linear rejected the token" };
+  }
+  const data = readNested(record, "data");
+  if (!response.ok || errors.length > 0 || !data) {
+    const message = readString(isRecord(errors[0]) ? errors[0] : null, "message").slice(0, 300);
+    return { ok: false, status: 502, error: message || `Linear request failed (HTTP ${response.status})` };
+  }
+  return { ok: true, data };
+}
+
+/** Like verifyLinearViewerOrganization, but also returns who the viewer is. */
+async function verifyLinearViewerIdentity(
+  request: Request,
+  env: RelayEnv,
+): Promise<{ authorized: true; viewer: LinearViewerIdentity } | { authorized: false; response: Response }> {
+  const authorization = readAuthorizationHeader(request);
+  if (!authorization || await hasValidBearerAccountToken(request, env)) {
+    return { authorized: false, response: linearAgentError(401, "Linear authorization token is required") };
+  }
+  const tokenHash = await sha256Hex(authorization);
+  const cached = linearViewerIdentityByTokenHash.get(tokenHash);
+  if (cached && cached.expiresAt > Date.now()) {
+    const { expiresAt: _expiresAt, ...viewer } = cached;
+    return { authorized: true, viewer };
+  }
+  if (cached) linearViewerIdentityByTokenHash.delete(tokenHash);
+
+  const result = await linearGraphqlRequest(
+    env,
+    authorization,
+    "query AdeAgentViewer { viewer { id name displayName organization { id name } } }",
+  );
+  if (!result.ok) {
+    return {
+      authorized: false,
+      response: result.status === 401
+        ? linearAgentError(401, "Invalid Linear authorization token")
+        : linearAgentError(502, "Linear authorization check failed"),
+    };
+  }
+  const viewerRecord = readNested(result.data, "viewer");
+  const organization = readNested(viewerRecord, "organization");
+  const viewer: LinearViewerIdentity = {
+    linearUserId: readString(viewerRecord, "id"),
+    displayName: readString(viewerRecord, "name") || readString(viewerRecord, "displayName"),
+    organizationId: readString(organization, "id"),
+    organizationName: readString(organization, "name"),
+  };
+  if (!viewer.linearUserId || !viewer.organizationId) {
+    return { authorized: false, response: linearAgentError(401, "Invalid Linear authorization token") };
+  }
+  linearViewerIdentityByTokenHash.set(tokenHash, { ...viewer, expiresAt: Date.now() + LINEAR_AUTH_CACHE_TTL_MS });
+  evictExpiredCacheEntries(linearViewerIdentityByTokenHash, MAX_LINEAR_AUTH_CACHE_ENTRIES);
+  return { authorized: true, viewer };
+}
+
+async function authenticateLinearAgentAccount(
+  request: Request,
+  env: RelayEnv,
+): Promise<{ ok: true; accountId: string } | { ok: false; response: Response }> {
+  const accountId = await authenticateAccount(request, env);
+  if (!accountId) {
+    // Say why (missing, not a JWT, wrong issuer, audience, expired) so a client
+    // can show a fix instead of a bare 401. Never echoes the token.
+    let reason = "missing";
+    const candidates = accountTokenCandidates(request);
+    if (!request.headers.get(ACCOUNT_TOKEN_HEADER)) reason = "missing";
+    else if (candidates.length === 0) reason = "not_a_jwt";
+    else {
+      try {
+        await verifyAccountToken(candidates[0]!, env);
+      } catch (error) {
+        reason = error instanceof Error ? error.message.slice(0, 120) : "invalid";
+        if (/audience/i.test(reason)) {
+          // Client ids are public (they ship in the apps); naming the token's
+          // client makes a mismatched relay allowlist fixable.
+          try {
+            const claims = decodeJwt(candidates[0]!);
+            const client = typeof claims.azp === "string" ? claims.azp
+              : typeof (claims as Record<string, unknown>).client_id === "string" ? String((claims as Record<string, unknown>).client_id)
+                : Array.isArray(claims.aud) ? claims.aud.join(",") : typeof claims.aud === "string" ? claims.aud : null;
+            reason = `${reason}; token client ${client ? client.slice(0, 80) : "none"}`;
+          } catch {
+            // Keep the plain reason.
+          }
+        }
+      }
+    }
+    return { ok: false, response: json({ ok: false, error: "ADE account token is required", reason }, { status: 401 }) };
+  }
+  return { ok: true, accountId };
+}
+
+async function authenticateLinearAgentCaller(
+  request: Request,
+  env: RelayEnv,
+): Promise<{ ok: true; caller: LinearAgentCaller } | { ok: false; response: Response }> {
+  const account = await authenticateLinearAgentAccount(request, env);
+  if (!account.ok) return account;
+  const identity = await verifyLinearViewerIdentity(request, env);
+  if (!identity.authorized) return { ok: false, response: identity.response };
+  return { ok: true, caller: { accountId: account.accountId, viewer: identity.viewer } };
+}
+
+// --- Install / token lifecycle ------------------------------------------------
+
+async function readLinearAgentInstall(env: RelayEnv, organizationId: string): Promise<LinearAgentInstallRow | null> {
+  return await env.DB
+    .prepare(`
+      select org_id, org_name, app_user_id, access_token_enc, refresh_token_enc, expires_at,
+             installed_by_account_id, installed_by_linear_user_id, fallback_mode, runner_account_id,
+             installed_at, updated_at
+        from linear_agent_installs
+       where org_id = ?
+       limit 1
+    `)
+    .bind(organizationId)
+    .first<LinearAgentInstallRow>();
+}
+
+async function refreshLinearAgentToken(
+  env: RelayEnv,
+  key: CryptoKey,
+  install: LinearAgentInstallRow,
+  refreshToken: string,
+): Promise<LinearAgentResult<{ accessToken: string }>> {
+  const clientId = env.LINEAR_APP_CLIENT_ID?.trim();
+  if (!clientId) return { ok: false, status: 503, error: "agent_not_configured" };
+  let response: Response;
+  try {
+    response = await fetch(linearOAuthTokenUrl(env), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId }).toString(),
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Linear token refresh failed" };
+  }
+  const payload = await response.json().catch(() => null) as unknown;
+  const record = isRecord(payload) ? payload : null;
+  const accessToken = readString(record, "access_token");
+  const now = new Date().toISOString();
+  if (!response.ok || !accessToken) {
+    if (readString(record, "error") !== "invalid_grant") {
+      return { ok: false, status: 502, error: "Linear token refresh failed" };
+    }
+    // Refresh tokens rotate: a concurrent request may have spent this one a
+    // moment ago. Its rotated token is valid, so only a row nobody rotated is
+    // really dead.
+    const current = await readLinearAgentInstall(env, install.org_id);
+    if (current?.access_token_enc && current.access_token_enc !== install.access_token_enc) {
+      const rotated = await decryptLinearAgentToken(key, install.org_id, current.access_token_enc);
+      if (rotated) return { ok: true, accessToken: rotated };
+    }
+    await env.DB
+      .prepare(`
+        update linear_agent_installs
+           set access_token_enc = null, refresh_token_enc = null, expires_at = null, updated_at = ?
+         where org_id = ? and access_token_enc = ?
+      `)
+      .bind(now, install.org_id, install.access_token_enc)
+      .run();
+    return { ok: false, status: 409, error: "agent_not_installed" };
+  }
+
+  const nextRefreshToken = readString(record, "refresh_token") || refreshToken;
+  const expiresIn = Number(record?.expires_in);
+  const expiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+    ? new Date(Date.now() + expiresIn * 1000).toISOString()
+    : null;
+  await env.DB
+    .prepare(`
+      update linear_agent_installs
+         set access_token_enc = ?, refresh_token_enc = ?, expires_at = ?, updated_at = ?
+       where org_id = ? and access_token_enc = ?
+    `)
+    .bind(
+      await encryptLinearAgentToken(key, install.org_id, accessToken),
+      await encryptLinearAgentToken(key, install.org_id, nextRefreshToken),
+      expiresAt,
+      now,
+      install.org_id,
+      install.access_token_enc,
+    )
+    .run();
+  return { ok: true, accessToken };
+}
+
+async function linearAgentAccessToken(
+  env: RelayEnv,
+  organizationId: string,
+  forceRefresh: boolean,
+): Promise<LinearAgentResult<LinearAgentToken>> {
+  const key = await importLinearAgentTokenKey(env);
+  if (!key) return { ok: false, status: 503, error: "agent_not_configured" };
+  const install = await readLinearAgentInstall(env, organizationId);
+  if (!install?.access_token_enc) return { ok: false, status: 409, error: "agent_not_installed" };
+  const accessToken = await decryptLinearAgentToken(key, organizationId, install.access_token_enc);
+  if (!accessToken) return { ok: false, status: 500, error: "Linear agent token could not be read" };
+
+  const expiresAt = install.expires_at ? Date.parse(install.expires_at) : Number.NaN;
+  const nearExpiry = Number.isFinite(expiresAt) && expiresAt - Date.now() < LINEAR_AGENT_REFRESH_WINDOW_MS;
+  if (!forceRefresh && !nearExpiry) return { ok: true, accessToken, install };
+  const refreshToken = install.refresh_token_enc
+    ? await decryptLinearAgentToken(key, organizationId, install.refresh_token_enc)
+    : null;
+  if (!refreshToken) return { ok: true, accessToken, install };
+
+  const refreshed = await refreshLinearAgentToken(env, key, install, refreshToken);
+  if (refreshed.ok) return { ok: true, accessToken: refreshed.accessToken, install };
+  // A transient refresh failure keeps using a token that has not expired yet.
+  if (refreshed.status !== 409 && !forceRefresh && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+    return { ok: true, accessToken, install };
+  }
+  return refreshed;
+}
+
+async function linearAgentGraphql(
+  env: RelayEnv,
+  organizationId: string,
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<LinearAgentResult<{ data: Record<string, unknown>; install: LinearAgentInstallRow }>> {
+  let token = await linearAgentAccessToken(env, organizationId, false);
+  if (!token.ok) return token;
+  let result = await linearGraphqlRequest(env, `Bearer ${token.accessToken}`, query, variables);
+  if (!result.ok && result.status === 401) {
+    const refreshed = await linearAgentAccessToken(env, organizationId, true);
+    if (!refreshed.ok) return refreshed;
+    if (refreshed.accessToken !== token.accessToken) {
+      token = refreshed;
+      result = await linearGraphqlRequest(env, `Bearer ${token.accessToken}`, query, variables);
+    }
+  }
+  if (!result.ok) {
+    // A Linear 401 is about the app token, not the caller's ADE credentials.
+    return { ok: false, status: result.status === 401 ? 502 : result.status, error: result.status === 401 ? "Linear rejected the agent token" : result.error };
+  }
+  return { ok: true, data: result.data, install: token.install };
+}
+
+async function createLinearAgentActivity(
+  env: RelayEnv,
+  organizationId: string,
+  sessionId: string,
+  activity: LinearAgentActivityInput,
+): Promise<LinearAgentResult<{ activityId: string | null }>> {
+  // Linear takes signal/signalMetadata beside `content`, not inside it.
+  const input: Record<string, unknown> = { agentSessionId: sessionId, content: activity.content };
+  if (activity.ephemeral) input.ephemeral = true;
+  if (activity.signal) input.signal = activity.signal;
+  if (activity.signalMetadata) input.signalMetadata = activity.signalMetadata;
+  const result = await linearAgentGraphql(
+    env,
+    organizationId,
+    "mutation AdeAgentActivityCreate($input: AgentActivityCreateInput!) { agentActivityCreate(input: $input) { success agentActivity { id } } }",
+    { input },
+  );
+  if (!result.ok) return result;
+  const payload = readNested(result.data, "agentActivityCreate");
+  if (readBoolean(payload, "success") !== true) {
+    return { ok: false, status: 502, error: "Linear did not accept the activity" };
+  }
+  return { ok: true, activityId: readString(readNested(payload, "agentActivity"), "id") || null };
+}
+
+async function postLinearAgentAcknowledgement(
+  env: RelayEnv,
+  organizationId: string,
+  acknowledgement: LinearAgentAcknowledgement,
+): Promise<void> {
+  const result = await createLinearAgentActivity(env, organizationId, acknowledgement.sessionId, {
+    content: acknowledgement.content,
+    ephemeral: false,
+    signal: null,
+    signalMetadata: null,
+  });
+  if (!result.ok) {
+    console.warn(JSON.stringify({ kind: "linear_agent_ack_failed", status: result.status, error: result.error }));
+  }
+}
+
+// --- Webhook routing ------------------------------------------------------------
+
+/**
+ * Returns null when the event is not an agent-session event the relay can act
+ * on (no install, unknown session): the caller then stores it like any other
+ * Linear event.
+ */
+async function routeLinearAgentSessionEvent(
+  env: RelayEnv,
+  organizationId: string,
+  action: string,
+  payload: Record<string, unknown>,
+  receivedAt: string,
+): Promise<LinearAgentSessionRoute | null> {
+  const agentSession = readNested(payload, "agentSession");
+  const sessionId = readString(agentSession, "id");
+  if (!sessionId || sessionId.length > MAX_LINEAR_AGENT_ID_LENGTH) return null;
+
+  if (action === "created") {
+    const install = await readLinearAgentInstall(env, organizationId);
+    if (!install?.access_token_enc) return null;
+    const creator = readNested(agentSession, "creator");
+    const creatorId = readString(creator, "id") || readString(agentSession, "creatorId");
+    const issue = readNested(agentSession, "issue");
+    const issueId = readString(issue, "id") || readString(agentSession, "issueId");
+    const issueIdentifier = readString(issue, "identifier");
+    const member = creatorId
+      ? await env.DB
+        .prepare("select account_id from linear_agent_members where org_id = ? and linear_user_id = ? limit 1")
+        .bind(organizationId, creatorId)
+        .first<AccountMappingRow>()
+      : null;
+    let routedAccountId: string | null = null;
+    let routeReason: "member" | "runner" | "unrouted" = "unrouted";
+    if (member?.account_id) {
+      routedAccountId = member.account_id;
+      routeReason = "member";
+    } else if (install.fallback_mode === "runner" && install.runner_account_id) {
+      routedAccountId = install.runner_account_id;
+      routeReason = "runner";
+    }
+
+    await env.DB
+      .prepare(`
+        insert or ignore into linear_agent_sessions(
+          session_id, org_id, issue_id, issue_identifier, creator_linear_user_id,
+          routed_account_id, route_reason, created_at, updated_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        sessionId,
+        organizationId,
+        issueId || null,
+        issueIdentifier || null,
+        creatorId || null,
+        routedAccountId,
+        routeReason,
+        receivedAt,
+        receivedAt,
+      )
+      .run();
+    // A redelivered `created` (new delivery id, same session) keeps the first
+    // routing and must not post a second acknowledgement.
+    const session = await readLinearAgentSession(env, sessionId);
+    if (!session || session.org_id !== organizationId) return null;
+    const fresh = session.created_at === receivedAt;
+    const cutoff = new Date(Date.now() - LINEAR_AGENT_SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare("delete from linear_agent_sessions where updated_at < ?").bind(cutoff).run();
+
+    if (session.routed_account_id) {
+      return {
+        routed: true,
+        accountId: session.routed_account_id,
+        acknowledgement: fresh ? { sessionId, content: { type: "thought", body: LINEAR_AGENT_ACK_BODY } } : null,
+      };
+    }
+    const creatorName = readString(creator, "name") || "This Linear user";
+    return {
+      routed: false,
+      acknowledgement: fresh
+        ? {
+          sessionId,
+          content: {
+            type: "error",
+            body: `${creatorName} is not connected to ADE yet. Open ADE → Settings → Integrations → Linear and connect Linear to use the ADE agent.`,
+          },
+        }
+        : null,
+    };
+  }
+
+  if (action === "prompted") {
+    const session = await readLinearAgentSession(env, sessionId);
+    if (!session || session.org_id !== organizationId) return null;
+    await env.DB
+      .prepare("update linear_agent_sessions set updated_at = ? where session_id = ?")
+      .bind(receivedAt, sessionId)
+      .run();
+    return session.routed_account_id
+      ? { routed: true, accountId: session.routed_account_id, acknowledgement: null }
+      : { routed: false, acknowledgement: null };
+  }
+  return null;
+}
+
+async function readLinearAgentSession(env: RelayEnv, sessionId: string): Promise<LinearAgentSessionRow | null> {
+  return await env.DB
+    .prepare(`
+      select session_id, org_id, issue_id, issue_identifier, routed_account_id,
+             claimed_by_machine_id, claimed_at, created_at
+        from linear_agent_sessions
+       where session_id = ?
+       limit 1
+    `)
+    .bind(sessionId)
+    .first<LinearAgentSessionRow>();
+}
+
+async function linearAgentMemberAccountMatches(
+  env: RelayEnv,
+  organizationId: string,
+  accountId: string,
+): Promise<boolean> {
+  const row = await env.DB
+    .prepare("select account_id from linear_agent_members where org_id = ? and account_id = ? limit 1")
+    .bind(organizationId, accountId)
+    .first<AccountMappingRow>();
+  return row?.account_id === accountId;
+}
+
+// --- Status / membership / settings ---------------------------------------------
+
+async function linearAgentStatus(env: RelayEnv, caller: LinearAgentCaller): Promise<Record<string, unknown>> {
+  const organizationId = caller.viewer.organizationId;
+  const install = await readLinearAgentInstall(env, organizationId);
+  const members = (await env.DB
+    .prepare(`
+      select linear_user_id, account_id, display_name, registered_at, last_seen_at
+        from linear_agent_members
+       where org_id = ?
+       order by registered_at asc
+       limit ?
+    `)
+    .bind(organizationId, MAX_LINEAR_AGENT_MEMBERS)
+    .all<LinearAgentMemberRow>()).results ?? [];
+  const me = members.find((member) => member.linear_user_id === caller.viewer.linearUserId);
+  const runnerAccountId = install?.runner_account_id ?? null;
+  return {
+    ok: true,
+    orgId: organizationId,
+    orgName: install?.org_name || caller.viewer.organizationName || null,
+    installed: Boolean(install?.access_token_enc),
+    appUserId: install?.app_user_id ?? null,
+    installedAt: install?.installed_at ?? null,
+    installedByMe: Boolean(install) && install?.installed_by_account_id === caller.accountId,
+    fallbackMode: install?.fallback_mode === "runner" ? "runner" : "reply",
+    runnerIsMe: runnerAccountId === caller.accountId,
+    runnerConfigured: Boolean(runnerAccountId),
+    me: {
+      linearUserId: caller.viewer.linearUserId,
+      registered: me?.account_id === caller.accountId,
+    },
+    members: members.map((member) => ({
+      linearUserId: member.linear_user_id,
+      displayName: member.display_name ?? "",
+      isMe: member.account_id === caller.accountId,
+      registeredAt: member.registered_at,
+      lastSeenAt: member.last_seen_at,
+    })),
+  };
+}
+
+async function upsertLinearAgentMember(env: RelayEnv, caller: LinearAgentCaller, now: string): Promise<void> {
+  await env.DB
+    .prepare(`
+      insert into linear_agent_members(org_id, linear_user_id, account_id, display_name, registered_at, last_seen_at)
+      values (?, ?, ?, ?, ?, ?)
+      on conflict(org_id, linear_user_id) do update set
+        registered_at = case
+          when linear_agent_members.account_id = excluded.account_id then linear_agent_members.registered_at
+          else excluded.registered_at
+        end,
+        account_id = excluded.account_id,
+        display_name = excluded.display_name,
+        last_seen_at = excluded.last_seen_at
+    `)
+    .bind(
+      caller.viewer.organizationId,
+      caller.viewer.linearUserId,
+      caller.accountId,
+      caller.viewer.displayName || null,
+      now,
+      now,
+    )
+    .run();
+}
+
+function parseLinearAgentExpiresAt(value: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (value === undefined || value === null || value === "") return { ok: true, value: null };
+  let milliseconds = Number.NaN;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    // Accept epoch seconds as well as epoch milliseconds.
+    milliseconds = value < 1e12 ? value * 1000 : value;
+  } else if (typeof value === "string") {
+    milliseconds = Date.parse(value);
+  }
+  if (!Number.isFinite(milliseconds)) return { ok: false };
+  return { ok: true, value: new Date(milliseconds).toISOString() };
+}
+
+async function handleLinearAgentInstall(request: Request, env: RelayEnv): Promise<Response> {
+  const key = await importLinearAgentTokenKey(env);
+  if (!key) return linearAgentError(503, "agent_not_configured");
+  const auth = await authenticateLinearAgentCaller(request, env);
+  if (!auth.ok) return auth.response;
+  const { caller } = auth;
+  const parsed = await readLinearAgentJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
+
+  const accessToken = normalizeOAuthToken(body.accessToken);
+  if (!accessToken || accessToken.length > MAX_LINEAR_AGENT_TOKEN_LENGTH) {
+    return linearAgentError(400, "accessToken is required");
+  }
+  const hasRefreshToken = body.refreshToken !== undefined && body.refreshToken !== null && body.refreshToken !== "";
+  const refreshToken = hasRefreshToken ? normalizeOAuthToken(body.refreshToken) : "";
+  if (hasRefreshToken && (!refreshToken || refreshToken.length > MAX_LINEAR_AGENT_TOKEN_LENGTH)) {
+    return linearAgentError(400, "refreshToken must be a string");
+  }
+  const expiresAt = parseLinearAgentExpiresAt(body.expiresAt);
+  if (!expiresAt.ok) return linearAgentError(400, "expiresAt must be an ISO timestamp or epoch time");
+
+  const app = await linearGraphqlRequest(
+    env,
+    `Bearer ${accessToken}`,
+    "query AdeAgentInstall { viewer { id } organization { id name urlKey } }",
+  );
+  if (!app.ok) {
+    return app.status === 401
+      ? linearAgentError(400, "Linear rejected the app token")
+      : linearAgentError(502, app.error);
+  }
+  const appUserId = readString(readNested(app.data, "viewer"), "id");
+  const organization = readNested(app.data, "organization");
+  const organizationId = readString(organization, "id");
+  if (!appUserId || !organizationId) return linearAgentError(502, "Linear returned an incomplete app identity");
+  if (organizationId !== caller.viewer.organizationId) {
+    return linearAgentError(403, "The app token belongs to a different Linear workspace");
+  }
+
+  const now = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert into linear_agent_installs(
+        org_id, org_name, app_user_id, access_token_enc, refresh_token_enc, expires_at,
+        installed_by_account_id, installed_by_linear_user_id, installed_at, updated_at
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(org_id) do update set
+        org_name = excluded.org_name,
+        app_user_id = excluded.app_user_id,
+        access_token_enc = excluded.access_token_enc,
+        refresh_token_enc = excluded.refresh_token_enc,
+        expires_at = excluded.expires_at,
+        installed_by_account_id = excluded.installed_by_account_id,
+        installed_by_linear_user_id = excluded.installed_by_linear_user_id,
+        installed_at = excluded.installed_at,
+        updated_at = excluded.updated_at
+    `)
+    .bind(
+      organizationId,
+      readString(organization, "name") || caller.viewer.organizationName || null,
+      appUserId,
+      await encryptLinearAgentToken(key, organizationId, accessToken),
+      refreshToken ? await encryptLinearAgentToken(key, organizationId, refreshToken) : null,
+      expiresAt.value,
+      caller.accountId,
+      caller.viewer.linearUserId,
+      now,
+      now,
+    )
+    .run();
+  await upsertLinearAgentMember(env, caller, now);
+  return json(await linearAgentStatus(env, caller));
+}
+
+async function handleLinearAgentUninstall(request: Request, env: RelayEnv): Promise<Response> {
+  const auth = await authenticateLinearAgentCaller(request, env);
+  if (!auth.ok) return auth.response;
+  const { caller } = auth;
+  const install = await readLinearAgentInstall(env, caller.viewer.organizationId);
+  if (!install) return linearAgentError(404, "agent_not_installed");
+  if (install.installed_by_account_id !== caller.accountId) {
+    return linearAgentError(403, "Only the account that installed the ADE agent can remove it");
+  }
+  await env.DB
+    .prepare("delete from linear_agent_installs where org_id = ? and installed_by_account_id = ?")
+    .bind(caller.viewer.organizationId, caller.accountId)
+    .run();
+  return json(await linearAgentStatus(env, caller));
+}
+
+async function handleLinearAgentStatus(request: Request, env: RelayEnv): Promise<Response> {
+  const auth = await authenticateLinearAgentCaller(request, env);
+  if (!auth.ok) return auth.response;
+  return json(await linearAgentStatus(env, auth.caller));
+}
+
+async function handleLinearAgentMemberRegistration(request: Request, env: RelayEnv): Promise<Response> {
+  const auth = await authenticateLinearAgentCaller(request, env);
+  if (!auth.ok) return auth.response;
+  const { caller } = auth;
+  if (request.method === "DELETE") {
+    await env.DB
+      .prepare("delete from linear_agent_members where org_id = ? and linear_user_id = ? and account_id = ?")
+      .bind(caller.viewer.organizationId, caller.viewer.linearUserId, caller.accountId)
+      .run();
+  } else {
+    await upsertLinearAgentMember(env, caller, new Date().toISOString());
+  }
+  return json(await linearAgentStatus(env, caller));
+}
+
+async function handleLinearAgentSettings(request: Request, env: RelayEnv): Promise<Response> {
+  const auth = await authenticateLinearAgentCaller(request, env);
+  if (!auth.ok) return auth.response;
+  const { caller } = auth;
+  const parsed = await readLinearAgentJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
+  if (body.fallbackMode !== undefined && body.fallbackMode !== "reply" && body.fallbackMode !== "runner") {
+    return linearAgentError(400, "fallbackMode must be 'reply' or 'runner'");
+  }
+  if (body.runner !== undefined && body.runner !== null && body.runner !== "self") {
+    return linearAgentError(400, "runner must be 'self' or null");
+  }
+  const install = await readLinearAgentInstall(env, caller.viewer.organizationId);
+  if (!install) return linearAgentError(404, "agent_not_installed");
+  if (install.installed_by_account_id !== caller.accountId) {
+    return linearAgentError(403, "Only the account that installed the ADE agent can change its settings");
+  }
+  const fallbackMode = body.fallbackMode === undefined ? install.fallback_mode : body.fallbackMode;
+  const runnerAccountId = body.runner === undefined
+    ? install.runner_account_id
+    : body.runner === "self" ? caller.accountId : null;
+  await env.DB
+    .prepare(`
+      update linear_agent_installs
+         set fallback_mode = ?, runner_account_id = ?, updated_at = ?
+       where org_id = ? and installed_by_account_id = ?
+    `)
+    .bind(fallbackMode, runnerAccountId, new Date().toISOString(), caller.viewer.organizationId, caller.accountId)
+    .run();
+  return json(await linearAgentStatus(env, caller));
+}
+
+// --- Session routes -----------------------------------------------------------------
+
+async function readRoutedLinearAgentSession(
+  env: RelayEnv,
+  sessionId: string,
+  accountId: string,
+): Promise<{ ok: true; session: LinearAgentSessionRow } | { ok: false; response: Response }> {
+  const session = await readLinearAgentSession(env, sessionId);
+  if (!session) return { ok: false, response: linearAgentError(404, "Unknown agent session") };
+  if (!session.routed_account_id || session.routed_account_id !== accountId) {
+    return { ok: false, response: linearAgentError(403, "forbidden") };
+  }
+  return { ok: true, session };
+}
+
+async function handleLinearAgentClaim(
+  env: RelayEnv,
+  accountId: string,
+  sessionId: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const machineId = readString(body, "machineId");
+  if (!machineId || machineId.length > MAX_LINEAR_AGENT_ID_LENGTH) {
+    return linearAgentError(400, "machineId is required");
+  }
+  const routed = await readRoutedLinearAgentSession(env, sessionId, accountId);
+  if (!routed.ok) return routed.response;
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - LINEAR_AGENT_CLAIM_STALE_MS).toISOString();
+  // First machine wins. Re-claiming from the holder refreshes the claim, and a
+  // claim nobody refreshed for 15 minutes is treated as abandoned.
+  await env.DB
+    .prepare(`
+      update linear_agent_sessions
+         set claimed_by_machine_id = ?, claimed_at = ?, updated_at = ?
+       where session_id = ?
+         and routed_account_id = ?
+         and (
+           claimed_by_machine_id is null
+           or claimed_by_machine_id = ?
+           or claimed_at is null
+           or claimed_at < ?
+         )
+    `)
+    .bind(machineId, nowIso, nowIso, sessionId, accountId, machineId, staleBefore)
+    .run();
+  const session = await readLinearAgentSession(env, sessionId);
+  const claimedByMachineId = session?.claimed_by_machine_id ?? null;
+  return json({ ok: true, claimed: claimedByMachineId === machineId, claimedByMachineId });
+}
+
+function parseLinearAgentActivity(
+  body: Record<string, unknown>,
+): { ok: true; activity: LinearAgentActivityInput } | { ok: false; error: string } {
+  const content = readNested(body, "content");
+  if (!content) return { ok: false, error: "content is required" };
+  const type = readString(content, "type");
+  if (!LINEAR_AGENT_ACTIVITY_TYPES.has(type)) {
+    return { ok: false, error: "content.type must be thought, action, elicitation, response, or error" };
+  }
+  if (body.ephemeral !== undefined && typeof body.ephemeral !== "boolean") {
+    return { ok: false, error: "ephemeral must be a boolean" };
+  }
+  const ephemeral = body.ephemeral === true;
+  if (ephemeral && !LINEAR_AGENT_EPHEMERAL_TYPES.has(type)) {
+    return { ok: false, error: "only thought and action activities may be ephemeral" };
+  }
+
+  const normalized: Record<string, unknown> = { type };
+  const fields: Array<{ key: string; required: boolean; nonEmpty: boolean }> = type === "action"
+    ? [
+      { key: "action", required: true, nonEmpty: true },
+      { key: "parameter", required: true, nonEmpty: false },
+      { key: "result", required: false, nonEmpty: false },
+    ]
+    : [{ key: "body", required: true, nonEmpty: true }];
+  for (const field of fields) {
+    const value = content[field.key];
+    if (value === undefined || value === null) {
+      if (field.required) return { ok: false, error: `content.${field.key} is required` };
+      continue;
+    }
+    if (typeof value !== "string" || (field.nonEmpty && !value.trim())) {
+      return { ok: false, error: `content.${field.key} must be a${field.nonEmpty ? " non-empty" : ""} string` };
+    }
+    if (utf8Length(value) > MAX_LINEAR_AGENT_TEXT_BYTES) {
+      return { ok: false, error: `content.${field.key} exceeds ${MAX_LINEAR_AGENT_TEXT_BYTES} bytes` };
+    }
+    normalized[field.key] = value;
+  }
+
+  let signal: string | null = null;
+  let signalMetadata: Record<string, unknown> | null = null;
+  if (type === "elicitation") {
+    if (content.signal !== undefined && content.signal !== null) {
+      if (typeof content.signal !== "string" || !LINEAR_AGENT_ELICITATION_SIGNALS.has(content.signal)) {
+        return { ok: false, error: "content.signal must be 'select' or 'auth'" };
+      }
+      signal = content.signal;
+    }
+    if (content.signalMetadata !== undefined && content.signalMetadata !== null) {
+      if (!isRecord(content.signalMetadata)) return { ok: false, error: "content.signalMetadata must be an object" };
+      if (utf8Length(JSON.stringify(content.signalMetadata)) > MAX_LINEAR_AGENT_TEXT_BYTES) {
+        return { ok: false, error: `content.signalMetadata exceeds ${MAX_LINEAR_AGENT_TEXT_BYTES} bytes` };
+      }
+      signalMetadata = content.signalMetadata;
+    }
+    if (signal === "select") {
+      // Plain strings become { label, value } pairs, the shape Linear requires.
+      const rawOptions = Array.isArray(signalMetadata?.options) ? signalMetadata!.options as unknown[] : [];
+      const options = rawOptions
+        .map((option) => (typeof option === "string"
+          ? { label: option, value: option }
+          : isRecord(option) && typeof option.label === "string"
+            ? { label: option.label, value: typeof option.value === "string" ? option.value : option.label }
+            : null))
+        .filter((option): option is { label: string; value: string } => option != null);
+      if (options.length === 0) return { ok: false, error: "a select elicitation needs options" };
+      signalMetadata = { ...(signalMetadata ?? {}), options };
+    }
+  }
+  return { ok: true, activity: { content: normalized, ephemeral, signal, signalMetadata } };
+}
+
+function parseLinearAgentExternalUrls(
+  value: unknown,
+  key: string,
+): { ok: true; urls: Array<{ label: string; url: string }> } | { ok: false; error: string } {
+  if (!Array.isArray(value) || value.length > MAX_LINEAR_AGENT_EXTERNAL_URLS) {
+    return { ok: false, error: `${key} must be an array of at most ${MAX_LINEAR_AGENT_EXTERNAL_URLS} links` };
+  }
+  const urls: Array<{ label: string; url: string }> = [];
+  for (const entry of value) {
+    const record = isRecord(entry) ? entry : null;
+    const label = readString(record, "label");
+    const url = readString(record, "url");
+    if (!label || label.length > MAX_LINEAR_AGENT_LABEL_LENGTH || !isHttpUrl(url)) {
+      return { ok: false, error: `${key} entries need a label and an http(s) url` };
+    }
+    urls.push({ label, url });
+  }
+  return { ok: true, urls };
+}
+
+function isHttpUrl(value: string): boolean {
+  if (!value || value.length > MAX_LINEAR_AGENT_URL_LENGTH) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function parseLinearAgentSessionUpdate(
+  body: Record<string, unknown>,
+): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {
+  const input: Record<string, unknown> = {};
+  if (body.plan !== undefined) {
+    if (!Array.isArray(body.plan) || body.plan.length > MAX_LINEAR_AGENT_PLAN_STEPS) {
+      return { ok: false, error: `plan must be an array of at most ${MAX_LINEAR_AGENT_PLAN_STEPS} steps` };
+    }
+    const plan: Array<{ content: string; status: string }> = [];
+    for (const step of body.plan) {
+      const record = isRecord(step) ? step : null;
+      const content = readString(record, "content");
+      const status = readString(record, "status");
+      if (!content || utf8Length(content) > MAX_LINEAR_AGENT_TEXT_BYTES || !LINEAR_AGENT_PLAN_STATUSES.has(status)) {
+        return { ok: false, error: "plan steps need content and a status of pending, inProgress, completed, or canceled" };
+      }
+      plan.push({ content, status });
+    }
+    input.plan = plan;
+  }
+  for (const key of ["externalUrls", "addedExternalUrls"] as const) {
+    if (body[key] === undefined) continue;
+    const parsed = parseLinearAgentExternalUrls(body[key], key);
+    if (!parsed.ok) return parsed;
+    input[key] = parsed.urls;
+  }
+  if (body.removedExternalUrls !== undefined) {
+    const removed = body.removedExternalUrls;
+    if (
+      !Array.isArray(removed)
+      || removed.length > MAX_LINEAR_AGENT_EXTERNAL_URLS
+      || !removed.every((url) => typeof url === "string" && isHttpUrl(url))
+    ) {
+      return { ok: false, error: "removedExternalUrls must be an array of http(s) urls" };
+    }
+    input.removedExternalUrls = removed;
+  }
+  if (Object.keys(input).length === 0) return { ok: false, error: "nothing to update" };
+  return { ok: true, input };
+}
+
+async function handleLinearAgentActivity(
+  env: RelayEnv,
+  accountId: string,
+  sessionId: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const routed = await readRoutedLinearAgentSession(env, sessionId, accountId);
+  if (!routed.ok) return routed.response;
+  const parsed = parseLinearAgentActivity(body);
+  if (!parsed.ok) return linearAgentError(400, parsed.error);
+  const result = await createLinearAgentActivity(env, routed.session.org_id, sessionId, parsed.activity);
+  if (!result.ok) return linearAgentFailureResponse(result);
+  return json({ ok: true, activityId: result.activityId });
+}
+
+async function handleLinearAgentSessionUpdate(
+  env: RelayEnv,
+  accountId: string,
+  sessionId: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const routed = await readRoutedLinearAgentSession(env, sessionId, accountId);
+  if (!routed.ok) return routed.response;
+  const parsed = parseLinearAgentSessionUpdate(body);
+  if (!parsed.ok) return linearAgentError(400, parsed.error);
+  const result = await linearAgentGraphql(
+    env,
+    routed.session.org_id,
+    "mutation AdeAgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) { agentSessionUpdate(id: $id, input: $input) { success } }",
+    { id: sessionId, input: parsed.input },
+  );
+  if (!result.ok) return linearAgentFailureResponse(result);
+  if (readBoolean(readNested(result.data, "agentSessionUpdate"), "success") !== true) {
+    return linearAgentError(502, "Linear did not accept the session update");
+  }
+  return json({ ok: true });
+}
+
+/**
+ * Best effort: moves an unstarted issue to its team's first `started` state and
+ * delegates it to the agent when nobody is delegated. Each change is attempted
+ * on its own so one refusal does not block the other.
+ */
+async function handleLinearAgentStart(env: RelayEnv, accountId: string, sessionId: string): Promise<Response> {
+  const routed = await readRoutedLinearAgentSession(env, sessionId, accountId);
+  if (!routed.ok) return routed.response;
+  const { session } = routed;
+  if (!session.issue_id) return json({ ok: true, stateChanged: false, stateId: null, delegateChanged: false });
+
+  const issueResult = await linearAgentGraphql(
+    env,
+    session.org_id,
+    "query AdeAgentIssue($id: String!) { issue(id: $id) { id delegate { id } state { id type } team { states { nodes { id type position } } } } }",
+    { id: session.issue_id },
+  );
+  if (!issueResult.ok) return linearAgentFailureResponse(issueResult);
+  const issue = readNested(issueResult.data, "issue");
+  if (!issue) return linearAgentError(404, "Linear issue not found");
+
+  let stateId: string | null = null;
+  const stateType = readString(readNested(issue, "state"), "type");
+  if (!LINEAR_AGENT_SETTLED_STATE_TYPES.has(stateType)) {
+    const nodes = readNested(readNested(issue, "team"), "states")?.nodes;
+    const started = (Array.isArray(nodes) ? nodes : [])
+      .filter((node): node is Record<string, unknown> => isRecord(node) && readString(node, "type") === "started")
+      .sort((left, right) => Number(left.position ?? 0) - Number(right.position ?? 0))[0];
+    stateId = readString(started, "id") || null;
+  }
+  const delegateId = readNested(issue, "delegate") ? null : issueResult.install.app_user_id;
+
+  const errors: string[] = [];
+  const update = async (input: Record<string, unknown>): Promise<boolean> => {
+    const result = await linearAgentGraphql(
+      env,
+      session.org_id,
+      "mutation AdeAgentIssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+      { id: session.issue_id, input },
+    );
+    if (!result.ok) {
+      errors.push(result.error);
+      return false;
+    }
+    const success = readBoolean(readNested(result.data, "issueUpdate"), "success") === true;
+    if (!success) errors.push("Linear did not accept the issue update");
+    return success;
+  };
+  const stateChanged = stateId ? await update({ stateId }) : false;
+  const delegateChanged = delegateId ? await update({ delegateId }) : false;
+  return json({
+    ok: true,
+    stateChanged,
+    stateId: stateChanged ? stateId : null,
+    delegateChanged,
+    ...(errors.length > 0 ? { errors } : {}),
+  });
+}
+
+// --- Subscriptions and dispatch -----------------------------------------------------
+
+async function subscribeLinearTopic(env: RelayEnv, topic: string): Promise<Response> {
+  return await linearTopicObject(env, topic).fetch(
+    new Request(`https://repo-events.internal/subscribe?topic=${encodeURIComponent(topic)}`, {
+      headers: { upgrade: "websocket" },
+    }),
+  );
+}
+
+async function handleLinearAgentSubscription(request: Request, env: RelayEnv): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return text("expected websocket", 426);
+  }
+  const account = await authenticateLinearAgentAccount(request, env);
+  if (!account.ok) return account.response;
+  return await subscribeLinearTopic(env, `linear-account:${account.accountId}`);
+}
+
+async function handleLinearOrganizationSubscription(
+  request: Request,
+  env: RelayEnv,
+  organizationId: string,
+): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return text("expected websocket", 426);
+  }
+  const authorization = await authorizeLinearEventsRead(request, env, organizationId, false);
+  if (!authorization.authorized) return authorization.response;
+  return await subscribeLinearTopic(env, `linear-org:${organizationId}`);
+}
+
+async function handleLinearAgentRequest(request: Request, env: RelayEnv, pathname: string): Promise<Response> {
+  const parts = pathname.split("/").filter(Boolean).slice(2);
+  const route = parts.join("/");
+  if (route === "install") {
+    if (request.method === "POST") return await handleLinearAgentInstall(request, env);
+    if (request.method === "DELETE") return await handleLinearAgentUninstall(request, env);
+    return text("method not allowed", 405);
+  }
+  if (route === "status") {
+    if (request.method !== "GET") return text("method not allowed", 405);
+    return await handleLinearAgentStatus(request, env);
+  }
+  if (route === "members/register") {
+    if (request.method !== "POST" && request.method !== "DELETE") return text("method not allowed", 405);
+    return await handleLinearAgentMemberRegistration(request, env);
+  }
+  if (route === "settings") {
+    if (request.method !== "PUT") return text("method not allowed", 405);
+    return await handleLinearAgentSettings(request, env);
+  }
+  if (route === "subscribe") return await handleLinearAgentSubscription(request, env);
+
+  if (parts.length === 3 && parts[0] === "sessions") {
+    const action = parts[2];
+    if (action !== "claim" && action !== "activities" && action !== "update" && action !== "start") {
+      return text("not found", 404);
+    }
+    if (request.method !== "POST") return text("method not allowed", 405);
+    let sessionId = "";
+    try {
+      sessionId = decodeURIComponent(parts[1] ?? "").trim();
+    } catch {
+      sessionId = "";
+    }
+    if (!sessionId || sessionId.length > MAX_LINEAR_AGENT_ID_LENGTH) return linearAgentError(400, "sessionId is invalid");
+    const account = await authenticateLinearAgentAccount(request, env);
+    if (!account.ok) return account.response;
+    if (action === "start") return await handleLinearAgentStart(env, account.accountId, sessionId);
+    const parsed = await readLinearAgentJsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    if (action === "claim") return await handleLinearAgentClaim(env, account.accountId, sessionId, parsed.body);
+    if (action === "activities") return await handleLinearAgentActivity(env, account.accountId, sessionId, parsed.body);
+    return await handleLinearAgentSessionUpdate(env, account.accountId, sessionId, parsed.body);
+  }
+  return text("not found", 404);
 }
 
 function parseCursorWebhookTimestamp(payload: Record<string, unknown>): number | null {
@@ -3161,7 +4545,7 @@ async function handleAccountIntegrations(request: Request, env: RelayEnv): Promi
   });
 }
 
-export async function handleRequest(request: Request, env: RelayEnv): Promise<Response> {
+export async function handleRequest(request: Request, env: RelayEnv, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return json({ ok: true });
@@ -3172,12 +4556,17 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/cursor/webhook") return await handleCursorWebhook(request, env);
   if (url.pathname === "/cursor/events") return await handleListCursorEvents(request, env);
   if (url.pathname === "/linear/orgs/register") return await handleLinearOrganizationRegister(request, env);
-  if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env);
+  if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env, ctx);
   if (url.pathname === "/linear/oauth/callback") return handleLinearOAuthCallback(request);
   const linearOrganizationEvents = routeLinearOrganizationEvents(url.pathname);
   if (linearOrganizationEvents) {
     return await handleListLinearEvents(request, env, linearOrganizationEvents.organizationId);
   }
+  const linearOrganizationSubscription = routeLinearOrganizationSubscription(url.pathname);
+  if (linearOrganizationSubscription) {
+    return await handleLinearOrganizationSubscription(request, env, linearOrganizationSubscription.organizationId);
+  }
+  if (url.pathname.startsWith("/linear/agent/")) return await handleLinearAgentRequest(request, env, url.pathname);
 
   const repoWebhookAdmin = routeRepoWebhookAdmin(url.pathname);
   if (repoWebhookAdmin?.action === "heal") return await handleWebhookHeal(request, env, repoWebhookAdmin);

@@ -1534,6 +1534,14 @@ function parseJsonArrayOrEmpty<T>(raw: unknown): T[] {
   }
 }
 
+export type LinearPrPublishedHandler = (args: {
+  lane: LaneSummary;
+  issueIds: string[];
+  issueIdentifiers: string[];
+  prNumber: number;
+  githubUrl: string;
+}) => Promise<void>;
+
 export function createPrService({
   db,
   logger,
@@ -1810,6 +1818,9 @@ export function createPrService({
     return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
   };
 
+  // Set by the runtime: runs after a PR's Linear cards are posted (proof upload).
+  let linearPrPublishedHandler: LinearPrPublishedHandler | null = null;
+
   const publishLinearPrCardsForLane = async (args: {
     lane: LaneSummary;
     repo: GitHubRepoRef;
@@ -1845,6 +1856,21 @@ export function createPrService({
         prNumber: args.prNumber,
         issueIdentifier: refs[index]?.issue.identifier ?? null,
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+
+    if (linearPrPublishedHandler) {
+      await linearPrPublishedHandler({
+        lane: args.lane,
+        issueIds: refs.map((reference) => reference.issue.id),
+        issueIdentifiers: refs.map((reference) => reference.issue.identifier),
+        prNumber: args.prNumber,
+        githubUrl: args.githubUrl,
+      }).catch((error) => {
+        logger.warn("prs.linear_pr_published_hook_failed", {
+          laneId: args.lane.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }
 
@@ -11917,6 +11943,9 @@ export function createPrService({
   };
 
   return {
+    setLinearPrPublishedHandler(handler: LinearPrPublishedHandler | null): void {
+      linearPrPublishedHandler = handler;
+    },
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
     },

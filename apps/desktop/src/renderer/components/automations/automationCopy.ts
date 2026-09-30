@@ -100,6 +100,16 @@ function githubClause(type: string, trigger: AutomationTrigger): string {
 
 function linearClause(type: string, trigger: AutomationTrigger): string {
   const where = trigger.team ? ` in ${trigger.team}` : trigger.project ? ` in ${trigger.project}` : "";
+  if (type === "linear.comment_created") {
+    const on = trigger.team ? ` on a ${trigger.team} issue` : trigger.project ? ` on a ${trigger.project} issue` : " on a Linear issue";
+    const about = trigger.keywords?.length ? ` mentioning ${trigger.keywords.join(" or ")}` : "";
+    return `Someone comments${on}${about}`;
+  }
+  if (type === "linear.project_update_posted") return `A project update is posted${trigger.project ? ` in ${trigger.project}` : ""}`;
+  if (type === "linear.initiative_update_posted") return "An initiative update is posted";
+  if (type === "linear.user_joined") return "Someone joins the Linear workspace";
+  if (type === "linear.agent_delegated") return `A Linear issue${where}${labelSuffix(trigger.labels)} is delegated to ADE and reaches this ADE`;
+  if (type === "linear.agent_mentioned") return `An @ADE mention on a Linear issue${where}${labelSuffix(trigger.labels)} reaches this ADE`;
   if (type.endsWith("_created")) return `A Linear issue is created${where}`;
   if (type.endsWith("_updated")) return `A Linear issue is updated${where}`;
   if (type.endsWith("_assigned")) return `A Linear issue is assigned${where}`;

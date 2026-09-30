@@ -416,6 +416,17 @@ import type {
   CtoGetLinearIssuePickerDataResult,
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
+  CtoCountLinearIssuesArgs,
+  CtoCountLinearIssuesResult,
+  CtoGetLinearIssueArgs,
+  CtoLinearCustomView,
+  LinearAgentOverview,
+  LinearInboxNotification,
+  NormalizedLinearIssue as LinearAgentNormalizedIssue,
+  CtoStartLinearOAuthResult as LinearAgentInstallStart,
+  CtoGetLinearOAuthSessionResult as LinearAgentInstallSession,
+  CtoUpdateLinearIssueArgs,
+  NormalizedLinearIssue,
   CtoLinearIssueComment,
   CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
@@ -4209,6 +4220,28 @@ declare global {
         getLinearIssueComments: (
           args: { issueId: string },
         ) => Promise<CtoLinearIssueComment[]>;
+        /** Full detail read (relations, parent, sub-issues). */
+        getLinearIssue: (
+          args: CtoGetLinearIssueArgs,
+        ) => Promise<NormalizedLinearIssue | null>;
+        /** One Linear `issueUpdate`; resolves to the refreshed issue. */
+        updateLinearIssue: (
+          args: CtoUpdateLinearIssueArgs,
+        ) => Promise<NormalizedLinearIssue | null>;
+        countLinearIssues: (
+          args: CtoCountLinearIssuesArgs,
+        ) => Promise<CtoCountLinearIssuesResult>;
+        getLinearCustomViews: () => Promise<CtoLinearCustomView[]>;
+        getLinearAgentOverview: () => Promise<LinearAgentOverview>;
+        startLinearAgentInstall: () => Promise<LinearAgentInstallStart>;
+        getLinearAgentInstallSession: (sessionId: string) => Promise<LinearAgentInstallSession>;
+        registerLinearAgentMember: () => Promise<LinearAgentOverview>;
+        unregisterLinearAgentMember: () => Promise<LinearAgentOverview>;
+        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => Promise<LinearAgentOverview>;
+        uninstallLinearAgent: () => Promise<LinearAgentOverview>;
+        getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => Promise<LinearInboxNotification[]>;
+        markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => Promise<void>;
+        getLinearIssueRelationsIssue: (issueId: string) => Promise<LinearAgentNormalizedIssue | null>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;

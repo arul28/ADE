@@ -306,8 +306,42 @@ export type TriggerContext = {
   pr?: TriggerPrContext;
   /** Structured Linear payload for `linear.*` triggers. */
   linear?: { issue: TriggerLinearIssueContext };
+  /** Set for `linear.agent_*` triggers: the Linear agent session that started this run. */
+  linearAgent?: TriggerLinearAgentContext;
   /** Structured chat-session payload for `session.*` triggers. */
   session?: TriggerSessionContext;
+};
+
+export type TriggerLinearAgentContext = {
+  agentSessionId: string;
+  /** Linear's formatted issue + comments + guidance, written for an agent prompt. */
+  promptContext: string | null;
+  /** Who delegated or mentioned the agent. */
+  creatorName: string | null;
+  /** The comment that mentioned the agent, when the session came from a mention. */
+  commentBody: string | null;
+};
+
+/**
+ * Lets the Linear agent service take part in an agent-session run it started.
+ * Every hook runs only for runs whose trigger carries `linearAgent`.
+ */
+export type AutomationLinearAgentHooks = {
+  /** Checks that must pass before a lane exists (the model is usable here). Throw to fail the run. */
+  beforeRun?: (args: { rule: AutomationRule; trigger: TriggerContext; runId: string }) => Promise<void>;
+  /** Returns the lane to run in, or null to use the rule's normal lane choice. */
+  resolveLane?: (args: { rule: AutomationRule; trigger: TriggerContext; runId: string }) => Promise<string | null>;
+  /** Runs after the chat exists and before its first turn. */
+  onSessionCreated?: (args: { rule: AutomationRule; trigger: TriggerContext; runId: string; sessionId: string; laneId: string }) => Promise<void>;
+  /** Runs once when the run ends, for success and for every failure path. */
+  onRunFinished?: (args: {
+    rule: AutomationRule;
+    trigger: TriggerContext;
+    runId: string;
+    sessionId: string | null;
+    status: "succeeded" | "failed";
+    error: string | null;
+  }) => void;
 };
 
 /**
@@ -1342,6 +1376,7 @@ export function createAutomationService({
   let budgetCapServiceRef = budgetCapService;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
   let linearIngressAvailableRef = linearIngressAvailable ?? (() => false);
+  let linearAgentHooksRef: AutomationLinearAgentHooks | null = null;
   let cursorCloudIngressAvailableRef = cursorCloudIngressAvailable ?? (() => false);
   let githubPollingAvailableRef = githubPollingAvailable ?? (() => hasConfiguredGitHubOrigin(projectRoot));
   const readWebhookGatewayPublicUrl = (): string | null => {
@@ -2677,6 +2712,22 @@ export function createAutomationService({
     if (laneId) lines.push(`Lane ID: ${laneId}`);
     if (args.trigger.eventName) lines.push(`Event: ${args.trigger.eventName}`);
     if (args.trigger.summary) lines.push(`Ingress summary: ${args.trigger.summary}`);
+    if (args.trigger.linearAgent) {
+      const agent = args.trigger.linearAgent;
+      lines.push(
+        "",
+        agent.commentBody
+          ? `${agent.creatorName ?? "Someone"} mentioned you (the ADE agent) in Linear:`
+          : `${agent.creatorName ?? "Someone"} delegated this Linear issue to you (the ADE agent).`,
+      );
+      if (agent.commentBody) lines.push("", agent.commentBody.trim());
+      if (agent.promptContext?.trim()) lines.push("", "Linear context:", agent.promptContext.trim());
+      lines.push(
+        "",
+        "Your progress is shown to them live in Linear. When you need a decision, ask it as a question; they answer in Linear.",
+        "Your final message is posted to Linear as your reply. Do not post it again with `ade linear comment`.",
+      );
+    }
     if (args.rule.prompt?.trim()) {
       // Substitute `{{trigger.*}}` placeholders inside the user-authored prompt
       // (same mechanism used for ade-action args) so rules like
@@ -3743,6 +3794,36 @@ export function createAutomationService({
     trigger: TriggerContext;
     existingRunId?: string | null;
   }): Promise<AutomationRun> => {
+    const hooks = args.trigger.linearAgent ? linearAgentHooksRef : null;
+    if (!hooks) return await runAgentSessionDispatchInner(args, null);
+    let finishedRunId: string | null = args.existingRunId ?? null;
+    try {
+      const run = await runAgentSessionDispatchInner(args, hooks, (runId) => { finishedRunId = runId; });
+      hooks.onRunFinished?.({ rule: args.rule, trigger: args.trigger, runId: run.id, sessionId: run.chatSessionId ?? null, status: "succeeded", error: null });
+      return run;
+    } catch (error) {
+      const row = finishedRunId ? loadRunRow(finishedRunId) : null;
+      hooks.onRunFinished?.({
+        rule: args.rule,
+        trigger: args.trigger,
+        runId: finishedRunId ?? "",
+        sessionId: row?.chat_session_id ?? null,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
+
+  const runAgentSessionDispatchInner = async (
+    args: {
+      rule: AutomationRule;
+      trigger: TriggerContext;
+      existingRunId?: string | null;
+    },
+    hooks: AutomationLinearAgentHooks | null,
+    reportRunId?: (runId: string) => void,
+  ): Promise<AutomationRun> => {
     if (!agentChatServiceRef) {
       throw new Error("Agent chat service is unavailable");
     }
@@ -3769,6 +3850,7 @@ export function createAutomationService({
       budgetProvider,
       { runScopeId: run.id },
     );
+    reportRunId?.(run.id);
     if (budgetCheck && !budgetCheck.allowed) {
       const message = budgetCheck.reason ?? "Budget cap blocked automation run.";
       updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
@@ -3778,7 +3860,9 @@ export function createAutomationService({
 
     let laneId: string | null;
     try {
-      laneId = await resolveExecutionLaneId(args.rule, args.trigger, null, run.id);
+      await hooks?.beforeRun?.({ rule: args.rule, trigger: args.trigger, runId: run.id });
+      laneId = (await hooks?.resolveLane?.({ rule: args.rule, trigger: args.trigger, runId: run.id }))
+        ?? await resolveExecutionLaneId(args.rule, args.trigger, null, run.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
@@ -3819,11 +3903,14 @@ export function createAutomationService({
         ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
           ? { codexSandbox: permissionConfig.providers.codexSandbox }
           : {}),
-        surface: "automation",
+        // A Linear agent chat is work someone asked for by name: it belongs in
+        // Work, with its lane, its "needs you" state and its thread.
+        surface: args.trigger.linearAgent ? "work" : "automation",
         automationId: args.rule.id,
         automationRunId: run.id,
       });
       sessionId = session.id;
+      await hooks?.onSessionCreated?.({ rule: args.rule, trigger: args.trigger, runId: run.id, sessionId: session.id, laneId });
       updateRun(run.id, {
         chat_session_id: session.id,
         status: "running",
@@ -4440,6 +4527,7 @@ export function createAutomationService({
     assignee?: string | null;
     stateTransition?: string | null;
     changedFields?: string[];
+    linearAgent?: TriggerLinearAgentContext | null;
   }): Promise<AutomationIngressEventRecord | null> => {
     const eventKey = args.eventKey.trim();
     if (!eventKey.length) return null;
@@ -4521,6 +4609,7 @@ export function createAutomationService({
       assignee: args.assignee ?? undefined,
       stateTransition: args.stateTransition ?? undefined,
       changedFields: args.changedFields,
+      ...(args.linearAgent ? { linearAgent: args.linearAgent } : {}),
     };
 
     const candidateRules = listRules()
@@ -4601,6 +4690,28 @@ export function createAutomationService({
 
     setLinearIngressAvailable(check: () => boolean) {
       linearIngressAvailableRef = check;
+    },
+
+    setLinearAgentHooks(hooks: AutomationLinearAgentHooks | null) {
+      linearAgentHooksRef = hooks;
+    },
+
+    /** Every rule on this machine (enabled or not), for callers that filter by trigger. */
+    listRules(): AutomationRule[] {
+      return listRules();
+    },
+
+    /** Enabled rules on this machine whose triggers match a `linear.agent_*` event. */
+    hasMatchingLinearAgentRule(args: { triggerType: AutomationTriggerType; team?: string | null; project?: string | null; labels?: string[] }): boolean {
+      const trigger: TriggerContext = {
+        triggerType: args.triggerType,
+        team: args.team ?? undefined,
+        project: args.project ?? undefined,
+        labels: args.labels,
+      };
+      return listRules()
+        .filter((rule) => rule.enabled)
+        .some((rule) => rule.triggers.some((candidate) => triggerMatches(candidate, trigger, undefined, undefined)));
     },
 
     setCursorCloudIngressAvailable(check: () => boolean) {

@@ -270,6 +270,17 @@ import type {
   CtoGetLinearIssuePickerDataResult,
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
+  CtoCountLinearIssuesArgs,
+  CtoCountLinearIssuesResult,
+  CtoGetLinearIssueArgs,
+  CtoLinearCustomView,
+  LinearAgentOverview,
+  LinearInboxNotification,
+  NormalizedLinearIssue as LinearAgentNormalizedIssue,
+  CtoStartLinearOAuthResult as LinearAgentInstallStart,
+  CtoGetLinearOAuthSessionResult as LinearAgentInstallSession,
+  CtoUpdateLinearIssueArgs,
+  NormalizedLinearIssue,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
@@ -2021,6 +2032,10 @@ async function callProjectRuntimeActionIfBound<T>(
   );
   if (remote.handled) return remote;
   return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
+}
+
+function linearAgentUnavailable(): Promise<never> {
+  return Promise.reject(new Error("Open a project in ADE to use the Linear agent."));
 }
 
 async function callProjectRuntimeActionOr<T>(
@@ -12523,6 +12538,63 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.ctoGetLinearIssueComments, args),
       ),
+    getLinearIssue: async (
+      args: CtoGetLinearIssueArgs,
+    ): Promise<NormalizedLinearIssue | null> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "fetchIssueById",
+        { arg: args.issueId },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearIssue, args),
+      ),
+    updateLinearIssue: async (
+      args: CtoUpdateLinearIssueArgs,
+    ): Promise<NormalizedLinearIssue | null> => {
+      const { issueId, ...patch } = args;
+      return callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "updateIssue",
+        { argsList: [issueId, patch] },
+        () => ipcRenderer.invoke(IPC.ctoUpdateLinearIssue, args),
+      );
+    },
+    countLinearIssues: async (
+      args: CtoCountLinearIssuesArgs,
+    ): Promise<CtoCountLinearIssuesResult> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "countIssues",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoCountLinearIssues, args),
+      ),
+    getLinearCustomViews: async (): Promise<CtoLinearCustomView[]> =>
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "listCustomViews",
+        {},
+        () => ipcRenderer.invoke(IPC.ctoGetLinearCustomViews),
+      ),
+    // ---- The ADE Linear agent (runtime-only; no project, no agent) ----
+    getLinearAgentOverview: async (): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "getOverview", {}, linearAgentUnavailable),
+    startLinearAgentInstall: async (): Promise<LinearAgentInstallStart> =>
+      callProjectRuntimeActionOr("linear_agent", "startInstall", {}, linearAgentUnavailable),
+    getLinearAgentInstallSession: async (sessionId: string): Promise<LinearAgentInstallSession> =>
+      callProjectRuntimeActionOr("linear_agent", "getInstallSession", { args: { sessionId } }, linearAgentUnavailable),
+    registerLinearAgentMember: async (): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "registerMember", {}, linearAgentUnavailable),
+    unregisterLinearAgentMember: async (): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "unregisterMember", {}, linearAgentUnavailable),
+    updateLinearAgentSettings: async (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "updateSettings", { args }, linearAgentUnavailable),
+    uninstallLinearAgent: async (): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "uninstall", {}, linearAgentUnavailable),
+    getLinearInbox: async (args?: { first?: number; includeRead?: boolean }): Promise<LinearInboxNotification[]> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "listNotifications", { args: args ?? {} }, linearAgentUnavailable),
+    markLinearNotification: async (args: { notificationId: string; action: "read" | "archive" }): Promise<void> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "markNotification", { args }, linearAgentUnavailable),
+    getLinearIssueRelationsIssue: async (issueId: string): Promise<LinearAgentNormalizedIssue | null> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "fetchIssueById", { argsList: [issueId] }, linearAgentUnavailable),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,
     ): Promise<LinearConnectionStatus> => {

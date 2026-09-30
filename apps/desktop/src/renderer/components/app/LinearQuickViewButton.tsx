@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleNotch, Warning, X } from "@phosphor-icons/react";
+import { Warning } from "@phosphor-icons/react";
 
 import type {
   CtoLinearQuickView,
@@ -20,6 +20,7 @@ import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearPaneHeader } from "./LinearPaneHeader";
 import {
   clearLinearQuickViewSelection,
   LinearIssueBrowser,
@@ -721,9 +722,10 @@ export function LinearQuickViewButton({
         }}
         title="Linear quick view"
         hideHeader
-        width={1760}
-        height="min(940px, calc(100dvh - 28px))"
-        maxHeight="calc(100dvh - 28px)"
+        // Keeps clear of the window edges and the macOS window buttons.
+        width="min(1680px, calc(100vw - 112px))"
+        height="min(900px, calc(100dvh - 104px))"
+        maxHeight="calc(100dvh - 104px)"
         bodyPadding={false}
         scrollBody={false}
         bodyStyle={{ display: "flex", flexDirection: "column" }}
@@ -736,49 +738,12 @@ export function LinearQuickViewButton({
           boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
         }}
       >
-        <div
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-          style={{ background: LINEAR_BRAND.surface }}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-            >
-              <LinearMark size={14} />
-            </span>
-            <div className="min-w-0 truncate text-[12px] text-fg/90">
-              <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
-              <span className="text-muted-fg/45"> · </span>
-              <span className="text-muted-fg/65">
-                {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
-                {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
-              </span>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
-              data-variant="ghost"
-              onClick={() => setRefreshKey((key) => key + 1)}
-              disabled={browserLoading}
-              title="Refresh Linear"
-            >
-              {browserLoading ? <CircleNotch size={11} className="animate-spin" /> : null}
-              Refresh
-            </button>
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
-              data-variant="ghost"
-              onClick={close}
-              title="Close Linear"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        </div>
+        <LinearPaneHeader
+          quickView={quickView}
+          loading={browserLoading}
+          onRefresh={() => setRefreshKey((key) => key + 1)}
+          onClose={close}
+        />
 
         <div className="min-h-0 flex-1 overflow-hidden">
           <LinearIssueBrowser

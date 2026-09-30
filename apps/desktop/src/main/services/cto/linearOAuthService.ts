@@ -20,8 +20,23 @@ const EXTERNAL_SESSION_TTL_MS = 5 * 60 * 1000;
 export const LINEAR_MOBILE_OAUTH_REDIRECT_URI =
   "https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/oauth/callback";
 
+/**
+ * `user`: connect Linear as the person (the normal sign-in).
+ * `agent-install`: install the ADE agent in the workspace (`actor=app`); the
+ * token goes to the relay through the agent token handler, never into this
+ * machine's Linear credential.
+ */
+export type LinearOAuthPurpose = "user" | "agent-install";
+
+export type LinearAgentTokenHandler = (token: {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: string | null;
+}) => Promise<void>;
+
 type LinearOAuthSessionState = {
   id: string;
+  purpose: LinearOAuthPurpose;
   state: string;
   redirectUri: string;
   authUrl: string;
@@ -125,6 +140,7 @@ export function createLinearOAuthService(args: {
   const externalSessions = new Map<string, LinearExternalOAuthSessionState>();
   let disposed = false;
   let startingServer: http.Server | null = null;
+  let agentTokenHandler: LinearAgentTokenHandler | null = null;
   let disposeInFlight: Promise<void> | null = null;
 
   const assertActive = (): void => {
@@ -248,6 +264,7 @@ export function createLinearOAuthService(args: {
     redirectUri: string;
     state: string;
     codeChallenge?: string | null;
+    purpose?: LinearOAuthPurpose;
   }): string => {
     const authorizeUrl = new URL(LINEAR_AUTHORIZE_URL);
     authorizeUrl.searchParams.set("client_id", input.clientId);
@@ -257,13 +274,21 @@ export function createLinearOAuthService(args: {
     // The ADE app's data-change webhooks only deliver for a workspace whose
     // authorization carries the admin scope (Linear's OAuth-app webhook rule).
     // Custom OAuth clients keep the narrower grant.
-    authorizeUrl.searchParams.set(
-      "scope",
-      args.credentials.getOAuthClientSource() === "ade-app" ? "read,write,admin" : "read,write",
-    );
-    // Keep authorization user-scoped. This is Linear's default, but making it
-    // explicit keeps the desktop and mobile authorize URLs byte-for-byte aligned.
-    authorizeUrl.searchParams.set("actor", "user");
+    if (input.purpose === "agent-install") {
+      // Installs the ADE agent: an app actor that can be delegated issues and
+      // mentioned. Linear refuses `admin` for app actors and asks a workspace
+      // admin to approve this grant.
+      authorizeUrl.searchParams.set("scope", "read,write,app:assignable,app:mentionable");
+      authorizeUrl.searchParams.set("actor", "app");
+    } else {
+      authorizeUrl.searchParams.set(
+        "scope",
+        args.credentials.getOAuthClientSource() === "ade-app" ? "read,write,admin" : "read,write",
+      );
+      // Keep authorization user-scoped. This is Linear's default, but making it
+      // explicit keeps the desktop and mobile authorize URLs byte-for-byte aligned.
+      authorizeUrl.searchParams.set("actor", "user");
+    }
     // Ask Linear for a consent screen; Linear still resolves the workspace
     // from the user's active browser session/workspace switcher.
     authorizeUrl.searchParams.set("prompt", "consent");
@@ -275,7 +300,7 @@ export function createLinearOAuthService(args: {
   };
 
   const exchangeCode = async (
-    session: Pick<LinearOAuthSessionState, "redirectUri" | "codeVerifier">,
+    session: Pick<LinearOAuthSessionState, "redirectUri" | "codeVerifier"> & { purpose?: LinearOAuthPurpose },
     code: string,
     signal?: AbortSignal,
   ): Promise<void> => {
@@ -328,14 +353,20 @@ export function createLinearOAuthService(args: {
         ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
         : null;
 
-    args.credentials.setOAuthToken({
+    const token = {
       accessToken: payload.access_token.trim(),
       refreshToken: typeof payload.refresh_token === "string" ? payload.refresh_token.trim() : null,
       expiresAt,
-    });
+    };
+    if (session.purpose === "agent-install") {
+      if (!agentTokenHandler) throw new Error("The ADE agent cannot be installed from this runtime.");
+      await agentTokenHandler(token);
+      return;
+    }
+    args.credentials.setOAuthToken(token);
   };
 
-  const startSessionOnce = async (): Promise<CtoStartLinearOAuthResult> => {
+  const startSessionOnce = async (purpose: LinearOAuthPurpose): Promise<CtoStartLinearOAuthResult> => {
     assertActive();
     pruneExpiredSessions();
     // Close any leftover pending sessions so the fixed port is available.
@@ -531,10 +562,12 @@ export function createLinearOAuthService(args: {
       redirectUri,
       state,
       codeChallenge: pkce?.challenge,
+      purpose,
     });
 
     session = {
       id: sessionId,
+      purpose,
       state,
       redirectUri,
       authUrl,
@@ -558,11 +591,20 @@ export function createLinearOAuthService(args: {
   };
 
   let startSessionInFlight: Promise<CtoStartLinearOAuthResult> | null = null;
-  const startSession = (): Promise<CtoStartLinearOAuthResult> => {
+  let startSessionInFlightPurpose: LinearOAuthPurpose | null = null;
+  const startSession = (options?: { purpose?: LinearOAuthPurpose }): Promise<CtoStartLinearOAuthResult> => {
     if (disposed) return Promise.reject(new Error("Linear OAuth service is no longer active."));
-    if (startSessionInFlight) return startSessionInFlight;
-    const work = startSessionOnce().finally(() => {
-      if (startSessionInFlight === work) startSessionInFlight = null;
+    const purpose = options?.purpose ?? "user";
+    if (startSessionInFlight && startSessionInFlightPurpose === purpose) return startSessionInFlight;
+    const previous = startSessionInFlight;
+    startSessionInFlightPurpose = purpose;
+    // One loopback port: a start for the other purpose waits for the running
+    // start, then supersedes its pending session.
+    const work = (previous ? previous.catch(() => undefined).then(() => startSessionOnce(purpose)) : startSessionOnce(purpose)).finally(() => {
+      if (startSessionInFlight === work) {
+        startSessionInFlight = null;
+        startSessionInFlightPurpose = null;
+      }
     });
     startSessionInFlight = work;
     return work;
@@ -667,6 +709,10 @@ export function createLinearOAuthService(args: {
 
   return {
     startSession,
+    /** Set by the Linear agent runtime: receives the `actor=app` token of an agent install. */
+    setAgentTokenHandler(handler: LinearAgentTokenHandler | null): void {
+      agentTokenHandler = handler;
+    },
     getSession,
     startExternalSession,
     completeExternalSession,

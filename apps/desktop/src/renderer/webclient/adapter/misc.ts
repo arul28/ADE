@@ -931,6 +931,11 @@ function createCtoNamespace(
     getLinearQuickView: () => call("cto.getLinearQuickView", {}, null),
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
+    getLinearIssueComments: (args?: unknown) => call("cto.getLinearIssueComments", args, []),
+    getLinearIssue: (args?: unknown) => call("cto.getLinearIssue", args, null),
+    updateLinearIssue: (args?: unknown) => call("cto.updateLinearIssue", args, null),
+    countLinearIssues: (args?: unknown) => call("cto.countLinearIssues", args, { counts: {} }),
+    getLinearCustomViews: () => call("cto.getLinearCustomViews", {}, []),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 

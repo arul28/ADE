@@ -88,6 +88,12 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
       { value: "linear.issue_assigned", label: "Issue assigned" },
       { value: "linear.issue_status_changed", label: "Status changed" },
       { value: "linear.issue_labeled", label: "Issue labeled" },
+      { value: "linear.comment_created", label: "Comment added" },
+      { value: "linear.project_update_posted", label: "Project update posted" },
+      { value: "linear.initiative_update_posted", label: "Initiative update posted" },
+      { value: "linear.user_joined", label: "Member joined" },
+      { value: "linear.agent_delegated", label: "Delegated to ADE" },
+      { value: "linear.agent_mentioned", label: "Mentioned @ADE" },
     ],
   },
   {

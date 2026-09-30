@@ -3056,12 +3056,13 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       return { users, labels, states };
     },
     async getIssuePickerData() {
-      const [projects, users, states] = await Promise.all([
+      const [projects, users, states, labels] = await Promise.all([
         tracker.listProjects().catch(() => []),
         tracker.listUsers().catch(() => []),
         tracker.listWorkflowStates().catch(() => []),
+        tracker.listLabels().catch(() => []),
       ]);
-      return { projects, users, states };
+      return { projects, users, states, labels };
     },
   };
 }
@@ -3200,6 +3201,44 @@ function buildLinearOAuthDomainService(runtime: AdeRuntime): OpaqueService | nul
         ...session,
         connection: await buildRuntimeLinearConnectionStatus(runtime),
       };
+    },
+  };
+}
+
+function buildLinearAgentDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const agentRuntime = runtime.linearAgentRuntime;
+  const oauth = runtime.linearOAuthService;
+  if (!agentRuntime) return null;
+  return {
+    async getOverview() {
+      return agentRuntime.getOverview();
+    },
+    /** Opens Linear's consent screen for an `actor=app` install; poll getInstallSession. */
+    async startInstall() {
+      if (!oauth) throw new Error("Linear sign-in is unavailable in this runtime.");
+      return oauth.startSession({ purpose: "agent-install" });
+    },
+    async getInstallSession(args?: unknown) {
+      if (!oauth) throw new Error("Linear sign-in is unavailable in this runtime.");
+      return oauth.getSession(readStringActionArg(args, "sessionId"));
+    },
+    async registerMember() {
+      await agentRuntime.relay.registerMember();
+      return agentRuntime.getOverview();
+    },
+    async unregisterMember() {
+      await agentRuntime.relay.unregisterMember();
+      return agentRuntime.getOverview();
+    },
+    async updateSettings(args?: unknown) {
+      const record = asActionRecord(args);
+      const fallbackMode = record.fallbackMode === "runner" ? "runner" : "reply";
+      await agentRuntime.relay.updateSettings({ fallbackMode, runner: record.runner === "self" ? "self" : null });
+      return agentRuntime.getOverview();
+    },
+    async uninstall() {
+      await agentRuntime.relay.uninstall();
+      return agentRuntime.getOverview();
     },
   };
 }
@@ -3474,6 +3513,7 @@ export function getAdeActionDomainServices(
     account_vault: toService(runtime.accountVaultStore),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),
+    linear_agent: buildLinearAgentDomainService(runtime),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),

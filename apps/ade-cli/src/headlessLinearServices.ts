@@ -3012,6 +3012,9 @@ export function createHeadlessLinearServices(
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
     openExternal: args.openExternal ?? (async () => {}),
+    // Posts the "PR opened" card (and, through the published hook, proof) onto
+    // the lane's Linear issues. Without it the brain skipped Linear entirely.
+    getLinearIssueTracker: () => issueTracker,
   });
   const agentChatService = createHeadlessAgentChatService(
     args.projectRoot,

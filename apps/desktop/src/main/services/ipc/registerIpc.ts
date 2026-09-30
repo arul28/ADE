@@ -660,6 +660,12 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoGetLinearIssuePickerDataResult,
+  CtoCountLinearIssuesArgs,
+  CtoCountLinearIssuesResult,
+  CtoGetLinearIssueArgs,
+  CtoLinearCustomView,
+  CtoUpdateLinearIssueArgs,
+  NormalizedLinearIssue,
   CtoLinearIssueComment,
   CtoLinearQuickView,
   CtoSearchLinearIssuesArgs,
@@ -12732,14 +12738,15 @@ export function registerIpc({
     // can render a graceful empty state instead of having to handle a thrown
     // error — matches the behavior the picker expects when Linear is offline.
     if (!ctx.linearIssueTracker) {
-      return { projects: [], users: [], states: [] };
+      return { projects: [], users: [], states: [], labels: [] };
     }
-    const [projects, users, states] = await Promise.all([
+    const [projects, users, states, labels] = await Promise.all([
       ctx.linearIssueTracker.listProjects().catch(() => []),
       ctx.linearIssueTracker.listUsers().catch(() => []),
       ctx.linearIssueTracker.listWorkflowStates().catch(() => []),
+      ctx.linearIssueTracker.listLabels().catch(() => []),
     ]);
-    return { projects, users, states };
+    return { projects, users, states, labels };
   });
 
   ipcMain.handle(
@@ -12762,6 +12769,44 @@ export function registerIpc({
       return ctx.linearIssueTracker.fetchIssueComments(arg.issueId);
     }
   );
+
+  ipcMain.handle(
+    IPC.ctoGetLinearIssue,
+    async (_event, arg: CtoGetLinearIssueArgs): Promise<NormalizedLinearIssue | null> => {
+      if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) return null;
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) return null;
+      return ctx.linearIssueTracker.fetchIssueById(arg.issueId.trim());
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoUpdateLinearIssue,
+    async (_event, arg: CtoUpdateLinearIssueArgs): Promise<NormalizedLinearIssue | null> => {
+      if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) {
+        throw new Error("updateLinearIssue requires issueId.");
+      }
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      const { issueId, ...patch } = arg;
+      return ctx.linearIssueTracker.updateIssue(issueId.trim(), patch);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.ctoCountLinearIssues,
+    async (_event, arg: CtoCountLinearIssuesArgs): Promise<CtoCountLinearIssuesResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker || !arg?.queries || typeof arg.queries !== "object") return { counts: {} };
+      return ctx.linearIssueTracker.countIssues(arg);
+    }
+  );
+
+  ipcMain.handle(IPC.ctoGetLinearCustomViews, async (): Promise<CtoLinearCustomView[]> => {
+    const ctx = getCtx();
+    if (!ctx.linearIssueTracker) return [];
+    return ctx.linearIssueTracker.listCustomViews();
+  });
 
   ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();

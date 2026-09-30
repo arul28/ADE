@@ -33,6 +33,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "account_vault",
   "linear_credentials",
   "linear_oauth",
+  "linear_agent",
   "linear_issue_tracker",
   "github",
   "feedback",

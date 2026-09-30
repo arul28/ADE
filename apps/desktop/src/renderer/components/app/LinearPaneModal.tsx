@@ -1,27 +1,18 @@
 import React, { useEffect, type ReactNode } from "react";
-import { CircleNotch, X } from "@phosphor-icons/react";
 
 import type { CtoLinearQuickView } from "../../../shared/types";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { Dialog } from "../ui/dialog";
+import {
+  LinearPaneHeader,
+  LINEAR_PANE_BRAND,
+  type IssuePaneBrand,
+} from "./LinearPaneHeader";
 
-export type IssuePaneBrand = {
-  surface: string;
-  surfaceHover: string;
-  accent: string;
-  border: string;
-};
-
-const LINEAR_PANE_BRAND: IssuePaneBrand = {
-  surface: LINEAR_BRAND.surface,
-  surfaceHover: LINEAR_BRAND.surfaceHover,
-  accent: LINEAR_BRAND.primaryBright,
-  border: LINEAR_BRAND.border,
-};
+export type { IssuePaneBrand } from "./LinearPaneHeader";
 
 /**
  * Shared popover chrome for Linear and GitHub issue panes: a centered, portal'd
@@ -56,15 +47,6 @@ export function LinearPaneModal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const title = headerTitle
-    ?? quickView?.organization?.name
-    ?? "Linear";
-  const subtitle = headerSubtitle
-    ?? [
-      quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected",
-      quickView?.organization?.urlKey,
-    ].filter(Boolean).join(" · ");
-
   useEffect(() => {
     if (!open || typeof window === "undefined") return undefined;
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
@@ -85,9 +67,10 @@ export function LinearPaneModal({
       }}
       title={ariaLabel}
       hideHeader
-      width={1760}
-      height="min(940px, calc(100dvh - 28px))"
-      maxHeight="calc(100dvh - 28px)"
+      // Keeps clear of the window edges and the macOS window buttons.
+      width="min(1680px, calc(100vw - 112px))"
+      height="min(900px, calc(100dvh - 104px))"
+      maxHeight="calc(100dvh - 104px)"
       bodyPadding={false}
       scrollBody={false}
       bodyStyle={{ display: "flex", flexDirection: "column" }}
@@ -100,50 +83,18 @@ export function LinearPaneModal({
         boxShadow: `0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px ${brand.border}`,
       }}
     >
-      <div
-        className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-        style={{ background: brand.surface }}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-            style={{ background: brand.surfaceHover, color: brand.accent }}
-          >
-            {mark ?? <LinearMark size={14} />}
-          </span>
-          <div className="min-w-0 truncate text-[12px] text-fg/90">
-            <span className="font-medium">{title}</span>
-            {subtitle ? (
-              <>
-                <span className="text-muted-fg/45"> · </span>
-                <span className="text-muted-fg/65">{subtitle}</span>
-              </>
-            ) : null}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
-            data-variant="ghost"
-            onClick={onRefresh}
-            disabled={loading}
-            title={refreshTitle}
-          >
-            {loading ? <CircleNotch size={11} className="animate-spin" /> : null}
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
-            data-variant="ghost"
-            onClick={onClose}
-            title={closeTitle}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      </div>
+      <LinearPaneHeader
+        quickView={quickView}
+        title={headerTitle}
+        subtitle={headerSubtitle}
+        loading={loading}
+        brand={brand}
+        mark={mark}
+        refreshTitle={refreshTitle}
+        closeTitle={closeTitle}
+        onRefresh={onRefresh}
+        onClose={onClose}
+      />
 
       <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
     </Dialog>

@@ -2,6 +2,29 @@ import type { IssueTracker } from "./issueTracker";
 import type { LinearClient } from "./linearClient";
 import { getErrorMessage } from "../shared/utils";
 
+// Titles this close (word overlap) to an open issue in the same team count as a
+// duplicate follow-up.
+const FOLLOW_UP_DUPLICATE_THRESHOLD = 0.8;
+
+function titleWords(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 2),
+  );
+}
+
+function titleSimilarity(left: string, right: string): number {
+  const a = titleWords(left);
+  const b = titleWords(right);
+  if (a.size === 0 || b.size === 0) return 0;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  return shared / Math.min(a.size, b.size);
+}
+
 export function createLinearIssueTracker(args: { client: LinearClient }): IssueTracker {
   return {
     runGraphQL(params) {
@@ -26,6 +49,14 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     searchIssues(query) {
       return args.client.searchIssues(query);
+    },
+
+    countIssues(query) {
+      return args.client.countIssues(query);
+    },
+
+    listCustomViews() {
+      return args.client.listCustomViews();
     },
 
     fetchCandidateIssues(query) {
@@ -54,6 +85,15 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     updateIssueAssignee(issueId, assigneeId) {
       return args.client.updateIssueAssignee(issueId, assigneeId);
+    },
+
+    updateIssuePriority(issueId, priority) {
+      return args.client.updateIssuePriority(issueId, priority);
+    },
+
+    async updateIssue(issueId, patch) {
+      await args.client.updateIssue(issueId, patch);
+      return args.client.fetchIssueById(issueId);
     },
 
     createComment(issueId, body) {
@@ -86,6 +126,86 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     fetchIssueComments(issueId) {
       return args.client.fetchIssueComments(issueId);
+    },
+
+    createIssue(input) {
+      return args.client.createIssue(input);
+    },
+
+    createIssueRelation(params) {
+      return args.client.createIssueRelation(params);
+    },
+
+    async createFollowUpIssue(input) {
+      if (!input.allowDuplicate) {
+        // Two reads: full-text search ranks similar titles, and a direct title
+        // filter sees issues filed seconds ago (the search index lags).
+        const openStates = ["triage", "backlog", "unstarted", "started"];
+        type RecentIssues = { issues?: { nodes?: Array<{ id: string; identifier: string; title: string; url: string | null; state?: { name?: string } }> } };
+        const [ranked, recent] = await Promise.all([
+          args.client.searchIssues({ query: input.title, teamKey: input.teamKey, stateTypes: openStates, first: 10 }).catch(() => null),
+          (args.client.runGraphQL({
+            query: `query RecentSimilarIssues($title: String!, $team: String!, $states: [String!]) {
+              issues(first: 10, filter: { title: { containsIgnoreCase: $title }, team: { key: { eqIgnoreCase: $team } }, state: { type: { in: $states } } }) {
+                nodes { id identifier title url state { name } }
+              }
+            }`,
+            variables: { title: input.title.trim().slice(0, 80), team: input.teamKey, states: openStates },
+          }) as Promise<RecentIssues>).catch(() => null),
+        ]);
+        const direct = (recent?.issues?.nodes ?? []).map((node) => ({
+          id: node.id,
+          identifier: node.identifier,
+          title: node.title,
+          url: node.url,
+          stateName: node.state?.name ?? "",
+        }));
+        const duplicate = [...direct, ...(ranked?.issues ?? [])]
+          .find((issue) => titleSimilarity(issue.title, input.title) >= FOLLOW_UP_DUPLICATE_THRESHOLD);
+        if (duplicate) {
+          return {
+            created: false,
+            reason: "duplicate",
+            duplicateOf: {
+              id: duplicate.id,
+              identifier: duplicate.identifier,
+              title: duplicate.title,
+              url: duplicate.url,
+              stateName: duplicate.stateName,
+            },
+          };
+        }
+      }
+      // Resolve the source first: callers pass identifiers ("VER-404"), and
+      // parent/relation inputs want the issue's id.
+      const sourceRef = input.sourceIssueId?.trim() || null;
+      const source = sourceRef ? await args.client.fetchIssueById(sourceRef) : null;
+      if (sourceRef && !source) throw new Error(`Linear issue ${sourceRef} was not found.`);
+      const sourceIssueId = source?.id ?? null;
+      const relation = input.relation ?? (sourceIssueId ? "related" : null);
+      const issue = await args.client.createIssue({
+        ...input,
+        teamKey: input.teamKey?.trim() || source?.teamKey || "",
+        projectId: input.projectId ?? (source?.projectId || null),
+        parentId: relation === "sub_issue" && sourceIssueId ? sourceIssueId : input.parentId,
+      });
+      if (sourceIssueId && relation && relation !== "sub_issue") {
+        // The new issue is the subject: "blocks" = the new issue blocks the source.
+        await args.client.createIssueRelation({ issueId: issue.id, relatedIssueId: sourceIssueId, type: relation });
+      }
+      return { created: true, issue, relation };
+    },
+
+    listNotifications(params) {
+      return args.client.listNotifications(params);
+    },
+
+    markNotification(params) {
+      return args.client.markNotification(params.notificationId, params.action);
+    },
+
+    createProjectUpdate(params) {
+      return args.client.createProjectUpdate(params);
     },
 
     async getConnectionStatus() {
