@@ -24403,6 +24403,27 @@ function formatRouterEfficiency(value: unknown): string {
     );
   }
 
+  const topThreads = Array.isArray(threads.topThreads) ? threads.topThreads.filter(isRecord) : [];
+  if (topThreads.length) {
+    sections.push(
+      "",
+      "Top threads by cost",
+      renderTable(
+        ["session", "route", "turns", "segments", "actual", "same harness", "any harness"],
+        topThreads.map((thread) => [
+          `${asString(thread.sessionId) ?? ""}${thread.parentSessionId ? " (child)" : ""}`,
+          `${asString(thread.provider) ?? ""} ${asString(thread.model) ?? ""}`.trim(),
+          count(thread.turns),
+          count(thread.segments),
+          usd(thread.actualUsd),
+          usd(thread.sameHarnessUsd),
+          usd(thread.anyHarnessUsd),
+        ]),
+        "No threads.",
+      ),
+    );
+  }
+
   sections.push(
     "",
     renderKeyValues("Subagents (shadow log)", [

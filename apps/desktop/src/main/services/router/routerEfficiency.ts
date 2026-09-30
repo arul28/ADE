@@ -181,6 +181,70 @@ export type ThreadReplayInput = {
   trusted: ReadonlySet<string>;
 };
 
+function billingLabel(route: RouteBilling | null): string {
+  if (!route) return "unrouted";
+  switch (route.kind) {
+    case "plan":
+      return `${route.plan} plan`;
+    case "metered":
+      return `metered (${route.channel})`;
+    case "free":
+      return "free";
+  }
+}
+
+/** One segment's replay: what it cost, what the router would pick, and who bills each side. */
+type SegmentDecision = {
+  pricedTurns: number;
+  actualUsd: number;
+  sameHarnessUsd: number;
+  anyHarnessUsd: number;
+  /** The route the segment ran on, as a route id when the catalog knows it. */
+  from: string;
+  sameHarnessTo: string | null;
+  anyHarnessTo: string | null;
+  billing: { actual: RouteBilling | null; sameHarness: RouteBilling | null; anyHarness: RouteBilling | null };
+  /** Why the segment kept its route in every harness; null when it moved. */
+  keptBecause: string | null;
+};
+
+function decideSegment(segment: ThreadSegment, input: ThreadReplayInput, plans: ReadonlyMap<string, PlanState>): SegmentDecision {
+  let pricedTurns = 0;
+  let actualUsd = 0;
+  for (const turn of segment.turns) {
+    if (turn.apiEquivalentUsd == null) continue;
+    pricedTurns += 1;
+    actualUsd += turn.apiEquivalentUsd;
+  }
+  const harness = routeHarnessOf(segment.provider);
+  const kind: RouterTaskKind = segment.parentSessionId ? "unknown" : "lead";
+  const pick = harness
+    ? pickRoute({
+        routes: input.routes,
+        reference: findReferenceRoute(input.routes, harness, segment.model, segment.effort),
+        kind,
+        plans,
+        trusted: input.trusted,
+      })
+    : null;
+  const refBilling = pick?.reference?.route.billing ?? (harness && segment.model ? routeBillingFor(harness, segment.model) : null);
+  return {
+    pricedTurns,
+    actualUsd,
+    sameHarnessUsd: actualUsd * costRatio(pick?.sameHarness ?? null, pick?.reference ?? null),
+    anyHarnessUsd: actualUsd * costRatio(pick?.anyHarness ?? null, pick?.reference ?? null),
+    from: pick?.reference?.route.id ?? `${segment.provider}|${segment.model ?? "?"}|${segment.effort ?? "-"}`,
+    sameHarnessTo: pick?.sameHarness?.route.id ?? null,
+    anyHarnessTo: pick?.anyHarness?.route.id ?? null,
+    billing: {
+      actual: refBilling,
+      sameHarness: pick?.sameHarness?.route.billing ?? refBilling,
+      anyHarness: pick?.anyHarness?.route.billing ?? refBilling,
+    },
+    keptBecause: pick?.anyHarness ? null : !harness ? `the ${segment.provider} harness is not routed` : pick?.keptBecause ?? "kept",
+  };
+}
+
 /**
  * Replays the router over every thread. Plans are taken as they are now, with
  * no window blocked: a replay asks which route was cheaper at equal quality,
@@ -194,18 +258,15 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
   const moves = { sameHarness: new Map<string, RouterEfficiencyMove>(), anyHarness: new Map<string, RouterEfficiencyMove>() };
   const threads = new Map<string, RouterThreadEfficiency["topThreads"][number]>();
   const billing = new Map<string, { plan: string | null; actualUsd: number; sameHarnessUsd: number; anyHarnessUsd: number }>();
+  const totals = { pricedTurns: 0, actualUsd: 0, sameHarnessUsd: 0, anyHarnessUsd: 0 };
+  const switched = { sameHarness: 0, anyHarness: 0 };
+
   const addBilling = (route: RouteBilling | null, side: "actualUsd" | "sameHarnessUsd" | "anyHarnessUsd", usd: number) => {
-    const label = !route ? "unrouted" : route.kind === "plan" ? `${route.plan} plan` : route.kind === "metered" ? `metered (${route.channel})` : "free";
+    const label = billingLabel(route);
     const entry = billing.get(label) ?? { plan: route?.kind === "plan" ? route.plan : null, actualUsd: 0, sameHarnessUsd: 0, anyHarnessUsd: 0 };
     entry[side] += usd;
     billing.set(label, entry);
   };
-  let pricedTurns = 0;
-  let actualUsd = 0;
-  let sameHarnessUsd = 0;
-  let anyHarnessUsd = 0;
-  const switched = { sameHarness: 0, anyHarness: 0 };
-
   const noteMove = (bucket: Map<string, RouterEfficiencyMove>, from: string, to: string, actual: number, routed: number) => {
     const key = `${from} → ${to}`;
     const move = bucket.get(key) ?? { from, to, segments: 0, actualUsd: 0, routedUsd: 0 };
@@ -216,53 +277,30 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
   };
 
   for (const segment of segments) {
+    const decision = decideSegment(segment, input, plans);
     segmentsByStart[segment.startsAt] += 1;
-    let segmentUsd = 0;
-    for (const turn of segment.turns) {
-      if (turn.apiEquivalentUsd == null) continue;
-      pricedTurns += 1;
-      segmentUsd += turn.apiEquivalentUsd;
-    }
-    const harness = routeHarnessOf(segment.provider);
-    const kind: RouterTaskKind = segment.parentSessionId ? "unknown" : "lead";
-    const pick = harness
-      ? pickRoute({
-          routes: input.routes,
-          reference: findReferenceRoute(input.routes, harness, segment.model, segment.effort),
-          kind,
-          plans,
-          trusted: input.trusted,
-        })
-      : null;
-    const sameUsd = segmentUsd * costRatio(pick?.sameHarness ?? null, pick?.reference ?? null);
-    const anyUsd = segmentUsd * costRatio(pick?.anyHarness ?? null, pick?.reference ?? null);
-    actualUsd += segmentUsd;
-    sameHarnessUsd += sameUsd;
-    anyHarnessUsd += anyUsd;
-
-    const refBilling = pick?.reference?.route.billing ?? (harness && segment.model ? routeBillingFor(harness, segment.model) : null);
-    addBilling(refBilling, "actualUsd", segmentUsd);
-    addBilling(pick?.sameHarness?.route.billing ?? refBilling, "sameHarnessUsd", sameUsd);
-    addBilling(pick?.anyHarness?.route.billing ?? refBilling, "anyHarnessUsd", anyUsd);
-
-    const from = pick?.reference?.route.id ?? `${segment.provider}|${segment.model ?? "?"}|${segment.effort ?? "-"}`;
-    if (pick?.sameHarness) {
+    totals.pricedTurns += decision.pricedTurns;
+    totals.actualUsd += decision.actualUsd;
+    totals.sameHarnessUsd += decision.sameHarnessUsd;
+    totals.anyHarnessUsd += decision.anyHarnessUsd;
+    addBilling(decision.billing.actual, "actualUsd", decision.actualUsd);
+    addBilling(decision.billing.sameHarness, "sameHarnessUsd", decision.sameHarnessUsd);
+    addBilling(decision.billing.anyHarness, "anyHarnessUsd", decision.anyHarnessUsd);
+    if (decision.sameHarnessTo) {
       switched.sameHarness += 1;
-      noteMove(moves.sameHarness, from, pick.sameHarness.route.id, segmentUsd, sameUsd);
+      noteMove(moves.sameHarness, decision.from, decision.sameHarnessTo, decision.actualUsd, decision.sameHarnessUsd);
     }
-    if (pick?.anyHarness) {
+    if (decision.anyHarnessTo) {
       switched.anyHarness += 1;
-      noteMove(moves.anyHarness, from, pick.anyHarness.route.id, segmentUsd, anyUsd);
+      noteMove(moves.anyHarness, decision.from, decision.anyHarnessTo, decision.actualUsd, decision.anyHarnessUsd);
     }
-    if (!pick?.anyHarness) {
-      const reason = !harness ? `the ${segment.provider} harness is not routed` : pick?.keptBecause ?? "kept";
-      const entry = kept.get(reason) ?? { segments: 0, turns: 0, actualUsd: 0 };
+    if (decision.keptBecause) {
+      const entry = kept.get(decision.keptBecause) ?? { segments: 0, turns: 0, actualUsd: 0 };
       entry.segments += 1;
       entry.turns += segment.turns.length;
-      entry.actualUsd += segmentUsd;
-      kept.set(reason, entry);
+      entry.actualUsd += decision.actualUsd;
+      kept.set(decision.keptBecause, entry);
     }
-
     const thread = threads.get(segment.sessionId) ?? {
       sessionId: segment.sessionId,
       parentSessionId: segment.parentSessionId,
@@ -276,9 +314,9 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     };
     thread.turns += segment.turns.length;
     thread.segments += 1;
-    thread.actualUsd += segmentUsd;
-    thread.sameHarnessUsd += sameUsd;
-    thread.anyHarnessUsd += anyUsd;
+    thread.actualUsd += decision.actualUsd;
+    thread.sameHarnessUsd += decision.sameHarnessUsd;
+    thread.anyHarnessUsd += decision.anyHarnessUsd;
     threads.set(segment.sessionId, thread);
   }
 
@@ -293,12 +331,12 @@ export function replayThreads(input: ThreadReplayInput): RouterThreadEfficiency 
     turns: input.turns.length,
     segments: segments.length,
     segmentsByStart,
-    pricedTurns,
-    actualUsd: cents(actualUsd),
-    sameHarnessUsd: cents(sameHarnessUsd),
-    anyHarnessUsd: cents(anyHarnessUsd),
-    sameHarnessSaving: share(sameHarnessUsd, actualUsd),
-    anyHarnessSaving: share(anyHarnessUsd, actualUsd),
+    pricedTurns: totals.pricedTurns,
+    actualUsd: cents(totals.actualUsd),
+    sameHarnessUsd: cents(totals.sameHarnessUsd),
+    anyHarnessUsd: cents(totals.anyHarnessUsd),
+    sameHarnessSaving: share(totals.sameHarnessUsd, totals.actualUsd),
+    anyHarnessSaving: share(totals.anyHarnessUsd, totals.actualUsd),
     switchedSegments: switched,
     byBilling: [...billing]
       .sort((a, b) => b[1].actualUsd - a[1].actualUsd || b[1].anyHarnessUsd - a[1].anyHarnessUsd)

@@ -101,11 +101,6 @@ export type RouterShadowOutcomeRow = {
   totalTokens: number | null;
   toolUses: number | null;
   costUsd: number | null;
-  /** The token split, when the runtime reports one. Absent on rows written before it existed. */
-  inputTokens?: number | null;
-  outputTokens?: number | null;
-  cacheReadTokens?: number | null;
-  cacheWriteTokens?: number | null;
 };
 
 export type RouterShadowSummary = {
@@ -322,10 +317,6 @@ export function createModelRouterService(args: {
       totalTokens: usage?.totalTokens ?? event.totalTokens ?? null,
       toolUses: usage?.toolUses ?? event.toolUseCount ?? null,
       costUsd: usage?.costUsd ?? null,
-      inputTokens: usage?.inputTokens ?? null,
-      outputTokens: usage?.outputTokens ?? null,
-      cacheReadTokens: usage?.cacheReadTokens ?? null,
-      cacheWriteTokens: usage?.cacheWriteTokens ?? null,
     }));
   };
 
@@ -393,8 +384,7 @@ export function createModelRouterService(args: {
     async shadowSummary(input = {}) {
       const days = reportDays(input.days);
       const rows = await readShadowRows(now() - days * 86_400_000);
-      const decisions = rows.filter((row): row is RouterShadowDecisionRow => row.type === "decision");
-      const outcomes = new Map(rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome").map((row) => [row.key, row]));
+      const { decisions, outcomes } = splitShadowRows(rows);
       const byKind: RouterShadowSummary["byKind"] = {};
       const sameMoves = new Map<string, number>();
       const anyMoves = new Map<string, number>();
@@ -462,18 +452,16 @@ export function createModelRouterService(args: {
         args.readTurns(sinceMs),
         readShadowRows(sinceMs),
       ]);
-      const outcomes = new Map(rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome").map((row) => [row.key, row]));
-      const subagents = rows
-        .filter((row): row is RouterShadowDecisionRow => row.type === "decision")
-        .map((row) => {
-          const outcome = outcomes.get(row.key);
-          return {
-            sameHarnessSaving: row.sameHarness?.savingShare ?? null,
-            anyHarnessSaving: row.anyHarness?.savingShare ?? null,
-            picked: { sameHarness: Boolean(row.sameHarness), anyHarness: Boolean(row.anyHarness) },
-            outcome: outcome ? { totalTokens: outcome.totalTokens, costUsd: outcome.costUsd } : null,
-          };
-        });
+      const { decisions, outcomes } = splitShadowRows(rows);
+      const subagents = decisions.map((row) => {
+        const outcome = outcomes.get(row.key);
+        return {
+          sameHarnessSaving: row.sameHarness?.savingShare ?? null,
+          anyHarnessSaving: row.anyHarness?.savingShare ?? null,
+          picked: { sameHarness: Boolean(row.sameHarness), anyHarness: Boolean(row.anyHarness) },
+          outcome: outcome ? { totalTokens: outcome.totalTokens, costUsd: outcome.costUsd } : null,
+        };
+      });
       return {
         days,
         registry: args.registry.status(),
@@ -488,8 +476,21 @@ export function createModelRouterService(args: {
   };
 }
 
-function reportDays(days: number | undefined): number {
-  return Math.max(1, Math.min(90, Math.floor(days ?? 7)));
+/** Whole days from 1 to 90; anything that is not a number reads as the default 7. */
+function reportDays(days: unknown): number {
+  const whole = Math.floor(Number(days ?? 7));
+  return Number.isFinite(whole) ? Math.min(90, Math.max(1, whole)) : 7;
+}
+
+/** The shadow log's decisions, and each decision's outcome by key. */
+function splitShadowRows(rows: ReadonlyArray<RouterShadowDecisionRow | RouterShadowOutcomeRow>): {
+  decisions: RouterShadowDecisionRow[];
+  outcomes: Map<string, RouterShadowOutcomeRow>;
+} {
+  return {
+    decisions: rows.filter((row): row is RouterShadowDecisionRow => row.type === "decision"),
+    outcomes: new Map(rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome").map((row) => [row.key, row])),
+  };
 }
 
 type ModelSource = (provider: AgentChatProvider) => Promise<AgentChatModelInfo[]>;
@@ -516,16 +517,14 @@ export function attachSharedModelRouter(args: {
   if (!shared) {
     const sources: ModelSource[] = [];
     const getAvailableModels: ModelSource = async (provider) => {
+      // Every scope lists at once; a scope that fails adds nothing. Newest
+      // first, so the newest scope's row wins a duplicate model id.
+      const lists = await Promise.allSettled([...sources].reverse().map((source) => source(provider)));
       const seen = new Set<string>();
       const models: AgentChatModelInfo[] = [];
-      for (const source of [...sources].reverse()) {
-        let listed: AgentChatModelInfo[];
-        try {
-          listed = await source(provider);
-        } catch {
-          continue;
-        }
-        for (const info of listed) {
+      for (const list of lists) {
+        if (list.status !== "fulfilled") continue;
+        for (const info of list.value) {
           const id = info.modelId ?? info.id;
           if (seen.has(id)) continue;
           seen.add(id);
