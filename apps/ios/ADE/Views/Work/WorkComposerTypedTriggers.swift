@@ -447,11 +447,12 @@ struct WorkModelMention: Equatable {
   let token: String
   let range: NSRange
 
-  /// `modelMentionChipLabel`: `DeepSeek V4.1 Flash · High · Full access`.
+  /// `modelMentionChipLabel`: `DeepSeek V4.1 Flash · High · Full auto`.
   func chipLabel(displayName: String) -> String {
     var parts = [displayName]
     if let effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
-    parts.append(WorkModelMentionDetector.permissionLabel(permission))
+    let provider = WorkModelMentionDirectory.shared.entry(for: modelId)?.provider
+    parts.append(WorkModelMentionDetector.permissionLabel(permission, provider: provider))
     return parts.joined(separator: " · ")
   }
 
@@ -465,9 +466,80 @@ struct WorkModelMention: Equatable {
 }
 
 enum WorkModelMentionDetector {
-  /// `MODEL_MENTION_PERMISSION_MODES`, in menu order.
+  /// `MODEL_MENTION_PERMISSION_MODES`, in menu order. Kept for callers that
+  /// have no provider; new UI uses `permissionOptions(provider:)`.
   static let permissionModes = ["default", "auto", "plan", "edit", "full-auto"]
   static let defaultPermission = "default"
+
+  /// A provider's own permission modes, mirroring `shared/modelPermissions.ts`
+  /// and the desktop footer's option lists.
+  struct PermissionOption: Equatable {
+    let value: String
+    let label: String
+  }
+
+  static func permissionOptions(provider: String?) -> [PermissionOption] {
+    switch (provider ?? "").lowercased() {
+    case "claude":
+      return [
+        PermissionOption(value: "default", label: "Manual"),
+        PermissionOption(value: "auto", label: "Auto"),
+        PermissionOption(value: "acceptEdits", label: "Accept edits"),
+        PermissionOption(value: "plan", label: "Plan mode"),
+        PermissionOption(value: "bypassPermissions", label: "Bypass"),
+      ]
+    case "codex":
+      return [
+        PermissionOption(value: "default", label: "Default"),
+        PermissionOption(value: "edit", label: "Edit"),
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+        PermissionOption(value: "config-toml", label: "Config"),
+      ]
+    case "cursor":
+      return [
+        PermissionOption(value: "agent", label: "Agent"),
+        PermissionOption(value: "ask", label: "Ask"),
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+      ]
+    case "droid", "factory":
+      return [
+        PermissionOption(value: "read-only", label: "Read-only"),
+        PermissionOption(value: "auto-low", label: "Auto low"),
+        PermissionOption(value: "auto-medium", label: "Auto medium"),
+        PermissionOption(value: "auto-high", label: "Auto high"),
+        PermissionOption(value: "agi", label: "AGI (orchestrator)"),
+      ]
+    default:
+      return [
+        PermissionOption(value: "plan", label: "Plan"),
+        PermissionOption(value: "edit", label: "Edit"),
+        PermissionOption(value: "full-auto", label: "Full auto"),
+        PermissionOption(value: "config-toml", label: "Config"),
+      ]
+    }
+  }
+
+  /// The mode a fresh chip starts on, matching the desktop per provider.
+  static func defaultPermission(provider: String?) -> String {
+    switch (provider ?? "").lowercased() {
+    case "claude", "codex": return "default"
+    case "cursor": return "agent"
+    case "droid", "factory": return "auto-low"
+    default: return "edit"
+    }
+  }
+
+  /// The label for a stored mode in a provider's vocabulary. Falls back to the
+  /// legacy generic labels when the provider is unknown.
+  static func permissionLabel(_ mode: String?, provider: String?) -> String {
+    guard let mode, !mode.isEmpty else { return defaultPermission(provider: provider) }
+    if let option = permissionOptions(provider: provider).first(where: { $0.value == mode }) {
+      return option.label
+    }
+    return permissionLabels[mode] ?? mode
+  }
 
   private static let permissionLabels: [String: String] = [
     "default": "Default",
@@ -671,6 +743,9 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
     let title: String
     /// Harness and route, e.g. "OpenCode · OpenCode Go".
     let subtitle: String
+    /// Chat runtime provider (harness group key), so the chip's permission menu
+    /// offers this provider's own modes.
+    let provider: String
     let reasoningTiers: [String]
     let defaultEffort: String?
     let isAvailable: Bool
@@ -716,6 +791,7 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
                 groupKey: group.key,
                 route: routed ? provider.displayName : nil
               ),
+              provider: group.key,
               reasoningTiers: tiers,
               defaultEffort: WorkModelMentionDetector.defaultEffort(
                 tiers: tiers,
@@ -1312,16 +1388,57 @@ enum WorkComposerSlashRegistry {
     )
   }
 
-  /// Filter to rows whose token prefixes the typed query.
+  /// Filter and rank rows with the same tiers as `@` and the desktop:
+  /// exact > prefix > word-prefix > substring > scattered letters, and scattered
+  /// letters only when nothing better matched. This is what makes `/test` rank
+  /// `test` first instead of drowning in long names that merely contain those
+  /// letters.
   static func suggestions(from commands: [HostSlashCommand], query: String) -> [WorkComposerSuggestion] {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    return commands.prefix(maxCommands).compactMap { command in
-      guard let suggestion = suggestion(for: command) else { return nil }
-      guard trimmed.isEmpty || suggestion.title.dropFirst().lowercased().hasPrefix(trimmed) else {
-        return nil
-      }
-      return suggestion
+    guard !trimmed.isEmpty else {
+      return commands.prefix(maxCommands).compactMap { suggestion(for: $0) }
     }
+    var scored: [(suggestion: WorkComposerSuggestion, score: Int)] = []
+    for command in commands {
+      guard let suggestion = suggestion(for: command) else { continue }
+      guard let score = slashScore(suggestion.title, trimmed) else { continue }
+      scored.append((suggestion, score))
+    }
+    let best = scored.map(\.score).min()
+    let keepScattered = (best ?? 0) >= 3
+    let kept = scored.filter { keepScattered || $0.score < 3 }
+    kept.sort { lhs, rhs in
+      if lhs.score != rhs.score { return lhs.score < rhs.score }
+      return lhs.suggestion.title < rhs.suggestion.title
+    }
+    return kept.prefix(maxCommands).map(\.suggestion)
+  }
+
+  /// Tier score for one `/` token against a lowercased query, or nil for no match.
+  private static func slashScore(_ name: String, _ query: String) -> Int? {
+    let base = name.hasPrefix("/") ? String(name.dropFirst()) : name
+    let target = base.lowercased()
+    if target == query { return 0 }
+    if target.hasPrefix(query) { return 1 }
+    if wordPrefixHit(target, query) { return 1 }
+    if target.contains(query) { return 2 }
+    return subsequenceHit(target, query) ? 3 : nil
+  }
+
+  private static func wordPrefixHit(_ target: String, _ query: String) -> Bool {
+    guard !query.isEmpty else { return false }
+    return target
+      .split(whereSeparator: { "-:/_ ".contains($0) })
+      .contains { $0.hasPrefix(query) }
+  }
+
+  private static func subsequenceHit(_ target: String, _ query: String) -> Bool {
+    var cursor = target.startIndex
+    for character in query {
+      guard let index = target[cursor...].firstIndex(of: character) else { return false }
+      cursor = target.index(after: index)
+    }
+    return true
   }
 
   /// The host list when it has anything usable, else the minimal static set.
@@ -1570,7 +1687,7 @@ final class WorkComposerSuggestionController: ObservableObject {
         insertText: WorkModelMentionDetector.formatToken(
           modelId: entry.modelId,
           effort: entry.defaultEffort,
-          permission: WorkModelMentionDetector.defaultPermission
+          permission: WorkModelMentionDetector.defaultPermission(provider: entry.provider)
         ),
         modelId: entry.modelId
       )
@@ -2969,14 +3086,22 @@ struct WorkModelChipEditorBar: View {
     WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.reasoningTiers ?? []
   }
 
+  private var provider: String {
+    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.provider ?? ""
+  }
+
+  private var permissionOptions: [WorkModelMentionDetector.PermissionOption] {
+    WorkModelMentionDetector.permissionOptions(provider: provider)
+  }
+
   private var currentPermission: String {
-    chip.permission ?? WorkModelMentionDetector.defaultPermission
+    chip.permission ?? WorkModelMentionDetector.defaultPermission(provider: provider)
   }
 
   private var summary: String {
     var parts: [String] = []
     if let effort = chip.effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
-    parts.append(WorkModelMentionDetector.permissionLabel(chip.permission))
+    parts.append(WorkModelMentionDetector.permissionLabel(chip.permission, provider: provider))
     return parts.joined(separator: " · ")
   }
 
@@ -3009,14 +3134,14 @@ struct WorkModelChipEditorBar: View {
           }
         }
         Section("Permissions") {
-          ForEach(WorkModelMentionDetector.permissionModes, id: \.self) { mode in
+          ForEach(permissionOptions, id: \.value) { option in
             Button {
-              controller.rewriteEditingModelChip(effort: chip.effort, permission: mode)
+              controller.rewriteEditingModelChip(effort: chip.effort, permission: option.value)
             } label: {
-              if mode == currentPermission {
-                Label(WorkModelMentionDetector.permissionLabel(mode), systemImage: "checkmark")
+              if option.value == currentPermission {
+                Label(option.label, systemImage: "checkmark")
               } else {
-                Text(WorkModelMentionDetector.permissionLabel(mode))
+                Text(option.label)
               }
             }
           }

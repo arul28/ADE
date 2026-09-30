@@ -47,18 +47,20 @@ import {
 import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
 import {
   MODEL_MENTION_DEFAULT_PERMISSION,
-  MODEL_MENTION_PERMISSION_MODES,
   formatModelMentionToken,
   isModelMentionTokenBody,
   modelMentionEffortLabel,
   modelMentionHarnessLabel,
-  modelMentionPermissionLabel,
   modelMentionSubtitle,
   parseModelMentions,
   rankComposerModelSuggestions,
   type ComposerModelSuggestion,
   type ModelMention,
 } from "../../../desktop/src/shared/modelMentions";
+import {
+  defaultModelPermission,
+  modelPermissionOptions,
+} from "../../../desktop/src/shared/modelPermissions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -2848,11 +2850,13 @@ export function modelMentionSuggestionsFromCatalog(
       modelId: args.id,
       title: args.displayName || descriptor?.displayName || args.id,
       subtitle: modelMentionSubtitle(modelMentionHarnessLabel(args.group), args.route),
+      provider: args.group,
       reasoningTiers: [...tiers],
       defaultEffort: selectSupportedReasoningEffort({
         tiers,
         advertisedDefault: args.defaultReasoningEffort ?? descriptor?.defaultReasoningEffort ?? null,
       }),
+      defaultPermission: defaultModelPermission(args.group),
     });
   };
   if (catalog?.groups.length) {
@@ -2901,6 +2905,8 @@ export type ModelChipEdit = {
   start: number;
   mention: ModelMention;
   title: string;
+  /** Chat runtime provider, so the permission step offers its own modes. */
+  provider: string;
   reasoningTiers: string[];
   step: ModelChipEditStep;
   index: number;
@@ -2909,9 +2915,10 @@ export type ModelChipEdit = {
 export function modelChipEditOptions(
   step: ModelChipEditStep,
   reasoningTiers: readonly string[],
+  provider: string,
 ): Array<{ value: string; label: string }> {
   return step === "perm"
-    ? MODEL_MENTION_PERMISSION_MODES.map((value) => ({ value, label: modelMentionPermissionLabel(value) }))
+    ? modelPermissionOptions(provider).map((option) => ({ value: option.value, label: option.label }))
     : reasoningTiers.map((value) => ({ value, label: modelMentionEffortLabel(value) }));
 }
 
@@ -2921,7 +2928,7 @@ function modelChipEditAtStep(
   step: ModelChipEditStep,
 ): ModelChipEdit {
   const current = step === "effort" ? edit.mention.effort : edit.mention.permission;
-  const index = modelChipEditOptions(step, edit.reasoningTiers).findIndex((option) => option.value === current);
+  const index = modelChipEditOptions(step, edit.reasoningTiers, edit.provider).findIndex((option) => option.value === current);
   return { ...edit, step, index: Math.max(0, index) };
 }
 
@@ -14054,7 +14061,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const mention: ModelMention = {
         modelId: model.modelId,
         effort: model.defaultEffort,
-        permission: MODEL_MENTION_DEFAULT_PERMISSION,
+        permission: model.defaultPermission ?? MODEL_MENTION_DEFAULT_PERMISSION,
       };
       const token = formatModelMentionToken(mention);
       const trigger = composerTriggerForSelection(detectedTrigger, suggestion.label, "mention");
@@ -14063,7 +14070,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setMentionSuggestions([]);
       setMentionIndex(0);
       setModelChipEdit(modelChipEditAtStep(
-        { token, start: trigger.start, mention, title: model.title, reasoningTiers: model.reasoningTiers },
+        { token, start: trigger.start, mention, title: model.title, provider: model.provider ?? "opencode", reasoningTiers: model.reasoningTiers },
         model.reasoningTiers.length > 0 ? "effort" : "perm",
       ));
       return;
@@ -14088,7 +14095,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * in the draft, then move from thinking to permissions, or close.
    */
   const applyModelChipEditOption = useCallback((edit: ModelChipEdit, optionIndex: number) => {
-    const option = modelChipEditOptions(edit.step, edit.reasoningTiers)[optionIndex];
+    const option = modelChipEditOptions(edit.step, edit.reasoningTiers, edit.provider)[optionIndex];
     if (!option) return;
     const mention: ModelMention = edit.step === "effort"
       ? { ...edit.mention, effort: option.value }
@@ -15936,7 +15943,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // are open. Any other key closes them (the chip keeps its values) and then
     // does what it normally does, so the user can simply keep typing.
     if (pane === "chat" && textInputActive && modelChipEdit) {
-      const optionCount = modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers).length;
+      const optionCount = modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers, modelChipEdit.provider).length;
       if (key.upArrow && optionCount > 0) {
         setModelChipEdit({ ...modelChipEdit, index: (modelChipEdit.index - 1 + optionCount) % optionCount });
         return;
@@ -18818,7 +18825,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             <ModelChipOptionPalette
               modelTitle={modelChipEdit.title}
               stepLabel={modelChipEdit.step === "effort" ? "Thinking" : "Permissions"}
-              options={modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers)}
+              options={modelChipEditOptions(modelChipEdit.step, modelChipEdit.reasoningTiers, modelChipEdit.provider)}
               selectedIndex={modelChipEdit.index}
               currentValue={modelChipEdit.step === "effort" ? modelChipEdit.mention.effort : modelChipEdit.mention.permission}
               width={paletteOverlayWidth}

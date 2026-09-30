@@ -57624,6 +57624,29 @@ export function createAgentChatService(args: {
       return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     };
 
+    // Claude command/skill files carry their kind and where they came from, so
+    // the `/` menu can group them (project skills before user/plugin skills).
+    const claudeCommandOrigin = (
+      cmd: { source: "command" | "skill"; filePath?: string },
+    ): AgentChatSlashCommand["origin"] => {
+      if (cmd.source !== "skill") return "provider";
+      const filePath = cmd.filePath ?? "";
+      if (/[\\/]plugins[\\/]/.test(filePath)) return "plugin";
+      if (laneWorktreePath && filePath.startsWith(laneWorktreePath)) return "project";
+      return "user";
+    };
+    const claudeCommandFiles = (): AgentChatSlashCommand[] =>
+      discoverClaudeSlashCommands(laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+          kind: cmd.source === "skill" ? ("skill" as const) : ("command" as const),
+          origin: claudeCommandOrigin(cmd),
+        }));
+
     const filesystemBackedCommands = (): AgentChatSlashCommand[] => {
       const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(
         laneWorktreePath,
@@ -57635,14 +57658,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const skillAndCommandFiles: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
-        .filter(isDispatchableClaudeSdkSlashCommand)
-        .map((cmd) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
+      const skillAndCommandFiles: AgentChatSlashCommand[] = claudeCommandFiles();
       return mergeSlashCommands([promptCommands, skillAndCommandFiles]);
     };
 
@@ -57656,14 +57672,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
-        .filter(isDispatchableClaudeSdkSlashCommand)
-        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
+      const projectCommands: AgentChatSlashCommand[] = claudeCommandFiles();
       return filterClaudeGuiSlashCommands(
         mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]),
         managed?.runtime?.kind === "claude" ? managed.runtime.terminalSlashCommandNames : [],
