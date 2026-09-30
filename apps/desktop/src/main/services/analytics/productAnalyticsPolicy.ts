@@ -204,6 +204,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "reset_credit_consumed",
   "pending_input_dismissed",
   "new_lane_launch",
+  // One event after Codex realtime answers a chat's voice offer. It is scoped
+  // to a chat session locally; no audio, transcript, or voice preferences.
+  "voice_conversation_started",
   // How an external CLI session came into ADE: continued or copied, into a
   // chat or a terminal. Never the session, its folder, or its title.
   "session_continue_chat",

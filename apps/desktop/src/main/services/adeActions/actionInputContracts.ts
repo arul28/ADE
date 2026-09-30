@@ -446,6 +446,22 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
       example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
     },
+    startCodexRealtime: {
+      description:
+        "Start a Codex realtime voice conversation on a chat from a renderer WebRTC offer. "
+        + "The session uses the signed-in ChatGPT account and is CTO-only.",
+      input: "object { sessionId: string, sdp: string, preferences?: CodexVoicePreferences | null }",
+    },
+    stopCodexRealtime: {
+      description: "Stop the current Codex realtime voice conversation for a chat. CTO-only.",
+      input: "object { sessionId: string, token?: string }",
+    },
+    getCodexRealtimeState: {
+      description:
+        "Read the current Codex voice state and live captions for the renderer. "
+        + "Captions contain spoken words, so this read is CTO-only.",
+      input: "object { sessionId: string, token: string }",
+    },
     handoffSession: {
       description:
         "Hand a chat to a different model. \"brief\" writes a summary and starts a fresh thread (any lane in the project); "

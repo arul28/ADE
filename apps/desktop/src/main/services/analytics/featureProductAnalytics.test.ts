@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
+  captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
   captureSessionImportAnalytics,
   providerAccountAnalyticsCapture,
@@ -80,6 +81,39 @@ describe("captureNewLaneLaunchAnalytics", () => {
     // The allowlist keeps every value: nothing is silently dropped at the boundary.
     const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", (captured[0] as { properties: Record<string, unknown> }).properties as never);
     expect(sanitized).toMatchObject({ feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" });
+  });
+});
+
+describe("captureFeatureUsedAnalytics", () => {
+  it("records one coarse voice start per chat session without preference or transcript data", () => {
+    const { analytics, captured } = recorder();
+    captureFeatureUsedAnalytics({
+      analytics,
+      surface: "desktop",
+      feature: "chat",
+      action: "voice_conversation_started",
+      outcome: "completed",
+      provider: "anthropic",
+      sessionId: "chat-session-private",
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      event: "ade_feature_used",
+      surface: "desktop",
+      sessionId: "chat-session-private",
+      dedupeKey: "feature:chat:voice_conversation_started:completed:claude:chat-session-private",
+      minimumIntervalMs: 60 * 60_000,
+      properties: {
+        feature: "chat",
+        action: "voice_conversation_started",
+        outcome: "completed",
+        provider: "claude",
+      },
+    });
+    const properties = (captured[0] as { properties: Record<string, unknown> }).properties;
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
+    expect(JSON.stringify(properties)).not.toContain("chat-session-private");
   });
 });
 

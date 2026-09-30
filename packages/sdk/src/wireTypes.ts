@@ -16,17 +16,14 @@
  * version was written. Listed for autocomplete, not for exhaustiveness.
  *
  * `runtime` is the only one the SDK decodes: it is the chat-envelope channel.
- * `pty` is terminal bytes the SDK has no surface for, and `cto_voice` is live
- * CTO call state — which carries a call's running transcript, is fail-closed to
- * the `cto` role at the runtime, and never reaches an `agent`-role sidecar like
- * this one. Neither is ever handed to a subscriber.
+ * `pty` is terminal bytes the SDK has no surface for. Other categories that a
+ * newer runtime adds remain unknown strings and are never handed to a subscriber.
  */
 export type KnownBufferedEventCategory =
   | "orchestrator"
   | "dag_mutation"
   | "runtime"
-  | "pty"
-  | "cto_voice";
+  | "pty";
 
 /**
  * BufferedEvent as produced by `apps/ade-cli/src/eventBuffer.ts`.

@@ -44,6 +44,7 @@ import {
 import { activeTurnDispatchModes } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import type { Logger } from "../logging/logger";
+import { captureFeatureUsedAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { startCodexVoiceHost, type CodexVoiceHost } from "./codexVoiceHost";
 
 const ANSWER_TIMEOUT_MS = 20_000;
@@ -79,6 +80,7 @@ export type CodexVoiceChat = {
 
 export type CodexVoiceSessionDeps<TChat extends CodexVoiceChat, TRuntime extends CodexVoiceRuntime> = {
   logger: Logger;
+  analytics?: FeatureAnalytics | null;
   requestTimeoutMs: number;
   ensureChat: (sessionId: string) => TChat;
   emitChatEvent: (chat: TChat, event: AgentChatEvent) => void;
@@ -754,6 +756,15 @@ export function createCodexVoiceSessions<
         threadId: transport.threadId,
         answerBytes: answerSdp.length,
         latencyMs: Date.now() - session.startedAt,
+      });
+      captureFeatureUsedAnalytics({
+        analytics: deps.analytics,
+        surface: "desktop",
+        feature: "chat",
+        action: "voice_conversation_started",
+        outcome: "completed",
+        provider: chat.session.provider,
+        sessionId: chat.session.id,
       });
       return { threadId: transport.threadId, sdp: answerSdp, token: session.token };
     } catch (error) {

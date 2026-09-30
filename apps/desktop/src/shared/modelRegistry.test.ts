@@ -458,10 +458,10 @@ describe("modelRegistry", () => {
     expect(byId).toBe("anthropic/claude-opus-5");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6-sol");
+    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6.1-sol");
     expect(resolveModelSlug("gpt-5.6-sol", "codex")).toBe("openai/gpt-5.6-sol");
     expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6-astra");
-    expect(resolveModelSlug("gpt-5.4", "codex")).toBe("openai/gpt-5.4");
+    expect(resolveModelSlug("gpt-5.4", "codex")).toBeUndefined();
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();
     expect(resolveModelSlug("   ")).toBeUndefined();
@@ -489,6 +489,7 @@ describe("modelRegistry", () => {
 
   it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
     expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
+      "openai/gpt-6.1-sol",
       "openai/gpt-6-astra",
       "openai/gpt-6-sol",
       "openai/gpt-6-luna",
@@ -496,11 +497,6 @@ describe("modelRegistry", () => {
       "openai/gpt-5.6-terra",
       "openai/gpt-5.6-luna",
       "openai/gpt-5.5",
-      "openai/gpt-5.4",
-      "openai/gpt-5.4-mini",
-      "openai/gpt-5.3-codex",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.2",
     ]);
 
     // API-key OpenAI models are now discovered dynamically through OpenCode,
@@ -552,7 +548,7 @@ describe("modelRegistry", () => {
       serviceTiers: ["fast"],
     });
     // The bare family names follow the newest generation (model-manifest.json).
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6-sol");
+    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
     expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
     expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-5.6-terra");
     expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
@@ -633,9 +629,8 @@ describe("modelRegistry", () => {
     expect(resolved?.id).toBe("openai/gpt-5.5");
   });
 
-  it("resolves gpt-5.4 to the real OpenAI model when the provider is codex", () => {
-    const resolved = resolveModelDescriptorForProvider("gpt-5.4", "codex");
-    expect(resolved?.id).toBe("openai/gpt-5.4");
+  it("does not resolve deprecated GPT-5.4 as an available Codex model", () => {
+    expect(resolveModelDescriptorForProvider("gpt-5.4", "codex")).toBeUndefined();
   });
 
   it("resolves gpt-5.5 to the real OpenAI model when the provider is codex", () => {

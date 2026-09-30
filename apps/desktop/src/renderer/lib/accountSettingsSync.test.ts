@@ -153,6 +153,7 @@ describe("accountSettingsSync (renderer)", () => {
       "launchPromptClipboardNoticeEnabled",
       "promptStashButtonEnabled",
       "voiceInputEnabled",
+      "codexVoice",
       "codeBlockCopyButtonPosition",
       "agentTurnCompletionSound",
       "agentTurnCompletionSoundVolume",
@@ -572,4 +573,3 @@ describe("accountSettingsSync (renderer)", () => {
     expect(api.set).not.toHaveBeenCalled();
   });
 });
-

@@ -35,6 +35,7 @@ export type FeatureAnalyticsAction =
   | "reset_credit_consumed"
   | "pending_input_dismissed"
   | "new_lane_launch"
+  | "voice_conversation_started"
   | "session_continue_chat"
   | "session_copy_chat"
   | "session_continue_cli"
@@ -93,9 +94,11 @@ export function captureFeatureUsedAnalytics(args: {
   action: FeatureAnalyticsAction;
   outcome: FeatureAnalyticsOutcome;
   provider?: unknown;
+  sessionId?: string | null;
 }): void {
   if (!args.analytics) return;
   const provider = args.provider === undefined ? undefined : coarseProviderFamily(args.provider);
+  const sessionId = args.sessionId?.trim() || undefined;
   const properties: Record<string, ProductAnalyticsPropertyValue> = {
     feature: args.feature,
     action: args.action,
@@ -106,7 +109,8 @@ export function captureFeatureUsedAnalytics(args: {
   args.analytics.captureInternal({
     event: FEATURE_EVENT,
     surface: args.surface,
-    dedupeKey: `feature:${args.feature}:${args.action}:${args.outcome}${dedupeProvider}`,
+    ...(sessionId ? { sessionId } : {}),
+    dedupeKey: `feature:${args.feature}:${args.action}:${args.outcome}${dedupeProvider}${sessionId ? `:${sessionId}` : ""}`,
     minimumIntervalMs: FEATURE_DEDUPE_INTERVAL_MS,
     properties,
   } satisfies ProductAnalyticsCapture);

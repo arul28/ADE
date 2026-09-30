@@ -201,9 +201,9 @@ const OPUS: ModelDescriptor = {
 };
 
 const GPT: ModelDescriptor = {
-  id: "openai/gpt-5.4",
-  shortId: "gpt-5.4",
-  displayName: "GPT-5.4",
+  id: "openai/gpt-5.5",
+  shortId: "gpt-5.5",
+  displayName: "GPT-5.5",
   family: "openai",
   authTypes: ["cli-subscription"],
   contextWindow: 1_000_000,
@@ -212,7 +212,7 @@ const GPT: ModelDescriptor = {
   reasoningTiers: ["low", "medium", "high"],
   color: "#10A37F",
   providerRoute: "codex-cli",
-  providerModelId: "gpt-5.4",
+  providerModelId: "gpt-5.5",
   cliCommand: "codex",
   isCliWrapped: true,
 };

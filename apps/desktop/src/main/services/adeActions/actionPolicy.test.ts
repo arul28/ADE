@@ -547,7 +547,7 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
 }> = [
   { domain: "automation_planner", why: "plan / simulate / save automations from plain English", actions: ["parseNaturalLanguage", "validateDraft", "simulate", "saveDraft"] },
   { domain: "automations", why: "read, fire, enable, and delete rules", actions: ["list", "get", "saveRule", "deleteRule", "toggleRule", "triggerManually", "listRuns"] },
-  { domain: "chat", why: "handoff and scheduled work", actions: ["handoffSession", "createScheduledWork", "listScheduledWork", "getScheduledWorkState", "cancelScheduledWork", "setScheduledWorkPaused"] },
+  { domain: "chat", why: "handoff, scheduled work, and Codex voice controls", actions: ["handoffSession", "createScheduledWork", "listScheduledWork", "getScheduledWorkState", "cancelScheduledWork", "setScheduledWorkPaused", "startCodexRealtime", "stopCodexRealtime", "getCodexRealtimeState"] },
   // `ingest` is deliberately absent: it is not on the action bus at all.
   // The CTO's `captureProof` tool reaches the broker in-process, and the only
   // other writer is the `ingest_computer_use_artifacts` RPC tool, which owns
@@ -612,6 +612,9 @@ describe("CTO domain coverage over the ADE action bus", () => {
       ["budget", "updateConfig"],
       ["usage", "forceRefresh"],
       ["computer_use_artifacts", "deleteArtifacts"],
+      ["chat", "startCodexRealtime"],
+      ["chat", "stopCodexRealtime"],
+      ["chat", "getCodexRealtimeState"],
     ] as Array<[AdeActionDomain, string]>) {
       expect(isCtoOnlyAdeAction(domain, action), `${domain}.${action}`).toBe(true);
     }

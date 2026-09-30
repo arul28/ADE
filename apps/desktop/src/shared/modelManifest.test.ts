@@ -49,11 +49,11 @@ afterEach(() => {
 });
 
 describe("bundled model manifest", () => {
-  it("adds GPT-6 Sol, GPT-6 Luna, and Claude Opus 5.5 with their verified wire ids", () => {
+  it("adds GPT-6.1 Sol, GPT-6 Luna, and Claude Opus 5.5 with their verified wire ids", () => {
     expect(getModelById("openai/gpt-6-sol")?.providerModelId).toBe("gpt-6-sol");
     expect(getModelById("openai/gpt-6-luna")?.providerModelId).toBe("gpt-6-luna");
     expect(getModelById("anthropic/claude-opus-5-5")?.providerModelId).toBe("claude-opus-5-5");
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6-sol");
+    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
     expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
     expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
     // The older generation stays reachable by its full id.
@@ -61,9 +61,14 @@ describe("bundled model manifest", () => {
     expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
   });
 
-  it("orders the new Codex rows right after Astra", () => {
+  it("orders the Codex rows with GPT-6.1 Sol ahead of Astra", () => {
     const ids = listModelDescriptorsForProvider("codex").map((model) => model.id);
-    expect(ids.slice(0, 3)).toEqual(["openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna"]);
+    expect(ids.slice(0, 4)).toEqual([
+      "openai/gpt-6.1-sol",
+      "openai/gpt-6-astra",
+      "openai/gpt-6-sol",
+      "openai/gpt-6-luna",
+    ]);
   });
 
   it("makes Claude Opus 5.5 the app-wide and Claude default, keeping Astra for Codex", () => {

@@ -255,6 +255,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | Claude/Codex family; omitted when no account was named |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
+| `chat` | `voice_conversation_started` | `completed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -263,6 +264,15 @@ keeps only the event's property keys and closed values; its `safeStringProperty`
 path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
+
+A Codex voice conversation records one `voice_conversation_started` fact after
+the realtime offer receives an answer. The event is scoped to the chat session
+in local deduplication, with a one-hour minimum interval, and includes only the
+coarse provider family. It never carries audio, a transcript, voice settings,
+SDP, thread IDs, or a raw session ID; the analytics service salts and hashes
+the local session ID before capture. Its volume stays within the existing
+`ade_feature_used` ceilings of 140 events per UTC day and 30 per minute, with
+at most one accepted event per chat session per hour.
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 

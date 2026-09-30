@@ -325,6 +325,7 @@ import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { createCodexVoiceSessions } from "./codexVoiceSession";
+import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
   evictOldestEntries,
@@ -9417,6 +9418,8 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 
 export function createAgentChatService(args: {
   projectRoot: string;
+  /** Optional main-process analytics sink for successful desktop voice starts. */
+  analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
   runtimeSocketPath?: string | null;
   /** Activity reports require an RPC endpoint that this process actually serves. */
@@ -19407,6 +19410,7 @@ export function createAgentChatService(args: {
   // dependencies below are late-bound, so they resolve when first called.
   const codexVoice = createCodexVoiceSessions<ManagedChatSession, CodexRuntime>({
     logger,
+    analytics: args.analytics,
     requestTimeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
     ensureChat: (sessionId) => ensureManagedSession(sessionId),
     emitChatEvent: (managed, event) => emitChatEvent(managed, event),

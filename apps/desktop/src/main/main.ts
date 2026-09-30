@@ -4132,6 +4132,7 @@ app.whenReady().then(async () => {
     const agentChatService = createAgentChatService({
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
+      analytics: productAnalyticsService,
       runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
