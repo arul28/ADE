@@ -1407,10 +1407,10 @@ enum WorkComposerSlashRegistry {
     let best = scored.map(\.score).min()
     let keepScattered = (best ?? 0) >= 3
     let kept = scored.filter { keepScattered || $0.score < 3 }
-    kept.sort { lhs, rhs in
-      if lhs.score != rhs.score { return lhs.score < rhs.score }
-      return lhs.suggestion.title < rhs.suggestion.title
-    }
+      .sorted { lhs, rhs in
+        if lhs.score != rhs.score { return lhs.score < rhs.score }
+        return lhs.suggestion.title < rhs.suggestion.title
+      }
     return kept.prefix(maxCommands).map(\.suggestion)
   }
 
