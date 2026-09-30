@@ -106,7 +106,8 @@ describe("model mention send-time detail", () => {
     );
     expect(detail.attributes).toContainEqual(["provider", "claude"]);
     expect(detail.attributes).toContainEqual(["effort", "high"]);
-    expect(detail.attributes).toContainEqual(["permissions", "full-auto"]);
+    // The block names the provider's own mode; the CLI flag stays generic.
+    expect(detail.attributes).toContainEqual(["permissions", "bypassPermissions"]);
     expect(detail.hint).toContain("--reasoning-effort high");
     expect(detail.hint).toContain("--permissions full-auto");
     expect(detail.hint).toContain("--effort high");
