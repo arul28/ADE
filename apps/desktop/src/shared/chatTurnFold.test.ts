@@ -491,3 +491,67 @@ describe("duplicate answer text", () => {
     expect(unknown!.duplicateAnswerKeys.size).toBe(0);
   });
 });
+
+describe("deriveTurnFolds — a short postscript does not hide the answer", () => {
+  // A provider that labels no `final_answer` (Claude) writes its answer, runs a
+  // cleanup tool, then one more line. The last line is the answer only when the
+  // earlier text is not a much longer answer.
+  const long = (key: string, turnId = "t1"): TurnFoldRow => ({ key, role: "text", turnId, text: "A".repeat(500) });
+  const short = (key: string, turnId = "t1"): TurnFoldRow => ({ key, role: "text", turnId, text: "P".repeat(20) });
+  const prose = (key: string, value: string, turnId = "t1", phase: TurnFoldRow["phase"] = null): TurnFoldRow => ({
+    key,
+    role: "text",
+    turnId,
+    phase,
+    text: value,
+  });
+
+  it("keeps the postscript visible below the earlier answer", () => {
+    const [fold] = deriveTurnFolds(
+      [user("u"), history("tool"), long("answer"), short("ps"), done("d")],
+      snapshots(),
+    );
+    expect(fold!.answerKey).toBe("answer");
+    expect([...fold!.hiddenKeys]).toEqual(["tool"]);
+    // Rows after the answer never fold: the postscript draws below it.
+    expect(fold!.hiddenKeys.has("ps")).toBe(false);
+  });
+
+  it.each([
+    ["a long answer before a short postscript", [history("tool"), long("answer"), short("ps")], "answer"],
+    ["a postscript too long to be one (>280)", [history("tool"), long("answer"), prose("ps", "P".repeat(300))], "ps"],
+    ["an earlier text too short (<400)", [history("tool"), prose("answer", "A".repeat(350)), short("ps")], "ps"],
+    ["an earlier text long enough but under 3x", [history("tool"), prose("answer", "A".repeat(450)), prose("ps", "P".repeat(200))], "ps"],
+    ["three work rows between answer and postscript", [history("h1"), long("answer"), history("h2"), history("h3"), history("h4"), short("ps")], "answer"],
+    ["four work rows between answer and postscript", [history("h1"), long("answer"), history("h2"), history("h3"), history("h4"), history("h5"), short("ps")], "ps"],
+    ["a commentary text between answer and postscript", [history("tool"), long("answer"), prose("c", "C".repeat(500), "t1", "commentary"), short("ps")], "ps"],
+    ["an empty text row stepped over", [history("tool"), long("answer"), prose("blank", "   "), short("ps")], "answer"],
+    ["a text row from another turn stepped over", [history("tool"), long("answer"), prose("stray", "S".repeat(50), "t0"), short("ps")], "answer"],
+    // 150 emoji are 300 UTF-16 code units: long enough to be a full answer, so
+    // the earlier text is not the answer. iOS matches this unit (`.utf16.count`).
+    ["an emoji postscript capped in UTF-16 code units", [history("tool"), long("answer"), prose("ps", "\u{1F600}".repeat(150))], "ps"],
+    ["no prose supplied at all", [history("tool"), text("a"), text("b")], "b"],
+  ] as const)("%s", (_name, rows, expected) => {
+    const [fold] = deriveTurnFolds([user("u"), ...rows, done("d")], snapshots());
+    expect(fold!.answerKey).toBe(expected);
+  });
+
+  it("lets a final_answer label win without consulting the postscript rule", () => {
+    const [fold] = deriveTurnFolds(
+      [user("u"), long("long-unlabelled"), prose("labelled", "L".repeat(20), "t1", "final_answer"), short("ps"), done("d")],
+      snapshots(),
+    );
+    expect(fold!.answerKey).toBe("labelled");
+  });
+
+  it("never hides a real answer when the earlier text is only short narration", () => {
+    // A short interim line, a tool, then the short answer: no long text exists,
+    // so the last line stays the answer and the narration is hidden by the fold.
+    const [fold] = deriveTurnFolds(
+      [user("u"), prose("narration", "Let me check the sources."), history("tool"), short("answer"), done("d")],
+      snapshots(),
+    );
+    expect(fold!.answerKey).toBe("answer");
+    expect([...fold!.hiddenKeys]).toEqual(["narration", "tool"]);
+  });
+});

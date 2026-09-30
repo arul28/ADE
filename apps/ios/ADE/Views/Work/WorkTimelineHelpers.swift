@@ -2419,6 +2419,62 @@ private struct WorkTurnFoldPlan {
   let duplicateAnswers: Set<Int>
 }
 
+private let workTurnFoldPostscriptMaxChars = 280
+private let workTurnFoldAnswerMinChars = 400
+private let workTurnFoldAnswerToPostscriptRatio = 3
+private let workTurnFoldPostscriptMaxWorkRows = 3
+
+/// The answer of a turn with no `final_answer` label (desktop
+/// `answerBeforePostscript`). The last prose, except when it is a short
+/// postscript to a much longer text: the model answers in full, runs a cleanup
+/// tool, then writes one more line. Then the long text is the answer, and the
+/// postscript stays visible below it.
+private func workTurnFoldAnswerBeforePostscript(
+  entries: [WorkTimelineEntry],
+  rows: [WorkTurnFoldFacts],
+  windowStart: Int,
+  lastText: Int,
+  turnId: String
+) -> Int {
+  guard lastText >= 0 else { return lastText }
+  func proseLength(_ index: Int) -> Int {
+    guard case .message(let message) = entries[index].payload else { return 0 }
+    // UTF-16 code units, matching desktop `String.length`. Grapheme-cluster
+    // counts (`String.count`) disagree for emoji and combining marks, which
+    // would make the two platforms fold the same turn differently.
+    return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
+  }
+  let postscriptLength = proseLength(lastText)
+  guard postscriptLength > 0, postscriptLength <= workTurnFoldPostscriptMaxChars else { return lastText }
+  var workRows = 0
+  var index = lastText - 1
+  while index >= windowStart {
+    let row = rows[index]
+    if case .text = row.role {
+      if let rowTurnId = row.turnId, rowTurnId != turnId { index -= 1; continue }
+      let answerLength = proseLength(index)
+      // Empty prose draws nothing; step over it whether or not the surface
+      // flagged the row trivial (the phone adapter does; a surface that did not
+      // would otherwise let an empty row end the search).
+      if row.trivial || answerLength == 0 { index -= 1; continue }
+      if case .message(let message) = entries[index].payload,
+         message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
+        return lastText
+      }
+      return answerLength >= workTurnFoldAnswerMinChars
+        && answerLength >= postscriptLength * workTurnFoldAnswerToPostscriptRatio
+        ? index
+        : lastText
+    }
+    if !row.trivial {
+      workRows += 1
+      if workRows > workTurnFoldPostscriptMaxWorkRows { return lastText }
+    }
+    index -= 1
+  }
+  return lastText
+}
+
 /// One finished turn's fold, or nil when it does not fold (desktop `foldTurn`).
 private func workTurnFoldPlan(
   entries: [WorkTimelineEntry],
@@ -2446,7 +2502,11 @@ private func workTurnFoldPlan(
     lastText = index
     if phase == "final_answer" { lastFinalAnswer = index }
   }
-  let answerIndex = lastFinalAnswer >= 0 ? lastFinalAnswer : lastText
+  let answerIndex = lastFinalAnswer >= 0
+    ? lastFinalAnswer
+    : workTurnFoldAnswerBeforePostscript(
+      entries: entries, rows: rows, windowStart: windowStart, lastText: lastText, turnId: turnId
+    )
   guard answerIndex >= 0 else { return nil }
 
   let answerText: String = {

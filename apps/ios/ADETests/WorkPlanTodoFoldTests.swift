@@ -132,6 +132,57 @@ final class WorkPlanTodoFoldTests: XCTestCase {
     XCTAssertTrue(open.contains { $0.id == "message:answer-1" })
   }
 
+  func testShortPostscriptDoesNotHideTheEarlierAnswer() {
+    // A Claude turn labels no `final_answer`: the model answers at length, runs
+    // a cleanup tool, then writes one more line. The long text is the answer,
+    // and the postscript stays visible below it.
+    let user = WorkChatMessage(id: "user-1", role: "user", markdown: "Fix the issue", timestamp: "2026-09-24T00:10:00.000Z", turnId: "turn-1", itemId: nil)
+    let research = WorkToolCardModel(id: "tool-research", toolName: "Read", status: .completed, startedAt: "2026-09-24T00:10:00.500Z", completedAt: "2026-09-24T00:10:00.900Z", argsText: nil, resultText: nil, turnId: "turn-1")
+    let answer = WorkChatMessage(id: "answer-1", role: "assistant", markdown: String(repeating: "A", count: 500), timestamp: "2026-09-24T00:10:01.000Z", turnId: "turn-1", itemId: "text-1")
+    let cleanup = WorkToolCardModel(id: "tool-cleanup", toolName: "Bash", status: .completed, startedAt: "2026-09-24T00:10:02.000Z", completedAt: "2026-09-24T00:10:02.500Z", argsText: nil, resultText: nil, turnId: "turn-1")
+    let postscript = WorkChatMessage(id: "postscript-1", role: "assistant", markdown: "I also deleted the temporary validation files.", timestamp: "2026-09-24T00:10:03.000Z", turnId: "turn-1", itemId: "text-2")
+    let marker = WorkTurnEndMarker(turnId: "turn-1", time: "2026-09-24T00:10:04.000Z", workedDurationLabel: "2m 22s", status: "completed", terminalReasonLabel: nil, provider: "claude", modelLabel: "Claude", modelId: nil, sourceCount: 0)
+    let timeline = [
+      WorkTimelineEntry(id: "user:user-1", timestamp: user.timestamp, rank: 0, payload: .message(user), turnId: "turn-1"),
+      WorkTimelineEntry(id: "tool:tool-research", timestamp: research.startedAt, rank: 1, payload: .toolCard(research), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:answer-1", timestamp: answer.timestamp, rank: 2, payload: .message(answer), turnId: "turn-1"),
+      WorkTimelineEntry(id: "tool:tool-cleanup", timestamp: cleanup.startedAt, rank: 3, payload: .toolCard(cleanup), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:postscript-1", timestamp: postscript.timestamp, rank: 4, payload: .message(postscript), turnId: "turn-1"),
+      WorkTimelineEntry(id: "turn-end:turn-1", timestamp: marker.time, rank: 5, payload: .turnEndMarker(marker), turnId: "turn-1"),
+    ]
+
+    let closed = workApplyingTurnFolds(timeline)
+    XCTAssertTrue(closed.contains { if case .turnFold = $0.payload { return true }; return false })
+    // Work before the answer folds; the answer and everything after it draw.
+    XCTAssertFalse(closed.contains { $0.id == "tool:tool-research" })
+    XCTAssertTrue(closed.contains { $0.id == "message:answer-1" })
+    XCTAssertTrue(closed.contains { $0.id == "tool:tool-cleanup" })
+    XCTAssertTrue(closed.contains { $0.id == "message:postscript-1" })
+  }
+
+  func testPostscriptLengthUsesUTF16CodeUnitsLikeDesktop() {
+    // 150 emoji are 300 UTF-16 code units: too long to be a postscript, so the
+    // last text is the answer and the earlier long text folds. Counting grapheme
+    // clusters would read 150 and pick the earlier text instead.
+    let user = WorkChatMessage(id: "user-1", role: "user", markdown: "Fix the issue", timestamp: "2026-09-24T00:20:00.000Z", turnId: "turn-1", itemId: nil)
+    let research = WorkToolCardModel(id: "tool-research", toolName: "Read", status: .completed, startedAt: "2026-09-24T00:20:00.500Z", completedAt: "2026-09-24T00:20:00.900Z", argsText: nil, resultText: nil, turnId: "turn-1")
+    let answer = WorkChatMessage(id: "answer-1", role: "assistant", markdown: String(repeating: "A", count: 500), timestamp: "2026-09-24T00:20:01.000Z", turnId: "turn-1", itemId: "text-1")
+    let emoji = WorkChatMessage(id: "emoji-1", role: "assistant", markdown: String(repeating: "😀", count: 150), timestamp: "2026-09-24T00:20:02.000Z", turnId: "turn-1", itemId: "text-2")
+    let marker = WorkTurnEndMarker(turnId: "turn-1", time: "2026-09-24T00:20:03.000Z", workedDurationLabel: "3s", status: "completed", terminalReasonLabel: nil, provider: "claude", modelLabel: "Claude", modelId: nil, sourceCount: 0)
+    let timeline = [
+      WorkTimelineEntry(id: "user:user-1", timestamp: user.timestamp, rank: 0, payload: .message(user), turnId: "turn-1"),
+      WorkTimelineEntry(id: "tool:tool-research", timestamp: research.startedAt, rank: 1, payload: .toolCard(research), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:answer-1", timestamp: answer.timestamp, rank: 2, payload: .message(answer), turnId: "turn-1"),
+      WorkTimelineEntry(id: "message:emoji-1", timestamp: emoji.timestamp, rank: 3, payload: .message(emoji), turnId: "turn-1"),
+      WorkTimelineEntry(id: "turn-end:turn-1", timestamp: marker.time, rank: 4, payload: .turnEndMarker(marker), turnId: "turn-1"),
+    ]
+
+    let closed = workApplyingTurnFolds(timeline)
+    XCTAssertTrue(closed.contains { if case .turnFold = $0.payload { return true }; return false })
+    XCTAssertFalse(closed.contains { $0.id == "message:answer-1" })
+    XCTAssertTrue(closed.contains { $0.id == "message:emoji-1" })
+  }
+
   func testBackgroundJobThatWasLiveAtTurnEndStaysBelowTheFold() {
     let user = WorkChatMessage(id: "user-1", role: "user", markdown: "Start the server", timestamp: "2026-09-24T00:00:00.000Z", turnId: "turn-1", itemId: nil)
     let job = WorkBackgroundJobModel(id: "background-job:job-1", taskId: "job-1", title: "npm run dev", status: "completed", startedAt: "2026-09-24T00:00:01.000Z", updatedAt: "2026-09-24T00:00:05.000Z", durationLabel: "4s", turnId: "turn-1")
