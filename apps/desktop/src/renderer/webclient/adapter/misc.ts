@@ -988,7 +988,7 @@ function createCtoNamespace(
     getLinearInbox: (args?: { first?: number; includeRead?: boolean }) => call(
       "linear_issue_tracker.listNotifications",
       { args: args ?? {} },
-      [],
+      unavailableOnHost("Linear inbox reads are unavailable on the connected ADE host."),
     ),
     markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }) => call(
       "linear_issue_tracker.markNotification",
@@ -999,7 +999,7 @@ function createCtoNamespace(
     getLinearIssueRelationsIssue: (issueId: string) => call(
       "linear_issue_tracker.fetchIssueById",
       { argsList: [issueId] },
-      null,
+      unavailableOnHost("Linear issue relations are unavailable on the connected ADE host."),
     ),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
