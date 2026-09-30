@@ -560,10 +560,12 @@ function answerBeforePostscript(
     const row = rows[index]!;
     if (row.role === "text") {
       if (row.turnId && row.turnId !== turnId) continue;
-      // Empty text draws nothing; step over it.
-      if (row.trivial) continue;
-      if (row.phase === "commentary") return lastText;
       const answerLength = row.text?.trim().length ?? 0;
+      // Empty prose draws nothing; step over it whether or not the surface
+      // flagged the row trivial (the desktop adapter does; a surface that did
+      // not would otherwise let an empty row end the search).
+      if (row.trivial || answerLength === 0) continue;
+      if (row.phase === "commentary") return lastText;
       return answerLength >= TURN_FOLD_ANSWER_MIN_CHARS
         && answerLength >= postscriptLength * TURN_FOLD_ANSWER_TO_POSTSCRIPT_RATIO
         ? index

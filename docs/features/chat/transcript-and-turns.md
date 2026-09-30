@@ -892,14 +892,15 @@ implements a two-layer transform:
    is unaffected. iOS mirrors it in `workStripInlineMarkdown`; the TUI imports
    the desktop helper directly.
 
-5. **Turn fold (desktop and hosted web; not yet ADE Code or iOS).** Once a
+5. **Turn fold (desktop, hosted web, and iOS; not yet ADE Code).** Once a
    turn has its `done` row, the rows between
    its user message and its answer fold into one row, so a finished turn reads
    user message → `Worked for 4m 12s · 18 tools · 3 files · 2 subagents` →
    answer → done divider. The rules are pure and UI-free in
-   `apps/desktop/src/shared/chatTurnFold.ts` (for the TUI and iOS to adopt
-   later); `deriveChatTranscriptTurnFolds()` / `applyChatTranscriptTurnFolds()`
-   in `chatTranscriptRows.ts` adapt them to desktop's grouped rows. It is
+   `apps/desktop/src/shared/chatTurnFold.ts`;
+   `deriveChatTranscriptTurnFolds()` / `applyChatTranscriptTurnFolds()`
+   in `chatTranscriptRows.ts` adapt them to desktop's grouped rows, and iOS
+   mirrors them in `WorkTimelineHelpers.swift` (`workTurnFoldPlan`). It is
    presentation only: events, storage, sync, and canonical text are unchanged.
 
    - **Live turns never fold.** Until `done` arrives the thread looks exactly
@@ -907,7 +908,14 @@ implements a two-layer transform:
      working indicator.
    - **The answer** is the turn's last `text` row, or its last
      `phase: "final_answer"` row when the provider labelled one; a
-     `commentary` row is never the answer. A turn with no answer (tool-only,
+     `commentary` row is never the answer. When the provider labels none
+     (Claude), a short last text can be a postscript to an earlier answer: if
+     the last text is at most 280 characters, the previous non-empty text of
+     the same turn is at least 400 characters and at least three times as long,
+     and no more than three non-trivial drawn rows sit between them, that
+     earlier text is the answer and the postscript draws below it. The search
+     steps over empty text and rows of another turn, and stops at a
+     `commentary` row. A turn with no answer (tool-only,
      interrupted before any text, an error) does not fold. Neither does a turn
      whose fold would hide nothing, or only trivial rows: status and
      diagnostics receipts (`status`, `activity`, `step_boundary`,

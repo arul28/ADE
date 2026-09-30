@@ -2449,12 +2449,15 @@ private func workTurnFoldAnswerBeforePostscript(
     let row = rows[index]
     if case .text = row.role {
       if let rowTurnId = row.turnId, rowTurnId != turnId { index -= 1; continue }
-      if row.trivial { index -= 1; continue }
+      let answerLength = proseLength(index)
+      // Empty prose draws nothing; step over it whether or not the surface
+      // flagged the row trivial (the phone adapter does; a surface that did not
+      // would otherwise let an empty row end the search).
+      if row.trivial || answerLength == 0 { index -= 1; continue }
       if case .message(let message) = entries[index].payload,
          message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "commentary" {
         return lastText
       }
-      let answerLength = proseLength(index)
       return answerLength >= workTurnFoldAnswerMinChars
         && answerLength >= postscriptLength * workTurnFoldAnswerToPostscriptRatio
         ? index
