@@ -1,0 +1,31 @@
+---
+title: "v1.2.83"
+description: "Release notes for ADE v1.2.83 - September 30, 2026"
+---
+
+ADE 1.2.83 ships SDK 0.5.0 with the host-side fixes integrators asked for, a quieter embedded runtime, and the Linear, model, and provider work from the last day.
+
+## SDK 0.5
+
+`@ade-dev/sdk` and `@ade-dev/chat-ui` are **0.5.0**, and support `@ade-dev/runtime` **>=1.2.82 <2.0.0**. The lower bound did not move: nothing in 0.5.0 needs a new wire, so an app on runtime 1.2.82 keeps working.
+
+- A host hook for removals: `registerAdeIpc({ onThreadRemoved })` fires once for every delete and archive the served client reports, whoever made it. Refusing a bridge method stays `authorize`'s job.
+- A cost preference for new chats: `models.defaultModel({ prefer })` and `pickDefaultModel(models, { prefer })` rank a provider's models yourself, so a host can start on the cheapest capable model instead of the provider's default.
+- Attachment roots that used to fail the whole open can be tested first: `checkAttachmentRoot` and `filterAttachmentRoots` report a refused root with its reason. A list identical to the one already in use is not sent again.
+- The retry and edit docs now state that the rollback does not cover the disk, and how a host finds the files the old turn wrote. `ModelCatalogEntry.provider` points at `isSupportedProvider`, the MCP activity-label rule has a worked example, and the tool-chip docs show how to build an action from a structured result.
+
+## Desktop
+
+- A model registry and a shadow router land behind the model picker (#1383).
+- A rate-limited account backs off, says so, and is never handed to the CLI (#1384).
+- Account secrets are pulled from the vault, and the wrapped-foreign-key repair no longer corrupts DDL (#1385).
+- A Custom provider is confirmed, applied, and visible after it is added (#1386).
+- GPT-6.1 Sol and Codex 0.159 ship, with Codex voice available in every chat (#1388).
+- Linear is first class: ADE acts as a Linear Agent, with a Ready view, an inbox, and lane sync (#1393).
+- A short postscript no longer hides the turn's answer (#1394).
+- Model chips, the `@` chip caret, and cross-machine handoff from any chat (#1395).
+
+## Runtime 1.2.83
+
+- An embedded runtime is no longer told about its role ceiling: the sentence and its `brain.role_ceiling_below_cto` warning are gone under `--profile embedded`, where the clients they warn about are not connected (#1387).
+- The runtime no longer logs "could not bound runtime log" for `launchd` files an embedded runtime never has, which removes two lines that carried the full home path into every embedder's log (#1387).

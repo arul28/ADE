@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.83] - 2026-09-30
+
+### SDK 0.5
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` 0.5.0, supporting runtime `>=1.2.82 <2.0.0`. A host hook for thread removals (`onThreadRemoved`), a model cost preference (`defaultModel({ prefer })`), attachment-root checks that keep one bad root from failing every open (`checkAttachmentRoot`, `filterAttachmentRoots`), and the retry/edit, provider-narrowing and MCP label docs from the Versic round-3 ledger (#1387).
+
+### Runtime 1.2.83
+
+- An embedded runtime no longer prints its role-ceiling sentence or the `brain.role_ceiling_below_cto` warning, and no longer logs "could not bound runtime log" for `launchd` files it does not have. Four lines an embedder saw on every start are gone, including two that carried the full home path (#1387).
+
+### Desktop
+
+- Model registry and shadow router (#1383), a rate-limited account that backs off and says so (#1384), account secrets pulled from the vault with the wrapped-FK DDL repair (#1385), Custom providers confirmed and visible (#1386), GPT-6.1 Sol and Codex 0.159 with Codex voice in every chat (#1388), Linear as a first-class pane with an Agent, Ready view, inbox and lane sync (#1393), the turn-fold postscript fix (#1394), and model chips with cross-machine handoff (#1395).
+
 ## [1.2.82] - 2026-09-29
 
 ### SDK 0.4
@@ -2211,6 +2225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.83]: https://github.com/arul28/ADE/compare/v1.2.82...v1.2.83
 [1.2.82]: https://github.com/arul28/ADE/compare/v1.2.81...v1.2.82
 [1.2.81]: https://github.com/arul28/ADE/compare/v1.2.80...v1.2.81
 [1.2.80]: https://github.com/arul28/ADE/compare/v1.2.79...v1.2.80
