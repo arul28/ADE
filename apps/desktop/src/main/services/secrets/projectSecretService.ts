@@ -68,26 +68,6 @@ export type ProjectSecretServiceOptions = {
 
 const UNAVAILABLE_PULL: ProjectSecretPullResult = { state: "unavailable" };
 
-/** ISO-8601 parse, or null when the value is not a usable timestamp. */
-function parseTimestamp(value: string | null | undefined): number | null {
-  if (typeof value !== "string" || !value.trim()) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-/**
- * True when the vault's row is strictly newer than the copy on this machine.
- *
- * An unparsable timestamp on either side answers false, so a malformed vault
- * row can never overwrite a value that already works here.
- */
-function isVaultRowNewer(vaultUpdatedAt: string, localUpdatedAt: string): boolean {
-  const vaultTime = parseTimestamp(vaultUpdatedAt);
-  const localTime = parseTimestamp(localUpdatedAt);
-  if (vaultTime === null || localTime === null) return false;
-  return vaultTime > localTime;
-}
-
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new Error("Secret name is required.");
@@ -218,19 +198,17 @@ export function createProjectSecretService(projectRoot: string, options: Project
    * silently stayed on this disk is the defect this guards against: the row
    * looked shared, the other machines never saw it, and nothing said so.
    *
-   * A row that is ALREADY shared stays shared. A vault that is briefly
-   * unreachable must not quietly turn a shared secret into a machine-local one,
-   * because every later pull then skips it and the other machines keep the old
-   * value forever. The push is re-offered on a later vault-ready tick instead.
+   * The vault is the authority for an account-scoped name, so a row that cannot
+   * reach it must not claim account storage: the next pull would put the
+   * account's older value back over what the person just typed. It is saved for
+   * this device instead, and the save message says which of these happened.
    */
   const resolveWritableStorage = (
     requested: ProjectSecretStorage,
-    previousStorage: ProjectSecretStorage | null,
     accountScope = getAccountScope(),
   ): ProjectSecretStorage => {
     if (requested !== "account") return "device";
     if (!accountScope) return "device";
-    if (previousStorage === "account") return "account";
     if (!getAccountUserId()) return "device";
     return hasAccountVault() ? "account" : "device";
   };
@@ -297,7 +275,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const imported: string[] = [];
     const replaced: string[] = [];
     const accountScope = getAccountScope();
-    const defaultStorage: ProjectSecretStorage = resolveWritableStorage("account", null, accountScope);
+    const defaultStorage: ProjectSecretStorage = resolveWritableStorage("account", accountScope);
     const saved: Array<{ name: string; value: string; storage: ProjectSecretStorage }> = [];
     const now = nowIso();
     store.updateSync((values) => {
@@ -370,30 +348,6 @@ export function createProjectSecretService(projectRoot: string, options: Project
     return removed;
   };
 
-  /**
-   * Move one local row onto the relay's clock without touching its value.
-   *
-   * Only ever called when the value already matches the vault's, so the write
-   * cannot change what the secret is. Without it a row saved here keeps this
-   * machine's stamp forever, and a fast clock then hides every later edit made
-   * on another machine.
-   */
-  const restampFromVault = (name: string, vaultUpdatedAt: string): void => {
-    const stamp = parseTimestamp(vaultUpdatedAt) === null ? nowIso() : vaultUpdatedAt;
-    try {
-      store.updateSync((values) => {
-        const index = parseIndex(values[INDEX_KEY] ?? null);
-        const entry = index.entries[name];
-        if (!entry || entry.storage !== "account" || entry.updatedAt === stamp) return false;
-        index.entries[name] = { ...entry, updatedAt: stamp };
-        values[INDEX_KEY] = serializeIndex(index);
-        return;
-      });
-    } catch (error) {
-      logVaultFailure("restamp", name, error);
-    }
-  };
-
   const pullFromAccount = async (): Promise<ProjectSecretPullResult> => {
     const accountScope = getAccountScope();
     const accountUserId = getAccountUserId();
@@ -446,9 +400,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
       } catch {
         continue;
       }
-      // A device-scoped copy is a deliberate "this machine only". The account
-      // copy is not its owner in either direction, so neither a delete nor a
-      // newer vault row reaches it.
+      // A device-scoped copy is a deliberate "this machine only": the account
+      // copy is not its owner in either direction, so neither a tombstone nor a
+      // live vault row reaches it.
       const known = readIndex().entries[name];
       if (known && known.storage !== "account") continue;
 
@@ -456,33 +410,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
         // Deleted on another machine, and the account is the authority for a
         // name this machine holds as account-scoped. The local copy goes too,
         // or the secret keeps working here while the account says it is gone.
-        if (!known || !isVaultRowNewer(item.updatedAt, known.updatedAt)) continue;
         if (removeAccountCopy(name)) removed += 1;
         continue;
-      }
-
-      if (known) {
-        if (known.updatedAt === item.updatedAt) continue;
-        if (!isVaultRowNewer(item.updatedAt, known.updatedAt)) {
-          // The stamps disagree in the direction a fast local clock can invent:
-          // a secret saved here carries this machine's stamp, a vault row the
-          // relay's. Compare the values instead — no clock is involved.
-          const localValue = store.getSync(valueKey(name));
-          const vaultValue = await readVaultValue(name, item.value);
-          if (localValue == null || vaultValue === null) continue;
-          if (localValue === vaultValue) {
-            // This machine's own push landed. Take the vault's stamp so the next
-            // comparison runs on one clock.
-            restampFromVault(name, item.updatedAt);
-            continue;
-          }
-          if (localValue.length && isVaultRowNewer(known.updatedAt, item.updatedAt)) {
-            // The local value really is newer and the vault never took it — a
-            // push that failed while the vault was unreachable. Offer it again.
-            syncSecretToVault(name, localValue, "account", accountScope);
-          }
-          continue;
-        }
       }
 
       const value = await readVaultValue(name, item.value);
@@ -491,12 +420,15 @@ export function createProjectSecretService(projectRoot: string, options: Project
       // owner's secrets into another owner's store.
       if (getAccountUserId() !== accountUserId) return UNAVAILABLE_PULL;
 
-      // Re-read: the awaits above gave another writer a window.
+      const vaultUpdatedAt = item.updatedAt;
+      // Re-read: the awaits above gave another writer a window. Nothing about
+      // this name changed since the last pull when the recorded stamp is
+      // already the vault's, which is also what keeps a converged vault from
+      // being rewritten on every tick.
       const current = readIndex().entries[name];
       if (current && current.storage !== "account") continue;
-      if (current && !isVaultRowNewer(item.updatedAt, current.updatedAt)) continue;
+      if (current?.updatedAt === vaultUpdatedAt) continue;
       const wasAbsent = !current;
-      const vaultUpdatedAt = parseTimestamp(item.updatedAt) === null ? nowIso() : item.updatedAt;
 
       let wrote = false;
       try {
@@ -504,7 +436,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
           const index = parseIndex(values[INDEX_KEY] ?? null);
           const existing = index.entries[name];
           if (existing && existing.storage !== "account") return false;
-          if (existing && !isVaultRowNewer(item.updatedAt, existing.updatedAt)) return false;
+          if (existing?.updatedAt === vaultUpdatedAt) return false;
           values[valueKey(name)] = value!;
           index.entries[name] = {
             createdAt: existing?.createdAt ?? vaultUpdatedAt,
@@ -580,10 +512,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (!nextValue.length) throw new Error("Secret value is required.");
       const requestedStorage = normalizeStorage(args?.storage);
       const accountScope = getAccountScope();
-      // Read before the write: an existing shared row must stay shared, so the
-      // destination is the row's, not just the request's.
-      const existingStorage = readIndex().entries[name]?.storage ?? null;
-      const storage = resolveWritableStorage(requestedStorage, existingStorage, accountScope);
+      const storage = resolveWritableStorage(requestedStorage, accountScope);
       const now = nowIso();
       let entry: ProjectSecretIndexEntry | null = null;
       let previousStorage: ProjectSecretStorage = "device";

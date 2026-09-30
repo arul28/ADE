@@ -485,7 +485,18 @@ export function createAccountCacheStore<
           // own upload legitimately contains stale rows, and applying one would
           // revert the user's edit in front of them.
           const cached = after.rows[key];
-          if (cached && Date.parse(remote.updatedAt) <= Date.parse(cached.updatedAt)) continue;
+          if (cached && Date.parse(remote.updatedAt) <= Date.parse(cached.updatedAt)) {
+            // Two tombstones agree the key is gone, so the stamp that decides
+            // anything later is the relay's. A tombstone this machine wrote
+            // carries its own clock, and leaving that in place would make a key
+            // another machine re-adds lose to it for as long as the clock runs
+            // ahead.
+            if (cached.deleted && remote.deleted) {
+              const tombstone = config.toRow(remote, cached);
+              if (tombstone !== null) after.rows[key] = tombstone;
+            }
+            continue;
+          }
           const next = config.toRow(remote, cached);
           if (next === null) continue;
           after.rows[key] = next;

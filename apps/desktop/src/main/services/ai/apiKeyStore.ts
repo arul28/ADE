@@ -1710,7 +1710,11 @@ function removeApiCredentialIn(
     scope.launchHomeAdeDir ?? undefined,
     { logger: vaultLogger },
   );
-  if (scope === projectScope) {
+  // Only a credential that was here asks the vault to forget the name. Queueing
+  // a delete for one this machine never held would re-stamp the account's
+  // tombstone on every hydration, and a fresh tombstone out-stamps a key another
+  // machine re-added — destroying it account-wide, with no way back.
+  if (scope === projectScope && existed) {
     fireAndForgetVaultWrite(
       { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
       "remove",

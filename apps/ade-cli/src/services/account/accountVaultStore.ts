@@ -305,7 +305,6 @@ export function createAccountVaultStore(args: {
       return { rows: page.items, cursor: page.cursor, truncated: page.truncated };
     },
     toRow: (item, cached) => {
-      // A null value means the relay could not open its own stored bytes. Keep
       // A tombstone is the one row that DOES have to replace a readable local
       // value: it says the credential was deleted on another machine, and the
       // consumer has to hear it.

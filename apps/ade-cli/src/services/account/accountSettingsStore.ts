@@ -263,7 +263,17 @@ export function createAccountSettingsStore(args: {
 
     remove(scope: string, key: string, options?: AccountSettingsWriteOptions): boolean {
       return cache.mutate((current, queue) => {
-        delete current.rows[cacheKey(scope, key)];
+        // Keep a tombstone rather than dropping the row, for the same reason the
+        // vault store does: a dropped row leaves nothing for a stale page from a
+        // pre-delete cursor to lose against, so the key comes back.
+        const stamp = new Date(now()).toISOString();
+        current.rows[cacheKey(scope, key)] = {
+          value: undefined,
+          updatedAt: stamp,
+          changedAt: stamp,
+          writerDeviceId: args.getDeviceId?.() ?? null,
+          deleted: true,
+        };
         queue({
           scope,
           key,

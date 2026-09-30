@@ -1781,6 +1781,14 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
   }
 }
 
+/** A non-PK unique index: what `crsql_as_crr` refuses a table for. */
+function hasBlockingUniqueIndexes(db: DatabaseSyncType, tableName: string): boolean {
+  return allRows<{ unique: number; origin: string }>(
+    db,
+    `pragma index_list('${tableName.replace(/'/g, "''")}')`,
+  ).some((index) => Number(index.unique) === 1 && index.origin !== "pk");
+}
+
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
   removeOrphanedCrrMetadata(db, logger);
   removeExcludedCrrMetadata(db, logger);
@@ -1801,6 +1809,11 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
       getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
     } catch (error) {
       if (repairTargets.has(tableName)) throw error;
+      // Swallow the one refusal named above — a table still carrying a non-PK
+      // unique index, which the schema retrofit could not strip. An I/O error
+      // or a busy lock is not a one-table problem, and swallowing it would turn
+      // a loud failure into a table that silently stops replicating.
+      if (!hasBlockingUniqueIndexes(db, tableName)) throw error;
       logger?.warn("db.crr_conversion_failed", {
         tableName,
         error: error instanceof Error ? error.message : String(error),

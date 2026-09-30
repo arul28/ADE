@@ -27,8 +27,10 @@ export function isProjectSecretPullResult(value: unknown): value is ProjectSecre
   const record = value as { state?: unknown; added?: unknown; updated?: unknown; removed?: unknown };
   if (record.state === "unavailable") return true;
   // `pulled` carries counts the summary reads, so promise them and check them.
+  // `removed` may be missing: a runtime from before account-wide deletes answers
+  // the older three-field shape, and that is still a pull result.
   return record.state === "pulled"
     && typeof record.added === "number"
     && typeof record.updated === "number"
-    && typeof record.removed === "number";
+    && (record.removed === undefined || typeof record.removed === "number");
 }
