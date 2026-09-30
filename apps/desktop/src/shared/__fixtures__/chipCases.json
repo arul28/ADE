@@ -173,6 +173,17 @@
         { "kind": "chat", "token": "@chat:9e2315e8ddef", "label": "Chat 9e2315e8" },
         { "kind": "file", "token": "src/shared/chips.ts", "label": "chips.ts" }
       ]
+    },
+    {
+      "_why": "A model chip: name, thinking level, permission mode. The id carries a percent-encoded separator, which the grammar must keep whole — this is the row that fails on either surface if its id charset drops `%`.",
+      "text": "hand this to @model:ade-lab/gpt-9%2Fmini?effort=high&perm=plan tomorrow",
+      "chips": [
+        {
+          "kind": "model",
+          "token": "@model:ade-lab/gpt-9%2Fmini?effort=high&perm=plan",
+          "label": "gpt-9%2Fmini · High · Plan"
+        }
+      ]
     }
   ]
 }

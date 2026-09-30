@@ -6918,10 +6918,11 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   /**
-   * The reverse: the chat itself lives on another machine. Only that machine can
-   * package its history, so the card stays off — and says which machine to open.
+   * The reverse: the chat itself lives on another machine. It opens the same
+   * modal — every source step is pinned to that machine — but the chat's own
+   * machine is never a destination, so the machine list is empty and names it.
    */
-  it("blocks cross-machine handoff for a chat pinned to another machine and names it", async () => {
+  it("opens cross-machine handoff for a chat pinned to another machine and excludes that machine", async () => {
     const studioBinding = {
       kind: "remote" as const,
       key: "remote:target-studio:project-studio",
@@ -6962,10 +6963,38 @@ describe("AgentChatPane submit recovery", () => {
       selectedLaneId: "lane-studio",
     });
 
+    // The chat's own machine IS connected and handoff-capable. It must still be
+    // left out of the destination list, which is what empties the machine list.
+    (window.ade as any).remoteRuntime = {
+      onConnectionSnapshotChanged: vi.fn().mockReturnValue(() => {}),
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [{
+          state: "connected",
+          target: { id: studioBinding.targetId, name: "Mac Studio" },
+          capabilities: { projects: true, machineProjects: { handoffStoragePreflight: true } },
+        }],
+      }),
+    };
+    (window.ade as any).git = {
+      ...(window.ade as any).git,
+      getSyncStatus: vi.fn().mockResolvedValue({
+        diverged: false,
+        behind: 0,
+        ahead: 0,
+        hasUpstream: true,
+        recommendedAction: null,
+      }),
+      getOriginRemote: vi.fn().mockResolvedValue({
+        remoteUrl: "git@github.com:arul28/ade.git",
+        branch: "studio-lane",
+      }),
+    };
+
     renderPane(session);
 
     openChatHandoff(session.sessionId, "remote");
 
+    expect(await screen.findByRole("heading", { name: /Continue on another computer/i })).toBeTruthy();
     expect(await screen.findByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
   });
 

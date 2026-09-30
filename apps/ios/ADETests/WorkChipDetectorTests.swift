@@ -97,6 +97,39 @@ final class WorkChipDetectorTests: XCTestCase {
     )
   }
 
+  // MARK: Model mention grammar
+
+  /// An OpenCode id encodes its provider model id, so it carries `%`. The
+  /// charset must keep it whole — dropping `%` truncated the token.
+  func testModelMentionKeepsAPercentEncodedIdWhole() {
+    let text = "use @model:opencode/openrouter/anthropic%2Fclaude-opus-4.7?effort=high&perm=full-auto now"
+    let found = WorkModelMentionDetector.mentions(in: text as NSString)
+    XCTAssertEqual(found.count, 1)
+    guard let mention = found.first else { return XCTFail("expected one model mention") }
+    XCTAssertEqual(mention.modelId, "opencode/openrouter/anthropic%2Fclaude-opus-4.7")
+    XCTAssertEqual(mention.effort, "high")
+    XCTAssertEqual(mention.permission, "full-auto")
+    XCTAssertEqual(
+      (text as NSString).substring(with: mention.range),
+      "@model:opencode/openrouter/anthropic%2Fclaude-opus-4.7?effort=high&perm=full-auto"
+    )
+  }
+
+  func testModelMentionTrailingProseAndBoundaries() {
+    let found = WorkModelMentionDetector.mentions(in: "try @model:acme/rocket-9." as NSString)
+    XCTAssertEqual(found.first?.modelId, "acme/rocket-9")
+    XCTAssertEqual(found.first?.token, "@model:acme/rocket-9")
+    // `a@model:x` is an email-shaped substring, not a mention.
+    XCTAssertTrue(WorkModelMentionDetector.mentions(in: "a@model:x" as NSString).isEmpty)
+    XCTAssertTrue(WorkModelMentionDetector.mentions(in: "@model:" as NSString).isEmpty)
+  }
+
+  func testModelMentionShellSafeLabels() {
+    XCTAssertEqual(WorkModelMentionDetector.effortLabel("xhigh"), "Extra high")
+    XCTAssertEqual(WorkModelMentionDetector.permissionLabel("full-auto"), "Full access")
+    XCTAssertEqual(WorkModelMentionDetector.permissionLabel(nil), "Default")
+  }
+
   func testFormatTokenRoundTrips() {
     for kind in [WorkChatMention.Kind.chat, .lane, .terminal] {
       let token = WorkChatMentionDetector.formatToken(kind: kind, id: "abc-123")
