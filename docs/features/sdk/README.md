@@ -16,7 +16,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
-| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.5.0, unchanged from 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.5.1, unchanged from 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
 | `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only), `readStoredMcpServers` (migration), `withResolvedHeaders` (explicit headers, then the `mcpHeaders` callback), and the missing-headers warning. |
 | `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
 | `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
@@ -178,8 +178,8 @@ link handler.
 
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
-SDK 0.5.0 keeps the same 0.4.0 runtime range, `>=1.2.82 <2.0.0`, because nothing
-in it needs a new wire. It adds three host-side surfaces and no protocol change:
+SDK 0.5.1 keeps the same 0.4.0 runtime range, `>=1.2.82 <2.0.0`, because nothing
+in that line needs a new wire. It adds three host-side surfaces and no protocol change:
 
 - `checkAttachmentRoot(path, home)` and `filterAttachmentRoots(list, home)` — test an
   attachment root before `threads.open` sends it. The runtime refuses some roots
