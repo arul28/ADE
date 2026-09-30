@@ -51,6 +51,16 @@ The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --soc
 
 Provider logins are **not** stored under the sidecar home. Claude / Codex / Cursor credentials stay in those tools' own config homes. If the machine user can already run that provider in a terminal, the sidecar can too.
 
+## What's new in 0.5
+
+`@ade-dev/sdk` 0.5.0, `@ade-dev/chat-ui` 0.4.1 and runtime 1.2.83 are available together. SDK 0.5.0 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move: nothing in 0.5.0 needs a new wire, so a host on runtime 1.2.82 keeps working. See [Version compatibility](/sdk/runtime#version-compatibility).
+
+- **Attachment roots that fail the whole open.** `checkAttachmentRoot(path, home)` and `filterAttachmentRoots(list, home)` test a root before you send it, so one bad entry no longer locks every chat. An identical list is not sent again. See [Where a path may point](/sdk/threads#where-a-path-may-point).
+- **A host hook for removals.** `registerAdeIpc({ onThreadRemoved })` fires once for every delete and archive the served client reports, whoever made it, so your chat list stays exact even when you swap clients per account. See [Electron](/sdk/electron#hosts-with-many-threads).
+- **A cost preference for new chats.** `models.defaultModel({ prefer })` and `pickDefaultModel(models, { prefer })` rank a provider's models yourself, so a host can start on Sonnet instead of the provider's most expensive default. See [`pickDefaultModel`](/sdk/reference#pickdefaultmodel).
+- **Less noise from an embedded runtime.** The role-ceiling sentence and the two "could not bound runtime log" lines are gone from runtime 1.2.83. An older runtime still prints them.
+- **Docs.** `ModelCatalogEntry.provider` now points at `isSupportedProvider`; the retry and edit docs say the rollback does not cover the disk and how to find the files yourself; an MCP label key may need its bare spelling when the event names no server.
+
 ## What's new in 0.4
 
 `@ade-dev/sdk` 0.4.0, `@ade-dev/chat-ui` 0.4.0 and runtime 1.2.82 are available together. SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. An older runtime still connects, and the features below that need 1.2.82 throw `unsupported` or do nothing. See [Version compatibility](/sdk/runtime#version-compatibility).

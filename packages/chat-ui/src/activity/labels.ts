@@ -55,7 +55,15 @@ export type ActivityLabelConfig = {
    * name only when the event carries an MCP source naming that server
    * (`tool_call.mcp.server`, surfaced as `ToolChipRow.identity`). A bare name
    * with no MCP source has no server, so only a bare key (`tool`, `tool*`)
-   * matches it.
+   * matches it — and that happens whenever a provider's event does not name
+   * the server for a tool your host injected. The matcher does not guess a
+   * server from the name: a bare name is not evidence of who owns it.
+   *
+   * So a host that injects MCP tools should key their bare names too, or cover
+   * the family with one wildcard: `{ "versic_*": "Checking your projects…" }`
+   * matches whether or not the event names the `versic` server. Keep the
+   * server-qualified key as well when you want it to win over another server's
+   * tool with the same bare name.
    */
   map?: Record<string, ActivityLabelEntry>;
   /** Runs before `map`. Return null to fall through to the map. */

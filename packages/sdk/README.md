@@ -24,9 +24,11 @@ npm install @ade-dev/sdk
 Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
 
-SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). An
-older or newer runtime still connects, logs one warning, and degrades feature
-by feature. Pass `requireCompatibleRuntime: true` to refuse it with
+SDK 0.5.0 supports runtime `>=1.2.82 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). The
+lower bound did not move in 0.5.0 — nothing in that release needs a new wire,
+so a host on runtime 1.2.82 keeps working. An older or newer runtime still
+connects, logs one warning, and degrades feature by feature. Pass
+`requireCompatibleRuntime: true` to refuse it with
 `runtime_incompatible`. `doctor().runtime.compatibility` reports the verdict.
 
 ## Quickstart
@@ -112,11 +114,25 @@ thread's `attachmentRoots` (0.4, runtime 1.2.82). See
 [Attachments](https://www.ade-app.dev/docs/sdk/threads#attachments) for the
 size limits.
 
+One refused `attachmentRoots` entry fails the whole open, and a host normally
+sends the same roots every time. Test a candidate with `checkAttachmentRoot`,
+or prepare the whole list with `filterAttachmentRoots`, which drops a bad entry
+and reports why (both 0.5). A list identical to the one already in use is not
+sent again, so a repeated list costs no update call.
+
 `thread.retry()` and `thread.editLast(text)` (0.4, runtime 1.2.82) roll the
 provider back and run the last user message again, and the transcript shows it
 once. Claude and Codex only; another provider throws `unsupported`, and a
-running turn throws `turn_in_flight`. Files the old turn changed are not
-restored.
+running turn throws `turn_in_flight`. The rollback covers the conversation, not
+the disk: files the old turn wrote stay, and the result does not report them.
+If you allow writes, inspect the events at or after `retractedFromSequence` in
+your own history copy and warn the user.
+
+`models.defaultModel({ prefer })` (0.5) takes your own ranking inside one
+provider's models. Return a number above zero to prefer a model — the highest
+score wins — so a host that wants the newest Sonnet, not the provider's
+default, states it here instead of keeping its own copy of the rule. A model
+nobody scores falls back to `isDefault`, then to catalog order.
 
 Host configuration applies on **create only**. A resume re-applies what the key
 was created with and ignores the `cwd`, `instructions`, `settingSources`,
@@ -294,6 +310,12 @@ to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
 `title` and `reasoningEffort` cross (breaking in 0.3). `allowModel` gates model
 choice. `registerAdeIpc` also accepts `() => client`, for a host that replaces
 its client per account.
+
+`onThreadRemoved(key, kind)` (0.5) fires once for every delete and archive the
+served client reports, whether the renderer or your own main-process code made
+it, so your chat list stays exact even when the client is swapped per account.
+Refuse `threads.delete` or `threads.archive` in `authorize` to stop the
+renderer from making them at all — there is no separate deny list.
 
 To ship the runtime inside a signed app instead of downloading it, install
 `@ade-dev/runtime`, copy it into your resources, and pass

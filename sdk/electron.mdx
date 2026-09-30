@@ -125,19 +125,27 @@ allowThreadKey: async (key) => key === "new-chat" || (await client.threads.get(k
 
 The gate runs on every keyed call, so keep it cheap. `allowModel` can also be async.
 
-To keep your own list correct when a renderer deletes or archives a chat over the bridge, listen for `threadLifecycle` in main:
+To keep your own list correct when a renderer deletes or archives a chat over the bridge, pass `onThreadRemoved` to `registerAdeIpc` (SDK 0.5):
 
 ```ts
-client.on("threadLifecycle", ({ key, change }) => {
-  if (change === "deleted") catalog.delete(key);
+registerAdeIpc(ipcMain, () => currentClient(), {
+  // …
+  onThreadRemoved: (key, kind) => {
+    if (kind === "deleted") catalog.delete(key);
+    else catalog.markArchived(key);
+  },
 });
 ```
+
+It fires once for every delete and archive this client reports, whoever made it — the renderer over the bridge, or main code calling `client.threads.delete`. `kind` is `"deleted"` or `"archived"`; an unarchive is not reported. Your own `client.on("threadLifecycle")` listener sees the same events, but only on the client you subscribed to: when you swap clients per account through a client getter, the bridge follows the swap for you and your hand-written listener does not.
 
 To stop the renderer from deleting or archiving at all, refuse those methods in `authorize`:
 
 ```ts
 authorize: (event, method) => isTrustedFrame(event.sender) && method !== "threads.delete",
 ```
+
+There is deliberately no separate deny list: `authorize` already runs on every method before the SDK sees it.
 
 ### Preload
 
@@ -266,7 +274,7 @@ Everything that crosses `contextBridge` is structured-cloned, which drops protot
 | `threads.open` | `threads.open(key, opts)` | `authorize`, `allowThreadKey` | returns a thread handle; see [what a renderer may send](#what-a-renderer-may-send-to-threadsopen) |
 | `threads.list` | `threads.list()` | `authorize` | every `ThreadSummary` whose key `allowThreadKey` accepts. Rows with no key are left out |
 | `threads.get` | `threads.get(key)` | `authorize`, `allowThreadKey` | one `ThreadSummary`, or `null`. SDK 0.4 |
-| `threads.delete` / `threads.archive` / `threads.unarchive` | `threads.delete(key)` / `.archive(key)` / `.unarchive(key)` | `authorize`, `allowThreadKey` | the renderer does not need to open the key first. Delete also drops the key's handles on every renderer |
+| `threads.delete` / `threads.archive` / `threads.unarchive` | `threads.delete(key)` / `.archive(key)` / `.unarchive(key)` | `authorize`, `allowThreadKey` | the renderer does not need to open the key first. Delete also drops the key's handles on every renderer, and both delete and archive call `onThreadRemoved` (SDK 0.5) |
 | `thread.export` | `exportThread(key)` | `authorize`, `allowThreadKey` | JSONL |
 | `thread.update` | `thread.update(patch, { force })` | `authorize`, `allowThreadKey` | only `title`, `reasoningEffort` and `fastMode` cross |
 | `thread.retry` / `thread.editLast` | `thread.retry()` / `thread.editLast(text, opts)` | `authorize`, `allowThreadKey` | SDK 0.4. `editLast` takes only `displayText` and `attachments` |

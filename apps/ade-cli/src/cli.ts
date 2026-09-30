@@ -21329,9 +21329,16 @@ async function runServe(
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentity = dropInheritedCallerIdentity(process.env);
+  // `--profile embedded` marks this runtime as a guest inside an external
+  // embedder's process (the ADE SDK). Read here, before the identity notes, so
+  // an embedded runtime stays quiet about a role ceiling that is correct for
+  // it: it serves one host at `agent` on purpose, and nothing it could refuse
+  // is connected.
+  const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
+  const embedded = runtimeProfile === "embedded";
   const brainIdentityNotes = [
     describeDroppedCallerIdentity(droppedCallerIdentity),
-    describeBrainRoleCeiling(options.role),
+    describeBrainRoleCeiling(options.role, { embedded }),
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
   if (process.platform === "darwin") {
@@ -21477,11 +21484,7 @@ async function runServe(
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
-  // `--profile embedded` marks this runtime as a guest inside an external
-  // embedder's process (the ADE SDK). It only reshapes the machine chat scope:
-  // project scopes are still built on demand exactly as before, because an
-  // embedder that registers a project still expects that project to work.
-  const runtimeProfile = parseRuntimeProfile(readValue(args, ["--profile"]));
+  // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
@@ -23050,7 +23053,7 @@ async function runServe(
   if (droppedCallerIdentity.length > 0) {
     headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });
   }
-  if (options.role !== "cto") {
+  if (options.role !== "cto" && !embedded) {
     headlessProjectLogger.warn("brain.role_ceiling_below_cto", { role: options.role });
   }
   /*

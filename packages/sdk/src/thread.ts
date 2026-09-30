@@ -140,11 +140,15 @@ export type EditLastOptions = {
 /**
  * What `retry` and `editLast` return, once the runtime has cut the old turn
  * out and dispatched the new one. The new turn's events follow on the stream.
+ *
+ * The rollback is the CONVERSATION only. Files the old turn wrote stay on
+ * disk, and this result does not report them (see `retry`).
  */
 export type ThreadRerunResult = {
   /**
    * The first history `sequence` removed. Every event at or after it is gone
-   * from the runtime's history; drop the same events from any copy you keep.
+   * from the runtime's history; drop the same events from any copy you keep —
+   * and inspect them there if you want to warn about files the old turn wrote.
    */
   retractedFromSequence: number;
   /**
@@ -275,7 +279,13 @@ export interface AdeThread {
    * user message, removes that message and everything after it from the
    * thread's history, and sends the same message (text and attachments) again.
    * The history then holds the message once. Files the old turn changed are
-   * NOT restored.
+   * NOT restored: the rollback covers the conversation, not the disk.
+   *
+   * The result does not say whether the old turn wrote files, because the
+   * runtime cannot tell which of YOUR tools write. A host that lets the agent
+   * write can find them itself: the removed events are the ones at or after
+   * `retractedFromSequence` in your own copy of the history, so inspect their
+   * tool calls and warn the user if any of them was a write.
    *
    * What a subscriber sees, in order: `session_meta_updated` with
    * `historyInvalidated: true` and the new `historyGeneration` (drop your copy

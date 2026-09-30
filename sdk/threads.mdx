@@ -141,7 +141,7 @@ Limits:
 
 - **Claude and Codex only.** Another provider, or a runtime older than 1.2.82, throws `unsupported`.
 - **Not during a turn.** A running turn, or one that waits on an approval, throws `turn_in_flight`, and nothing changes. Wait for the turn to end, or call `interrupt()` first.
-- **Files are not restored.** Changes that the old turn made on disk stay.
+- **Files are not restored.** The rollback covers the conversation, not the disk: changes the old turn made stay. The result does **not** say whether the old turn wrote files, because the runtime cannot tell which of your tools write. If you allow writes, find them yourself — the removed events are the ones at or after `retractedFromSequence` in your own history copy, so inspect their tool calls and warn the user if any of them was a write.
 - A thread with no user message yet throws `rpc_error`.
 
 Over the Electron bridge, `thread.retry` and `thread.editLast` are allowed methods. `editLast` takes only `displayText` and `attachments` from the renderer.
@@ -379,6 +379,15 @@ await ade.threads.open("main", { refresh: { attachmentRoots: [app.getPath("downl
 
 - Each root follows the `cwd` rules: absolute, no `~`, not a filesystem root, not the home directory itself, not inside the SDK `home`. At most 32. A bad entry throws `invalid_option` and names it.
 - The roots are **read roots for attachments only**. They do not change where the agent runs, and they are not a sandbox.
+- **One refused entry fails the whole open.** Because the runtime is sent the whole list, and a host usually sends the same roots on every open, one bad entry would lock every chat. Test a candidate with `checkAttachmentRoot`, or prepare the list with `filterAttachmentRoots` (SDK 0.5), which drops the bad entry and reports why instead of throwing:
+
+  ```ts
+  const { roots, dropped } = filterAttachmentRoots([downloads, musicDir, "/"], home);
+  for (const entry of dropped) log.warn(`attachment root ignored: ${entry.root} — ${entry.reason}`);
+  await ade.threads.open("main", { ...createOptions, attachmentRoots: roots });
+  ```
+
+- A list **identical** to the one already on the thread is not sent again, the same way an identical `refresh.mcpServers` map is skipped. A host that repeats its four roots on every open costs no update call and does not restart the provider.
 - Like `cwd`, `attachmentRoots` on a resume is ignored (with a log line). Use `refresh.attachmentRoots` to replace them; `[]` clears them.
 - With `hydrate: false`, a file in a root is attached without being read, so a File Provider placeholder is not downloaded.
 

@@ -156,7 +156,7 @@ it.
 | `approvals` | `{ render?, labels? }` | — | custom approval card and button wording |
 | `emptyState` | `ReactNode` | `"No messages yet."` | |
 | `renderToolResult` | `(row: ToolChipRow) => ReactNode` | — | custom result view under a chip |
-| `toolChipActions` | `(row: ToolChipRow) => { label, onSelect }[]` | — | buttons on a chip, e.g. from `row.resourceLinks` |
+| `toolChipActions` | `(row: ToolChipRow) => { label, onSelect }[]` | — | buttons on a chip. Prefer `row.resourceLinks`; when a tool returns only ids, parse `row.result` yourself |
 | `hasOlder` / `loadingOlder` / `onLoadOlder` | | — | "Load older messages" paging |
 | `windowThreshold` | `number` | `150` | row count above which rows are windowed |
 | `overscan` | `number` | `8` | rows mounted on each side of the view |
@@ -261,6 +261,26 @@ chip never keeps saying "Searching…". Labels apply to the live thinking
 indicator, tool chips, and error text. An elapsed suffix appears after 3s of
 running and is formatted `45s` / `1m 35s` / `1h 5m`. `prefers-reduced-motion`
 is respected in both CSS and the indicator's animated ellipsis.
+
+An MCP tool may be keyed in any spelling — `mcp:versic:search`,
+`mcp__versic__search`, `versic:search`, or the bare `search` — and one key
+matches the tool under every provider. A **server-qualified** key matches a
+tool the provider reported by its bare name only when the event names that
+server (`ToolChipRow.identity`). A bare name with no server on the event
+matches only a bare key, and the matcher never guesses a server from the name.
+So when your host injects MCP tools and the event sometimes arrives without a
+server, key the bare name as well — or cover the family with one wildcard,
+which matches either way:
+
+```ts
+labels={{
+  map: {
+    "mcp:versic:*": "Checking your projects…", // wins when the event names the server
+    "versic_*": "Checking your projects…",     // matches the bare name
+    "*": "Working…",
+  },
+}}
+```
 
 ## Theming
 

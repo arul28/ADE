@@ -125,6 +125,22 @@ export type RegisterAdeIpcOptions = {
    * meant to offer. May be async (SDK >= 0.4).
    */
   allowModel?: (key: string, selection: { modelId: string }) => boolean | Promise<boolean>;
+  /**
+   * Called once for every delete or archive this client reports, whoever made
+   * it: a renderer over the bridge, or main code calling
+   * `client.threads.delete` / `client.threads.archive` (SDK 0.5).
+   *
+   * `kind` is `"deleted"` or `"archived"`. An unarchive is not reported: the
+   * thread is back, not gone. The bridge has already released the renderer's
+   * handles for the key when this runs, so your own list can drop the key.
+   *
+   * To STOP a renderer from deleting or archiving at all, refuse the method in
+   * `authorize` — return false for `method === "threads.delete"` (or
+   * `"threads.archive"`). There is deliberately no separate deny list.
+   *
+   * A callback that throws is logged and ignored; it does not fail the delete.
+   */
+  onThreadRemoved?: (key: string, kind: "deleted" | "archived") => void;
   /** Optional line logger, matching the SDK's own `logger` option. */
   logger?: (line: string) => void;
 };
@@ -326,7 +342,18 @@ export function registerAdeIpc(
     watchedClient = client;
     try {
       stopWatching = client.on("threadLifecycle", (payload) => {
-        if (payload?.change === "deleted" && typeof payload.key === "string") forgetKeyEverywhere(payload.key);
+        const key = payload?.key;
+        if (typeof key !== "string") return;
+        if (payload?.change === "deleted") forgetKeyEverywhere(key);
+        // The one place this fires. Every delete and archive reaches it — the
+        // renderer's `threads.delete`, and main code calling it on the client —
+        // so a host callback is never called twice for one removal. A client
+        // with no `threadLifecycle` event skips it, which is why the two
+        // `threads.delete` / `threads.archive` handlers also do their own
+        // cleanup (see `forgetKeyEverywhere` there).
+        if (payload?.change === "deleted" || payload?.change === "archived") {
+          notifyThreadRemoved(key, payload.change);
+        }
       });
     } catch (error) {
       // A client from an SDK before 0.4 rejects the event name; its deletes
@@ -657,6 +684,18 @@ export function registerAdeIpc(
     }
   }
 
+  /** Tell the host one thread is gone, or archived. Never throws. */
+  function notifyThreadRemoved(key: string, kind: "deleted" | "archived"): void {
+    if (!opts.onThreadRemoved) return;
+    try {
+      opts.onThreadRemoved(key, kind);
+    } catch (error) {
+      // A host callback must not take down the bridge, and must not stop the
+      // remaining renderers from being cleaned up.
+      log(`[ade-electron] onThreadRemoved threw for "${key}": ${errorMessage(error)}`);
+    }
+  }
+
   function requireThread(entry: RendererEntry, key: string): AdeThread {
     const thread = entry.threads.get(key);
     if (!thread) {
@@ -730,8 +769,9 @@ export function registerAdeIpc(
     "threads.delete": async (_entry, args) => {
       const key = requireString(args[0], "thread key");
       await currentClient().threads.delete(key);
-      // The client's `threadLifecycle` event does this too; doing it here as
-      // well keeps a client without that event (a test double) correct.
+      // The client's `threadLifecycle` event does this too, and it is what
+      // calls `onThreadRemoved`; doing the release here as well keeps a client
+      // without that event (a test double) correct.
       forgetKeyEverywhere(key.trim());
       return null;
     },

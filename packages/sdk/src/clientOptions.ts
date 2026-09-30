@@ -143,6 +143,13 @@ export type ThreadRefreshOptions = {
    * refresh, and a refusal fails the `open` with the thread unchanged. On a
    * recreate or a create they are the roots the session starts with. The
    * stored record is updated either way. SDK >= 0.4.
+   *
+   * A list identical to the one the record holds is NOT sent again, the same
+   * way an identical `refresh.mcpServers` map is skipped: a host that repeats
+   * its four roots on every open costs no update call and does not restart the
+   * provider. Compare and canonicalize a root with `checkAttachmentRoot`, and
+   * prepare a whole list with `filterAttachmentRoots`, so one refused entry
+   * cannot fail every open. SDK >= 0.5.
    */
   attachmentRoots?: string[];
 };
@@ -320,6 +327,11 @@ export type ThreadOpenOptions = {
    * These are READ roots for attachments only: they do not change where the
    * agent runs, and they are not a sandbox. A path is matched after the
    * runtime resolves symlinks on both sides (see the attachments guide).
+   *
+   * ONE REFUSED ENTRY FAILS THE WHOLE OPEN, because the runtime is sent the
+   * whole list. Test a candidate first with `checkAttachmentRoot`, or prepare
+   * the list with `filterAttachmentRoots`, which drops a bad entry and reports
+   * why. Both are SDK >= 0.5.
    *
    * IGNORED ON RESUME, like `cwd`: a known key keeps the roots on record. Pass
    * `refresh.attachmentRoots` to replace them on a live thread.

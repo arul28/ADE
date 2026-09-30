@@ -660,6 +660,13 @@ export type ModelCatalogEntry = {
    * {@link AdeProvider} values for every model this SDK can open a thread on;
    * typed open because the runtime's catalog is downloaded and can list a
    * provider group newer than this SDK.
+   *
+   * Because it is open, `ThreadOpenOptions.provider` (typed `AdeProvider`) will
+   * not take it without narrowing. Narrow it with `isSupportedProvider` — an
+   * SDK export since 0.4 — rather than a cast:
+   *
+   *   if (!isSupportedProvider(entry.provider)) return;
+   *   ade.threads.open(key, { provider: entry.provider, model: entry.id });
    */
   provider: AdeProvider | (string & {});
   /** Provider-native model ref ADE sends under the hood. */

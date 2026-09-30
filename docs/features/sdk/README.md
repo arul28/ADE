@@ -16,7 +16,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), retry and edit the last turn, interrupt, `update`, `updateMcpServers`, history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
-| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0` for SDK 0.5.0, unchanged from 0.4.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
 | `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only), `readStoredMcpServers` (migration), `withResolvedHeaders` (explicit headers, then the `mcpHeaders` callback), and the missing-headers warning. |
 | `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
 | `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
@@ -27,7 +27,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/binary.ts` | Resolves a local `ade` binary: explicit path, bundled platform package, home cache, PATH, else download. |
 | `packages/sdk/src/bundledRuntime.ts` | `resolveBundledRuntime()` — finds an installed `@ade-dev/runtime-<target>` package and its `bin/` + `native/` halves. |
 | `packages/sdk/src/runtimeSignature.ts` | `probeRuntimeSignature()` — `codesign` + `spctl` on macOS, `Get-AuthenticodeSignature` on Windows. Never throws; null means "not known". |
-| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, a per-`webContents.id` registry, `authorize` / `allowThreadKey` / `allowModel` gates, the `openOptions` hook and the four-field renderer filter, the client getter and client swap, teardown on destroy and navigation. |
+| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, a per-`webContents.id` registry, `authorize` / `allowThreadKey` / `allowModel` gates, the `openOptions` hook and the four-field renderer filter, the `onThreadRemoved(key, kind)` host callback, the client getter and client swap, teardown on destroy and navigation. |
 | `packages/sdk/src/electron/preload.ts` | `exposeAdeBridge()` — single-file, zero-import preload module safe under `sandbox: true`. It exports the function and does not call it. |
 | `packages/sdk/src/electron/preload-auto.ts` | `@ade-dev/sdk/electron/preload-auto` — calls `exposeAdeBridge` with the default key and prefix. One CJS file whose only `require` is `"electron"`, for `webPreferences.preload` directly. |
 | `packages/sdk/src/electron/global.ts` | `@ade-dev/sdk/electron/global` — types only: `declare global { interface Window { ade: AdeBridge } }`. |
@@ -44,9 +44,9 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/windowsSystemTools.ts` | Resolves `taskkill` / `tar` through `\\?\GLOBALROOT\SystemRoot\System32`, never PATH. |
 | `packages/sdk/src/types.ts` | Hand-copied wire subset of `apps/desktop/src/shared/types/chat.ts` and `personalChats.ts` (the package does not import across the repo boundary). |
 | `packages/sdk/src/permissions.ts` | `always-allow` → per-provider full-auto create args; `ThreadPermissionPolicy` validation (`fallback` required, absolute `sandboxRoot`). |
-| `packages/sdk/src/hostConfig.ts` | `instructions` / `cwd` / `settingSources` normalization and the three capability reports. |
+| `packages/sdk/src/hostConfig.ts` | `instructions` / `cwd` / `settingSources` normalization and the three capability reports, plus the attachment-root checks `checkAttachmentRoot` and `filterAttachmentRoots` (0.5) — the throwing `validateAttachmentRoots` stays for `threads.open`. |
 | `packages/sdk/src/approvals.ts` | `ApprovalDecision` → engine decision, and `PendingInputRequest` → `ApprovalRequest`. |
-| `packages/sdk/src/providers.ts` | Catalog derivation, the `providers.status` merge rule, and the `onChange` fingerprint. |
+| `packages/sdk/src/providers.ts` | Catalog derivation, `pickDefaultModel` (with the 0.5 `prefer` ranking), the `providers.status` merge rule, and the `onChange` fingerprint. |
 | `packages/sdk/src/providerStatusPublisher.ts` | The `client.providers` surface: probe, merge, cache, listener set, poll timer. The poll never asks to refresh. |
 | `packages/sdk/src/clientOptions.ts` | The public option types for `createAdeChat` and `threads.open`, kept apart from the lifecycle file because they are mostly prose an embedder must read. |
 | `packages/sdk/src/threadWarnings.ts` | Every line a newly opened or resumed thread earns: unreported capabilities, the two deny-policy holes, and one line per option a resume ignored. Pure, so the honesty rules are testable without a runtime. |
@@ -177,6 +177,33 @@ update and their capability state, and transcript links use the host's safe
 link handler.
 
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
+
+SDK 0.5.0 keeps the same 0.4.0 runtime range, `>=1.2.82 <2.0.0`, because nothing
+in it needs a new wire. It adds three host-side surfaces and no protocol change:
+
+- `checkAttachmentRoot(path, home)` and `filterAttachmentRoots(list, home)` — test an
+  attachment root before `threads.open` sends it. The runtime refuses some roots
+  (the home folder itself, a filesystem root, a path inside the SDK home) and one
+  refused entry fails the whole open, so a host that repeats the same roots on
+  every open could lock every chat with a single bad entry. `filterAttachmentRoots`
+  drops the bad entry, caps at 32, and reports each drop with its reason.
+- `registerAdeIpc({ onThreadRemoved(key, kind) })` — called once per delete and
+  archive the served client reports, whoever made it. The bridge already follows
+  `threadLifecycle` internally to release renderer handles; the callback exposes
+  the same event to the host, and keeps working across a client swap that a
+  hand-written `client.on("threadLifecycle")` listener would miss.
+- `models.defaultModel({ prefer })` / `pickDefaultModel(models, { prefer })` — a
+  host-side ranking within one provider's qualifying models. A score above zero
+  prefers a model; the highest score wins, and an unscored model falls back to
+  `isDefault` then catalog order.
+
+An identical `refresh.attachmentRoots` list was already skipped (the same rule
+`refresh.mcpServers` follows); 0.5 only documents it.
+
+Runtime 1.2.83 removes two lines an embedded runtime printed on every start: the
+role-ceiling sentence, which does not apply to a sidecar serving one host at
+`agent`, and the two "could not bound runtime log" lines, for `launchd` files that
+an embedded runtime never has.
 
 Durable threads: `threads.open("support", { provider, model })` creates or resumes by key stored under the home. Reopening the same key after a restart continues the conversation.
 
@@ -735,6 +762,12 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
   refusal throws `AdeError("unauthorized")` and the SDK is never called.
   `allowThreadKey` also filters `threads.list` over IPC, and keyless rows are
   dropped there.
+- `onThreadRemoved(key, kind)` (0.5) is the host's notification that a thread is
+  gone or archived. It fires from the bridge's own `threadLifecycle` watcher —
+  the one subscription that also covers a delete main code makes on the served
+  client — so it is called once per removal and follows a client swap. Denying a
+  bridge method stays `authorize`'s job (`method === "threads.delete"`); there is
+  no separate deny list.
 - The renderer never configures a thread (0.3, breaking). With an
   `openOptions(key, rendererOptions)` hook the hook's result is what the SDK
   opens with and the renderer's options are ignored; the hook may return

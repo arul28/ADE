@@ -32,11 +32,23 @@ export function copytruncateLogIfOversized(
     fs.truncateSync(filePath, 0);
     return true;
   } catch (error) {
-    try {
-      process.stderr.write(`ADE could not bound runtime log ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}\n`);
-    } catch {}
+    // A log file that is not there is the normal case, not a fault: an embedded
+    // runtime (the ADE SDK's sidecar) is not started by launchd, so its
+    // `launchd.*.log` files never exist. Reporting ENOENT put two lines of
+    // noise, carrying the full `home` path, in front of every embedder's log.
+    if (!isMissingFileError(error)) {
+      try {
+        process.stderr.write(`ADE could not bound runtime log ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}\n`);
+      } catch {}
+    }
     return false;
   }
+}
+
+/** Whether an error is "the file is not there" rather than a real failure. */
+function isMissingFileError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT";
 }
 
 export function boundLaunchdLogs(runtimeDir: string): void {

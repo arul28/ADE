@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AdeError } from "./errors.js";
+import { AdeError, errorMessage } from "./errors.js";
 import type {
   AgentChatHostConfigLevel,
   AgentChatInstructions,
@@ -251,6 +251,76 @@ export function validateAttachmentRoots(value: unknown, sdkHome: string): string
     if (!roots.includes(root)) roots.push(root);
   });
   return roots;
+}
+
+/** What {@link checkAttachmentRoot} answers: the canonical root, or the refusal. */
+export type AttachmentRootCheck = { ok: true; root: string } | { ok: false; reason: string };
+
+/**
+ * Check one candidate `attachmentRoots` entry without throwing (SDK 0.5).
+ *
+ * The runtime refuses some roots — the home folder itself, a filesystem root, a
+ * path inside the SDK home — and a refused root fails the whole `threads.open`.
+ * Because a host normally sends the same roots on every open, one bad entry
+ * locks every chat. Use this to test a candidate before you send it:
+ *
+ *   const check = checkAttachmentRoot(downloadsDir, home);
+ *   if (!check.ok) warn(check.reason); else roots.push(check.root);
+ *
+ * `root` is the canonical, validated spelling, so it is what
+ * `validateAttachmentRoots` and the runtime will accept. `sdkHome` is the same
+ * `home` you pass to `createAdeChat`.
+ */
+export function checkAttachmentRoot(value: unknown, sdkHome: string): AttachmentRootCheck {
+  try {
+    return { ok: true, root: validateHostDirectory(value, sdkHome, "attachmentRoot") };
+  } catch (error) {
+    return { ok: false, reason: errorMessage(error) };
+  }
+}
+
+/** The result of {@link filterAttachmentRoots}: the roots to send, and the ones dropped. */
+export type AttachmentRootFilterResult = {
+  /** Valid roots, canonicalized, de-duplicated, capped. Pass these to `threads.open`. */
+  roots: string[];
+  /** One entry per refused or over-the-limit input, with the reason it was refused. */
+  dropped: Array<{ root: string; reason: string }>;
+};
+
+/**
+ * Prepare a root list for `threads.open` without ever failing the open (SDK 0.5).
+ *
+ * Keeps every valid entry in list order, canonicalized and de-duplicated, and
+ * reports each refused entry with its reason instead of throwing. Entries past
+ * `MAX_ATTACHMENT_ROOTS` are dropped the same way. The result is safe to pass
+ * straight to `threads.open` or `threads.open(..., { refresh: { attachmentRoots } })`.
+ *
+ * A non-array argument still throws: that is a programming error, not a root a
+ * caller meant to filter.
+ */
+export function filterAttachmentRoots(value: unknown, sdkHome: string): AttachmentRootFilterResult {
+  if (!Array.isArray(value)) {
+    throw new AdeError("invalid_option", "attachmentRoots must be an array of absolute directory paths.");
+  }
+  const roots: string[] = [];
+  const dropped: AttachmentRootFilterResult["dropped"] = [];
+  value.forEach((entry) => {
+    const reported = typeof entry === "string" ? entry : String(entry);
+    if (roots.length >= MAX_ATTACHMENT_ROOTS) {
+      dropped.push({
+        root: reported,
+        reason: `attachmentRoots takes at most ${MAX_ATTACHMENT_ROOTS} directories; this one is over the limit.`,
+      });
+      return;
+    }
+    const check = checkAttachmentRoot(entry, sdkHome);
+    if (!check.ok) {
+      dropped.push({ root: reported, reason: check.reason });
+      return;
+    }
+    if (!roots.includes(check.root)) roots.push(check.root);
+  });
+  return { roots, dropped };
 }
 
 function validateHostDirectory(value: unknown, sdkHome: string, label: string): string {

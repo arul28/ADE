@@ -48,7 +48,7 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `providers.onChange(cb)` | Full status list on each change. Never bypasses the cache. Returns unsubscribe. |
 | `models.list()` | Catalog. `providerId` must match a status entry to be selectable in chat-ui. |
 | `models.onChange(cb)` | The whole catalog, each time a model's id, `isAvailable`, `connected` or `isDefault` changes. Not called on subscribe. Returns unsubscribe. SDK 0.4. |
-| `models.defaultModel({ available?, providers? }?)` | The model a new thread should use, or `null`. See [`pickDefaultModel`](#pickdefaultmodel). SDK 0.4. |
+| `models.defaultModel({ available?, providers?, prefer? }?)` | The model a new thread should use, or `null`. See [`pickDefaultModel`](#pickdefaultmodel). SDK 0.4; `prefer` is SDK 0.5. |
 | `doctor()` | Structured health check. |
 | `exportThread(key)` | Transcript as JSONL. |
 | `dispose()` | Stop the runtime. Idempotent. Ends in-flight turns without `error`/`done`. |
@@ -62,13 +62,13 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `permissions` | `"always-allow"` \| `"default"` \| `ThreadPermissionPolicy`. See [Permissions](/sdk/permissions). |
 | `instructions` | `string \| { mode: "append" \| "replace", text }`. A bare string means append. |
 | `cwd` | Absolute path the provider runs in. Created at mode `0755`. Defaults to `<home>/personal-chats/workspaces`. |
-| `attachmentRoots` | `string[]`. Extra directories an absolute attachment path may point into. Same rules as `cwd`; at most 32. Runtime 1.2.82 or later. See [Attachments](/sdk/threads#where-a-path-may-point). SDK 0.4. |
+| `attachmentRoots` | `string[]`. Extra directories an absolute attachment path may point into. Same rules as `cwd`; at most 32. Runtime 1.2.82 or later. One refused entry fails the whole open, so test a candidate with `checkAttachmentRoot` or prepare the list with `filterAttachmentRoots` (SDK 0.5). See [Attachments](/sdk/threads#where-a-path-may-point). SDK 0.4. |
 | `settingSources` | `"none"` (default) \| `"project"` \| `"user"` \| `"all"`. |
 | `reasoningEffort` | Provider-native effort token, when the model offers one. |
 | `title` | Display title stored on the thread record. |
 | `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
 | `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
-| `refresh` | `{ mcpServers?, attachmentRoots? }`. Replaces the thread's MCP servers or attachment roots on a resume, so a new token, port or folder takes effect. The one option a resume does not ignore. |
+| `refresh` | `{ mcpServers?, attachmentRoots? }`. Replaces the thread's MCP servers or attachment roots on a resume, so a new token, port or folder takes effect. The one option a resume does not ignore. A map or list identical to the one already in use is not sent again, so a host that repeats its own values costs no update call. |
 
 All four host-configuration options persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
 
@@ -128,13 +128,55 @@ The three capability fields are `null` when the thread requested nothing, **and*
 ```ts
 function pickDefaultModel(
   models: readonly ModelCatalogEntry[],
-  opts?: { available?: boolean; providers?: readonly string[] },
+  opts?: {
+    available?: boolean;
+    providers?: readonly string[];
+    prefer?: (model: ModelCatalogEntry) => number;
+  },
 ): ModelCatalogEntry | null
 ```
 
 `available` (default `true`) keeps only models with `isAvailable` and `connected`. `providers` keeps only those providers and tries them in order. Within a provider, or within all of them when `providers` is absent, the catalog's `isDefault` model wins, then the first model the catalog lists. `client.models.defaultModel(opts)` is the same rule on a fresh catalog.
 
-`isSupportedProvider(value)` narrows a string such as `ModelCatalogEntry.provider` to `AdeProvider` without a cast.
+`prefer` (SDK 0.5) is your own ordering inside one provider's qualifying models. Return a number greater than zero to prefer a model: the highest score wins. Return 0 or less for "no opinion", and that model is ranked the usual way. A model nobody scores falls back to `isDefault`, then to catalog order, so `prefer` never removes a model from the pool. Use it to state a cost or family preference instead of keeping your own copy of the rule:
+
+```ts
+// Start new chats on the newest Sonnet, not on the provider's most
+// expensive default.
+const start = await ade.models.defaultModel({
+  prefer: (model) => (/sonnet/i.test(model.id) ? 1 : 0),
+});
+```
+
+`isSupportedProvider(value)` narrows a string such as `ModelCatalogEntry.provider` to `AdeProvider` without a cast. `ModelCatalogEntry.provider` is deliberately typed open, because a downloaded catalog can name a provider newer than this SDK.
+
+## `checkAttachmentRoot` and `filterAttachmentRoots` {#attachment-root-helpers}
+
+Both are SDK 0.5. They answer the question "will the runtime accept this root?" before you send it, because one refused entry fails the whole `threads.open`.
+
+```ts
+function checkAttachmentRoot(
+  value: unknown,
+  sdkHome: string,
+): { ok: true; root: string } | { ok: false; reason: string };
+
+function filterAttachmentRoots(
+  value: unknown,
+  sdkHome: string,
+): { roots: string[]; dropped: Array<{ root: string; reason: string }> };
+```
+
+`checkAttachmentRoot` never throws. `ok: true` carries the canonical spelling the runtime will accept — the same one `threads.open` stores — so pass that, not your original string. `sdkHome` is the same `home` you give `createAdeChat`.
+
+`filterAttachmentRoots` keeps every valid entry in list order, canonicalized and de-duplicated, capped at 32, and reports each refused or over-the-limit entry with its reason. Its `roots` is safe to pass straight to `threads.open`, so one bad entry no longer locks every chat:
+
+```ts
+const { roots, dropped } = filterAttachmentRoots([downloads, musicDir, "/"], home);
+for (const entry of dropped) log.warn(`attachment root ignored: ${entry.root} — ${entry.reason}`);
+await ade.threads.open("main", { ...createOptions, attachmentRoots: roots });
+```
+
+A non-array argument still throws `invalid_option`: that is a programming error, not a root you meant to filter.
 
 ## `ThreadSummary` {#threadsummary}
 
@@ -249,7 +291,7 @@ type DoctorReport = {
 
 `unsupported` (SDK 0.4): the provider or the runtime cannot do what you asked. `retry()` and `editLast()` throw it for a provider other than Claude or Codex, and on a runtime without the `rerunLastTurn` action.
 
-A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRoots` entry, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code.
+A relative or refused `cwd` throws `invalid_option`. So does a bad `attachmentRoots` entry, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code. Prepare an `attachmentRoots` list with [`filterAttachmentRoots`](#attachment-root-helpers) to keep one bad entry from failing the open.
 
 `runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
 

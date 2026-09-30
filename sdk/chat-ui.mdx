@@ -198,7 +198,24 @@ Two slots let a host act on a result:
 
 `row.resourceLinks` holds the MCP `resource_link` items of the result, when the provider passes them through. See [MCP](/sdk/mcp#resource-links) for which providers do.
 
-The best source for an action is a `resource_link` that your own MCP tool returns. When a tool returns only ids, build the action from the structured result yourself. Do not let the model write the link: a model can invent a URL for the wrong environment.
+**Prefer a `resource_link` first.** It is the one source that carries a URL your own tool produced, so use it when the tool returns one:
+
+```tsx
+toolChipActions={(row) => {
+  if (row.status !== "completed") return [];
+  const links = row.resourceLinks ?? [];
+  if (links.length > 0) {
+    return links.map((link) => ({
+      label: link.title ?? "Open",
+      onSelect: () => open(link.uri),
+    }));
+  }
+  // Fall through to your own parse of the result, below.
+  return [];
+}}
+```
+
+**When the tool returns only ids, build the action yourself.** Most host MCP tools return `{ projectId, trackId }` rather than a link, and emit no `resource_link`. Parse your own result shape and construct the action from the id. Never let the model write the link: a model can invent a URL for the wrong environment, and it has.
 
 ```tsx
 toolChipActions={(row) => {
@@ -208,6 +225,8 @@ toolChipActions={(row) => {
   return [{ label: "Open project", onSelect: () => openProject(result.projectId) }];
 }}
 ```
+
+Write one `toolChipActions` that tries `row.resourceLinks` first and falls back to your parse, so a tool that starts returning links keeps working.
 
 `row.result` is the tool's result as the provider reported it. Check `row.status` first: a running chip has no result.
 
@@ -232,6 +251,18 @@ Resolution order: `resolve()` → exact key → longest wildcard prefix → `*` 
 A key can use the same tool names as a [permission policy](/sdk/permissions). `mcp:versic:*`, `mcp:versic:search`, `versic:search`, `mcp__versic__search` and `search` all match the tool `search` of the server `versic`. You list each tool once.
 
 Some providers report an MCP tool by its bare name (`search`). A server-qualified key (`mcp:versic:*`) matches that tool when the event names its MCP server, which the runtime does for Claude and Codex (`ToolChipRow.identity`). A bare name with no MCP server on the event matches only a bare key. `matchLabelKey(keys, name, identity?)` takes the identity as its third argument for your own lookups.
+
+The matcher never invents a server from the name, because a bare name is not evidence of who owns it. So when your host injects MCP tools and the event sometimes arrives without a server, key the bare name as well as the qualified one — or cover the family with one wildcard, which matches either way:
+
+```ts
+labels={{
+  map: {
+    "mcp:versic:*": "Checking your projects…", // wins when the event names the server
+    "versic_*": "Checking your projects…",     // matches the bare name
+    "*": "Working…",
+  },
+}}
+```
 
 ## Theming
 
