@@ -171,17 +171,27 @@ against the new model, because there the old level belonged to a model the user
 just left; the composer's own control keeps working either way, so changing the
 level after the pick wins.
 
-Two marks say what a chat runs on, in the same accent everywhere:
+What a chat runs on is said in the same accent everywhere, and with one mark
+per row:
 
-- the **composer's model trigger** draws the preset's own mark with its accent,
-  and a harness chip beside it names the program that runs it with the
-  harness's colour and mark;
-- the **session card** leads with the preset's mark (or the harness's, for an
-  ad-hoc route) and keeps the harness readable as a smaller mark beside it.
+- the **composer's model trigger** draws the preset's own mark (for an ad-hoc
+  route, the mark of the *source* that serves the model) with that mark's
+  accent, and a harness chip beside it names the program that runs it in the
+  harness's own colour;
+- the **session card** draws that same single mark. The harness is not a second
+  glyph — two marks in one row compete with the title for a fact the row's
+  tooltip already carries, and the harness is the less surprising half of the
+  pairing, since the Custom provider is what the person chose.
 
 A mark is never drawn without its accent. The default purple is a preset's
 fallback colour, not "no colour", so using it for a preset that has one of its
 own is the mismatch this note exists to prevent.
+
+**The launch guard is local.** It reads and writes the account-settings copy of
+the brain this client is attached to. A launch pinned to another machine is
+resolved by *that* machine's copy, which this client can neither read nor write,
+so the guard reports that it cannot vouch for it and the other machine's own
+account sync is what converges.
 
 ## Routes: any source in any harness
 

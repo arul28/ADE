@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildKeySourceLaunch,
   previewHarnessLaunchPlan,
-  resolveAgentPins,
   resolveHarnessPresetForLaunch,
   resolveHarnessPresetPlan,
   resolveLaunchBrain,
@@ -15,6 +14,7 @@ import {
   stripTrailingV1,
   type HarnessPresetLaunchDeps,
 } from "./harnessPresetLaunch";
+import { resolveAgentPins } from "./harnessPresetSubagents";
 import {
   listLaunchableCredentials,
   resolveCredentialForLaunch,

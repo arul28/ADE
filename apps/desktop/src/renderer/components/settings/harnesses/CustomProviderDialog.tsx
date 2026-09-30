@@ -146,6 +146,15 @@ export function CustomProviderDialog({
   const [logoError, setLogoError] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /**
+   * The local write has happened.
+   *
+   * The dialog stays open when the account has not confirmed the write, so the
+   * primary action becomes Retry — which only re-pushes. Without this, pressing
+   * Save again after a successful retry would write a SECOND preset, because
+   * the first Save really did save.
+   */
+  const [written, setWritten] = useState(false);
   const [generating, setGenerating] = useState(false);
   const objectUrlRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -362,25 +371,51 @@ export function CustomProviderDialog({
                   if (saving) return;
                   setSaving(true);
                   void onRetryAccountSync()
-                    .then((error) => setAccountError(error))
+                    .then((error) => {
+                      setAccountError(error);
+                      // Confirmed: there is nothing left to do here, and
+                      // leaving Save on screen would invite a second write.
+                      if (!error) onClose();
+                    })
                     .finally(() => setSaving(false));
                 },
               }
-            : {
-                label: editingPresetId ? "Save" : "Create",
-                variant: "solid",
-                disabled: !canSave || saving,
-                onClick: () => {
-                  if (!canSave || saving) return;
-                  setSaving(true);
-                  void onSave(finalDraft)
-                    .then((error) => setAccountError(error))
-                    .finally(() => setSaving(false));
+            : written
+              ? { label: "Close", variant: "solid", onClick: onClose }
+              : {
+                  label: editingPresetId ? "Save" : "Create",
+                  variant: "solid",
+                  disabled: !canSave || saving,
+                  onClick: () => {
+                    if (!canSave || saving) return;
+                    setSaving(true);
+                    setWritten(true);
+                    void onSave(finalDraft)
+                      .then((error) => setAccountError(error))
+                      .finally(() => setSaving(false));
+                  },
                 },
-              },
         ]}
       >
-        <div data-custom-provider-editor="" style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT, minWidth: 0 }}>
+        {/* A frozen form after a write.
+            The local save really happened, so what the account will receive is
+            what is on screen NOW. Letting the fields keep moving while the
+            warning shows would let someone rename a preset, press Retry, and
+            watch a confirmation for the name they just replaced. */}
+        <fieldset
+          disabled={written}
+          data-custom-provider-editor=""
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 18,
+            fontFamily: SANS_FONT,
+            minWidth: 0,
+            margin: 0,
+            padding: 0,
+            border: "none",
+          }}
+        >
           {accountError ? (
             <Banner
               layout="inline"
@@ -724,7 +759,7 @@ export function CustomProviderDialog({
             />
             {logoError ? <FieldError>{logoError}</FieldError> : null}
           </section>
-        </div>
+        </fieldset>
       </Dialog>
 
       {cropSrc ? (

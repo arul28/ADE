@@ -24,6 +24,7 @@
 import {
   HARNESS_PRESETS_SETTING_KEY,
   normalizeHarnessPresetList,
+  type HarnessPreset,
 } from "../../shared/harnessPresets";
 import { isRoutePresetId } from "../../shared/harnessRoutes";
 import { rootAppStoreApi } from "../state/appStore";
@@ -40,29 +41,41 @@ function accountSettingsApi(): NonNullable<typeof window.ade.accountSettings> | 
   return window.ade?.accountSettings ?? null;
 }
 
-function presetIdsFromRow(value: unknown): string[] | null {
-  const presets = normalizeHarnessPresetList(value);
-  return presets.map((preset) => preset.id);
-}
-
 /**
- * Whether this machine's settings cache already holds the preset.
+ * The preset as this machine's settings cache holds it, or `null` when the
+ * question could not be answered (no bridge, no brain, an unreadable row).
  *
- * `null` means the question could not be answered (no bridge, no brain, an
- * unreadable row) — distinct from `false`, which is a confirmed absence.
+ * The CONTENT, not just the id: the brain resolves the whole preset out of this
+ * row, so an edit whose upload failed leaves the id present with the previous
+ * model, source and pins — and a guard that matched on the id alone would let
+ * that launch run the old settings while the picker showed the new ones.
  */
-async function machineHoldsPreset(presetId: string): Promise<boolean | null> {
+async function machinePreset(presetId: string): Promise<HarnessPreset | null | undefined> {
   const api = accountSettingsApi();
   if (!api) return null;
   try {
     const result = await api.list({ scope: "all" });
     if (!result || result.ok !== true) return null;
     const row = result.value.find((entry) => entry.key === HARNESS_PRESETS_SETTING_KEY);
-    if (!row) return false;
-    const ids = presetIdsFromRow(row.value);
-    return ids ? ids.includes(presetId) : null;
+    if (!row) return undefined;
+    // A row whose value is not a list is a shape this build does not
+    // understand — "cannot answer", never "absent". Normalising it would yield
+    // an empty list, and pushing on that would replace a list this machine
+    // never read.
+    if (!Array.isArray(row.value)) return null;
+    return normalizeHarnessPresetList(row.value).find((preset) => preset.id === presetId);
   } catch {
     return null;
+  }
+}
+
+/** The same preset on both sides, compared as stored. */
+function samePresetOnBothSides(local: HarnessPreset, machine: HarnessPreset | null): boolean {
+  if (!machine) return false;
+  try {
+    return JSON.stringify(machine) === JSON.stringify(local);
+  } catch {
+    return false;
   }
 }
 
@@ -90,19 +103,47 @@ export async function saveHarnessPresetsToAccount(): Promise<HarnessPresetAccoun
  */
 export async function ensureHarnessPresetOnBrain(
   presetId: string | null | undefined,
+  options: {
+    /**
+     * The launch runs on another computer, whose resolver reads THAT machine's
+     * settings cache. This client cannot read or write it — the account
+     * settings service is local-runtime-backed — so the only honest answer is
+     * that this check does not cover that machine's copy.
+     */
+    targetsAnotherMachine?: boolean;
+  } = {},
 ): Promise<HarnessPresetAccountSyncOutcome> {
   const id = presetId?.trim() ?? "";
   if (!id || isRoutePresetId(id)) return { ok: true, message: null };
+  if (options.targetsAnotherMachine) {
+    return {
+      ok: false,
+      message: "This chat runs on another computer, which keeps its own copy of your account settings.",
+    };
+  }
   // Read the list here rather than taking it as an argument: every launch
   // surface would otherwise have to thread the store's slice through for a
   // check that is about this machine's saved list, not about the caller.
   const presets = rootAppStoreApi.getState().harnessPresets;
-  if (!presets.some((preset) => preset.id === id)) {
+  const local = presets.find((preset) => preset.id === id);
+  if (!local) {
     // Not this machine's list either — a stale chat, or another account's
     // preset. Say so rather than pushing a list that cannot contain it.
     return { ok: false, message: "This custom provider is not saved on this computer." };
   }
-  const present = await machineHoldsPreset(id);
-  if (present !== false) return { ok: true, message: null };
-  return await saveHarnessPresetsToAccount();
+  const machine = await machinePreset(id);
+  // Cannot answer: a row this build does not understand, or a brain that could
+  // not be asked. Pushing then would replace a list this machine never read, so
+  // the launch goes ahead exactly as it did before this guard existed.
+  if (machine === null) return { ok: true, message: null };
+  // A confirmed absence, and a copy that differs from what the user just
+  // picked, both mean the brain cannot resolve this preset. Pushing on a
+  // difference is deliberately not a "who is newer" comparison: this machine
+  // cannot see the other side's stamp from here, and the account store's own
+  // newer-wins rule is what reconciles the two lists. Launching on the model
+  // the user is looking at beats holding the brain's copy untouched.
+  if (machine === undefined || !samePresetOnBothSides(local, machine)) {
+    return await saveHarnessPresetsToAccount();
+  }
+  return { ok: true, message: null };
 }

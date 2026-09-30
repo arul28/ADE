@@ -18,6 +18,7 @@ import {
   openCodeSubagentAgentBlock,
   type HarnessSubagentLaunch,
 } from "../../../shared/harnessSubagentLaunch";
+import { subagentLaunchModelIds } from "./harnessPresetSubagents";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import {
   ensurePrivateDirectory,
@@ -204,7 +205,15 @@ function buildKeySourceEnv(args: {
           npm: "@ai-sdk/openai-compatible",
           name: credential.label?.trim() || id,
           options: { baseURL: baseUrl, apiKey: key },
-          models: Object.fromEntries(models.map((model) => [model, {} as Record<string, never>])),
+          // The subagent agent-block below names `id/model` entries, and
+          // OpenCode resolves an agent's model against this list: a pin the
+          // provider block does not carry is one OpenCode cannot start. The
+          // credential's own models stay first, so nothing about the existing
+          // list changes.
+          models: Object.fromEntries(
+            [...new Set([...models, ...subagentLaunchModelIds(subagent)])]
+              .map((model) => [model, {} as Record<string, never>]),
+          ),
         },
       };
       const openCodeConfigPath = writeConfig

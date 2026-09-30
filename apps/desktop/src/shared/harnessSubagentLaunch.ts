@@ -27,9 +27,17 @@ import {
   type HarnessPresetBody,
 } from "./harnessPresets";
 
-/** One resolved subagent pin: the id the harness must request, plus its effort. */
+/**
+ * One resolved subagent pin.
+ *
+ * Either half may stand alone: a harness that takes a thinking level can be
+ * told one without also naming a model (Codex), and a harness that takes a
+ * model has no level to name (Grok, OpenCode). A pin with neither does not
+ * exist — `hasSubagentLaunch` is what says so.
+ */
 export type HarnessSubagentPin = {
-  model: string;
+  /** The id the harness must request. Absent means "leave the model alone". */
+  model?: string;
   effort?: string;
 };
 
@@ -84,12 +92,15 @@ function tomlString(value: string): string {
  * an empty table.
  */
 export function codexSubagentConfigTomlLines(subagent: HarnessSubagentLaunch | undefined): string[] {
-  if (!subagent?.subagents) return [];
+  const model = subagent?.subagents?.model?.trim();
+  const effort = subagent?.subagents?.effort?.trim();
+  if (!model && !effort) return [];
+  // Written whole because ADE owns this file, and an empty table would still be
+  // a table. Each half is its own key, so naming only a level is a complete
+  // request rather than a half-written one.
   const lines = ["", "[agents]"];
-  lines.push(`default_subagent_model = ${tomlString(subagent.subagents.model)}`);
-  if (subagent.subagents.effort?.trim()) {
-    lines.push(`default_subagent_reasoning_effort = ${tomlString(subagent.subagents.effort.trim())}`);
-  }
+  if (model) lines.push(`default_subagent_model = ${tomlString(model)}`);
+  if (effort) lines.push(`default_subagent_reasoning_effort = ${tomlString(effort)}`);
   return lines;
 }
 
@@ -115,7 +126,7 @@ export function grokSubagentConfigTomlLines(
   // Grok's default subagent type is `general-purpose`; a preset that names only
   // a subagent model pins that type, which is the one every spawn lands on
   // unless the agent asks for another.
-  if (subagent.subagents && !entries.some(([type]) => type === "general-purpose")) {
+  if (subagent.subagents?.model && !entries.some(([type]) => type === "general-purpose")) {
     entries.unshift(["general-purpose", subagent.subagents.model]);
   }
   if (!entries.length) return [];
@@ -142,7 +153,8 @@ export function openCodeSubagentAgentBlock(
     if (!pin?.model || !type) continue;
     block[type] = { model: modelIdFor(pin.model) };
   }
-  if (subagent.subagents && !block.general) {
+  // A model-less pin is a level, and OpenCode has no per-agent level to write.
+  if (subagent.subagents?.model && !block.general) {
     block.general = { model: modelIdFor(subagent.subagents.model) };
   }
   return Object.keys(block).length ? block : null;

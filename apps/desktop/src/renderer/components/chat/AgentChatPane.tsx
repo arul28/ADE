@@ -11161,7 +11161,9 @@ export function AgentChatPane({
     // preset no longer exists on this account", which falls the chat back to
     // the harness's own sign-in. Best-effort — an unreachable brain leaves the
     // launch exactly as it was.
-    await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId);
+    await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId, {
+      targetsAnotherMachine: launchBinding.kind === "remote",
+    });
     void copyPromptForLaunch(snapshot.text);
 
     // The renderer-owned chain: used for launches into an existing lane, and

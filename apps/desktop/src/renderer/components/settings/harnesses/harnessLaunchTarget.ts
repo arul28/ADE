@@ -16,7 +16,7 @@ import {
   type HarnessPresetLogo,
   type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
-import { PROVIDER_GROUP_COLORS } from "../../../../shared/providerColors";
+import { PROVIDER_CHAT_ACCENTS, PROVIDER_GROUP_COLORS } from "../../../../shared/providerColors";
 import { decodeRoutePresetId, isRoutePresetId } from "../../../../shared/harnessRoutes";
 import { encodeOpenCodeRegistryId } from "../../../../shared/modelRegistry";
 import { harnessModelLabel } from "./harnessModels";
@@ -52,6 +52,25 @@ export function harnessAccentColor(harness: HarnessPresetBody | string): string 
     ?? DEFAULT_HARNESS_PRESET_ACCENT;
 }
 
+/**
+ * The mark a source wears — who the model actually comes from.
+ *
+ * An opencode source names its provider id (`opencode-go`, `opencode-zen`);
+ * every other kind names the provider the credential or subscription belongs
+ * to. Both are the same vocabulary `ProviderLogo` and the preset wizard's
+ * source rows already use.
+ */
+export function sourceLogoFamily(source: HarnessPresetSource): string {
+  return source.kind === "opencode" ? source.providerId : source.provider;
+}
+
+/** The accent a source wears. Its brand colour where there is one, else the harness's. */
+function sourceAccentColor(source: HarnessPresetSource, harness: HarnessPresetBody): string {
+  const family = sourceLogoFamily(source);
+  const branded = (PROVIDER_CHAT_ACCENTS as Record<string, string | undefined>)[family];
+  return branded ?? harnessAccentColor(harness);
+}
+
 export function resolveHarnessLaunchTarget(
   presetId: string | null | undefined,
   presets: readonly HarnessPreset[],
@@ -70,8 +89,12 @@ export function resolveHarnessLaunchTarget(
       launchModelId: launchModelIdFor(spec.harness, spec.source, spec.model),
       ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
       name: `${routeModelLabel(spec.source, spec.model, catalogScopeKey)} · ${harnessShortLabel(spec.harness)}`,
-      logo: { kind: "provider", providerId: spec.harness },
-      accentColor: harnessAccentColor(spec.harness),
+      // The SOURCE's mark, not the harness's: an ad-hoc route is a saved
+      // provider in everything but name, and the harness is the half the person
+      // picked for convenience rather than the half that identifies the model.
+      // The harness stays in the name and in the tooltip every row carries.
+      logo: { kind: "provider", providerId: sourceLogoFamily(spec.source) },
+      accentColor: sourceAccentColor(spec.source, spec.harness),
       adHoc: true,
     };
   }

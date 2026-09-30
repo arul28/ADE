@@ -2286,7 +2286,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // owns the lane, out of the same account-settings copy the renderer
       // syncs. Make sure that copy holds the preset before the spawn, or the
       // CLI starts on the harness's own sign-in and reports the preset gone.
-      await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId);
+      await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
+        targetsAnotherMachine: args.pin?.kind === "remote",
+      });
       const result = args.pin
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);

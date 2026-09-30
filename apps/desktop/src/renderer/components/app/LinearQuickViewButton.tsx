@@ -412,7 +412,7 @@ export function LinearQuickViewButton({
           // Same rule as every other launch: the brain resolves a preset out
           // of its own account-settings copy, so that copy has to hold it
           // before the launch is handed over.
-          await ensureHarnessPresetOnBrain(args.presetId);
+          await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
           const session = pin
             ? await window.ade.agentChat.launch(launchArgs, pin)
             : await window.ade.agentChat.launch(launchArgs);
@@ -425,7 +425,7 @@ export function LinearQuickViewButton({
         // attached so the agent drives it via `ade linear`. Returns the pty
         // session id, which runBatchLaunch records like a chat session id.
         launchCli: async (args) => {
-          await ensureHarnessPresetOnBrain(args.presetId);
+          await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
           const cliArgs: Parameters<typeof window.ade.agentChat.launchCli>[0] = {
             laneId: args.laneId,
             provider: args.provider,

@@ -124,6 +124,30 @@ describe("harnessPresetAccountSync", () => {
     expect(flush).not.toHaveBeenCalled();
   });
 
+  it("pushes when the brain's copy is an older EDIT of the same preset", async () => {
+    // An edit whose upload failed leaves the id present with the previous
+    // content, so the brain would launch the model the user just replaced.
+    rootAppStoreApi.setState({ harnessPresets: [{ ...preset("hp_new"), model: "claude-sonnet-5" }] });
+    installApi({ machineIds: ["hp_new"] });
+
+    await ensureHarnessPresetOnBrain("hp_new");
+    expect(flush).toHaveBeenCalledWith(HARNESS_PRESETS_SETTING_KEY);
+  });
+
+  it("says it cannot vouch for a launch running on another computer", async () => {
+    // The account settings service is local-runtime-backed: this client can
+    // neither read nor write that machine's cache, so claiming the preset is
+    // there would be a guess.
+    rootAppStoreApi.setState({ harnessPresets: [preset("hp_new")] });
+    const api = installApi({ machineIds: [] });
+
+    const result = await ensureHarnessPresetOnBrain("hp_new", { targetsAnotherMachine: true });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("another computer");
+    expect(api.list).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+  });
+
   it("asks for nothing when the choice is an ad-hoc route", async () => {
     const routeId = encodeRoutePresetId({
       harness: "claude",

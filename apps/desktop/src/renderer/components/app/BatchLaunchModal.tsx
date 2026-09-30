@@ -409,7 +409,9 @@ export function BatchLaunchModal({
       // so the launch knows its harness and the model that harness receives.
       // The brain resolves it again at spawn time, out of its own copy, so make
       // sure that copy has it before the batch is handed over.
-      await ensureHarnessPresetOnBrain(config.presetId);
+      await ensureHarnessPresetOnBrain(config.presetId, {
+        targetsAnotherMachine: targetPin?.kind === "remote",
+      });
       const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
       if (config.presetId && !target) {
         showToast({

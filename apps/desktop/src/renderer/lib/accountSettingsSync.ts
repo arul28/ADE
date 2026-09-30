@@ -313,16 +313,24 @@ function sameValue(left: unknown, right: unknown): boolean {
  * still queued, which is what makes a retry correct and what keeps a caller
  * from rolling back a change the user can still see.
  */
-function unsyncedResult(signedOut: boolean, error?: unknown): AccountSettingsResult<null> {
+function unsyncedResult(
+  signedOut: boolean,
+  error?: unknown,
+  override?: string,
+): AccountSettingsResult<null> {
   const detail = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return {
     ok: false,
     unavailable: true,
-    message: detail || (signedOut
+    message: override || detail || (signedOut
       ? "Sign in to ADE to sync this setting to your account."
       : "This computer could not reach ADE's account settings service."),
   };
 }
+
+/** The account changed while this write was in flight; it stays queued. */
+const IDENTITY_CHANGED_MESSAGE =
+  "The signed-in account changed while this was being saved. It will be sent again under the account signed in now.";
 
 /**
  * Starts hydrating from, and writing through to, the account settings store.
@@ -534,7 +542,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       const generationAtQueue = identityGeneration;
       if (resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return Promise.resolve(unsyncedResult(false));
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
       const owner = realAccountUserId();
       // Calling set is the queue boundary. Do not move the stamp earlier: a
@@ -548,7 +556,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       });
       if (identityGeneration !== generationAtQueue || resolveAccountUserId() !== userIdAtQueue) {
         markDirtyKey(existingDirtyKey);
-        return Promise.resolve(unsyncedResult(false));
+        return Promise.resolve(unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE));
       }
       stamps[stampKey(scopeKey, entry.key)] = new Date(now()).toISOString();
       dirtyKeys.delete(existingDirtyKey);

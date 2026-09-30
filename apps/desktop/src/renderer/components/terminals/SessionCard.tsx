@@ -67,9 +67,7 @@ import {
 } from "./SessionHoverCard";
 import { ToolLogo } from "./ToolLogos";
 import { HarnessLogo } from "../shared/HarnessLogo";
-import { ProviderLogo } from "../shared/ProviderLogos";
 import { harnessBodyLabel } from "../../../shared/harnessPresets";
-import { bodyLogoFamily } from "../settings/harnesses/presetFacts";
 import {
   resolveHarnessLaunchTarget,
   type HarnessLaunchTarget,
@@ -342,14 +340,17 @@ function modelHandoffProviderSequence(session: TerminalSessionSummary): string[]
 }
 
 /**
- * A Custom provider's own mark, with the harness that runs it beside it.
+ * A Custom provider's own mark — and nothing else.
  *
  * A row used to show the harness alone, which said "Claude Code" for a chat the
- * person had deliberately pointed at another vendor's model — the one fact
- * about that row they chose and the one the mark did not carry. The preset's
- * (or the route's) mark leads, at the preset's accent; the harness stays
- * readable as a smaller mark on its right, so the pairing is legible without a
- * second line.
+ * person had deliberately pointed at another vendor's model: the one fact about
+ * that row they chose, and the one the mark did not carry. The preset's (or the
+ * route's) own mark, at the preset's own accent, replaces it.
+ *
+ * No second glyph for the harness. Two marks in one row is a badge cluster
+ * competing with the title for a fact the tooltip already carries, and the
+ * harness is the *less* surprising half of the pairing — the person picked the
+ * Custom provider.
  */
 function CustomProviderMark({
   target,
@@ -362,10 +363,9 @@ function CustomProviderMark({
     <span
       data-session-custom-provider={target.presetId}
       title={`${target.name} · ${harnessBodyLabel(target.harness)}`}
-      className="inline-flex shrink-0 items-center gap-0.5 opacity-90"
+      className="inline-flex shrink-0 items-center opacity-90"
     >
       <HarnessLogo logo={target.logo} size={size} accentColor={target.accentColor} />
-      <ProviderLogo family={bodyLogoFamily(target.harness)} size={Math.max(8, Math.round(size * 0.62))} />
     </span>
   );
 }
@@ -377,12 +377,11 @@ function SessionProviderLogoStack({
   session: TerminalSessionSummary;
   size: number;
 }) {
-  // The saved Custom provider (or ad-hoc route) this row runs on, resolved
-  // from the same account-scoped list every other surface reads. It is a
-  // store read rather than a projected field because the mark has to follow a
-  // rename or a re-logo without the row being relisted.
-  // Root store: the list is an account-scoped preference, and a project store
-  // only ever holds the seed copy it was created with (see `useHarnessPresets`).
+  // The saved Custom provider (or ad-hoc route) this row runs on, resolved from
+  // the same account-scoped list every other surface reads: a store read rather
+  // than a projected field, so the mark follows a rename or a re-logo without
+  // the row being relisted. The ROOT store, because a project store only ever
+  // holds the seed copy it was created with (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
   const customTarget = React.useMemo(
     () => resolveHarnessLaunchTarget(session.presetId, harnessPresets),
