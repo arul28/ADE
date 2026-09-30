@@ -25,15 +25,12 @@ describe("ipc channel redaction", () => {
     expect(redacted).toMatchObject({ providerId: "anthropic", requestId: "req-1" });
   });
 
-  // The machine-scoped OpenAI key travels as a bare `key` field. It was in
-  // neither gate: the channel was absent from the map, and the generic
-  // field-name guard matched `apikey` but not `key` — so a verbose IPC trace
-  // wrote the user's OpenAI key into the log file verbatim. These two map
-  // entries are now the only thing redacting it, so this test is the gate.
+  // A provider key travels as a bare `key` field, which the generic
+  // field-name guard does not treat as a secret. These map entries are the
+  // only thing redacting it, so this test is the gate.
   it("redacts the raw provider credential on every key-store channel", () => {
     for (const channel of [
       IPC.aiStoreApiKey,
-      IPC.aiStoreMachineApiKey,
       IPC.aiSetOpencodeProviderKey,
     ]) {
       const [redacted] = redactIpcArgsForChannel(channel, [

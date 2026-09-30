@@ -823,9 +823,6 @@ ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropi
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in
 ade --role cto actions run ai.piLoginSubmit --input-json "$(jq -n --arg v "$PI_API_KEY" '{providerId:"anthropic",requestId:"req-1",value:$v}')"  # answer a prompt; keep the value out of argv and shell history
 ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthropic"}'
-ade actions run ai.getMachineApiKeyStatus --input-json '{"provider":"openai"}' --json         # is a MACHINE-scoped provider key configured, and from the store or the environment; never the key itself
-ade --role cto actions run ai.storeMachineApiKey --input-json "$(jq -n --arg v "$OPENAI_API_KEY" '{provider:"openai",key:$v}')"   # keep the secret out of argv and shell history
-ade --role cto actions run ai.deleteMachineApiKey --input-json '{"provider":"openai"}' --json
 ade actions run cto_state.getThreadHealth --json                           # can the CTO thread take a turn, and is a rotation advised
 ade --role cto actions run cto_state.startFreshSession --json       # retire the CTO thread and open a clean one (CTO-only; memory and identity carry over)
 ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{"path":".../.ade/artifacts/computer-use/scene.png"}' --json
@@ -901,18 +898,13 @@ more. `ai.piLoginSubmit`'s `value` can be a raw API key: pass it through
 `--input-json` built from an environment variable rather than typing it inline,
 and never echo the result.
 
-Provider keys come in two scopes and neither has a typed command, for the same
-reason `ade secrets` is not one of them: a provider key is not a project secret.
-`ai.storeApiKey` / `ai.deleteApiKey` / `ai.listApiKeys` write the PROJECT's store
-(`<project>/.ade/secrets`); `ai.storeMachineApiKey` / `ai.deleteMachineApiKey` /
-`ai.getMachineApiKeyStatus` write this INSTALL's (`~/.ade/secrets`, or
-`$ADE_HOME`), which is the one a key should live in when it pays for something
-the machine does rather than something the repo does. Both writers are CTO-only; both status reads
-are not, because they answer "is a key configured, and did it come from the
-store or the environment" and never return the key. The secret travels one way,
-in: `storeMachineApiKey` returns the resulting status, not what you sent it.
-Build the `--input-json` from an environment variable as above rather than
-typing the key inline, and never echo the result into a log.
+Provider keys have no typed command, for the same reason `ade secrets` is not
+one of them: a provider key is not a project secret. `ai.storeApiKey` /
+`ai.deleteApiKey` / `ai.listApiKeys` write and list the PROJECT's store
+(`<project>/.ade/secrets`). The writers are CTO-only; the list is not, because
+it names providers and never returns a key. Build the `--input-json` from an
+environment variable rather than typing the key inline, and never echo the
+result into a log.
 
 `computer_use_artifacts.ingestSceneSnapshot` is not a second `ade proof attach`.
 It is CTO-only, takes no bytes, and accepts only a path already inside this

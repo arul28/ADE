@@ -175,7 +175,7 @@ z-index, transform, filter or `isolation` would trap toasts under dialogs again.
 
 `ViewportOverlayHost` owns viewport anchoring and pointer passthrough for
 transient overlays that are not banners, sheets, dialogs, or toasts, including
-the call HUD, capture notice, and chat handoff animation. The hosts
+the capture notice and chat handoff animation. The hosts
 (`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`, and
 `ViewportOverlayHost`) already use named layers. If you need a z-index at all,
 you are probably building an overlay the hosts already provide. A new layer

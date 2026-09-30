@@ -17,8 +17,12 @@ import readline from "node:readline";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { terminateChildProcessTree } from "../shared/utils";
 import type { Logger } from "../logging/logger";
+import { codexPlanIncludesVoice } from "../../../shared/codexVoice";
+import { codexAuthModeFromAccountRead } from "./providerUsageAccount";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+/** The relay thread's model: the cheapest model on every voice-capable plan. */
+const RELAY_MODEL = "gpt-6-luna";
 
 /** What the relay thread is told. Its replies are discarded, so keep them tiny. */
 const RELAY_INSTRUCTIONS = [
@@ -31,20 +35,11 @@ export type CodexVoiceHostNotification = { method: string; params: Record<string
 
 export type CodexVoiceHost = {
   threadId: string;
-  /** ChatGPT plan type from `account/read`, when the sign-in reports one. */
-  planType: string | null;
   request: <T = unknown>(method: string, params: unknown) => Promise<T>;
   close: () => void;
 };
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
-
-/** Plans that include Codex voice, per OpenAI's Codex pricing page. */
-export function codexPlanIncludesVoice(planType: string | null): boolean {
-  if (!planType) return true;
-  const plan = planType.trim().toLowerCase();
-  return plan !== "free" && plan !== "go" && plan !== "free_workspace";
-}
 
 export async function startCodexVoiceHost(args: {
   executable: string;
@@ -171,21 +166,18 @@ export async function startCodexVoiceHost(args: {
       capabilities: { experimentalApi: true },
     });
     write({ method: "initialized", params: {} });
-    const account = await request<{ account?: { type?: unknown; planType?: unknown } | null }>("account/read", {})
-      .catch(() => null);
-    const accountType = typeof account?.account?.type === "string" ? account.account.type.toLowerCase() : null;
-    if (accountType && accountType !== "chatgpt") {
-      throw new Error("Voice needs Codex signed in with ChatGPT. An API key cannot run voice.");
-    }
-    if (!account?.account) {
+    const account = codexAuthModeFromAccountRead(await request("account/read", {}).catch(() => null));
+    if (!account) {
       throw new Error("Voice needs Codex signed in with ChatGPT. Sign in to Codex and try again.");
     }
-    const planType = typeof account.account.planType === "string" ? account.account.planType : null;
-    if (!codexPlanIncludesVoice(planType)) {
-      throw new Error(`Your ChatGPT plan (${planType}) does not include Codex voice.`);
+    if (account.authMode !== "chatgpt") {
+      throw new Error("Voice needs Codex signed in with ChatGPT. An API key cannot run voice.");
+    }
+    if (!codexPlanIncludesVoice(account.planType)) {
+      throw new Error(`Your ChatGPT plan (${account.planType}) does not include Codex voice.`);
     }
     const started = await request<{ thread?: { id?: unknown } }>("thread/start", {
-      model: "gpt-6-luna",
+      model: RELAY_MODEL,
       cwd: args.cwd,
       approvalPolicy: "never",
       sandbox: "read-only",
@@ -195,8 +187,8 @@ export async function startCodexVoiceHost(args: {
     });
     const threadId = typeof started?.thread?.id === "string" ? started.thread.id : "";
     if (!threadId) throw new Error("Codex did not start a voice thread.");
-    logger.info("agent_chat.codex_voice_host_ready", { sessionId, threadId, planType });
-    return { threadId, planType, request, close };
+    logger.info("agent_chat.codex_voice_host_ready", { sessionId, threadId, planType: account.planType });
+    return { threadId, request, close };
   } catch (error) {
     close();
     throw error;

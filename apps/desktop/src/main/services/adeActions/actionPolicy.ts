@@ -83,17 +83,14 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
-  // `storeMachineApiKey` / `deleteMachineApiKey` join the project-scoped pair
-  // for the same reason: writing or destroying a provider credential is
-  // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
-  // answers "is a key configured and where from", never the key.
+  // Writing or destroying a provider credential is operator work.
   // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
   // operator-only like the updater it pairs with.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
   // Both are operator work, like `project_secret.exportEnv`.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -161,8 +158,19 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   },
   // Stashes are unsent user-authored drafts. Desktop runtime clients connect
   // without a chat binding at CTO role; session-bound agents must never read
-  // or mutate this private composer state through `ade actions`.
-  chat: { only: ["listPromptStashes", "createPromptStash", "deletePromptStash"] },
+  // or mutate this private composer state through `ade actions`. Voice is the
+  // user's microphone and a session billed to their ChatGPT plan: an agent
+  // must not start, stop, or watch it.
+  chat: {
+    only: [
+      "listPromptStashes",
+      "createPromptStash",
+      "deletePromptStash",
+      "startCodexRealtime",
+      "stopCodexRealtime",
+      "getCodexRealtimeState",
+    ],
+  },
   // ── Domain-coverage decisions (deliberately NOT added here) ──
   // The CTO gained curated tools over automation planning, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
@@ -703,13 +711,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
-    // Machine-scoped keys (this install's ADE home, not the project's). On the
-    // bus so the renderer can reach the store the RUNTIME reads — desktop main
-    // writes through a different credential store and the runtime cannot open
-    // it. The secret travels one way, in; only a status comes back.
-    "getMachineApiKeyStatus",
-    "storeMachineApiKey",
-    "deleteMachineApiKey",
     "updateConfig",
     "opencodeAuthMethods",
     "opencodeOAuthStart",

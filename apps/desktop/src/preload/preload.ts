@@ -204,7 +204,6 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
-  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -3189,7 +3188,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       // The polled path reaches the renderer without passing through
       // `toRemoteRuntimeBufferedEvent`: the batch is cast, not normalized, so
       // the category guard is applied here too.
-      if (!isRendererRuntimeEventCategory(event.category)) continue;
+      if (!isRemoteRuntimeEventCategory(event.category)) continue;
       // `remoteRuntimeEventStartedAtMs` is 0 for remote bindings, so the shared
       // helper's zero guard already restricts this to local ones.
       if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, event.timestamp)) {
@@ -3301,16 +3300,6 @@ function toRemoteRuntimeEventNotificationPayload(
   return { bindingKey, event, ...(eventEpoch ? { eventEpoch } : {}) };
 }
 
-/**
- * Categories a RENDERER-bound event stream may carry: the known ones only, so
- * a category an older runtime still emits is dropped rather than dispatched.
- */
-function isRendererRuntimeEventCategory(
-  value: unknown,
-): value is RemoteRuntimeEventCategory {
-  return isRemoteRuntimeEventCategory(value);
-}
-
 function toRemoteRuntimeBufferedEvent(
   value: unknown,
 ): RemoteRuntimeBufferedEvent | null {
@@ -3318,7 +3307,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (!isRendererRuntimeEventCategory(category)) {
+  if (!isRemoteRuntimeEventCategory(category)) {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};
@@ -5022,91 +5011,6 @@ const adeBridge = {
     listApiKeys: async (pin?: OpenProjectBinding | null): Promise<string[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "listApiKeys", {}, () =>
         ipcRenderer.invoke(IPC.aiListApiKeys),
-      ),
-    /*
-     * Machine-scoped keys go to the LOCAL runtime, and never to a remote one.
-     *
-     * Two rules, both load bearing. A remote brain is the wrong store outright:
-     * the key follows THIS machine's ADE home, so these use the local-only
-     * helper rather than `callProjectRuntimeActionOr`, whose first stop is the
-     * remote runtime when the window is remote-bound. And among the local
-     * options the runtime is the right one, because desktop main writes through
-     * `createDesktopCredentialStore` (Electron `safeStorage`) while the project
-     * runtime reads through `EncryptedFileCredentialStore` — a key written to
-     * the first is invisible to the second, which is how Settings could report
-     * `configured: true` while the runtime answered "no OpenAI key on this
-     * machine".
-     *
-     * `callLocalProjectActionStrictIfBound` rather than the fresh-binding
-     * variant: a machine-scoped key is the same secret through any local
-     * binding, so refreshing the binding first would buy nothing and only add
-     * an await — and the strict helper is the one that does not wait on an
-     * in-flight remote project open, which a Settings write has no reason to
-     * block behind.
-     *
-     * The desktop IPC stays as the fallback, and is what answers when no
-     * project is bound, when the window is remote-bound, and in the in-process
-     * runtime mode where there is no daemon to call. The key still travels one
-     * way only — in, on `store` — and never comes back out of these calls.
-     */
-    getMachineApiKeyStatus: async (
-      provider: string,
-      pin?: OpenProjectBinding | null,
-    ): Promise<MachineApiKeyStatus> => {
-      // A pin names another machine's runtime, whose own ADE home holds its key.
-      if (pin) {
-        return callPinnedRuntimeAction<MachineApiKeyStatus>(pin, "ai", "getMachineApiKeyStatus", { args: { provider } });
-      }
-      const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
-        "ai",
-        "getMachineApiKeyStatus",
-        { args: { provider } },
-      );
-      if (runtime.handled) return runtime.result;
-      return ipcRenderer.invoke(IPC.aiGetMachineApiKeyStatus, { provider });
-    },
-    storeMachineApiKey: async (
-      provider: string,
-      key: string,
-      pin?: OpenProjectBinding | null,
-    ): Promise<MachineApiKeyStatus> =>
-      clearAround(
-        () => aiStatusCache.clear(),
-        async () => {
-          if (pin) {
-            return callPinnedRuntimeAction<MachineApiKeyStatus>(pin, "ai", "storeMachineApiKey", {
-              args: { provider, key },
-            });
-          }
-          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
-            "ai",
-            "storeMachineApiKey",
-            { args: { provider, key } },
-          );
-          if (runtime.handled) return runtime.result;
-          return ipcRenderer.invoke(IPC.aiStoreMachineApiKey, { provider, key });
-        },
-      ),
-    deleteMachineApiKey: async (
-      provider: string,
-      pin?: OpenProjectBinding | null,
-    ): Promise<MachineApiKeyStatus> =>
-      clearAround(
-        () => aiStatusCache.clear(),
-        async () => {
-          if (pin) {
-            return callPinnedRuntimeAction<MachineApiKeyStatus>(pin, "ai", "deleteMachineApiKey", {
-              args: { provider },
-            });
-          }
-          const runtime = await callLocalProjectActionStrictIfBound<MachineApiKeyStatus>(
-            "ai",
-            "deleteMachineApiKey",
-            { args: { provider } },
-          );
-          if (runtime.handled) return runtime.result;
-          return ipcRenderer.invoke(IPC.aiDeleteMachineApiKey, { provider });
-        },
       ),
     verifyApiKey: async (
       provider: string, pin?: OpenProjectBinding | null

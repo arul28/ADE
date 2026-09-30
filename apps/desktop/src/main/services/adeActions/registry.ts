@@ -27,13 +27,10 @@ import {
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
 import {
-  deleteMachineApiKey,
   getApiCredentialSummary,
-  getMachineApiKeyStatus,
   listApiCredentials,
   removeApiCredential,
   storeApiCredential,
-  storeMachineApiKey,
 } from "../ai/apiKeyStore";
 import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
@@ -2208,36 +2205,6 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         typeof args?.credentialId === "string" && args.credentialId ? args.credentialId : undefined,
       );
       invalidateReadiness(provider);
-    },
-    /*
-     * Machine-scoped keys, on the runtime.
-     *
-     * These used to exist only as desktop-main IPC, and that was a
-     * runtime-backed null-service bug wearing a different hat: desktop main
-     * writes through `createDesktopCredentialStore`, whose primary is Electron
-     * `safeStorage`, while the project runtime reads through
-     * `EncryptedFileCredentialStore`. A key saved in Settings therefore landed
-     * in a store the runtime cannot open — so the runtime went on answering
-     * "no OpenAI key on this machine" with a key visibly configured in the UI. The renderer now routes the machine trio to the
-     * LOCAL runtime, which puts the write and the read in one process and one
-     * store.
-     *
-     * Nothing here returns, logs, or echoes the key itself: the secret travels
-     * one way, in, on `storeMachineApiKey`, and only a status comes back.
-     */
-    getMachineApiKeyStatus: (args?: { provider?: string }) =>
-      getMachineApiKeyStatus(requireNonEmptyString(args?.provider, "provider")),
-    storeMachineApiKey: (args?: { provider?: string; key?: string }) => {
-      const provider = requireNonEmptyString(args?.provider, "provider");
-      storeMachineApiKey(provider, requireNonEmptyString(args?.key, "key"));
-      invalidateReadiness(provider);
-      return getMachineApiKeyStatus(provider);
-    },
-    deleteMachineApiKey: (args?: { provider?: string }) => {
-      const provider = requireNonEmptyString(args?.provider, "provider");
-      deleteMachineApiKey(provider);
-      invalidateReadiness(provider);
-      return getMachineApiKeyStatus(provider);
     },
     updateConfig: (partial?: Partial<AiConfig>) => {
       const projectConfigService = requireService(runtime.projectConfigService, "Project config service not available.");

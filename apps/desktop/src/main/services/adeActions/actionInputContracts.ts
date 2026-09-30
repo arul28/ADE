@@ -54,24 +54,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run cto_memory.recordDiscovery --input-json '{\"fact\":\"Vitest localStorage suites need Node 22\",\"tags\":{\"topic\":\"testing\",\"path\":\"apps/desktop\"}}'",
     },
   },
-  ai: {
-    getMachineApiKeyStatus: {
-      description:
-        "Report whether this MACHINE has a provider key and where it resolves from (\"store\" or \"env\"). Scoped to this install's ADE home, not the project. Never returns the key.",
-      input: "object { provider: string }",
-      example: "ade --role cto actions run ai.getMachineApiKeyStatus --input-json '{\"provider\":\"openai\"}' --json",
-    },
-    storeMachineApiKey: {
-      description:
-        "Store a provider key for this machine, in the credential store the project runtime reads. The secret travels one way: only a status comes back.",
-      input: "object { provider: string, key: string }",
-    },
-    deleteMachineApiKey: {
-      description: "Remove this machine's stored provider key and return the resulting status.",
-      input: "object { provider: string }",
-      example: "ade --role cto actions run ai.deleteMachineApiKey --input-json '{\"provider\":\"openai\"}'",
-    },
-  },
   account: {
     startLogin: {
       description: "Start the machine-owned ADE account OAuth PKCE login flow.",

@@ -7,7 +7,6 @@ import {
   createService,
   cursorModelsListMock,
   fs,
-  mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
   path,

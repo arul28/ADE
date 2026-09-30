@@ -130,13 +130,6 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
-- `apps/desktop/src/main/services/ai/apiKeyStore.ts` — the machine-scope half:
-  `initMachineApiKeyStore`, `createMachineScopeState` (store path under
-  `resolveMachineAdeLayout().secretsDir`, `projectRootPath: null`),
-  `storeMachineApiKey` / `deleteMachineApiKey` / `listMachineStoredProviders`,
-  and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
-  handing the value back. Every helper takes its `ApiKeyScopeState` as the
-  first argument, so each call names the store it reads.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
   machine's provider accounts (Claude and Codex only): the plain-JSON registry,
   the always-present base account whose `configHome` is recomputed on every read,
@@ -1924,7 +1917,6 @@ proxy fabricates callable namespaces for missing properties, so
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
 | Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
 | Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
-| Machine-scoped API keys | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; the provider's env var is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior

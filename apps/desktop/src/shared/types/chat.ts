@@ -15,6 +15,7 @@ export type AcpToolKind =
   | "switch_mode"
   | "other";
 
+import type { CodexVoicePreferences } from "../codexVoice";
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
@@ -4828,7 +4829,7 @@ export type AgentChatCodexRealtimeStartArgs = {
   sessionId: string;
   sdp: string;
   /** The user's voice settings; the brain normalizes whatever arrives. */
-  preferences?: import("../codexVoice").CodexVoicePreferences | null;
+  preferences?: CodexVoicePreferences | null;
 };
 
 export type AgentChatCodexRealtimeStartResult = {

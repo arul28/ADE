@@ -350,7 +350,6 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
-  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -1340,17 +1339,6 @@ declare global {
         storeApiKey: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<void>;
         deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
         listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
-        /**
-         * Machine-scoped keys: stored in this machine's ADE home, not the open
-         * project, so a key pasted once is still there in the next repo. Each
-         * returns the resulting status — never the key.
-         *
-         * Optional: shipped after this group did, so an older preload will not
-         * have it and callers must guard before reaching for it.
-         */
-        getMachineApiKeyStatus?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
-        storeMachineApiKey?: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
-        deleteMachineApiKey?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
         verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**

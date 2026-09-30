@@ -91,23 +91,6 @@ describe("the automation action lookup", () => {
   });
 });
 
-describe("machine-scoped API keys on the ai domain", () => {
-  it("exposes the machine key trio, so the renderer can write the store the RUNTIME reads", () => {
-    // Desktop main writes through Electron safeStorage; the runtime reads
-    // through EncryptedFileCredentialStore. With the trio on desktop IPC only,
-    // a key saved in Settings was invisible to the runtime even though the UI
-    // reported it as configured.
-    const services = getAdeActionDomainServices({
-      aiIntegrationService: { listApiKeys: () => [] },
-      projectConfigService: {},
-    } as never);
-    const names = listAllowedAdeActionNames("ai", services.ai as Record<string, unknown>);
-    expect(names).toContain("getMachineApiKeyStatus");
-    expect(names).toContain("storeMachineApiKey");
-    expect(names).toContain("deleteMachineApiKey");
-  });
-});
-
 describe("getAdeActionDomainServices feature gates", () => {
   it("keeps Automations domains available in packaged builds by default", () => {
     withEnv(

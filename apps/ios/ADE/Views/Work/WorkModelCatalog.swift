@@ -199,7 +199,7 @@ func workPrioritizeGPT56ChatModels(
   func priority(_ model: AgentChatModelInfo) -> Int {
     let canonicalId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
       ?? workCanonicalCodexRegistryId(for: model.id)
-    return workCodexFamilySortPriority(canonicalId) ?? 6
+    return workCodexFamilySortPriority(canonicalId) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -1201,6 +1201,9 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   }
 }
 
+/// Sorts after every named Codex model, so a new family member never ties with an older model.
+private let workCodexUnrankedSortPriority = Int.max
+
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
   case "openai/gpt-6.1-sol": return 0
@@ -1775,7 +1778,7 @@ private func workPrioritizeCodex56Models(
   }
 
   func priority(_ modelId: String) -> Int {
-    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 6
+    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in

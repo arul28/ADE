@@ -5,14 +5,11 @@
  *
  * Ordered low to high. Most values are the numbers the existing surfaces
  * already used, so adopting a name does not change what renders above what.
- * Two layers moved on purpose:
- * - `toast` sits above `dialog` (it was 95, under everything), so a toast
- *   raised from inside a dialog (a cleanup result, a batch launch) is visible
- *   instead of hidden behind the scrim. The viewport lives inside `<main>`,
- *   which creates no stacking context, so this value competes directly with
- *   the body-portaled dialogs.
- * - `hud` sits above `sheet` (the CTO call HUD was 112), so the call's End
- *   button stays clickable while a top-bar sheet's click-away layer is open.
+ * One layer moved on purpose: `toast` sits above `dialog` (it was 95, under
+ * everything), so a toast raised from inside a dialog (a cleanup result, a
+ * batch launch) is visible instead of hidden behind the scrim. The viewport
+ * lives inside `<main>`, which creates no stacking context, so this value
+ * competes directly with the body-portaled dialogs.
  */
 export const Z_LAYERS = {
   /** Draft chrome while a new chat opens, beneath the first-message handoff. */

@@ -152,17 +152,6 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * Categories a RENDERER may name when it subscribes.
- *
- * Derived from the shared list rather than restated, so a category added there
- * reaches renderers by default. A category the list does not know (one an older
- * runtime still emits) is refused on subscribe and stripped from batches.
- */
-function isRendererRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return isRemoteRuntimeEventCategory(value);
-}
-
 function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStreamEventsRequest {
   if (!isObjectRecord(value)) return {};
   const request: RemoteRuntimeStreamEventsRequest = {};
@@ -177,7 +166,7 @@ function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStrea
     // subscription for one category into an UNCATEGORISED one — every category
     // the buffer carries, which is the opposite of what the caller asked for.
     // A renderer naming a category it may not have gets an error it can see.
-    if (!isRendererRuntimeEventCategory(value.category)) {
+    if (!isRemoteRuntimeEventCategory(value.category)) {
       throw new Error("Unknown runtime event category.");
     }
     request.category = value.category;
@@ -625,7 +614,7 @@ export function registerRuntimeBridge({
     batch: RemoteRuntimeStreamEventsResult,
   ): RemoteRuntimeStreamEventsResult => ({
     ...batch,
-    events: batch.events.filter((event) => isRendererRuntimeEventCategory(event.category)),
+    events: batch.events.filter((event) => isRemoteRuntimeEventCategory(event.category)),
   });
 
   const shouldForwardRuntimeEvent = (
@@ -634,7 +623,7 @@ export function registerRuntimeBridge({
   ): boolean => {
     // Only categories the renderer knows; an older runtime may still emit
     // one this build dropped.
-    if (!isRendererRuntimeEventCategory(event.category)) return false;
+    if (!isRemoteRuntimeEventCategory(event.category)) return false;
     if (event.category !== "pty") return true;
     if (event.payload.type !== "pty_data") return true;
     const ptyEvent = isObjectRecord(event.payload.event)
@@ -1619,7 +1608,7 @@ export function registerRuntimeBridge({
       // so it can own both key variants. Release the whole (binding, category).
       const prefix = runtimeEventRequestKeyPrefix(
         bindingKey,
-        isRendererRuntimeEventCategory(arg?.category) ? arg.category : undefined,
+        isRemoteRuntimeEventCategory(arg?.category) ? arg.category : undefined,
       );
       const released = cleanupRuntimeEventSubscriptions(
         event.sender.id,

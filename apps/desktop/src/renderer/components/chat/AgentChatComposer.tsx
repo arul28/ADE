@@ -146,7 +146,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type { ZLayer } from "../ui/zLayers";
 import { VoiceDictationButton } from "./VoiceDictationButton";
-import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoiceButton";
+import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
 import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";

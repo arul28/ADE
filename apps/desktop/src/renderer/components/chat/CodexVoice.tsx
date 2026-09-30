@@ -1,18 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Microphone, MicrophoneSlash, PhoneDisconnect, Waveform } from "@phosphor-icons/react";
 import type { AgentChatCodexRealtimeCaption } from "../../../shared/types";
-import type { CodexVoicePreferences } from "../../../shared/codexVoice";
+import { formatCodexVoiceDuration, type CodexVoicePreferences } from "../../../shared/codexVoice";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
 
 /**
- * Experimental Codex voice (realtime) for a Codex chat.
+ * Voice conversations: talk with any chat, carried by Codex voice.
  *
  * The renderer owns the WebRTC connection: it captures the microphone, plays
  * the model's audio, and sends only its SDP offer to the brain, which hands it
- * to the Codex app server (`thread/realtime/start`) and returns the answer. The
- * session runs on this chat's Codex thread with the user's ChatGPT sign-in.
+ * to a Codex app server (`thread/realtime/start`) and returns the answer. The
+ * session runs on the user's ChatGPT sign-in: on a Codex chat's own thread, or
+ * on a private voice host for any other chat (see codexVoiceSession.ts).
  *
  * Live state has two sources. Audio levels come from the local and remote
  * tracks, so the meter needs no IPC. Captions and "Codex is working" come from
@@ -72,8 +73,8 @@ function cleanError(error: unknown): string {
 }
 
 /**
- * One voice session for one chat. Pass `null` when voice does not apply (not a
- * Codex chat, or a grid tile); a live session then ends.
+ * One voice session for one chat. Pass `null` when voice does not apply (voice
+ * is off, Codex is not signed in, or a grid tile); a live session then ends.
  */
 export function useCodexVoice({
   sessionId,
@@ -92,6 +93,10 @@ export function useCodexVoice({
   const [working, setWorking] = useState(false);
   const [captions, setCaptions] = useState<AgentChatCodexRealtimeCaption[]>([]);
   const connectionRef = useRef<VoiceConnection | null>(null);
+  // Advanced by every start and every teardown. A start checks it after each
+  // await, so End (or a chat switch) while the mic or the brain is still
+  // answering cancels that start instead of letting it go live.
+  const attemptRef = useRef(0);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   // Read at start time; a settings change applies to the next conversation.
@@ -99,6 +104,7 @@ export function useCodexVoice({
   preferencesRef.current = preferences;
 
   const teardown = useCallback((notifyBrain: boolean) => {
+    attemptRef.current += 1;
     const connection = connectionRef.current;
     connectionRef.current = null;
     if (connection) {
@@ -107,9 +113,12 @@ export function useCodexVoice({
       connection.audio.pause();
       connection.audio.srcObject = null;
       void connection.audioContext?.close().catch(() => {});
-      if (notifyBrain) {
+      // Without a token the start is still in flight; it stops its own brain
+      // session when it returns. A token-less stop could end a session another
+      // window just started on the same chat.
+      if (notifyBrain && connection.token) {
         void window.ade.agentChat.codex
-          .realtimeStop({ sessionId: connection.sessionId, ...(connection.token ? { token: connection.token } : {}) })
+          .realtimeStop({ sessionId: connection.sessionId, token: connection.token })
           .catch((error: unknown) => logVoice("stop failed", error));
       }
     }
@@ -124,24 +133,36 @@ export function useCodexVoice({
 
   // Switching chats, leaving voice-capable chats, or unmounting ends the call:
   // audio must not outlive the chat it belongs to.
-  useEffect(() => () => {
-    if (connectionRef.current) teardown(true);
-  }, [sessionId, teardown]);
+  // Teardown also cancels a start that has no connection yet.
+  useEffect(() => () => teardown(true), [sessionId, teardown]);
 
   // A closing window cannot run React cleanup; end the call on the way out.
   useEffect(() => {
-    const onPageHide = () => {
-      if (connectionRef.current) teardown(true);
-    };
+    const onPageHide = () => teardown(true);
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
   }, [teardown]);
 
   const start = useCallback(async () => {
     if (!sessionId || connectionRef.current) return;
+    attemptRef.current += 1;
+    const attempt = attemptRef.current;
     setPhase("connecting");
     setStartedAt(null);
     const startedAtMs = performance.now();
+    // On macOS, Electron hands back a silent track instead of throwing when the
+    // OS has not granted the microphone, so ask for system access first (the
+    // same gate dictation uses) rather than opening a call that hears nothing.
+    const ensureAccess = window.ade?.transcription?.requestMicAccess;
+    if (ensureAccess) {
+      const access = await ensureAccess().catch(() => null);
+      if (attemptRef.current !== attempt) return;
+      if (access && access.status !== "granted") {
+        setPhase("idle");
+        onErrorRef.current?.(microphonePermissionGuidance());
+        return;
+      }
+    }
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -149,8 +170,15 @@ export function useCodexVoice({
       });
     } catch (error) {
       logVoice("microphone unavailable", error);
-      setPhase("idle");
-      onErrorRef.current?.(microphonePermissionGuidance());
+      if (attemptRef.current === attempt) {
+        setPhase("idle");
+        onErrorRef.current?.(microphonePermissionGuidance());
+      }
+      return;
+    }
+    if (attemptRef.current !== attempt) {
+      // Ended while the microphone was opening.
+      stream.getTracks().forEach((track) => track.stop());
       return;
     }
     const pc = new RTCPeerConnection();
@@ -229,6 +257,7 @@ export function useCodexVoice({
   }, [sessionId, teardown]);
 
   const stop = useCallback(() => teardown(true), [teardown]);
+  const startVoice = useCallback(() => void start(), [start]);
 
   const toggleMute = useCallback(() => {
     const connection = connectionRef.current;
@@ -307,7 +336,7 @@ export function useCodexVoice({
     speaking,
     working,
     captions,
-    start: () => void start(),
+    start: startVoice,
     stop,
     toggleMute,
   };
@@ -354,9 +383,7 @@ function useElapsed(startedAt: number | null): string {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [startedAt]);
-  if (startedAt == null) return "0:00";
-  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  return formatCodexVoiceDuration(startedAt == null ? 0 : now - startedAt);
 }
 
 const METER_WEIGHTS = [0.55, 0.85, 1, 0.8, 0.5];

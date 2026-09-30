@@ -6,7 +6,6 @@ import {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isUserOnlyAdeAction,
-  callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
   isSecretBearingAdeAction,
@@ -22,33 +21,6 @@ import type { AdeActionDomain } from "./domains";
  * whole service graph to ask it would be measuring the wiring instead of the
  * policy.
  */
-
-describe("machine-scoped API keys on the ai domain", () => {
-  it("is reachable on the bus, because the runtime owns the store the UI writes", () => {
-    expect(isAllowedAdeAction("ai", "getMachineApiKeyStatus")).toBe(true);
-    expect(isAllowedAdeAction("ai", "storeMachineApiKey")).toBe(true);
-    expect(isAllowedAdeAction("ai", "deleteMachineApiKey")).toBe(true);
-  });
-
-  it("gates the writes like the project-scoped pair, and leaves the status read open", () => {
-    // Writing or destroying a provider credential is operator work; asking
-    // whether one is configured is not, and never returns the key.
-    expect(isCtoOnlyAdeAction("ai", "storeMachineApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "deleteMachineApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "getMachineApiKeyStatus")).toBe(false);
-    // The project-scoped pair it mirrors.
-    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
-    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
-  });
-
-  it("documents the input shape of each", () => {
-    for (const action of ["getMachineApiKeyStatus", "storeMachineApiKey", "deleteMachineApiKey"]) {
-      const contract = getAdeActionInputContract("ai", action);
-      expect(contract, `ai.${action} needs an input contract`).toBeDefined();
-      expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
-    }
-  });
-});
 
 describe("isAllowedAdeAction", () => {
   it("accepts a canonical action from the allowlist", () => {

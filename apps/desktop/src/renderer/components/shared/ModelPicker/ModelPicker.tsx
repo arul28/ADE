@@ -19,7 +19,7 @@ import type { AuthStatus } from "./ModelPickerRail";
 import {
   createUnknownModelPlaceholder,
   descriptorsFromAgentChatModelCatalog,
-  filterAcpFallbackModelsToRuntimeCatalog,
+  filterFallbackModelsToRuntimeCatalog,
   mergeSelectorModels,
   requestModelCatalog,
   resolveModelDescriptorWithRuntimeCatalog,
@@ -358,7 +358,7 @@ export const ModelPicker = memo(function ModelPicker({
       if (!normalizedValue) return "";
       return constrainedAvailable.has(normalizedValue) ? normalizedValue : "";
     })();
-    const fallbackModels = filterAcpFallbackModelsToRuntimeCatalog(
+    const fallbackModels = filterFallbackModelsToRuntimeCatalog(
       mergeSelectorModels(
         availableModelIds,
         selectedValue,

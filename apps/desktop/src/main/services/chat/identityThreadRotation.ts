@@ -144,7 +144,8 @@ export function createIdentityThreadRotation<TManaged>(
    *
    * Read-only and cheap on purpose — it reads the session's own persisted
    * bookkeeping rather than asking a provider anything, so a caller can ask
-   * before drawing a banner without opening a query, and the answer survives a restart the way the problem it describes does.
+   * before drawing a banner without opening a query, and the answer survives
+   * a restart the way the problem it describes does.
    */
   const getSessionTurnHealth = ({ sessionId }: { sessionId: string }): AgentChatSessionTurnHealth => {
     const managed = deps.ensureManagedSession(sessionId);

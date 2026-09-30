@@ -1559,22 +1559,6 @@ app.whenReady().then(async () => {
     return subscriptionProxyService;
   };
   setHarnessProxyStarter(() => getSubscriptionProxyService().ensureRunning());
-  // Machine-scoped API keys belong to this install, not to
-  // whichever project happens to be open — a window with no project bound, a
-  // remote-bound window and the in-process mode all reach the machine-key IPC.
-  // Registered here, at app start, so they never fall through to a project-less
-  // encrypted fallback; and registered with the SHARED file store rather than
-  // `createDesktopCredentialStore`'s safeStorage-primary routed store, because
-  // the headless runtime and the `ade` CLI that must read these keys cannot
-  // decrypt an Electron safeStorage file.
-  {
-    const { initMachineApiKeyStore } = await import("./services/ai/apiKeyStore");
-    initMachineApiKeyStore({
-      credentialStore: new EncryptedFileCredentialStore({
-        secretsDir: machineAdeLayout.secretsDir,
-      }),
-    });
-  }
   const startupState = normalizeStartupProjectState({
     saved,
     additionalRecentProjects: readMachineRegistryRecentProjects(

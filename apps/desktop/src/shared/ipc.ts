@@ -774,14 +774,6 @@ export const IPC = {
   apiCredentialsStore: "ade.apiCredentials.store",
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
-  /**
-   * Machine-scoped API keys — the key follows this machine's ADE home, not the
-   * open project, so these deliberately do NOT route through the project
-   * runtime action the way the `ai` calls above do.
-   */
-  aiGetMachineApiKeyStatus: "ade.ai.getMachineApiKeyStatus",
-  aiStoreMachineApiKey: "ade.ai.storeMachineApiKey",
-  aiDeleteMachineApiKey: "ade.ai.deleteMachineApiKey",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   /**

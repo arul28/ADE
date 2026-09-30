@@ -268,7 +268,7 @@ export type RuntimeCatalogModelDescriptor = ModelDescriptor & {
   catalogRequiresConfiguration?: boolean;
 };
 
-const RUNTIME_DISCOVERED_ACP_FAMILIES: readonly ProviderFamily[] = [
+const RUNTIME_CATALOG_AUTHORITATIVE_FAMILIES: readonly ProviderFamily[] = [
   "qwen",
   "moonshot",
   "xai",
@@ -285,7 +285,7 @@ const RUNTIME_DISCOVERED_ACP_FAMILIES: readonly ProviderFamily[] = [
  * connected provider such as Qwen no longer defaults to a stale catalog row,
  * and Codex no longer shows retired or not-yet-enabled rows in a second tab.
  */
-export function filterAcpFallbackModelsToRuntimeCatalog(
+export function filterFallbackModelsToRuntimeCatalog(
   models: readonly ModelDescriptor[],
   catalogModels: readonly RuntimeCatalogModelDescriptor[],
 ): ModelDescriptor[] {
@@ -293,7 +293,7 @@ export function filterAcpFallbackModelsToRuntimeCatalog(
   for (const model of catalogModels) {
     if (
       model.catalogAvailable !== true
-      || !RUNTIME_DISCOVERED_ACP_FAMILIES.includes(model.family)
+      || !RUNTIME_CATALOG_AUTHORITATIVE_FAMILIES.includes(model.family)
     ) {
       continue;
     }

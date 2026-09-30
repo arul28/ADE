@@ -38,7 +38,7 @@ import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderSetupBanner } from "./providerEmptyState";
 import {
-  filterAcpFallbackModelsToRuntimeCatalog,
+  filterFallbackModelsToRuntimeCatalog,
   type RuntimeCatalogModelDescriptor,
 } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
@@ -317,11 +317,11 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (!merged.has(m.id)) merged.set(m.id, m);
     }
-    const runtimeAcpModels = models.filter(
+    const runtimeCatalogModels = models.filter(
       (model): model is RuntimeCatalogModelDescriptor =>
         (model as RuntimeCatalogModelDescriptor).catalogAvailable === true,
     );
-    return filterAcpFallbackModelsToRuntimeCatalog([...merged.values()], runtimeAcpModels);
+    return filterFallbackModelsToRuntimeCatalog([...merged.values()], runtimeCatalogModels);
   }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {

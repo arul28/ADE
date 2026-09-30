@@ -625,7 +625,6 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
-  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -5231,55 +5230,6 @@ export function registerIpc({
     },
   );
 
-  // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
-  // machine's install rather than to the bound project's runtime, so they are
-  // deliberately not routed through a project runtime action. Nothing here ever
-  // returns, logs, or echoes the key itself — only whether one resolves and
-  // where from.
-  ipcMain.handle(
-    IPC.aiGetMachineApiKeyStatus,
-    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
-      const { getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiStoreMachineApiKey,
-    async (_event, arg: { provider: string; key: string }): Promise<MachineApiKeyStatus> => {
-      const { getMachineApiKeyStatus, storeMachineApiKey } = await import("../ai/apiKeyStore");
-      storeMachineApiKey(arg.provider, arg.key);
-      try {
-        // The key store mutation already succeeded; invalidation is a freshness
-        // step so a saved key should not fail because a runtime cache is gone.
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
-          provider: arg.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDeleteMachineApiKey,
-    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
-      const { deleteMachineApiKey, getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
-      deleteMachineApiKey(arg.provider);
-      try {
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
-          provider: arg.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
   ipcMain.handle(
     IPC.aiVerifyApiKey,
     async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
@@ -8799,7 +8749,11 @@ export function registerIpc({
     if (!arg || typeof arg.sessionId !== "string" || typeof arg.sdp !== "string") {
       throw new Error("A chat session id and a WebRTC offer are required.");
     }
-    return ctx.agentChatService.startCodexRealtime({ sessionId: arg.sessionId, sdp: arg.sdp });
+    return ctx.agentChatService.startCodexRealtime({
+      sessionId: arg.sessionId,
+      sdp: arg.sdp,
+      preferences: arg.preferences ?? null,
+    });
   });
 
   ipcMain.handle(IPC.agentChatCodexRealtimeStop, async (_event, arg: AgentChatCodexRealtimeStopArgs): Promise<void> => {

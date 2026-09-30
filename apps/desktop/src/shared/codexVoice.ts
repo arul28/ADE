@@ -108,3 +108,16 @@ export function buildCodexVoiceStyleInstructions(preferences: CodexVoicePreferen
     : "Answer in the language the user speaks.");
   return lines.join("\n");
 }
+
+/** Plans that include Codex voice, per OpenAI's Codex pricing page. An unknown plan is allowed. */
+export function codexPlanIncludesVoice(planType: string | null | undefined): boolean {
+  const plan = planType?.trim().toLowerCase();
+  if (!plan) return true;
+  return plan !== "free" && plan !== "go" && plan !== "free_workspace";
+}
+
+/** A call length as m:ss, for the voice bar's timer and the chat's summary line. */
+export function formatCodexVoiceDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
