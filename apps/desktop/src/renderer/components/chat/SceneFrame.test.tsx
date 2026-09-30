@@ -678,7 +678,6 @@ describe("SceneFrame", () => {
             source={'<div id="n">3</div>'}
             live={false}
             scopeKey="row-failed-preview"
-           
           />
         </ChatRuntimeScopeProvider>,
       );
@@ -727,7 +726,6 @@ describe("SceneFrame", () => {
               source={'<div id="n">3</div>'}
               live={false}
               scopeKey="row-slow-bytes"
-             
             />
           </ChatRuntimeScopeProvider>,
         );
