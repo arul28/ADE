@@ -161,3 +161,33 @@ describe("describeToolActivity", () => {
     expect(describeToolActivity({ chip: chip({ tool: "Bash" }), config }).label).toBe("Bash");
   });
 });
+
+describe("matchLabelKey with an MCP tool", () => {
+  // The keys the activity-label docs use for a host that injects its own MCP
+  // tools under a family prefix.
+  const keys = ["mcp:versic:*", "versic_*", "*"];
+
+  it("matches a bare key on the tool's own name, and never invents a server", () => {
+    // The event names the server, so the server-qualified key wins over the
+    // bare family wildcard.
+    expect(matchLabelKey(keys, "mcp__versic__search", { server: "versic", tool: "search" })).toBe(
+      "mcp:versic:*",
+    );
+
+    // A bare, prefixed tool name matches the bare family wildcard. This is the
+    // case a host keys `versic_*` for.
+    expect(matchLabelKey(keys, "versic_projects", { server: null, tool: "versic_projects" })).toBe(
+      "versic_*",
+    );
+
+    // A bare name that BELONGS to the `versic` server, with no server on the
+    // event, matches neither the qualified key nor the `versic_` wildcard. The
+    // name alone is not evidence of who owns it, so only `*` is left — which is
+    // why a host cannot rely on one server-qualified key per family.
+    expect(matchLabelKey(keys, "search", { server: null, tool: "search" })).toBe("*");
+
+    // It still reaches the server-qualified key when the event DOES name the
+    // server, so the same one key covers both spellings there.
+    expect(matchLabelKey(keys, "search", { server: "versic", tool: "search" })).toBe("mcp:versic:*");
+  });
+});

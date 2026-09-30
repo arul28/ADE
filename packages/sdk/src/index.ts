@@ -77,7 +77,10 @@ export { pickDefaultModel, type DefaultModelOptions } from "./providers.js";
 export { APPROVAL_DECISIONS, isApprovalShaped } from "./approvals.js";
 export type { ApprovalDecision, ApprovalRequest } from "./approvals.js";
 
+export { checkAttachmentRoot, filterAttachmentRoots, MAX_ATTACHMENT_ROOTS } from "./hostConfig.js";
 export type {
+  AttachmentRootCheck,
+  AttachmentRootFilterResult,
   HostConfigCapability,
   InstructionsCapability,
   PermissionCapability,

@@ -17,14 +17,35 @@ export type DefaultModelOptions = {
    * qualifying model wins. Omit for every provider.
    */
   providers?: readonly string[];
+  /**
+   * Your own ranking inside one provider's qualifying models (SDK 0.5). Return
+   * a number greater than zero to prefer a model — the highest score wins.
+   * Return 0, a negative number, or a non-finite number for "no opinion": that
+   * model is then ranked the way it is ranked without this option.
+   *
+   * Use it to state a cost or family preference instead of keeping your own
+   * copy of the rule. For example, to start new chats on the newest Sonnet:
+   *
+   *   prefer: (model) => (/sonnet/i.test(model.id) ? 1 : 0)
+   *
+   * A model that nobody scores falls back to `isDefault`, then to catalog
+   * order, so passing this option never removes a model from the pool.
+   *
+   * A callback that throws propagates out of `pickDefaultModel` (and out of
+   * `client.models.defaultModel`), like every other host callback that is part
+   * of an operation. It is not swallowed: a ranking that fails silently would
+   * pick a model you did not ask for.
+   */
+  prefer?: (model: ModelCatalogEntry) => number;
 };
 
 /**
  * The model a new thread should use, or null when none qualifies.
  *
  * Among the qualifying models (see `DefaultModelOptions`), per provider in the
- * order `providers` gives (or all at once without it): the catalog's
- * `isDefault` model first, else the first model the catalog lists.
+ * order `providers` gives (or all at once without it): the model `prefer`
+ * scores highest, else the catalog's `isDefault` model, else the first model
+ * the catalog lists.
  */
 export function pickDefaultModel(
   models: readonly ModelCatalogEntry[],
@@ -32,8 +53,28 @@ export function pickDefaultModel(
 ): ModelCatalogEntry | null {
   const available = opts.available ?? true;
   const usable = available ? models.filter((model) => model.isAvailable && model.connected) : [...models];
-  const pick = (pool: readonly ModelCatalogEntry[]): ModelCatalogEntry | null =>
-    pool.find((model) => model.isDefault) ?? pool[0] ?? null;
+  const prefer = opts.prefer;
+  const pick = (pool: readonly ModelCatalogEntry[]): ModelCatalogEntry | null => {
+    if (prefer) {
+      let preferred: ModelCatalogEntry | null = null;
+      let bestScore = 0;
+      for (const model of pool) {
+        const score = prefer(model);
+        // Only a finite score above zero is a preference. Zero and below means
+        // "no opinion", so a host that scores one family keeps the catalog's
+        // own order everywhere else instead of accidentally taking pool[0].
+        // `Number.isFinite` returns false for a non-number, so it covers a host
+        // that returns a string or undefined too.
+        if (!Number.isFinite(score) || score <= 0) continue;
+        if (score > bestScore) {
+          preferred = model;
+          bestScore = score;
+        }
+      }
+      if (preferred) return preferred;
+    }
+    return pool.find((model) => model.isDefault) ?? pool[0] ?? null;
+  };
   if (!opts.providers) return pick(usable);
   for (const provider of opts.providers) {
     const found = pick(usable.filter((model) => model.provider === provider));

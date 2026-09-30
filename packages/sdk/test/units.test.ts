@@ -41,7 +41,10 @@ import {
   normalizePermissionCapability,
   normalizeSettingSources,
   normalizeSettingSourcesCapability,
+  checkAttachmentRoot,
+  filterAttachmentRoots,
   isFilesystemRoot,
+  validateAttachmentRoots,
   validateThreadCwd,
 } from "../src/hostConfig.js";
 import { ADE_ERROR_CODES, AdeError, readAdeErrorCode } from "../src/errors.js";
@@ -1618,5 +1621,58 @@ describe("pending input kinds", () => {
       requestKind: "something_new",
     });
     expect(observed?.requestKind).toBeUndefined();
+  });
+});
+
+describe("attachment root checks", () => {
+  const home = path.join(os.tmpdir(), "ade-sdk-roots-home");
+  const tempReal = fs.realpathSync.native(os.tmpdir());
+
+  it("accepts exactly what threads.open accepts, in the canonical spelling", () => {
+    // A host calls the check so that ONE bad root cannot fail the whole open,
+    // which means it has to agree with the validator the open itself uses.
+    const downloads = path.join(os.tmpdir(), "ade-sdk-roots", "downloads");
+    const check = checkAttachmentRoot(downloads, home);
+    if (!check.ok) throw new Error(`expected the check to accept ${downloads}: ${check.reason}`);
+
+    expect(check.root).toBe(path.join(tempReal, "ade-sdk-roots", "downloads"));
+    expect(validateAttachmentRoots([downloads], home)).toEqual([check.root]);
+  });
+
+  it("refuses a root the runtime refuses, with a reason instead of a throw", () => {
+    for (const bad of [path.parse(process.cwd()).root, os.homedir(), "~", "relative/dir", path.join(home, "state")]) {
+      const check = checkAttachmentRoot(bad, home);
+      if (check.ok) throw new Error(`expected ${bad} to be refused`);
+      expect(check.reason.length, `a refusal must say why: ${bad}`).toBeGreaterThan(0);
+    }
+    // The validator refuses the same values, so the two cannot disagree about
+    // what is usable.
+    expect(() => validateAttachmentRoots(["~", "relative/dir"], home)).toThrow(AdeError);
+  });
+
+  it("drops a bad entry, keeps the good ones, and returns a list the open accepts", () => {
+    const downloads = path.join(os.tmpdir(), "ade-sdk-roots-filter", "downloads");
+    const music = path.join(os.tmpdir(), "ade-sdk-roots-filter", "music");
+
+    const { roots, dropped } = filterAttachmentRoots([downloads, path.parse(process.cwd()).root, music], home);
+
+    expect(roots).toEqual([path.join(tempReal, "ade-sdk-roots-filter", "downloads"), path.join(tempReal, "ade-sdk-roots-filter", "music")]);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]!.root).toBe(path.parse(process.cwd()).root);
+    expect(dropped[0]!.reason).toMatch(/root/);
+    // The point of the helper: what it returns never fails the open.
+    expect(() => validateAttachmentRoots(roots, home)).not.toThrow();
+  });
+
+  it("keeps at most 32 roots, reports the rest, and still refuses a non-array", () => {
+    const many = Array.from({ length: 40 }, (_, index) => path.join(os.tmpdir(), "ade-sdk-roots-cap", `r${index}`));
+    const { roots, dropped } = filterAttachmentRoots(many, home);
+
+    expect(roots).toHaveLength(32);
+    expect(dropped).toHaveLength(8);
+    expect(dropped[0]!.reason).toMatch(/at most 32/);
+    // A non-array is a programming error, not a root list to filter.
+    expect(() => filterAttachmentRoots("not-a-list", home)).toThrow(AdeError);
+    expect(() => validateAttachmentRoots("not-a-list", home)).toThrow(/array/);
   });
 });

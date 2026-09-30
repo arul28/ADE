@@ -16,4 +16,4 @@
 declare const __ADE_SDK_VERSION__: string | undefined;
 
 export const SDK_VERSION: string =
-  typeof __ADE_SDK_VERSION__ === "string" ? __ADE_SDK_VERSION__ : "0.4.0";
+  typeof __ADE_SDK_VERSION__ === "string" ? __ADE_SDK_VERSION__ : "0.5.0";

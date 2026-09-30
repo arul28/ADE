@@ -3,6 +3,7 @@ import {
   deriveProviderStatus,
   flattenCatalog,
   mergeProviderStatus,
+  pickDefaultModel,
   providerStatusFingerprint,
 } from "../src/providers.js";
 import { defaultCatalog } from "./mockRuntime.js";
@@ -135,5 +136,44 @@ describe("provider status merge", () => {
       derived(),
     );
     expect(providerStatusFingerprint(before)).not.toBe(providerStatusFingerprint(after));
+  });
+});
+
+describe("default model selection", () => {
+  // `gpt-5-codex` is in this catalog but not connected, so it is never a
+  // candidate while `available` stays at its default.
+  const rows = () => flattenCatalog(defaultCatalog() as never);
+
+  it("takes the highest positive score, and keeps the catalog rule when nobody scores", () => {
+    const models = rows();
+    // The rule without `prefer`: the catalog's `isDefault` model, then the
+    // first model it lists.
+    expect(pickDefaultModel(models)?.id).toBe("claude-sonnet-4-5");
+
+    // A host that wants the newer or cheaper model states the preference here
+    // instead of keeping its own copy of the rule.
+    expect(
+      pickDefaultModel(models, { prefer: (model) => (model.id === "claude-opus-4-1" ? 10 : 0) })?.id,
+    ).toBe("claude-opus-4-1");
+
+    // Zero, a negative score and a non-finite score are all "no opinion", so
+    // the catalog's own answer stands rather than the first model in the pool.
+    expect(pickDefaultModel(models, { prefer: () => 0 })?.id).toBe("claude-sonnet-4-5");
+    expect(pickDefaultModel(models, { prefer: () => -1 })?.id).toBe("claude-sonnet-4-5");
+    expect(pickDefaultModel(models, { prefer: () => Number.NaN })?.id).toBe("claude-sonnet-4-5");
+
+    // A model this caller cannot use now is not a candidate, however it scores.
+    expect(
+      pickDefaultModel(models, { prefer: (model) => (model.id === "gpt-5-codex" ? 100 : 0) })?.id,
+    ).toBe("claude-sonnet-4-5");
+
+    // `providers` scopes the ranking: a score for a model outside the named
+    // provider's pool cannot promote it into that pool.
+    expect(
+      pickDefaultModel(models, {
+        providers: ["claude"],
+        prefer: (model) => (model.id === "gpt-5-codex" ? 100 : 0),
+      })?.id,
+    ).toBe("claude-sonnet-4-5");
   });
 });

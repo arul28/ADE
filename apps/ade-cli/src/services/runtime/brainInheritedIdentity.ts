@@ -59,8 +59,17 @@ export function describeDroppedCallerIdentity(dropped: readonly string[]): strin
  * The sentence for a brain whose role ceiling refuses the desktop. Desktop,
  * phone and web clients connect at `cto`; a lower ceiling refuses them at the
  * handshake with "default role … cannot serve CLI role cto".
+ *
+ * An embedded runtime (the ADE SDK's sidecar, `--profile embedded`) is silent:
+ * it serves exactly one host at role `agent` on purpose, so the desktop,
+ * phone and web clients this sentence warns about are not there to be refused,
+ * and the command it recommends does not apply.
  */
-export function describeBrainRoleCeiling(role: AdeRuntimeRole): string | null {
+export function describeBrainRoleCeiling(
+  role: AdeRuntimeRole,
+  opts: { embedded?: boolean } = {},
+): string | null {
   if (role === "cto") return null;
+  if (opts.embedded) return null;
   return `This brain serves at role ${role}, so ADE desktop, phone and web clients (role cto) will be refused. Start it as \`ade --role cto serve\` to serve them.`;
 }
