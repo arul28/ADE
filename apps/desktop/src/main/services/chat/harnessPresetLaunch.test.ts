@@ -786,6 +786,59 @@ describe("Claude subagents and built-in pins", () => {
     expect(written).toContain('default_subagent_reasoning_effort = "low"');
   });
 
+  it("writes a Grok subagent model Grok can actually spawn", () => {
+    // Grok's home defines only the models ADE writes into it, so a subagent
+    // model named in `[subagents.models]` but absent from the home is a type
+    // Grok has no such model to start. Both halves are the contract.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "grok",
+        model: "grok-4.6",
+        subagentModel: "grok-4.7",
+        source: { kind: "key", provider: "xai", credentialId: "work", label: "Work key" },
+      }),
+      deps({
+        getCredentialSummary: () => credential({ provider: "xai", baseUrl: "https://api.x.ai/v1" }),
+      }),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    const written = fs.readFileSync(path.join(plan.env.GROK_HOME!, "config.toml"), "utf8");
+    expect(written).toContain("[subagents.models]");
+    expect(written).toContain('general-purpose = "grok-4.7"');
+    expect(written).toContain('[model."grok-4.7"]');
+    // Grok has no per-subagent effort control, so nothing claims one.
+    expect(written).not.toContain("reasoning_effort");
+  });
+
+  it("wires an OpenCode preset's subagent pins into the config OpenCode reads", () => {
+    // The agent block is what selects a subagent's model, and the provider
+    // block is what OpenCode resolves that model against: a pin named in one
+    // and missing from the other is a subagent OpenCode cannot start.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "opencode",
+        model: "deepseek-v4.1-flash",
+        subagentModel: "kimi-k3",
+        source: { kind: "key", provider: "acme", credentialId: "work", label: "Work key" },
+      }),
+      deps({
+        getCredentialSummary: () => credential({
+          provider: "acme",
+          baseUrl: "https://acme.example/v1",
+          models: ["deepseek-v4.1-flash"],
+        }),
+      }),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    const written = JSON.parse(fs.readFileSync(plan.env.OPENCODE_CONFIG!, "utf8")) as {
+      agent?: Record<string, { model: string }>;
+      provider: Record<string, { models: Record<string, unknown> }>;
+    };
+    // OpenCode's default subagent type is `general`.
+    expect(written.agent).toEqual({ general: { model: "acme/kimi-k3" } });
+    expect(Object.keys(written.provider.acme!.models).sort()).toEqual(["deepseek-v4.1-flash", "kimi-k3"]);
+  });
+
   it("puts a pinned built-in's thinking level on its SDK agent entry", () => {
     const plan = resolveHarnessPresetPlan(
       preset({
