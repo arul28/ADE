@@ -57,4 +57,4 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 0bfc87451d3beaabfcff8f6d5d8e8c51fb175fa3:apps/desktop/src/main/services/chat/acpHost/acpRuntimeCoordinator.test.ts:generic-api-key:461
 
 # Public Clerk OAuth client id (not a credential) the relay accepts in account tokens.
-fca93e8889389307c60811c0d6474a7b9dab9a12:apps/webhook-relay/wrangler.jsonc:generic-api-key:12
+52f5b6f8ca83badacd2f2eb926fa8d3e714e6174:apps/webhook-relay/wrangler.jsonc:generic-api-key:12
