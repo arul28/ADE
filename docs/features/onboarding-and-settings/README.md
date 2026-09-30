@@ -1349,8 +1349,10 @@ Renderer — settings:
   model registry; `routerCore` classifies the task and picks the cheapest route
   that keeps quality; `modelRegistryStore` caches the registry at
   `<adeHome>/router/registry.json`; `modelRouterService` logs decisions and
-  outcomes to `<adeHome>/usage/router-shadow-*.jsonl` and changes no turn. The
-  wire contract is `apps/desktop/src/shared/routerRegistry.ts`.
+  outcomes to `<adeHome>/usage/router-shadow-*.jsonl` and changes no turn;
+  `routerEfficiency` replays every ledger thread at its free switch points and
+  sums the shadow log's subagents for `ade router efficiency`. The wire contract
+  is `apps/desktop/src/shared/routerRegistry.ts`.
 - `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
   ledger row after the turn, from Cursor's dashboard events and Factory
   session credits.

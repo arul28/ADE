@@ -27,7 +27,7 @@ import { estimateQuotaBurnRates } from "../usage/quotaBurnRate";
 import type { ModelRegistryStatus, ModelRegistryStore } from "./modelRegistryStore";
 import {
   buildModelRoutes,
-  registryFamilyForModelId,
+  findReferenceRoute,
   routeHarnessOf,
   type CatalogModel,
   type ModelRoute,
@@ -43,6 +43,12 @@ import {
   type RouterPick,
   type RouterTaskKind,
 } from "./routerCore";
+import {
+  replayThreads,
+  summarizeSubagents,
+  type RouterSubagentEfficiency,
+  type RouterThreadEfficiency,
+} from "./routerEfficiency";
 
 const SHADOW_FILE_PREFIX = "router-shadow-";
 const CATALOG_TTL_MS = 10 * 60_000;
@@ -110,6 +116,19 @@ export type RouterShadowSummary = {
   plans: Record<string, PlanState>;
 };
 
+/**
+ * What the router would have saved against what really ran: every chat thread
+ * in the turn ledger replayed at its free switch points, and every subagent in
+ * the shadow log. Dollars are public list prices; savings are estimates from
+ * benchmark cost per task, not measured runs.
+ */
+export type RouterEfficiencyReport = {
+  days: number;
+  registry: ModelRegistryStatus;
+  threads: RouterThreadEfficiency;
+  subagents: RouterSubagentEfficiency;
+};
+
 export type RouterPreviewArgs = {
   description: string;
   provider: string;
@@ -127,6 +146,7 @@ export type ModelRouterService = {
   preview(args: RouterPreviewArgs): Promise<RouterPick & { plans: Record<string, PlanState> }>;
   routes(args?: RouterRoutesArgs): Promise<{ registry: ModelRegistryStatus; routes: ModelRoute[] }>;
   shadowSummary(args?: { days?: number }): Promise<RouterShadowSummary>;
+  efficiency(args?: { days?: number }): Promise<RouterEfficiencyReport>;
   refreshRegistry(options?: { force?: boolean }): Promise<ModelRegistryStatus>;
 };
 
@@ -213,25 +233,6 @@ export function createModelRouterService(args: {
     return plans;
   };
 
-  /**
-   * The route a task would run on anyway. Claude subagents name a model by
-   * alias (`opus`, `sonnet`, `haiku`) or leave it to the parent (`inherit`).
-   */
-  const referenceRoute = (routes: readonly ModelRoute[], harness: string, model: string | null, effort: string | null): ModelRoute | null => {
-    if (!model) return null;
-    const inHarness = routes.filter((route) => route.harness === harness);
-    const alias = model.toLowerCase();
-    const family = ["opus", "sonnet", "haiku", "fable"].includes(alias)
-      ? registryFamilyForModelId(inHarness.find((route) => route.modelId.toLowerCase().includes(alias))?.modelId ?? model)
-      : registryFamilyForModelId(model);
-    const sameFamily = inHarness.filter((route) => registryFamilyForModelId(route.modelId) === family);
-    if (!sameFamily.length) return null;
-    return sameFamily.find((route) => route.effort === effort)
-      ?? sameFamily.find((route) => route.effort === "high")
-      ?? sameFamily.find((route) => route.effort === null)
-      ?? sameFamily[0]!;
-  };
-
   const summarize = (item: RouterDecision | null): DecisionSummary | null => item && {
     routeId: item.route.id,
     score: item.route.quality.score != null ? Math.round(item.route.quality.score * 1000) / 1000 : null,
@@ -252,7 +253,7 @@ export function createModelRouterService(args: {
   }): Promise<{ pick: RouterPick; states: Map<string, PlanState> }> => {
     const [routes, planInfo] = await Promise.all([loadCatalog(), loadPlans()]);
     const kind = input.kind ?? classifyRouterTask(input.description, input.agentType);
-    const reference = referenceRoute(routes, input.harness, input.model, input.effort);
+    const reference = findReferenceRoute(routes, input.harness, input.model, input.effort);
     return {
       pick: pickRoute({ routes, reference, kind, plans: planInfo.states, trusted: planInfo.trusted }),
       states: planInfo.states,
@@ -381,10 +382,9 @@ export function createModelRouterService(args: {
     },
 
     async shadowSummary(input = {}) {
-      const days = Math.max(1, Math.min(90, Math.floor(input.days ?? 7)));
+      const days = reportDays(input.days);
       const rows = await readShadowRows(now() - days * 86_400_000);
-      const decisions = rows.filter((row): row is RouterShadowDecisionRow => row.type === "decision");
-      const outcomes = new Map(rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome").map((row) => [row.key, row]));
+      const { decisions, outcomes } = splitShadowRows(rows);
       const byKind: RouterShadowSummary["byKind"] = {};
       const sameMoves = new Map<string, number>();
       const anyMoves = new Map<string, number>();
@@ -443,9 +443,53 @@ export function createModelRouterService(args: {
       };
     },
 
+    async efficiency(input = {}) {
+      const days = reportDays(input.days);
+      const sinceMs = now() - days * 86_400_000;
+      const [routes, planInfo, turns, rows] = await Promise.all([
+        loadCatalog(),
+        loadPlans(),
+        args.readTurns(sinceMs),
+        readShadowRows(sinceMs),
+      ]);
+      const { decisions, outcomes } = splitShadowRows(rows);
+      const subagents = decisions.map((row) => {
+        const outcome = outcomes.get(row.key);
+        return {
+          sameHarnessSaving: row.sameHarness?.savingShare ?? null,
+          anyHarnessSaving: row.anyHarness?.savingShare ?? null,
+          picked: { sameHarness: Boolean(row.sameHarness), anyHarness: Boolean(row.anyHarness) },
+          outcome: outcome ? { totalTokens: outcome.totalTokens, costUsd: outcome.costUsd } : null,
+        };
+      });
+      return {
+        days,
+        registry: args.registry.status(),
+        threads: replayThreads({ turns, routes, plans: planInfo.states, trusted: planInfo.trusted }),
+        subagents: summarizeSubagents(subagents),
+      };
+    },
+
     refreshRegistry(options) {
       return args.registry.refresh(options);
     },
+  };
+}
+
+/** Whole days from 1 to 90; anything that is not a number reads as the default 7. */
+function reportDays(days: unknown): number {
+  const whole = Math.floor(Number(days ?? 7));
+  return Number.isFinite(whole) ? Math.min(90, Math.max(1, whole)) : 7;
+}
+
+/** The shadow log's decisions, and each decision's outcome by key. */
+function splitShadowRows(rows: ReadonlyArray<RouterShadowDecisionRow | RouterShadowOutcomeRow>): {
+  decisions: RouterShadowDecisionRow[];
+  outcomes: Map<string, RouterShadowOutcomeRow>;
+} {
+  return {
+    decisions: rows.filter((row): row is RouterShadowDecisionRow => row.type === "decision"),
+    outcomes: new Map(rows.filter((row): row is RouterShadowOutcomeRow => row.type === "outcome").map((row) => [row.key, row])),
   };
 }
 
@@ -457,8 +501,11 @@ const sharedRouters = new Map<string, SharedRouter>();
 /**
  * One router per ADE home, like the turn ledger: every project scope in a
  * brain feeds the same shadow log. Each scope lends its chat service's model
- * catalog; the newest scope's catalog answers. The returned function detaches
- * the scope's catalog.
+ * catalog, and the router sees the union of them, newest scope first. A
+ * provider's passive list can be per project (OpenCode keeps its inventory by
+ * project root), so reading only the newest scope dropped every OpenCode route
+ * whenever that scope had never listed OpenCode models. The returned function
+ * detaches the scope's catalog.
  */
 export function attachSharedModelRouter(args: {
   adeDir: string;
@@ -470,8 +517,21 @@ export function attachSharedModelRouter(args: {
   if (!shared) {
     const sources: ModelSource[] = [];
     const getAvailableModels: ModelSource = async (provider) => {
-      const source = sources[sources.length - 1];
-      return source ? source(provider) : [];
+      // Every scope lists at once; a scope that fails adds nothing. Newest
+      // first, so the newest scope's row wins a duplicate model id.
+      const lists = await Promise.allSettled([...sources].reverse().map((source) => source(provider)));
+      const seen = new Set<string>();
+      const models: AgentChatModelInfo[] = [];
+      for (const list of lists) {
+        if (list.status !== "fulfilled") continue;
+        for (const info of list.value) {
+          const id = info.modelId ?? info.id;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          models.push(info);
+        }
+      }
+      return models;
     };
     shared = { service: args.create(getAvailableModels), sources };
     sharedRouters.set(key, shared);

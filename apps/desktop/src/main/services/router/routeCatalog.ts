@@ -225,6 +225,35 @@ function measuredAgentRow(
   return agents.find((row) => !row.pair && row.modelSlug === slug && row.agent.startsWith(name) && row.score != null) ?? null;
 }
 
+/**
+ * The route a task would run on anyway. Claude subagents name a model by
+ * alias (`opus`, `sonnet`, `haiku`) or leave it to the parent (`inherit`);
+ * an effort the catalog does not list falls back to `high`, then to none.
+ * The exact model id wins over its family: OpenCode serves one model through
+ * several gateways (`opencode-go/…` on the Go plan, `deepseek/…` metered), and
+ * the gateway decides who bills the route.
+ */
+export function findReferenceRoute(
+  routes: readonly ModelRoute[],
+  harness: string,
+  model: string | null,
+  effort: string | null,
+): ModelRoute | null {
+  if (!model) return null;
+  const inHarness = routes.filter((route) => route.harness === harness);
+  const alias = model.toLowerCase();
+  const exact = inHarness.filter((route) => route.modelId.toLowerCase() === alias);
+  const family = ["opus", "sonnet", "haiku", "fable"].includes(alias)
+    ? registryFamilyForModelId(inHarness.find((route) => route.modelId.toLowerCase().includes(alias))?.modelId ?? model)
+    : registryFamilyForModelId(model);
+  const sameFamily = exact.length ? exact : inHarness.filter((route) => registryFamilyForModelId(route.modelId) === family);
+  if (!sameFamily.length) return null;
+  return sameFamily.find((route) => route.effort === effort)
+    ?? sameFamily.find((route) => route.effort === "high")
+    ?? sameFamily.find((route) => route.effort === null)
+    ?? sameFamily[0]!;
+}
+
 export type CatalogModel = { provider: string; info: AgentChatModelInfo };
 
 /** Every route of the given models, one per effort level they offer. */

@@ -562,6 +562,7 @@ export type FormatterId =
   | "sync-pin"
   | "sync-devices"
   | "usage-snapshot"
+  | "router-efficiency"
   | "update-status";
 
 type ChatWaitTarget =
@@ -1022,7 +1023,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
-    $ ade router routes | pick | shadow | refresh  Model router: rated routes, a dry-run pick, the shadow log
+    $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
                                                     Manage this machine's Claude/Codex logins
@@ -2905,7 +2906,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   share of the plan, weighted by how fast its window is being used, and a
   window near its limit blocks the plan. The router runs in shadow mode: it
   logs the route it would have picked for each subagent and changes nothing.
-  Registry data is based on Artificial Analysis (artificialanalysis.ai).
+  Registry data is based on Artificial Analysis (artificialanalysis.ai). The
+  efficiency report replays every chat thread from the turn ledger — history
+  from day one — and the shadow-logged subagents; dollars are list prices.
 
     $ ade router routes --text                      Every route with score, cost, time, and billing
     $ ade router routes --provider codex --limit 20 One harness, best first
@@ -2913,6 +2916,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     The route it would pick for one task (dry run)
     $ ade router pick "fix the flaky test" --provider codex --model gpt-6-sol --kind light_edit
     $ ade router shadow --days 7 --text             What it would have changed for recent subagents
+    $ ade router efficiency --days 7 --text         What it would have saved across every chat thread and subagent
     $ ade router refresh --text                     Fetch the newest registry (signed-in accounts)
 
   Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
@@ -14780,7 +14784,7 @@ function buildOperationsPlan(args: string[]): CliPlan {
   throw new CliUsageError("operations supports status or wait.");
 }
 
-const ROUTER_TASK_KINDS = ["read_only", "review", "test_run", "light_edit", "heavy_edit", "unknown"] as const;
+const ROUTER_TASK_KINDS = ["read_only", "review", "test_run", "light_edit", "heavy_edit", "lead", "unknown"] as const;
 
 function buildRouterPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "routes";
@@ -14832,6 +14836,16 @@ function buildRouterPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "usage", "getRouterShadowSummary", days != null ? { days: Number(days) } : {})],
     };
   }
+  if (sub === "efficiency") {
+    const days = readValue(args, ["--days"]);
+    if (days != null && !(Number(days) >= 1 && Number(days) <= 90)) throw new CliUsageError("router efficiency --days must be a number from 1 to 90.");
+    return {
+      kind: "execute",
+      label: "router efficiency",
+      formatter: "router-efficiency",
+      steps: [actionStep("result", "usage", "getRouterEfficiency", days != null ? { days: Number(days) } : {})],
+    };
+  }
   if (sub === "refresh") {
     return {
       kind: "execute",
@@ -14839,7 +14853,7 @@ function buildRouterPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "usage", "refreshModelRegistry", { force: true })],
     };
   }
-  throw new CliUsageError(`Unknown router command '${sub}'. Use routes, pick, shadow, or refresh.`);
+  throw new CliUsageError(`Unknown router command '${sub}'. Use routes, pick, shadow, efficiency, or refresh.`);
 }
 
 function buildUsagePlan(args: string[]): CliPlan {
@@ -24258,6 +24272,176 @@ export function formatUsageSnapshot(value: unknown): string {
   return sections.join("\n");
 }
 
+/**
+ * The router efficiency report. Threads are replayed from the turn ledger;
+ * subagents come from the shadow log. Dollars are list prices, so every figure
+ * is an estimate. See `docs/features/onboarding-and-settings/usage-tracking.md`.
+ */
+function formatRouterEfficiency(value: unknown): string {
+  const report = isRecord(value) ? value : {};
+  const registry = isRecord(report.registry) ? report.registry : {};
+  const threads = isRecord(report.threads) ? report.threads : {};
+  const subagents = isRecord(report.subagents) ? report.subagents : {};
+  const byStart = isRecord(threads.segmentsByStart) ? threads.segmentsByStart : {};
+  const switched = isRecord(threads.switchedSegments) ? threads.switchedSegments : {};
+
+  const num = (input: unknown): number | null =>
+    typeof input === "number" && Number.isFinite(input) ? input : null;
+  const usd = (input: unknown): string => {
+    const amount = num(input);
+    return amount == null ? "" : `$${amount.toFixed(2)}`;
+  };
+  const pct = (input: unknown): string => {
+    const share = num(input);
+    return share == null ? "" : `${(share * 100).toFixed(1)}% saved`;
+  };
+  const count = (input: unknown, fallback = "0"): string => {
+    const amount = num(input);
+    return amount == null ? fallback : amount.toLocaleString("en-US");
+  };
+  const dollars = (actual: unknown, saving: unknown): string => {
+    const amount = usd(actual);
+    if (!amount) return "";
+    const saved = pct(saving);
+    return saved ? `${amount} (${saved})` : amount;
+  };
+
+  const sections: string[] = [
+    renderKeyValues(`Model router efficiency (${count(report.days, "?")} days)`, [
+      [
+        "registry",
+        [
+          asString(registry.source) ?? "registry",
+          asString(registry.generatedAt) ? `generated ${asString(registry.generatedAt)}` : "",
+          num(registry.models) != null ? `${count(registry.models)} models` : "",
+          num(registry.agents) != null ? `${count(registry.agents)} agents` : "",
+        ].filter(Boolean).join(", "),
+      ],
+      ["threads", `${count(threads.threads)}${num(threads.childThreads) ? ` (${count(threads.childThreads)} child)` : ""}`],
+      ["turns", `${count(threads.turns)} (${count(threads.pricedTurns)} priced)`],
+      ["segments", count(threads.segments)],
+      ["actual", usd(threads.actualUsd)],
+      ["same harness", dollars(threads.sameHarnessUsd, threads.sameHarnessSaving)],
+      ["any harness", dollars(threads.anyHarnessUsd, threads.anyHarnessSaving)],
+      ["switched", `${count(switched.sameHarness)} same harness, ${count(switched.anyHarness)} any harness`],
+    ]),
+    "",
+    renderKeyValues("Segments by start", [
+      ["thread start", count(byStart.thread_start)],
+      ["compaction", count(byStart.compaction)],
+      ["cache expired", count(byStart.cache_expired)],
+      ["route changed", count(byStart.route_changed)],
+    ]),
+  ];
+
+  // Plan routes are picked in plan percent, not list dollars, so a move onto
+  // a plan can raise dollars and still use less of the plan window.
+  const billing = Array.isArray(threads.byBilling) ? threads.byBilling.filter(isRecord) : [];
+  if (billing.length) {
+    const percent = (input: unknown): string => {
+      const amount = num(input);
+      return amount == null ? "" : `${amount.toFixed(2)}%`;
+    };
+    sections.push(
+      "",
+      "By billing (percent = share of the plan's longest window)",
+      renderTable(
+        ["billing", "actual", "same harness", "any harness"],
+        billing.map((entry) => {
+          const cell = (usdValue: unknown, percentValue: unknown) =>
+            [usd(usdValue), percent(percentValue)].filter(Boolean).join(" / ");
+          return [
+            asString(entry.billing) ?? "",
+            cell(entry.actualUsd, entry.actualPercent),
+            cell(entry.sameHarnessUsd, entry.sameHarnessPercent),
+            cell(entry.anyHarnessUsd, entry.anyHarnessPercent),
+          ];
+        }),
+        "No billing data.",
+      ),
+    );
+  }
+
+  const kept = Array.isArray(threads.kept) ? threads.kept.filter(isRecord).slice(0, 8) : [];
+  if (kept.length) {
+    sections.push(
+      "",
+      "Kept (top by cost)",
+      renderTable(
+        ["reason", "segments", "turns", "actual"],
+        kept.map((entry) => [
+          asString(entry.reason) ?? "kept",
+          count(entry.segments),
+          count(entry.turns),
+          usd(entry.actualUsd),
+        ]),
+        "No segments were kept.",
+      ),
+    );
+  }
+
+  const topMoves = isRecord(threads.topMoves) ? threads.topMoves : {};
+  for (const [label, moves] of [
+    ["Moves (same harness)", topMoves.sameHarness],
+    ["Moves (any harness)", topMoves.anyHarness],
+  ] as const) {
+    const rows = Array.isArray(moves) ? moves.filter(isRecord) : [];
+    if (!rows.length) continue;
+    sections.push(
+      "",
+      label,
+      renderTable(
+        ["from", "to", "segments", "actual -> routed"],
+        rows.map((move) => [
+          asString(move.from) ?? "",
+          asString(move.to) ?? "",
+          count(move.segments),
+          `${usd(move.actualUsd)} -> ${usd(move.routedUsd)}`,
+        ]),
+        "No moves.",
+      ),
+    );
+  }
+
+  const topThreads = Array.isArray(threads.topThreads) ? threads.topThreads.filter(isRecord) : [];
+  if (topThreads.length) {
+    sections.push(
+      "",
+      "Top threads by cost",
+      renderTable(
+        ["session", "route", "turns", "segments", "actual", "same harness", "any harness"],
+        topThreads.map((thread) => [
+          `${asString(thread.sessionId) ?? ""}${thread.parentSessionId ? " (child)" : ""}`,
+          `${asString(thread.provider) ?? ""} ${asString(thread.model) ?? ""}`.trim(),
+          count(thread.turns),
+          count(thread.segments),
+          usd(thread.actualUsd),
+          usd(thread.sameHarnessUsd),
+          usd(thread.anyHarnessUsd),
+        ]),
+        "No threads.",
+      ),
+    );
+  }
+
+  sections.push(
+    "",
+    renderKeyValues("Subagents (shadow log)", [
+      ["decisions", `${count(subagents.decisions)} (${count(subagents.withOutcome)} with outcome)`],
+      ["same picks", count(subagents.sameHarnessPicks)],
+      ["any picks", count(subagents.anyHarnessPicks)],
+      ["tokens", count(subagents.tokens)],
+      ["same saving", `${pct(subagents.sameHarnessSaving) || "n/a"} (by tokens)`],
+      ["any saving", `${pct(subagents.anyHarnessSaving) || "n/a"} (by tokens)`],
+      ["priced subagents", count(subagents.pricedSubagents)],
+      ["actual", usd(subagents.actualUsd)],
+      ["same harness", usd(subagents.sameHarnessUsd)],
+      ["any harness", usd(subagents.anyHarnessUsd)],
+    ]),
+  );
+  return sections.join("\n");
+}
+
 function formatSyncStatus(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const routeHealth = isRecord(snapshot.routeHealth) ? snapshot.routeHealth : {};
@@ -27936,6 +28120,8 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "usage-snapshot":
       return formatUsageSnapshot(value);
+    case "router-efficiency":
+      return formatRouterEfficiency(value);
     case "update-status":
       return formatUpdateStatus(value);
     case "github-app-auth":

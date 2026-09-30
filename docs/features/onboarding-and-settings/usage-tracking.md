@@ -671,10 +671,16 @@ and asks the Worker at most every 12 hours (30 minutes after a failure); a 304
 revalidates without reading the body, and `ADE_MODEL_REGISTRY_FILE` points the
 store at a local snapshot instead of the Worker.
 
-`routeCatalog` builds every route; `routerCore` classifies the task and picks the
-cheapest route that keeps the expected quality — within the task kind's tolerance
-of the model that would run it anyway, no more than 1.5× slower, and trusted (at
-least 30 own turns on the model, or a measured Artificial Analysis agent row).
+`routeCatalog` builds every route from the union of every open project's model
+list, newest project first — before, it read only the newest project's list,
+which dropped OpenCode routes whenever that project had never listed OpenCode
+models. `routerCore` classifies the task and picks the cheapest route that keeps
+the expected quality — within the task kind's tolerance of the model that would
+run it anyway, no more than 1.5× slower, and trusted (at least 30 own turns on the
+model, or a measured Artificial Analysis agent row). The efficiency replay
+gives a main chat thread the `lead` kind (tolerance 0.02) and a chat that another
+chat started the `unknown` kind (also 0.02), because the ledger holds no task
+description.
 Plan routes are priced from the ledger's burn rates (dollars per percent of each
 live window, weighted by how fast the window is being used), and a window at 95%
 or more blocks its plan. A cross-plan pick needs medium-or-better burn confidence
@@ -688,6 +694,39 @@ throws into the chat. Read it with `ade router shadow --days 7` (action
 `usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
 task with `ade router pick`, and force a fetch with `ade router refresh`.
 `ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
+
+`ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
+the router would have saved. It reads the turn ledger, so the history starts on day
+one, not the day the router shipped. Each chat thread is one series of turns. The
+router may change a thread's route only at a free switch point, where the prompt
+cache is cold and a change costs no rebuild:
+
+- the first turn of the thread;
+- the turn after a context compaction;
+- a turn that starts after the cache expired;
+- a turn where the user changed the model or effort.
+
+The turns from one switch point to the next are a segment. Each segment gets one
+router decision, and its list-price cost scales by the picked route's cost per task
+over the reference route's. A thread's cache TTL is one hour, except a Claude
+thread that writes only the 5-minute cache: that thread gets 5 minutes. The dollars
+are public list prices scaled by the benchmark cost per task. They are an estimate,
+not a measured run. The replay ignores today's blocked plan windows: it asks which
+route was cheaper at equal quality, and a window that has since reset says nothing
+about the past.
+
+The router picks plan routes in plan percent, not list dollars. So a move from a
+metered route onto a plan can raise list dollars and still be the cheaper pick. The
+`byBilling` part shows both currencies for each billing: the list dollars, and for a
+plan, the percent of its longest window (dollars divided by the ledger's dollars per
+percent). Read the cross-plan rows with the burn-rate limit below in mind.
+
+The report also summarizes the subagents in the shadow log. Claude reports no
+per-subagent price, so Claude subagents are weighted by tokens instead of dollars.
+OpenCode reports a price, so those subagents carry dollars. The report also lists
+the segments that kept their route and why, the top moves by cost, and the threads
+with the most spend. `ade router efficiency --days 7 --text` prints the readable
+form.
 
 Known limits: burn rates count ADE turns only, so a plan also used outside ADE
 looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.

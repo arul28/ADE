@@ -247,7 +247,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",
       input:
-        "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"unknown\" }",
+        "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"lead\" | \"unknown\" }",
       example: "ade router pick \"summarize how sync works\" --provider claude --model opus --text",
     },
     getRouterShadowSummary: {
@@ -255,6 +255,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "Summarize the shadow router: for each subagent that started, the route it would have picked instead, the estimated saving, and why it kept the original.",
       input: "object { days?: number (1-90, default 7) }",
       example: "ade router shadow --days 7 --text",
+    },
+    getRouterEfficiency: {
+      description:
+        "Report what the router would have saved: it replays every chat thread from the turn ledger at its free switch points and prices the router's pick against what really ran, then summarizes the shadow-logged subagents. Dollars are list prices and the saving is an estimate.",
+      input: "object { days?: number (1-90, default 7) }",
+      example: "ade router efficiency --days 7 --text",
     },
     refreshModelRegistry: {
       description: "Fetch the newest model registry from the ADE account directory (signed-in accounts only).",
