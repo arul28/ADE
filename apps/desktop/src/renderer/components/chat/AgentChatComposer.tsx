@@ -116,7 +116,9 @@ import {
 } from "../shared/PermissionModePicker";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { ensureRuntimeCatalogDescriptors, resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
@@ -1818,6 +1820,7 @@ export function AgentChatComposer({
   machineChipAction = null,
   cursorRuntime = null,
   modelRuntimePin = null,
+  catalogScopeKey,
   attachmentPersistenceUnavailableReason = null,
   onUseThisComputer,
   contextAttachments = [],
@@ -2007,6 +2010,12 @@ export function AgentChatComposer({
    * tab. `null` is only for surfaces with no composer machine.
    */
   modelRuntimePin?: OpenProjectBinding | null;
+  /**
+   * The machine bucket the model LIST was built from. Resolution must use the
+   * same bucket: a draft whose runtime pin differs from the list's scope looked
+   * up the static descriptor and lost the model's runtime reasoning tiers.
+   */
+  catalogScopeKey?: string;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
   /** Clears an unavailable draft machine without changing the project tab. */
@@ -2436,14 +2445,43 @@ export function AgentChatComposer({
   latestComposerMachineBindingRef.current = composerMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
-  const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
-  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null =>
-    composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId)),
-  [modelCatalogScopeKey]);
+  const modelCatalogScopeKey = catalogScopeKey ?? modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  const describeChipModel = useCallback((modelId: string): ComposerModelInfo | null => {
+    // Warm the scope's runtime descriptors first: without this the chip fell
+    // back to the static descriptor and lost an OpenCode model's reasoning tiers.
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey);
+    return composerModelInfo(resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId));
+  }, [modelCatalogScopeKey]);
+  // The runtime catalog (OpenCode/DeepSeek reasoning tiers, aliases) is loaded by
+  // the model picker on open. The `@model` menu and chip read it without the
+  // picker ever opening, so fetch it here once per scope; the tick below
+  // re-renders the menu and any existing chips when it lands.
+  const [runtimeCatalogTick, setRuntimeCatalogTick] = useState(0);
+  const modelRuntimePinRef = useRef(modelRuntimePin);
+  modelRuntimePinRef.current = modelRuntimePin;
+  useEffect(() => {
+    let cancelled = false;
+    const pin = modelRuntimePinRef.current;
+    const load = async () => {
+      if (!getSharedRuntimeCatalog(modelCatalogScopeKey)) {
+        const result = await fetchSharedRuntimeCatalog({
+          scopeKey: modelCatalogScopeKey,
+          mode: "cached",
+          ...(pin ? { pin } : {}),
+        });
+        if (cancelled || result.status !== "ok") return;
+      }
+      ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
+      if (!cancelled) setRuntimeCatalogTick((tick) => tick + 1);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [modelCatalogScopeKey]);
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
   describeChipModelRef.current = describeChipModel;
   const modelMentionOptions = useMemo(() => {
+    ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
     const ids = mentionModelIds ?? availableModelIds ?? [];
     const out = [];
     const seen = new Set<string>();
@@ -2454,7 +2492,7 @@ export function AgentChatComposer({
       out.push(composerModelSuggestion(descriptor));
     }
     return out;
-  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey]);
+  }, [availableModelIds, mentionModelIds, modelCatalogScopeKey, runtimeCatalogTick]);
   // A model chip being edited: which chip, which part, which option is lit.
   const [modelChipEdit, setModelChipEdit] = useState<{
     chip: HTMLElement;

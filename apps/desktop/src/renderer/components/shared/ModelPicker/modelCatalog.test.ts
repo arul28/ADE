@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PERSONAL_CHAT_CATALOG_SCOPE,
   descriptorsFromAgentChatModelCatalog,
+  ensureRuntimeCatalogDescriptors,
   filterFallbackModelsToRuntimeCatalog,
   getRuntimeCatalogModelDescriptor,
   mergeSelectorModels,
@@ -837,5 +838,63 @@ describe("requestModelCatalog", () => {
       .resolves.toEqual(catalog);
     expect(projectCatalog).toHaveBeenCalledWith({ mode: "force" });
     expect(personalCall).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureRuntimeCatalogDescriptors", () => {
+  beforeEach(() => {
+    resetRuntimeCatalogDescriptorCacheForTests();
+  });
+
+  function openCodeCatalog(modelId: string, reasoningEfforts: string[]): AgentChatModelCatalog {
+    return {
+      groups: [{
+        key: "opencode",
+        label: "OpenCode",
+        providers: [{
+          key: "deepseek",
+          displayName: "DeepSeek",
+          modelCount: 1,
+          subsections: [{
+            key: "deepseek",
+            label: "DeepSeek",
+            models: [{
+              id: modelId,
+              displayName: "DeepSeek V4.1 Flash",
+              family: "opencode",
+              groupKey: "opencode",
+              isAvailable: true,
+              supportsReasoning: true,
+              reasoningEfforts: reasoningEfforts.map((effort) => ({ effort })),
+            }],
+          }],
+        }],
+      }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    } as unknown as AgentChatModelCatalog;
+  }
+
+  // The composer's @ model menu and chip READ the runtime descriptor map, but
+  // only the picker ever built it. So an OpenCode model resolved to the static
+  // descriptor (no reasoning tiers) until a picker had been opened — the chip
+  // showed no thinking level. Warming the scope fixes that.
+  it("warms a scope's descriptors so an OpenCode model keeps its runtime tiers", () => {
+    const id = "opencode/deepseek/deepseek-flash";
+    rememberRuntimeCatalog(openCodeCatalog(id, ["none", "low", "high", "max"]), {
+      mode: "cached",
+      scopeKey: "machine-a",
+    });
+
+    ensureRuntimeCatalogDescriptors("machine-a");
+
+    expect(resolveModelDescriptorWithRuntimeCatalog(id, "machine-a")?.reasoningTiers)
+      .toEqual(["none", "low", "high", "max"]);
+  });
+
+  it("is a no-op for a scope whose catalog has not loaded", () => {
+    ensureRuntimeCatalogDescriptors("machine-empty");
+    expect(getRuntimeCatalogModelDescriptor("opencode/opencode-go/deepseek-v4.1-flash", "machine-empty"))
+      .toBeUndefined();
   });
 });
