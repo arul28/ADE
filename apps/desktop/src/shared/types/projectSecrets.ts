@@ -48,8 +48,13 @@ export type ProjectSecretPullResult =
     added: number;
     /** Account-scoped names whose vault copy was newer. */
     updated: number;
-    /** Account-scoped names deleted on another machine, dropped here too. */
-    removed: number;
+    /**
+     * Account-scoped names deleted on another machine, dropped here too.
+     *
+     * Optional because a runtime from before account-wide deletes answers
+     * without it, and that is still a pull result.
+     */
+    removed?: number;
   }
   | { state: "unavailable" };
 

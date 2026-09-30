@@ -759,6 +759,8 @@ describe("apiKeyStore", () => {
   });
 
   it("drops a key deleted on another machine, without asking the vault to forget it again", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const analytics = { captureInternal: (input: unknown) => { captured.push(input as Record<string, unknown>); } };
     const credentialStore = new MemoryCredentialStore();
     const vault = createVaultMock();
     const logger = { info: vi.fn(), warn: vi.fn() };
@@ -768,13 +770,24 @@ describe("apiKeyStore", () => {
       getAccountVault: () => vault as never,
       getAccountUserId: () => "account-a",
       logger,
+      analytics,
     });
-    store.storeApiKey("anthropic", "sk-local-key");
+    // The key arrives FROM the account first, which is what makes it the
+    // account's to delete. A key stored here is this machine's own.
     vault.list.mockResolvedValue({
       ok: true,
       value: [
-        { scope: "all", kind: "provider_api_key", key: "anthropic", value: null, updatedAt: "now", deleted: true },
-        { scope: "all", kind: "provider_api_key", key: "openai", value: null, updatedAt: "now", deleted: true },
+        { scope: "all", kind: "provider_api_key", key: "anthropic", value: "sk-from-account", updatedAt: "now" },
+      ],
+    } as never);
+    await store.hydrateApiKeysFromVault();
+    expect(store.getApiKey("anthropic")).toBe("sk-from-account");
+
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [
+        { scope: "all", kind: "provider_api_key", key: "anthropic", value: null, updatedAt: "later", deleted: true },
+        { scope: "all", kind: "provider_api_key", key: "openai", value: null, updatedAt: "later", deleted: true },
       ],
     } as never);
 
@@ -790,6 +803,36 @@ describe("apiKeyStore", () => {
       "ai.api_key_removed_by_account",
       { provider: "anthropic" },
     );
+    expect(captured).toEqual([]);
+  });
+
+  it("spares a device-only key that shares the name of one the account deleted", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const vault = createVaultMock();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, {
+      credentialStore,
+      getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
+    });
+    store.storeApiCredential({
+      provider: "openai",
+      credentialId: "Work",
+      label: "Work",
+      key: "sk-local-only",
+      deviceOnly: true,
+    });
+    vault.list.mockResolvedValue({
+      ok: true,
+      value: [
+        { scope: "all", kind: "provider_api_key", key: "openai#Work", value: null, updatedAt: "now", deleted: true },
+      ],
+    } as never);
+
+    await store.hydrateApiKeysFromVault();
+
+    expect(store.getApiCredentialKey("openai", "Work")).toBe("sk-local-only");
+    expect(vault.remove).not.toHaveBeenCalled();
   });
 });
 

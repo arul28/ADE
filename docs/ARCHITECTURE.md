@@ -548,8 +548,10 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
   key written across lines must be dropped whole, and a line filter left its
   `references …` behind as invalid SQL that aborted the open. A rewrite one table
   rejects is contained to that table (`db.crr_repair_table_failed`) instead of
-  stopping every other table's repair, and `ensureCrrTables` warns rather than
-  throws for a non-phone-critical table SQLite will not accept as a CRR. Durable JSON uses atomic
+  stopping every other table's repair — unless the rebuild could not roll its own
+  transaction back, which stops it. `ensureCrrTables` warns rather than throws
+  for a non-phone-critical table whose only refusal is a leftover non-PK unique
+  index; any other `crsql_as_crr` failure still aborts the open. Durable JSON uses atomic
   replace plus one `.lkg`; typed open failures flow through `lastFailureStore`
   and the brain-independent `projectRecoveryService`. See
   [Storage and recovery](./features/storage-and-recovery/README.md) and

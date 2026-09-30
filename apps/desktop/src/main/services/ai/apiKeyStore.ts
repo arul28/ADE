@@ -1716,7 +1716,8 @@ function removeApiCredentialIn(
   // never held would re-stamp the account's tombstone on every hydration, and a
   // fresh tombstone out-stamps a key another machine re-added — destroying it
   // account-wide, with no way back. A removal the vault reported is already
-  // recorded there, so re-issuing it has the same effect.
+  // recorded there, so re-issuing it would only re-stamp that tombstone and
+  // out-date a key another machine re-adds.
   if (scope === projectScope && existed && options?.notifyVault !== false) {
     fireAndForgetVaultWrite(
       { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
@@ -1803,10 +1804,17 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
     const storageKey = credentialStorageKey(parsed.provider, parsed.credentialId);
 
     if (item.deleted) {
-      // Deleted on another machine. This machine's copy has to go with it, or
+      // Deleted on another machine. The ACCOUNT's copy has to go with it, or
       // "account-wide" stops being true: the key would keep working here while
-      // the account says it does not exist. A machine that never had the key
-      // removes nothing.
+      // the account says it does not exist.
+      //
+      // Only a copy the account owns. A device-only value that happens to share
+      // the provider name is not the account's to delete, and removing it would
+      // destroy a credential with nothing to restore it from.
+      // `projectSecretService` draws the same line for a device-scoped secret,
+      // and `purgeAccountApiKeys` draws it on sign-out.
+      ensureStore(projectScope);
+      if (ensureProvenance(projectScope, [storageKey])[storageKey]?.source !== "account") continue;
       //
       // The internal removal, not `removeApiCredential`: that one captures a
       // `credential_removed` product event, and a sync tick is not a person

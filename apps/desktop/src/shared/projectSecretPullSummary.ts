@@ -10,13 +10,16 @@ export function projectSecretPullSummary(result: ProjectSecretPullResult): strin
   if (result.state === "unavailable") {
     return "Could not pull account secrets. Sign in, keep the background service running, and check this repository has a Git remote.";
   }
-  if (result.added === 0 && result.updated === 0 && result.removed === 0) {
+  const added = result.added ?? 0;
+  const updated = result.updated ?? 0;
+  const removed = result.removed ?? 0;
+  if (added === 0 && updated === 0 && removed === 0) {
     return "Account secrets are already up to date on this machine.";
   }
   const parts = [
-    result.added > 0 ? `${result.added} added` : null,
-    result.updated > 0 ? `${result.updated} updated` : null,
-    result.removed > 0 ? `${result.removed} removed` : null,
+    added > 0 ? `${added} added` : null,
+    updated > 0 ? `${updated} updated` : null,
+    removed > 0 ? `${removed} removed` : null,
   ].filter((part): part is string => part !== null);
   return `Pulled from account storage: ${parts.join(", ")}.`;
 }
