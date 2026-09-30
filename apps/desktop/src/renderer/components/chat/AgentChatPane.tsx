@@ -15062,6 +15062,7 @@ export function AgentChatPane({
             // it (or picking a non-cursor model another way) restores the full list.
             availableModelIds={composerAvailableModelIds}
             mentionModelIds={handoffAvailableModelIds}
+            catalogScopeKey={modelCatalogScopeKey}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
