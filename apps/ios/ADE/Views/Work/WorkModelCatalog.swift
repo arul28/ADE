@@ -460,8 +460,18 @@ func workModelCatalog(currentModelId: String, currentProvider: String) -> [WorkM
 
 func workDefaultCatalogModelId(provider: String) -> String? {
   let family = providerFamilyKey(provider)
-  return workCuratedModelCatalogGroups()
-    .first(where: { $0.key == family })?
+  guard let group = workCuratedModelCatalogGroups().first(where: { $0.key == family }) else {
+    return nil
+  }
+  // Keep the curated phone fallback aligned with the desktop model manifest,
+  // whose Codex default remains Astra even though GPT-6.1 Sol now sorts first.
+  if family == "codex",
+     let defaultModel = group.providers
+      .flatMap(\.models)
+      .first(where: { $0.id == "gpt-6-astra" }) {
+    return defaultModel.id
+  }
+  return group
     .providers
     .flatMap(\.models)
     .first?
@@ -1286,6 +1296,11 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
 }
 
 func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
+  if let lhsCodexId = lhs.flatMap(workCanonicalCodexRegistryId(for:)),
+     let rhsCodexId = rhs.flatMap(workCanonicalCodexRegistryId(for:)),
+     lhsCodexId != rhsCodexId {
+    return false
+  }
   // Key lists hold at most a handful of entries, so a nested scan beats building
   // two Sets — this runs inside per-render catalog filters and sort comparators.
   let lhsKeys = workModelLookupKeys(lhs)
