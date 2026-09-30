@@ -13,6 +13,9 @@
  * 1. Nothing folds while a turn is live. Only a turn with a `done` row folds.
  * 2. The ANSWER is the last text row of the turn — or the last `final_answer`
  *    row when the provider labelled one. `commentary` rows are never the answer.
+ *    Without a label, a short last text written after a few work rows is a
+ *    postscript, and the long text before it is the answer
+ *    ({@link answerBeforePostscript}).
  *    A turn with no answer (tool-only, interrupted before text, error) does not
  *    fold at all.
  * 3. The span is the rows strictly between the turn's user message and the
@@ -519,6 +522,60 @@ function rowFolds(row: TurnFoldRow, turnId: string, snapshot: TurnEndSnapshot | 
   }
 }
 
+/** A last text row this short can be a postscript to an earlier answer. */
+const TURN_FOLD_POSTSCRIPT_MAX_CHARS = 280;
+/** An earlier text row must be at least this long to be the answer instead. */
+const TURN_FOLD_ANSWER_MIN_CHARS = 400;
+/** And at least this many times longer than the postscript. */
+const TURN_FOLD_ANSWER_TO_POSTSCRIPT_RATIO = 3;
+/** Rows of work (a tool group, a notice) allowed between the answer and the postscript. */
+const TURN_FOLD_POSTSCRIPT_MAX_WORK_ROWS = 3;
+
+/**
+ * The answer of a turn whose provider labels no `final_answer` (Claude). The
+ * answer is the last text row, except when that row is a short postscript to a
+ * much longer text: the model answers in full, runs a cleanup tool, then writes
+ * "I also deleted the temp files." Then the long text before it is the answer,
+ * so the fold does not hide it. The postscript stays visible below the answer
+ * (rows after the answer never fold).
+ *
+ * Desktop drops tool rows before it folds, so the texts can be adjacent here.
+ * Only one step back, and not past more than a few drawn work rows. When the
+ * guess is wrong (long narration, then "Done."), the fold hides less, never
+ * the answer.
+ */
+function answerBeforePostscript(
+  rows: readonly TurnFoldRow[],
+  windowStart: number,
+  lastText: number,
+  turnId: string,
+): number {
+  if (lastText < 0) return lastText;
+  const postscriptLength = rows[lastText]!.text?.trim().length;
+  // The surface did not supply prose: no basis to look past the last text.
+  if (postscriptLength == null || postscriptLength === 0) return lastText;
+  if (postscriptLength > TURN_FOLD_POSTSCRIPT_MAX_CHARS) return lastText;
+  let workRows = 0;
+  for (let index = lastText - 1; index >= windowStart; index -= 1) {
+    const row = rows[index]!;
+    if (row.role === "text") {
+      if (row.turnId && row.turnId !== turnId) continue;
+      // Empty text draws nothing; step over it.
+      if (row.trivial) continue;
+      if (row.phase === "commentary") return lastText;
+      const answerLength = row.text?.trim().length ?? 0;
+      return answerLength >= TURN_FOLD_ANSWER_MIN_CHARS
+        && answerLength >= postscriptLength * TURN_FOLD_ANSWER_TO_POSTSCRIPT_RATIO
+        ? index
+        : lastText;
+    }
+    if (row.trivial) continue;
+    workRows += 1;
+    if (workRows > TURN_FOLD_POSTSCRIPT_MAX_WORK_ROWS) return lastText;
+  }
+  return lastText;
+}
+
 function foldTurn(
   rows: readonly TurnFoldRow[],
   windowStart: number,
@@ -539,7 +596,9 @@ function foldTurn(
     lastText = index;
     if (row.phase === "final_answer") lastFinalAnswer = index;
   }
-  const answerIndex = lastFinalAnswer >= 0 ? lastFinalAnswer : lastText;
+  const answerIndex = lastFinalAnswer >= 0
+    ? lastFinalAnswer
+    : answerBeforePostscript(rows, windowStart, lastText, turnId);
   if (answerIndex < 0) return null;
 
   const snapshot = snapshotFor(turnId);
