@@ -508,10 +508,12 @@ enum WorkModelMentionDetector {
   }
 
   // Character-for-character the desktop's `MODEL_TOKEN_SOURCE`: registry ids
-  // take letters, digits, `.`, `_`, `/`, `:` and `-`; the query only simple
-  // `key=value` pairs. The word boundary keeps emails and URLs out.
+  // take letters, digits, `.`, `_`, `/`, `:`, `%` and `-` (an OpenCode id
+  // encodes its provider model id, e.g. `anthropic%2Fclaude-opus-4.7`); the
+  // query only simple `key=value` pairs. The word boundary keeps emails and URLs
+  // out.
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:^|[\\s(\\[{,])@model:([A-Za-z0-9._/:-]+)(?:\\?([A-Za-z0-9=&._-]+))?",
+    pattern: "(?:^|[\\s(\\[{,])@model:([A-Za-z0-9._/:%+-]+)(?:\\?([A-Za-z0-9=&._-]+))?",
     options: []
   )
   /// A sentence can end right after a chip; trailing dots, colons and dashes
@@ -1595,8 +1597,13 @@ final class WorkComposerSuggestionController: ObservableObject {
       return
     }
     modelCatalogTask = Task { [weak self] in
-      _ = try? await syncService.getChatModelCatalog()
+      let catalog = try? await syncService.getChatModelCatalog()
       guard let self, !Task.isCancelled else { return }
+      // A failed fetch must not latch the guard: the next `@` trigger retries.
+      guard catalog != nil else {
+        self.modelCatalogRequested = false
+        return
+      }
       guard self.activeMatch?.kind == .at, !self.isLoading else { return }
       self.suggestions = self.mergedAtRows(files: self.lastFileRows)
     }

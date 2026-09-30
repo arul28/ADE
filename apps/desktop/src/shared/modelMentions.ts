@@ -72,9 +72,11 @@ export type ParsedModelMention = ModelMention & {
 
 // Model ids are registry ids such as `opencode/opencode-go/deepseek-v4.1-flash`
 // or `anthropic/claude-opus-5`: letters, digits, `.`, `_`, `-`, `/` and `:`.
-// The query only carries simple `key=value` pairs. The token must start at a
-// word boundary so an email or a URL never matches.
-const MODEL_ID_CHARS = "A-Za-z0-9._/:-";
+// An OpenCode id encodes its provider's model id, so it also carries `%`
+// (`opencode/openrouter/anthropic%2Fclaude-opus-4.7`); omitting it truncated
+// every such chip at the `%`. The query only carries simple `key=value` pairs.
+// The token must start at a word boundary so an email or a URL never matches.
+const MODEL_ID_CHARS = "A-Za-z0-9._/:%+-";
 const MODEL_TOKEN_SOURCE =
   `(?:^|[\\s(\\[{,])@model:([${MODEL_ID_CHARS}]+)(?:\\?([A-Za-z0-9=&._-]+))?`;
 

@@ -2085,9 +2085,9 @@ send disabled until the turn ends.
   source publication, lets the user choose an eligible connected runtime,
   brief or fork mode, and an optional continuation note, explains
   clone/storage/model/route failures, and shows what the capsule includes and
-  excludes before final confirmation. For a chat that already runs on another
-  machine, it opens the **Handoff to remote machine** dialog instead, which
-  names that machine.
+  excludes before final confirmation. It opens for every chat, including one
+  that already runs on another machine; that machine is left out of the
+  destination list (see below).
 - **Auto handoff…** opens `AutoHandoffModal`, hosted by `SessionContextMenu`.
 
 `ChatHandoffDialogs` uses Radix Dialog, so Escape, a click outside, and focus
