@@ -28,6 +28,7 @@ export {
   type AdeIpcBridgeHandle,
   type AdeIpcOpenContext,
   type RegisterAdeIpcOptions,
+  type ThreadRemovalKind,
 } from "./main.js";
 export { ADE_IPC_RENDERER_OPEN_FIELDS } from "./rendererOptions.js";
 export { checkAdeBridge, type CheckAdeBridgeOptions } from "./bridgeCheck.js";

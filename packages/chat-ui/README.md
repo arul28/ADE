@@ -268,19 +268,25 @@ matches the tool under every provider. A **server-qualified** key matches a
 tool the provider reported by its bare name only when the event names that
 server (`ToolChipRow.identity`). A bare name with no server on the event
 matches only a bare key, and the matcher never guesses a server from the name.
-So when your host injects MCP tools and the event sometimes arrives without a
-server, key the bare name as well — or cover the family with one wildcard,
-which matches either way:
+
+A bare key is compared with the tool's **own name**, so the bare key to write is
+the name your providers report. One wildcard covers a whole family when your
+injected tools carry a prefix:
 
 ```ts
 labels={{
   map: {
     "mcp:versic:*": "Checking your projects…", // wins when the event names the server
-    "versic_*": "Checking your projects…",     // matches the bare name
+    "versic_*": "Checking your projects…",     // the tool's own name, e.g. versic_projects
     "*": "Working…",
   },
 }}
 ```
+
+`versic_*` matches `versic_projects`, whether it arrives bare or as
+`mcp__versic__versic_projects`. It does **not** match a bare `search` that
+belongs to the `versic` server — that name starts with `search` — so only `*` or
+an exact `search` key reaches that one.
 
 ## Theming
 

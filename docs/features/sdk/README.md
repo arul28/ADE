@@ -200,10 +200,11 @@ in it needs a new wire. It adds three host-side surfaces and no protocol change:
 An identical `refresh.attachmentRoots` list was already skipped (the same rule
 `refresh.mcpServers` follows); 0.5 only documents it.
 
-Runtime 1.2.83 removes two lines an embedded runtime printed on every start: the
-role-ceiling sentence, which does not apply to a sidecar serving one host at
-`agent`, and the two "could not bound runtime log" lines, for `launchd` files that
-an embedded runtime never has.
+Runtime 1.2.83 silences the four lines an embedded runtime printed on every
+start. The role-ceiling sentence and its `brain.role_ceiling_below_cto` warning
+do not apply to a sidecar that serves one host at `agent`. The two "could not
+bound runtime log" lines name `launchd` files an embedded runtime never has.
+Both gates read `--profile embedded`; a full brain still prints them.
 
 Durable threads: `threads.open("support", { provider, model })` creates or resumes by key stored under the home. Reopening the same key after a restart continues the conversation.
 
@@ -765,9 +766,11 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
 - `onThreadRemoved(key, kind)` (0.5) is the host's notification that a thread is
   gone or archived. It fires from the bridge's own `threadLifecycle` watcher —
   the one subscription that also covers a delete main code makes on the served
-  client — so it is called once per removal and follows a client swap. Denying a
-  bridge method stays `authorize`'s job (`method === "threads.delete"`); there is
-  no separate deny list.
+  client — so it is called once per removal, and it re-binds to the current
+  client the next time a bridge call runs `syncClient` (a pre-0.4 client that
+  never emits `threadLifecycle` never calls it). Denying a bridge method stays
+  `authorize`'s job (`method === "threads.delete"`); there is no separate deny
+  list.
 - The renderer never configures a thread (0.3, breaking). With an
   `openOptions(key, rendererOptions)` hook the hook's result is what the SDK
   opens with and the renderer's options are ignored; the hook may return

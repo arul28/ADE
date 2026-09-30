@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isEnoent } from "../credentials/credentialFileIo";
 
 export const MAX_LAUNCHD_LOG_BYTES = 10 * 1024 * 1024;
 export const ROTATED_LAUNCHD_LOG_BYTES = 1024 * 1024;
@@ -36,19 +37,13 @@ export function copytruncateLogIfOversized(
     // runtime (the ADE SDK's sidecar) is not started by launchd, so its
     // `launchd.*.log` files never exist. Reporting ENOENT put two lines of
     // noise, carrying the full `home` path, in front of every embedder's log.
-    if (!isMissingFileError(error)) {
+    if (!isEnoent(error)) {
       try {
         process.stderr.write(`ADE could not bound runtime log ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}\n`);
       } catch {}
     }
     return false;
   }
-}
-
-/** Whether an error is "the file is not there" rather than a real failure. */
-function isMissingFileError(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === "ENOENT";
 }
 
 export function boundLaunchdLogs(runtimeDir: string): void {

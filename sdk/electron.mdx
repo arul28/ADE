@@ -137,7 +137,7 @@ registerAdeIpc(ipcMain, () => currentClient(), {
 });
 ```
 
-It fires once for every delete and archive this client reports, whoever made it — the renderer over the bridge, or main code calling `client.threads.delete`. `kind` is `"deleted"` or `"archived"`; an unarchive is not reported. Your own `client.on("threadLifecycle")` listener sees the same events, but only on the client you subscribed to: when you swap clients per account through a client getter, the bridge follows the swap for you and your hand-written listener does not.
+It fires for every delete and archive this client reports, whoever made it — the renderer over the bridge, or main code calling `client.threads.delete`. `kind` is `"deleted"` or `"archived"`; an unarchive is not reported, and a client that does not emit `threadLifecycle` (an SDK older than 0.4) never calls it. Your own `client.on("threadLifecycle")` listener sees the same events, but only on the client you subscribed to: when you swap clients per account through a client getter, this callback moves to the current client as soon as the bridge serves a call, and a hand-written listener never moves at all.
 
 To stop the renderer from deleting or archiving at all, refuse those methods in `authorize`:
 

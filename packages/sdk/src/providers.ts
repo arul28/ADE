@@ -30,6 +30,11 @@ export type DefaultModelOptions = {
    *
    * A model that nobody scores falls back to `isDefault`, then to catalog
    * order, so passing this option never removes a model from the pool.
+   *
+   * A callback that throws propagates out of `pickDefaultModel` (and out of
+   * `client.models.defaultModel`), like every other host callback that is part
+   * of an operation. It is not swallowed: a ranking that fails silently would
+   * pick a model you did not ask for.
    */
   prefer?: (model: ModelCatalogEntry) => number;
 };
@@ -58,7 +63,9 @@ export function pickDefaultModel(
         // Only a finite score above zero is a preference. Zero and below means
         // "no opinion", so a host that scores one family keeps the catalog's
         // own order everywhere else instead of accidentally taking pool[0].
-        if (typeof score !== "number" || !Number.isFinite(score) || score <= 0) continue;
+        // `Number.isFinite` returns false for a non-number, so it covers a host
+        // that returns a string or undefined too.
+        if (!Number.isFinite(score) || score <= 0) continue;
         if (score > bestScore) {
           preferred = model;
           bestScore = score;

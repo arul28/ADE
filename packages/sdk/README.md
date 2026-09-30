@@ -311,11 +311,12 @@ to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
 choice. `registerAdeIpc` also accepts `() => client`, for a host that replaces
 its client per account.
 
-`onThreadRemoved(key, kind)` (0.5) fires once for every delete and archive the
-served client reports, whether the renderer or your own main-process code made
-it, so your chat list stays exact even when the client is swapped per account.
-Refuse `threads.delete` or `threads.archive` in `authorize` to stop the
-renderer from making them at all — there is no separate deny list.
+`onThreadRemoved(key, kind)` (0.5) fires for every delete and archive the served
+client reports, whether the renderer or your own main-process code made it, so
+your chat list stays exact. It follows a client swapped per account as soon as
+the bridge serves a call. Refuse `threads.delete` or `threads.archive` in
+`authorize` to stop the renderer from making them at all — there is no separate
+deny list.
 
 To ship the runtime inside a signed app instead of downloading it, install
 `@ade-dev/runtime`, copy it into your resources, and pass
