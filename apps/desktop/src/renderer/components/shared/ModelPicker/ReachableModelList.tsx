@@ -18,11 +18,11 @@ import { scoreModelPickerSearch } from "./modelPickerSearch";
 /**
  * The shared "what can this harness run" list.
  *
- * One component for both Custom surfaces — the composer picker's Run-in view
- * and the Custom provider dialog — so the two can never disagree about what a
- * row says: its name, its limits ("1M · 384k"), and a small muted
- * "via ADE proxy" tag when the pairing needs translation. The dialog also
- * hangs a Test button off each row that a live check can run for.
+ * One component for the Custom provider wizard and for anything else that has
+ * to list what a harness can reach, so two surfaces can never disagree about
+ * what a row says: its name, its limits ("1M · 384k"), and a small muted
+ * "via ADE proxy" tag when the pairing needs translation. A caller can hang a
+ * Test button off each row for a live check.
  *
  * Grouped by source, because the source is the thing you pay: your Claude
  * account, OpenCode Go, a DeepSeek key, a subscription through the proxy. A
@@ -313,13 +313,16 @@ const ReachableModelRow = memo(function ReachableModelRow({
  *
  * A chip that cannot be chosen stays visible and says why on hover, so the
  * row answers "where is Cursor" instead of leaving the reader to wonder.
+ *
+ * The wizard's harness step is its only caller: a model *picker* does not build
+ * a pairing, it picks one that was already saved.
  */
 export function HarnessChipRow({
   options,
   selected,
   onSelect,
   size = "sm",
-  label = "Run in",
+  label = "Harness",
 }: {
   options: readonly HarnessChipOption[];
   selected: HarnessPresetBody | null;

@@ -1,9 +1,9 @@
 /**
  * Every model one harness can reach, grouped by where it comes from.
  *
- * This is the list both Custom surfaces draw: the composer picker's "Run in"
- * view and the Custom provider dialog. It is built from three inputs ADE
- * already has, and the route for every row comes from the one pure decision in
+ * This is the list the Custom provider wizard draws, for its model and for
+ * every subagent pin it offers. It is built from three inputs ADE already has,
+ * and the route for every row comes from the one pure decision in
  * `shared/harnessRoutes.ts`, so the list can never offer a pairing the launch
  * path would refuse:
  *

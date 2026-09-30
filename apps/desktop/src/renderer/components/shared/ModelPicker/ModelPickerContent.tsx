@@ -1025,9 +1025,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 query={query}
                 value={value}
                 activePresetId={activePresetId}
-                currentHarness={activeModel ? resolveCliProviderForModel(activeModel) ?? null : null}
                 mode={harnessLaunchMode}
-                runtimePin={runtimePin}
                 {...(catalogScopeKey ? { catalogScopeKey } : {})}
                 onSelect={handleCustomSelect}
                 {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}

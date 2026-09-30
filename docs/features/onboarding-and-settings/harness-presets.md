@@ -146,23 +146,14 @@ the logo that says whose it is, so a one-click launch shows everything it is
 about to apply. The search box filters presets by name, harness, and model. An empty list points at Settings › Providers ›
 Custom.
 
-The tab has two halves and they are not equally important:
-
-1. **Saved** leads, and it is what the tab is for. Selecting one applies the
-   whole preset — its model, its thinking level, and its harness — in one
-   click.
-2. **Use another model in a harness…** is the ad-hoc half: any model the
-   chosen harness can reach, launched without saving anything. It is folded
-   away, because it is a long list most visits never want, and it opens on its
-   own when this chat is already running an ad-hoc route.
-
-Inside it, the harness chips default to the harness the surface is *on* — a
-Codex chat opens Run-in on Codex — and the source chips narrow the list to one
-source ("All sources", "OpenCode Go", "OpenCode Zen", each key), so a dozen
-sources and a hundred models are one click apart instead of one scroll. The
-harness's own-account models are deliberately **absent**: Sonnet on your Claude
-account is already one row in the Claude tab, and repeating it here made
-"Custom" look like a second, worse copy of every provider tab.
+**A picker picks.** The tab is the saved providers, and one link — "Manage
+custom providers" — to Settings › Providers › Custom, where they are built.
+Building one is a five-step form over a live model catalog with its own page;
+a second, weaker copy of that form behind a tab in a model dropdown put the same
+list in two places with two different sets of controls, and the picker's copy
+could not save anything it produced. Selecting a saved provider applies the
+whole configuration — its model, its thinking level, its subagent settings, its
+harness — in one click, which is the entire point of saving one.
 
 Selecting a preset sets the composer's thinking level to the preset's, and the
 launch carries that level: a preset saved at High launches at High even when
@@ -237,11 +228,15 @@ missing piece.
 
 ### Ad-hoc routes
 
-A model picked in the composer's "Run in" view without a saved preset travels
+A pairing that was never saved — `ade chat create --via opencode-go --model
+…`, or any caller that names a harness, a source and a model directly — travels
 as a preset id of the form `route.<base64url(json)>` — the harness, the source
 reference and the model, never a secret. base64url passes the safe-identifier
 check every launch surface already applies to `presetId`, so an ad-hoc choice
-gets chat, CLI, resume, remote launch and sync with no new wire field. Its
+gets chat, CLI, resume, remote launch and sync with no new wire field. A route
+id is minted by whoever knows the pairing; the model picker no longer mints
+one, because building a pairing is what Settings › Providers › Custom is for.
+Its
 private config home lives under `provider-homes/route/<hash>/`, outside the
 preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
 removed, and removing any key removes them all (they are rebuilt on the next
