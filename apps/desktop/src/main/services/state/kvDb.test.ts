@@ -11,6 +11,7 @@ import {
   type TableRebuildPlan,
 } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
+import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import { EVENT_LOG_RETENTION_DAYS } from "./dbMaintenanceApi";
 
 const testRequire = createRequire(import.meta.url);
@@ -1005,5 +1006,144 @@ describe("inbound settle-tuple reconciliation hook", () => {
     const seenAfterFirst = seen.length;
     target.sync.applyChanges(changes);
     expect(seen.length, "a duplicate changeset must not be reported again").toBe(seenAfterFirst);
+  });
+});
+
+/**
+ * The CRR repair reads a stored CREATE TABLE and drops the constraints cr-sqlite
+ * cannot carry. It used to do that one line at a time, which left a wrapped
+ * foreign key's `references …` line behind and produced invalid SQLite — the
+ * failure that aborted a database open in the field. These are the shapes a
+ * line-based filter gets wrong, plus the ones it must not damage.
+ */
+describe("CREATE TABLE constraint stripping", () => {
+  /** A throwaway database, so each rewritten statement is validated on its own. */
+  const accept = (sql: string): void => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(sql);
+    } finally {
+      db.close();
+    }
+  };
+
+  it.each([
+    {
+      name: "a foreign key whose references and action wrap onto their own lines",
+      sql: [
+        "create table t (",
+        "  id text not null,",
+        "  primary key(id),",
+        "  foreign key(id)",
+        "    references other(id)",
+        "    on delete cascade",
+        ")",
+      ].join("\n"),
+      gone: /foreign key|references/i,
+      kept: "primary key(id)",
+    },
+    {
+      name: "a foreign key on its own line among several",
+      sql: [
+        "create table t (",
+        "  id text not null,",
+        "  other text not null,",
+        "  primary key(id),",
+        "  foreign key(id) references other(id),",
+        "  foreign key(other) references other(id)",
+        ")",
+      ].join("\n"),
+      gone: /foreign key|references/i,
+      kept: "other text not null",
+    },
+    {
+      name: "a constraint keyword in front of the wrapped foreign key",
+      sql: [
+        "create table t (",
+        "  id text not null,",
+        "  primary key(id),",
+        "  constraint fk_other foreign key(id)",
+        "    references other(id)",
+        ")",
+      ].join("\n"),
+      gone: /constraint|foreign key|references/i,
+      kept: "primary key(id)",
+    },
+    {
+      name: "a table-level unique constraint",
+      sql: "create table t (id text not null, other text not null, unique(id, other))",
+      gone: /unique/i,
+      kept: "other text not null",
+    },
+    {
+      name: "a comment in front of the keyword, whose apostrophe would open a string",
+      sql: [
+        "create table t (",
+        "  id text not null,",
+        "  primary key(id),",
+        "  -- it's a foreign key",
+        "  foreign key(id) references other(id)",
+        ")",
+      ].join("\n"),
+      gone: /foreign key|references/i,
+      kept: "primary key(id)",
+    },
+  ])("drops $name", ({ sql, gone, kept }) => {
+    const rewritten = stripCrrUnsupportedTableConstraints(sql);
+
+    expect(rewritten).not.toMatch(gone);
+    expect(rewritten).toContain(kept);
+    // The point of the rewrite: SQLite has to accept what comes out of it.
+    expect(() => accept(rewritten)).not.toThrow();
+  });
+
+  it.each([
+    {
+      name: "a comma inside a string default",
+      sql: "create table t (label text not null default 'a, b', primary key(label))",
+      kept: "'a, b'",
+    },
+    {
+      name: "the word unique inside a string default",
+      sql: "create table t (flag text not null default 'unique', primary key(flag))",
+      kept: "'unique'",
+    },
+    {
+      name: "a doubled quote inside the constraint's own name",
+      sql: "create table t (id text not null, constraint 'it''s fk' unique(id))",
+      kept: "id text not null",
+    },
+    {
+      name: "a statement with no parenthesised body",
+      sql: "create table t as select 1 as one",
+      kept: "select 1 as one",
+    },
+    {
+      name: "a body whose only clause is a column",
+      sql: "create table t (id text not null primary key)",
+      kept: "primary key",
+    },
+  ])("leaves $name alone", ({ sql, kept }) => {
+    const rewritten = stripCrrUnsupportedTableConstraints(sql);
+
+    expect(rewritten).toContain(kept);
+    expect(() => accept(rewritten)).not.toThrow();
+  });
+
+  it("returns converged DDL byte-identical, so a settled table is never rebuilt", () => {
+    const sql = [
+      "create table t (",
+      "  id text not null,",
+      "  label text not null default '',",
+      "  primary key(id)",
+      ")",
+    ].join("\n");
+
+    const once = stripCrrUnsupportedTableConstraints(sql);
+    const twice = stripCrrUnsupportedTableConstraints(once);
+
+    expect(once).toBe(sql);
+    expect(twice).toBe(once);
+    expect(() => accept(once)).not.toThrow();
   });
 });

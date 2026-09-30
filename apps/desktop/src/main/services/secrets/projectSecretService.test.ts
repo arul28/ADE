@@ -322,3 +322,124 @@ describe("project secret .env formatting", () => {
     expect(() => parseProjectSecretEnv("# only comments")).toThrow(/does not contain any variables/);
   });
 });
+
+/**
+ * The pull is how an account-scoped secret reaches a second machine, and the
+ * account is the authority for one. These cover what it takes from the vault,
+ * what it must never take, and what it must never write back.
+ */
+describe("pullFromAccount", () => {
+  const VAULT_SCOPE = "repo:github.com/acme/project";
+
+  function stubVaultRows(
+    vault: ReturnType<typeof makeVaultMock>,
+    rows: Array<Record<string, unknown>>,
+  ): void {
+    vault.list.mockResolvedValue({ ok: true, value: rows });
+  }
+
+  it.each([
+    { storage: "account" as const, expected: 1, kept: false },
+    { storage: "device" as const, expected: 0, kept: true },
+  ])("applies a delete from another machine to a $storage copy", async ({ storage, expected, kept }) => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "value", storage });
+
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: null,
+      updatedAt: "2026-07-17T00:00:00.000Z",
+      deleted: true,
+    }]);
+    const result = await service.pullFromAccount();
+
+    expect(result.state).toBe("pulled");
+    expect(result.state === "pulled" ? result.removed : -1).toBe(expected);
+    if (kept) {
+      expect(service.get({ name: "SHARED" }).value).toBe("value");
+    } else {
+      expect(service.list().secrets).toEqual([]);
+    }
+  });
+
+  it("takes the account's value even when this machine's clock ran ahead", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
+    // A vault stamp behind this machine's clock used to look like an older edit.
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: "edited-elsewhere",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }]);
+
+    const result = await service.pullFromAccount();
+
+    expect(service.get({ name: "SHARED" }).value).toBe("edited-elsewhere");
+    expect(result.state === "pulled" ? result.updated : -1).toBe(1);
+    expect(service.list().secrets[0]?.storage).toBe("account");
+  });
+
+  it("never writes to the vault, so a local value cannot out-stamp the account's", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
+    vault.set.mockClear();
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "SHARED",
+      value: "edited-elsewhere",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    }]);
+
+    await service.pullFromAccount();
+
+    expect(vault.set).not.toHaveBeenCalled();
+    expect(vault.remove).not.toHaveBeenCalled();
+  });
+
+  it("reports a settled repository as unchanged on the next pull", async () => {
+    const projectRoot = makeProjectRoot();
+    addOrigin(projectRoot);
+    const vault = makeVaultMock();
+    const service = createProjectSecretService(projectRoot, {
+      getAccountVault: () => vault,
+      getAccountUserId: () => "account-a",
+    });
+    stubVaultRows(vault, [{
+      scope: VAULT_SCOPE,
+      kind: "project_secret",
+      key: "FROM_ACCOUNT",
+      value: "account-value",
+      updatedAt: "2026-07-16T00:00:00.000Z",
+    }]);
+
+    const first = await service.pullFromAccount();
+    const second = await service.pullFromAccount();
+
+    expect(first).toEqual({ state: "pulled", added: 1, updated: 0, removed: 0 });
+    expect(second).toEqual({ state: "pulled", added: 0, updated: 0, removed: 0 });
+    expect(service.get({ name: "FROM_ACCOUNT" }).value).toBe("account-value");
+  });
+});

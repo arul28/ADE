@@ -478,4 +478,45 @@ describe("account settings store", () => {
     expect(reopened.list()).toHaveLength(0);
     expect(() => reopened.set("all", "appearance.theme", "dark")).not.toThrow();
   });
+  it("reads a key deleted on another machine as absent here too", async () => {
+    const store = makeStore();
+    store.set("all", "appearance.theme", "dark");
+    relay.getAccountSettings.mockResolvedValueOnce({
+      settings: [
+        {
+          ...record("all", "appearance.theme", undefined, "2026-09-17T00:00:00.000Z"),
+          deleted: true,
+          writerDeviceId: null,
+        },
+      ],
+      cursor: null,
+      truncated: false,
+    });
+
+    await store.sync();
+
+    // Account-wide means a delete reaches every machine. The tombstone is kept
+    // so this machine can tell it from a key it never had.
+    expect(store.get("all", "appearance.theme")).toBeUndefined();
+    expect(store.list("all")).toEqual([]);
+  });
+  it("keeps a setting deleted here deleted when a stale page arrives", async () => {
+    const store = makeStore();
+    store.set("all", "appearance.theme", "dark");
+    await store.sync();
+    store.remove("all", "appearance.theme");
+
+    // The delete uploads, then a page from a cursor taken before it arrives.
+    // With the row gone there is nothing for the stale copy to lose against,
+    // and the setting comes back on the machine that deleted it.
+    relay.getAccountSettings.mockResolvedValueOnce({
+      settings: [record("all", "appearance.theme", "dark", "2026-09-15T00:00:00.000Z")],
+      cursor: null,
+      truncated: false,
+    });
+    await store.sync();
+
+    expect(store.get("all", "appearance.theme")).toBeUndefined();
+    expect(store.list("all")).toEqual([]);
+  });
 });

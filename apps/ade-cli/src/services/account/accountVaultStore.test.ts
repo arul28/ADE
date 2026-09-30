@@ -447,4 +447,46 @@ describe("account vault store", () => {
     expect(relay.putAccountVault).not.toHaveBeenCalled();
     expect(relay.getAccountVault).not.toHaveBeenCalled();
   });
+  it("keeps a delete the relay reports, and lets the key come back when it is written again", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    relay.getAccountVault.mockResolvedValueOnce({
+      items: [{ ...item("anthropic", null, "2026-09-17T00:00:00.000Z"), deleted: true, writerDeviceId: null }],
+      cursor: null,
+      truncated: false,
+    });
+
+    await store.sync();
+
+    // The tombstone is the only evidence a delete happened, and a value row
+    // cannot carry it: it has to survive the pull to reach the consumer.
+    expect(store.get("all", "provider_key", "anthropic")).toBeNull();
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", deleted: true, readable: false }),
+    ]);
+
+    // Writing the key again is what un-deletes it.
+    expect(store.set("all", "provider_key", "anthropic", "sk-live-xyz")).toBe(true);
+    expect(store.get("all", "provider_key", "anthropic")).toBe("sk-live-xyz");
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", readable: true }),
+    ]);
+  });
+
+  it("does not let a stale tombstone erase a value written after it", async () => {
+    const store = makeStore();
+    store.set("all", "provider_key", "anthropic", "sk-live-abc");
+    relay.getAccountVault.mockResolvedValueOnce({
+      items: [{ ...item("anthropic", null, "2020-01-01T00:00:00.000Z"), deleted: true, writerDeviceId: null }],
+      cursor: null,
+      truncated: false,
+    });
+
+    await store.sync();
+
+    expect(store.get("all", "provider_key", "anthropic")).toBe("sk-live-abc");
+    expect(store.list("all")).toEqual([
+      expect.objectContaining({ key: "anthropic", readable: true }),
+    ]);
+  });
 });
