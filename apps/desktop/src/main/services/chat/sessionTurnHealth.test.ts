@@ -13,8 +13,7 @@ import {
 } from "./sessionTurnHealth";
 
 /**
- * The bookkeeping behind two promises: a CTO voice call is never started on a
- * thread that cannot answer, and a thread is offered a rotation BEFORE it
+ * The bookkeeping behind one promise: a thread is offered a rotation BEFORE it
  * wedges rather than after.
  *
  * The sentences below are the real ones. The owner's CTO thread failed with

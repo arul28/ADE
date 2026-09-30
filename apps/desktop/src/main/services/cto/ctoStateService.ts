@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import YAML from "yaml";
@@ -551,16 +550,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ? foldLegacyIdentityFields(source, storedExtension)
     : storedExtension;
 
-  // Voice settings are checked against the shipped list rather than trusted: a
-  // hand-edited identity.yaml naming a voice OpenAI does not have would fail
-  // the call at connect time, long after the mistake was made.
-  const voiceName = typeof source.voiceName === "string"
-    && (CTO_VOICE_VOICES as readonly string[]).includes(source.voiceName.trim())
-    ? source.voiceName.trim()
-    : undefined;
-  const voiceBackchannels = typeof source.voiceBackchannels === "boolean"
-    ? source.voiceBackchannels
-    : undefined;
   const crossMachineEnabled = typeof source.crossMachineEnabled === "boolean"
     ? source.crossMachineEnabled
     : undefined;
@@ -573,8 +562,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
     modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
     ...(onboardingState ? { onboardingState } : {}),
-    ...(voiceName ? { voiceName } : {}),
-    ...(voiceBackchannels === undefined ? {} : { voiceBackchannels }),
     ...(crossMachineEnabled === undefined ? {} : { crossMachineEnabled }),
     updatedAt,
   };
@@ -1522,7 +1509,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
    * and turn 200 of the same thread. The chat service stages it once per
    * provider thread rather than on every send, because a live thread already
    * holds it: re-sending it grew a real CTO thread by ~12k input tokens a turn
-   * and walked it into auto-compaction mid-voice-call.
+   * and walked it into auto-compaction.
    *
    * `key` is the content identity of the body, so an identity rename or an
    * edited prompt extension re-stages it on the very next turn instead of being

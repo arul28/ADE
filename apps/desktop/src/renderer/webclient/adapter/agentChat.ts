@@ -600,6 +600,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("codex.clearGoal", pin);
         return await call("chat.codex.clearGoal", args, null, false);
       },
+      // Experimental Codex voice is desktop-only while it is being evaluated.
+      realtimeStart: async (): Promise<never> => {
+        throw new Error("Codex voice is available in the desktop app only.");
+      },
+      realtimeStop: async () => {},
+      realtimeState: async () => ({ status: "ended" as const, working: false, captions: [], handoffs: 0, error: null }),
       resetMemory: async (args: unknown, pin?: RuntimePinArg) => {
         guardPin("codex.resetMemory", pin);
         await call("chat.codex.resetMemory", args, undefined, false);

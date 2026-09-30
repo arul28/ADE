@@ -30,7 +30,6 @@ import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
 import { formatUserMessageTranscriptBody } from "./composerDrafts";
 import { terminalReasonLabel } from "./terminalReason";
-import { voiceCallLineId, voiceCallMarkerBody, voiceCallRunsByStartIndex } from "./voiceCallRuns";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -790,10 +789,6 @@ export function renderChatLines(args: {
     }
   }
 
-  // Keyed by the index of each run's first envelope; empty for every chat that
-  // has never been on a call, which is every chat but the CTO's.
-  const voiceCallRuns = voiceCallRunsByStartIndex(args.events);
-
   const pushLine = (line: RenderedChatLine): void => {
     const last = lines[lines.length - 1];
     if (
@@ -835,17 +830,6 @@ export function renderChatLines(args: {
 
     const { envelope, index } = entry;
     const event = envelope.event;
-    // A CTO voice call's turns are real turns on the CTO's real thread; they are
-    // headed by one dim line saying a call happened and then render normally.
-    // See `voiceCallRuns.ts` for why the terminal marks rather than folds.
-    const voiceRun = voiceCallRuns.get(index);
-    if (voiceRun) {
-      pushLine({
-        id: voiceCallLineId(voiceRun.callId),
-        tone: "notice",
-        body: voiceCallMarkerBody(voiceRun),
-      });
-    }
     const id = chatEventLineId(envelope, index);
     const expanded = args.expandedLineIds?.has(id) ?? false;
     if (event.type === "user_message") {

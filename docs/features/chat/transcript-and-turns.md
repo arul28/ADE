@@ -506,8 +506,8 @@ implements a two-layer transform:
      events collapse per agent (keyed by `agentId ?? taskId`) into ONE
      row: a `subagent_spawn_anchor` while the agent is running, which the
      terminal event converts IN PLACE into a `subagent_result_card` when
-     the agent completes, fails, or stops. The row keeps its position, its
-     key, and its voice call, so a card never moves when it finishes: three
+     the agent completes, fails, or stops. The row keeps its position and
+     its key, so a card never moves when it finishes: three
      running cards side by side become finished cards one by one in the
      same row. A late result (after the parent's `done`, even during a
      later turn) settles the card in place the same way. Only a result
@@ -884,7 +884,7 @@ implements a two-layer transform:
    bold/italic, inline code, Markdown links, strikethrough, and leading
    heading/quote/list markers — via `stripInlineMarkdown`. It is used by the
    collapsed work-log entry args, the tool-summary header, the minimap prompt
-   and reply previews, and the voice-call opening line; the expanded render is
+   and reply previews; the expanded render is
    unchanged. It is a small conservative scanner, not a parser: markers are
    removed only in pairs and `_`/`*` only at word boundaries, so `snake_case`,
    a shell glob, and a lone `*` survive. Internal status/delegation

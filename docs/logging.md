@@ -168,20 +168,8 @@ cleanup and a per-paste failure, so they stay local: the connection flaps and
 the sweeps have no user action behind them, and a paste failure's reason is
 free text that cannot cross the analytics boundary.
 
-A CTO voice call and the capture gesture each write their own local structured
-line families, and neither is a PostHog event. `cto_voice.*` covers the call's
-whole life at the runtime that owns it: lifecycle (`start`, `call_end`,
-`end_call_scheduled`, `router_state`, `owner_went_quiet`), the delegation loop
-(`function_call`, `turn_failed`, `turn_interrupted`, `turn_timing`,
-`function_output_dropped`), the transcript gate (`transcript_accepted`,
-`transcript_rejected`, `transcript_valve_tripped` / `_cleared`), the bounded
-audio queues (`preopen_audio_dropped`, `output_audio_dropped`), and the ways a
-socket or a permission hold fails (`socket_error`, `socket_rejected`,
-`session_error`, `read_only_failed`, `confirm_mode_failed`). They carry call
-ids, coarse reasons, counts and durations. They never carry the transcript, the
-spoken words, the model's audio, or any part of the user's OpenAI key — the
-provider's own error text is classified into a house sentence before it is
-logged or read aloud. `capture.*` is the helper supervisor's equivalent
+The capture gesture writes its own local structured line family, and it is not
+a PostHog event. `capture.*` is the helper supervisor's family
 (`helper_started`, `helper_spawn_failed`, `helper_exited`, `helper_error`,
 `helper_stderr`, `helper_invalid_output`, `helper_output_overflow`,
 `helper_path_outside_output_dir`, `chord_ignored`, `late_answer_dropped`); it
@@ -199,7 +187,7 @@ Shared desktop/runtime boundary:
 - `apps/desktop/src/main/services/analytics/productAnalyticsService.ts` owns machine consent, installation identity, salted identifier hashing, persisted deduplication/quota state, and the bounded direct Capture API transport.
 - `apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts`, `dailyUsageAnalytics.ts`, and `agentTurnProductAnalytics.ts` are the durable-ledger, daily-aggregate, and work-session producers. `agentTurnProductAnalytics.ts` also owns `captureChatHandoffReplayAnalytics`, the handoff-replay outcome described below. Their focused coverage is consolidated in `productAnalyticsService.test.ts`.
 - `apps/desktop/src/main/services/analytics/featureProductAnalytics.ts` owns the closed, content-free `ade_feature_used` producers for provider accounts, API credentials, custom presets, proxy, reset-credit outcomes, and pending-question dismissal. It maps provider-shaped input to the existing coarse provider-family allowlist before capture.
-- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it. The CTO voice call's single end-of-call event is emitted inline from `services/cto/ctoVoiceRuntimeService.ts`, the durable owner of a call and the only place that sees every way one can finish.
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` is the capture-gesture producer (`reportCaptureGesture`). It takes a `Pick<ProductAnalyticsService, "captureInternal">` rather than the service, so the one call site cannot reach anything else through it.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts`, and `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx` expose the safe renderer boundary and lifecycle producers. `ProductAnalyticsSection.tsx` is the desktop opt-out UI.
 
 Attached clients and native surfaces:
@@ -893,32 +881,9 @@ snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
 
-### CTO voice calls and the capture gesture
+### The capture gesture
 
-A CTO voice call records one `ade_feature_used` event when it ENDS, emitted from
-the runtime-hosted call service — the durable owner of the call, and the only
-place that sees every way one can finish. It carries `feature: "cto"`,
-`action: "voice_call"`, one closed `outcome`, and the existing coarse
-`duration_bucket`. The five outcomes are the whole product question: `completed`,
-`rejected_key` (OpenAI refused the key), `connection_failed` (the socket never
-came up), `microphone_unavailable` (the OS would not open a microphone), and
-`ended_early` (the call ended before it got going). They are mapped from the
-teardown reason and the HTTP status, never from the sentence the user read —
-those name a provider and a settings pane. Nothing about the call itself
-crosses: not the transcript, the captions, the spoken words, the project, the
-lane, the CTO's name, the voice, the cost, or any part of a key. The bucket
-reuses the existing `duration_bucket` vocabulary (`under_1m` … `over_2h`)
-rather than a voice-specific spelling, so call length stays comparable with
-every other duration in the taxonomy.
-
-A deduplication key per call id makes the two terminal states one call publishes
-— `failed` then `ended` — a single accepted event. A call is a deliberate,
-attended act that bills by the minute, so the realistic worst case is a handful
-per installation per UTC day; the hard bound is the `ade_feature_used`
-140-per-day / 30-per-minute limits and the shared 200-event ceiling, neither of
-which was raised.
-
-The capture gesture records the same event from the main-process handler that
+The capture gesture records one `ade_feature_used` event from the main-process handler that
 delivers or refuses the shot, with `feature: "cto"`,
 `action: "capture_gesture"`, and one of three coarse outcomes: `delivered`,
 `failed`, and `too_large` (a display ADE could not fit into an attachment even
@@ -929,7 +894,7 @@ per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
 1,440 accepted events per outcome in theory, and the `ade_feature_used`
 30-per-minute and 140-per-day limits bound it in practice; the realistic number
 is single digits. No ceiling was raised, and the dashboard spec is deliberately
-untouched — no card asks either question yet.
+untouched — no card asks that question yet.
 
 ### Native iOS
 

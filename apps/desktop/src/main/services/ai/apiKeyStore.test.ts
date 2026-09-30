@@ -837,8 +837,8 @@ describe("apiKeyStore", () => {
 });
 
 /**
- * The CTO voice key is not the project's. It pays for calls this MACHINE makes,
- * so it is stored in the machine ADE home and must be readable from any project
+ * A machine-scoped key is not the project's. It belongs to this MACHINE, so it
+ * is stored in the machine ADE home and must be readable from any project
  * — and, just as importantly, a key sitting in one project's `.ade/secrets`
  * must NOT leak into it. These tests pin both directions of that boundary.
  */
@@ -941,7 +941,7 @@ describe("apiKeyStore machine scope", () => {
     // the project runtime. Before this, whichever of them read first cached the
     // store for its whole life, so a key stored by one was invisible to the
     // others — which is exactly how a key saved in Settings left the
-    // runtime-hosted voice call still answering "no OpenAI key on this machine".
+    // runtime still answering "no OpenAI key on this machine".
     safeStorageState.available = true;
     const store = await loadStoreModule();
     store.initApiKeyStore(projectRoot);

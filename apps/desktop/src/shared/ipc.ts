@@ -397,22 +397,11 @@ export const IPC = {
   agentChatCodexSetGoal: "ade.agentChat.codex.goal.set",
   agentChatCodexSetGoalStatus: "ade.agentChat.codex.goal.setStatus",
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
+  agentChatCodexRealtimeStart: "ade.agentChat.codex.realtime.start",
+  agentChatCodexRealtimeStop: "ade.agentChat.codex.realtime.stop",
+  agentChatCodexRealtimeState: "ade.agentChat.codex.realtime.state",
   agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
   agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
-  // CTO voice call. The renderer owns only the microphone and the speaker; the
-  // socket, the delegation loop and every confirmation decision stay in main.
-  ctoVoiceStart: "cto-voice:start",
-  ctoVoiceEnd: "cto-voice:end",
-  ctoVoicePushAudio: "cto-voice:push-audio",
-  ctoVoiceSetMuted: "cto-voice:set-muted",
-  ctoVoiceApprove: "cto-voice:approve",
-  ctoVoiceDeny: "cto-voice:deny",
-  ctoVoiceAttachImage: "cto-voice:attach-image",
-  ctoVoiceHasKey: "cto-voice:has-key",
-  /** Main → renderer: the whole call state, on every change. */
-  ctoVoiceState: "cto-voice:state",
-  /** Main → renderer: one chunk of output audio, base64 PCM16. */
-  ctoVoiceAudio: "cto-voice:audio",
   // Scenes — agent-authored HTML rendered in a sandboxed frame. `prepare` mints
   // an ade-scene:// URL, `snapshot` freezes the drawn frame, `attachProof`
   // files that snapshot into the proof drawer.

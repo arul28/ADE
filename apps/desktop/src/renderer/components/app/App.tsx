@@ -690,6 +690,7 @@ function ProjectTabHost() {
     launchPromptClipboardNoticeEnabled: s.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: s.promptStashButtonEnabled,
     voiceInputEnabled: s.voiceInputEnabled,
+    codexVoice: s.codexVoice,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const bindingsRef = React.useRef(new Map<string, OpenProjectBinding>());

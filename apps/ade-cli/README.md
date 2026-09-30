@@ -345,7 +345,7 @@ frozen wire identifier for the method, the action domain, and the item ids even
 though the product surface is now called Activity. Agents on a desktop endpoint
 reach the same operations through `ade actions run attention.<action>`.
 
-`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`, `cto_voice`) — one tuple that the buffer, this schema enum, and every client guard derive from. `cto_voice` is CTO-only in both transports; see the voice notes under the CLI surface below.
+`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`) — one tuple that the buffer, this schema enum, and every client guard derive from.
 
 `personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` are machine-scoped RPC methods, not entries in the `personalChats.call` action registry, so they are absent from `ade chat actions --personal` and `ade chat action --personal <action>` rejects them by design. They push `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a client holding the connection open; the CLI does not use them, because every `ade chat` command is a one-shot plan that polls. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports these from an older one that would ignore them — both optional, both absent on older runtimes. `personalChats.streamEvents` cursor draining is unchanged and stays the path for clients that cannot hold a socket.
 
@@ -828,8 +828,6 @@ ade --role cto actions run ai.storeMachineApiKey --input-json "$(jq -n --arg v "
 ade --role cto actions run ai.deleteMachineApiKey --input-json '{"provider":"openai"}' --json
 ade actions run cto_state.getThreadHealth --json                           # can the CTO thread take a turn, and is a rotation advised
 ade --role cto actions run cto_state.startFreshSession --json       # retire the CTO thread and open a clean one (CTO-only; memory and identity carry over)
-ade --role cto actions run cto_voice.getState --json                # phase, elapsed, captions, pending confirmation — a read; driving a call is the desktop window's job
-ade --role cto actions run cto_voice.hasKey --json                  # does this machine have an OpenAI key a call could bill to
 ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{"path":".../.ade/artifacts/computer-use/scene.png"}' --json
 ade cursor cloud agents list --text
 ade cursor cloud agents list --archived --limit 100 --text
@@ -909,35 +907,12 @@ reason `ade secrets` is not one of them: a provider key is not a project secret.
 (`<project>/.ade/secrets`); `ai.storeMachineApiKey` / `ai.deleteMachineApiKey` /
 `ai.getMachineApiKeyStatus` write this INSTALL's (`~/.ade/secrets`, or
 `$ADE_HOME`), which is the one a key should live in when it pays for something
-the machine does rather than something the repo does — the CTO voice call's
-OpenAI key is the current example. Both writers are CTO-only; both status reads
+the machine does rather than something the repo does. Both writers are CTO-only; both status reads
 are not, because they answer "is a key configured, and did it come from the
 store or the environment" and never return the key. The secret travels one way,
 in: `storeMachineApiKey` returns the resulting status, not what you sent it.
 Build the `--input-json` from an environment variable as above rather than
 typing the key inline, and never echo the result into a log.
-
-`cto_voice` is in the action registry and therefore listed by `ade --role cto
-actions list --domain cto_voice --text`, with an input contract on each of its
-nine actions — but it is not a CLI workflow, and listing it is not an invitation
-to drive it. Every action is CTO-only with no exceptions (`allExcept: []`, so a
-tenth action added later is operator-only by omission), and every one after
-`getState` / `hasKey` requires the `ownerToken` minted by the desktop window
-that started the call: exactly one window holds the microphone and drains the
-speaker, and `pullAudio` doubles as the heartbeat proving that window is still
-alive. An agent-role caller that tries anyway gets a plain refusal —
-`Action 'cto_voice.start' requires elevated role.` — not a silent no-op. From
-the CLI the useful pair is `cto_voice.getState` (phase, elapsed, captions, any
-pending confirmation) and `cto_voice.hasKey`, both reads.
-
-The `cto_voice` runtime event CATEGORY is gated the same way, in both event
-transports. A call's state events carry its running transcript, so listening to
-one is the same disclosure as reading the CTO thread: `stream_events` and
-`runtimeEvents.subscribe` refuse `category: "cto_voice"` outright from a
-non-CTO caller, and filter those events out of an uncategorised drain or
-subscription rather than failing it — the cursor still advances past what was
-withheld, so a poller cannot stall on them. Audio never enters the buffer at
-all; only phase, captions and approvals do.
 
 `computer_use_artifacts.ingestSceneSnapshot` is not a second `ade proof attach`.
 It is CTO-only, takes no bytes, and accepts only a path already inside this
@@ -947,11 +922,7 @@ broker lives in the runtime rather than in-process. Agents create proof through
 `ade proof attach` and the validated `ingest_computer_use_artifacts` tool, which
 is the path that checks owner claims and the caller's import root.
 
-The CTO's voice (`voiceName`) and whether it says one short sentence before it
-does real work (`voiceBackchannels`) live on the CTO identity, not in machine settings, so they
-move with the project: read them from `cto_state.getIdentity` and write them
-through `cto_state.updateIdentity` like any other identity field. There is no
-`ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
+There is no `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
 run` only.
 
 Two `cto_state` actions are new and one pair is gone. `getThreadHealth` is a

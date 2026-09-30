@@ -146,6 +146,8 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type { ZLayer } from "../ui/zLayers";
 import { VoiceDictationButton } from "./VoiceDictationButton";
+import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoiceButton";
+import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
@@ -2550,6 +2552,25 @@ export function AgentChatComposer({
   const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
   const voiceModelInstalled = useVoiceModelInstalled(voiceInputEnabled);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Codex voice: a voice layer on any chat, carried by the user's Codex
+  // (ChatGPT) sign-in. Shown when enabled in Settings and Codex is signed in;
+  // the full composer only, not grid tiles or parallel launches. Desktop only
+  // for now: the web client has no path to the brain's voice host.
+  const codexVoicePreferences = useAppStore((s) => s.codexVoice);
+  const codexAuth = useProviderAuthStatus().status.openai;
+  const codexVoiceOffered = Boolean(
+    sessionId
+    && !isWebClientMode()
+    && codexVoicePreferences.enabled
+    && codexAuth === "ok"
+    && !parallelChatMode
+    && layoutVariant !== "grid-tile",
+  );
+  const codexVoice = useCodexVoice({
+    sessionId: codexVoiceOffered ? sessionId ?? null : null,
+    preferences: codexVoicePreferences,
+    onError: setVoiceError,
+  });
   const [voiceShimmer, setVoiceShimmer] = useState(false);
 
   const resizeTextarea = useCallback(() => {
@@ -5624,6 +5645,7 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
+      <CodexVoiceBar voice={codexVoice} />
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -6470,6 +6492,9 @@ export function AgentChatComposer({
                   : []),
               ]}
             />
+
+            {/* Codex voice: talk with this chat. */}
+            {codexVoiceOffered ? <CodexVoiceButton voice={codexVoice} /> : null}
 
             {/* Voice dictation — paired just left of the send control. */}
             {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (

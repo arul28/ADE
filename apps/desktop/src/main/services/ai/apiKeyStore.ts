@@ -1230,9 +1230,9 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
 // Some keys are not the project's. `initApiKeyStore` resolves through
 // `resolveAdeLayout(projectRoot)`, so the encrypted fallback lands in
 // `<project>/.ade/secrets` and a key pasted once stops existing the moment the
-// user opens a different repo. The CTO voice key pays for calls THIS MACHINE
-// makes; scoping it to a project would mean asking the same person for the same
-// secret in every repo they open.
+// user opens a different repo. A machine-scoped key belongs to THIS MACHINE;
+// scoping it to a project would mean asking the same person for the same secret
+// in every repo they open.
 //
 // This is the same store, read in the same three tiers (credential store →
 // macOS Keychain → env var), with two differences: the encrypted fallback lives

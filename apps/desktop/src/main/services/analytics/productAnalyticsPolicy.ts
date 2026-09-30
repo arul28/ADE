@@ -176,12 +176,6 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The same three coarse outcomes for the lane's App Control session: one
   // started, an agent drove it, or a recording was filed as proof.
   "app_control",
-  // One coarse fact per CTO voice call, at the call's end. Whether calls are
-  // had at all, and whether they work, is the only question the feature has —
-  // and a call that dies on a rejected key looks identical to a short one in
-  // every other signal. Never the transcript, the words, the project, the
-  // provider, or any part of a key.
-  "voice_call",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -317,7 +311,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "chat", "cli", "work", "lanes", "files", "git", "prs",
     "automations", "command_palette", "storage_doctor", "attention", "updates", "connections",
     "usage",
-    // The CTO surface: voice calls and the capture gesture that feeds them.
+    // The CTO surface: the capture gesture.
     "cto",
     // Account/provider decisions owned by the brain or desktop main process.
     "provider_accounts", "api_credentials", "presets", "proxy",
@@ -374,13 +368,6 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // so it would be a typing signal rather than a workflow outcome, and it is
     // derivable from armed minus resumed anyway.
     "armed", "resumed", "paused",
-    // How a CTO voice call ended. `completed` above covers the ordinary case;
-    // these are the four ways it does not, and they are the whole product
-    // question — a rejected key, an unreachable OpenAI, a microphone the OS
-    // would not open, and a call the user or their window ended before it got
-    // going. Mapped from the teardown reason, never from the sentence the user
-    // read: those carry provider text and settings paths.
-    "rejected_key", "connection_failed", "microphone_unavailable", "ended_early",
     // Whether a capture-gesture press reached the composer. `failed` above is
     // the general case; `too_large` is the one failure that is a product fact
     // rather than an environment one — a display ADE cannot fit into an

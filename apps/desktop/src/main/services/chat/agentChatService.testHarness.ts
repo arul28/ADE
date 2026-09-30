@@ -31,7 +31,6 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { beginIdentityConfirmHold } from "./identitySessionPolicy";
 import { injectFsFault } from "../../../test/faultInjection";
 import {
   resolveBuiltInBrowserActorCapability,
@@ -2266,7 +2265,6 @@ export {
   SESSION_STALE_AFTER_MS,
   SessionTurnAbandonedError,
   acquireCursorSdkConnection,
-  beginIdentityConfirmHold,
   bridgeClaudeSessionToQuery,
   buildCodingAgentSystemPrompt,
   buildComputerUseDirective,

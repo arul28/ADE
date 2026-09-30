@@ -159,7 +159,6 @@ Pick a named layer and never type a z-index:
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
-| `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
 | `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
 | `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |

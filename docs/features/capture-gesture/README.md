@@ -1,6 +1,6 @@
 # Capture gesture
 
-Press **both ⌘ keys** on macOS, or **both Ctrl keys** on Windows, anywhere on the OS — in ADE, in a browser, in Xcode, over a video call — and the window in front is captured and handed to the CTO. If a voice call is on air the shot goes into the conversation; otherwise it is staged on the CTO composer and ADE comes forward with it already attached.
+Press **both ⌘ keys** on macOS, or **both Ctrl keys** on Windows, anywhere on the OS — in ADE, in a browser, in Xcode, over a video call — and the window in front is captured and handed to the CTO. It is staged on the CTO composer and ADE comes forward with it already attached.
 
 The whole feature is one sentence of user intent — *ask the CTO about what I am looking at* — and everything below is what that sentence costs to implement without asking the user for a permission they would refuse.
 
@@ -17,7 +17,7 @@ The whole feature is one sentence of user intent — *ask the CTO about what I a
 - `captureShotFit.ts` — `fitCaptureShotToAttachmentLimit`, the four-halvings downscale, with the two Electron image operations injected so the arithmetic is testable without a browser process. Lived in `main.ts`.
 - `captureGestureTarget.ts` — `pickCaptureGestureWindow`, the focused → last-focused → any-live order, pure and generic over the window type; main keeps only the liveness filter, which is the part only Electron can answer.
 - `captureHelper.ts` — the supervisor. Deliberately the same shape as `AttentionNotchHelper` — line cap (`MAX_HELPER_LINE_BYTES`, 64 KB), restart budget (`MAX_RESTART_ATTEMPTS`, 3), graceful-shutdown window, `windowsHide` — because the failure modes of a supervised NDJSON child are identical and a second, subtly different supervision policy in the same app is how one of them rots. It also owns `captureNow()`, the capture timeout (`CAPTURE_TIMEOUT_MS`, 8 s), the read-back cap (`MAX_CAPTURE_BYTES`, 48 MB), and the `isAdeWindow` determination. One boolean, `captureInFlight`, is the whole request latch — there is no generation counter — and `settleCapture()` is the single place it is cleared: it returns whether anything was actually in flight, so a `captured` line that arrives after its own timeout already reported a failure is dropped rather than delivered as a shot the user has been told did not happen, and its orphaned PNG is deleted rather than left for the dispose-time purge. Failures do not go through that gate at all: the Windows helper emits `permission-denied` at startup, before any capture was asked for, and that is the one signal saying why the gesture will never fire.
-- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` — `reportCaptureGesture(service, outcome)`, the one coarse product fact a press produces (`delivered` / `failed` / `too_large`). It lives beside the other analytics producers rather than inside the capture service so the privacy contract is reviewable in one folder, and it dedupes per outcome on a one-minute interval: the product question is whether the gesture works for an installation, and a user who fires it four times while something is broken is one fact, not four. See [logging.md › CTO voice calls and the capture gesture](../../logging.md#cto-voice-calls-and-the-capture-gesture).
+- `apps/desktop/src/main/services/analytics/captureGestureProductAnalytics.ts` — `reportCaptureGesture(service, outcome)`, the one coarse product fact a press produces (`delivered` / `failed` / `too_large`). It lives beside the other analytics producers rather than inside the capture service so the privacy contract is reviewable in one folder, and it dedupes per outcome on a one-minute interval: the product question is whether the gesture works for an installation, and a user who fires it four times while something is broken is one fact, not four. See [logging.md › The capture gesture](../../logging.md#the-capture-gesture).
 
 ### Native helpers
 
@@ -27,7 +27,7 @@ The whole feature is one sentence of user intent — *ask the CTO about what I a
 ### Renderer (`apps/desktop/src/renderer/components/capture/`)
 
 - `GlobalCaptureGestureHost.tsx` — mounted once in `AppShell.tsx`, inside the router and above every tab. It subscribes to `captureGesture.onShot` / `onFailure`, resolves the delivery target, stages attachments, navigates to `/cto`, and renders the fly-in and the failure notice.
-- `captureGestureDelivery.ts` — the routing decision as pure functions: `isCallJoinable`, `planCaptureAttachments`, `describeShot`. (Base64 lives in `renderer/lib/base64.ts`, shared with chat attachments and voice audio.)
+- `captureGestureDelivery.ts` — `planCaptureAttachments`, the pure decision of what to stage for one shot. (Base64 lives in `renderer/lib/base64.ts`, shared with chat attachments.)
 - `currentViewState.ts` — `CurrentViewState`, `composeCurrentViewState`, and `formatCurrentViewState`: "what is ADE showing right now", as a thing you can attach to a message.
 - `captureGestureLocalSettings.ts` — the machine-local on/off switch (`ade:capture-gesture:enabled`, default on) and `captureGestureBridgeAvailable()`.
 - `CaptureFlyIn.tsx` — the captured thumbnail flying into the composer. Two frames and a CSS transition, no animation library; `pointer-events: none` throughout, because a 420 ms overlay that eats a click is worse than no animation.
@@ -108,12 +108,7 @@ The helper writes the capture to a file under the OS temp root and names the pat
 
 ## The target is always the CTO
 
-There is no "capture to clipboard" and no destination chooser. There are two destinations and no payload either way, so the decision is a boolean, not a tagged union:
-
-- **A call is live** → `deliverToCall`. The shot is spoken about, not filed: the host only dispatches the `ade:cto-voice:attach-capture` DOM event. `useCtoVoiceCall` listens for it and calls the optional `ctoVoice.attachImage` bridge, which forwards the shot into the conversation with a note. The host does not call the bridge itself; doing both sent one capture to the live model two or three times. Pointing at something while you talk about it is why the gesture and the call were designed together, so the call consumes the shot rather than making the user go find a composer they are not looking at. See [CTO › Voice calls](../cto/README.md#voice-calls).
-- **No call** → `deliverToComposer`. `cto.ensureSession()` resolves the thread, ADE navigates to `/cto` **before** the chips appear — so an attachment is never staged onto a composer nobody is looking at — and each file is staged through `agentChat.saveTempAttachment` and announced with the `ade:agent-chat:add-attachment` event, the same one `WorkSidebar` dispatches.
-
-`isCallJoinable` decides, and it asks two things. The phase must be live — `isVoiceCallLive` in `shared/types/ctoVoice.ts` excludes `idle`, `ended` and `failed` **by name**, so a phase added later defaults to live rather than silently dropping captures. The phase list is not repeated here; a second copy of it was the drift that helper was written to end. On top of it, the call must have an id: one the main process cannot address is not one a shot can reach.
+There is no "capture to clipboard" and no destination chooser. Every shot goes to `deliverToComposer`: `cto.ensureSession()` resolves the thread, ADE navigates to `/cto` **before** the chips appear — so an attachment is never staged onto a composer nobody is looking at — and each file is staged through `agentChat.saveTempAttachment` and announced with the `ade:agent-chat:add-attachment` event, the same one `WorkSidebar` dispatches.
 
 ### Over ADE's own window, the image travels with view state
 
@@ -121,7 +116,7 @@ A screenshot of ADE tells the CTO what the pixels look like and nothing about wh
 
 No single accessor answered that question before. The pieces already existed and were scattered across `selectActiveProjectStateKey` and `selectWorkViewState` in `appStore`, `readStoredProjectRoute`, `parsePrsRouteState`, and `editorGroupsStore`; `currentViewState.ts` is the one place that assembles them, as a pure function over an injected snapshot rather than a hook, so the formatting is testable without mounting the app.
 
-Over another application's window ADE knows nothing worth attaching, and the note is omitted rather than guessed at. The image still carries provenance through `describeShot` — "Screenshot of Safari — …" rather than the single least useful thing you can hand an agent, an unlabelled screenshot.
+Over another application's window ADE knows nothing worth attaching, and the note is omitted rather than guessed at.
 
 ## Focus, feedback, and failure
 
@@ -152,10 +147,9 @@ The generated binaries are gitignored; `apps/desktop/resources/native/README.md`
 - **Desktop GUI only, deliberately.** The gesture is an OS-level key hook plus a native window grab, so there is no `ade` CLI, `ade code` TUI, or ADE Mobile equivalent — nothing to mirror, and the shot has to reach a composer on the machine that took it.
 - **Linux ships nothing.** X11 and Wayland need different grabs, Wayland refuses foreign-window pixel capture outright without a portal handshake, and ADE has no Linux packaging target. The gesture is hidden there rather than shipped as a permanently dead switch.
 - **Both helper binaries are built, not committed.** `resources/native` is gitignored, so a checkout carries the helper sources only. `npm run build:capture-helper` produces the macOS binary locally, and each platform builds its own helper at package time.
-- **Voice delivery goes through the same store the HUD reads.** `GlobalCaptureGestureHost` subscribes via `subscribeVoiceState` rather than opening its own `onState` listener — a second subscription delivered every push twice — and decides with `isCallJoinable(state)`, which needs a live phase *and* a call id. With no bridge at all (the hosted web client, the browser preview) the store never leaves `idle`, so the shot goes to the composer. The delivery event is dispatched in whichever window is in front and reaches the one service in the main process, so a capture taken from a window that does not hold the microphone still lands in the call.
 
 ## Cross-links
 
-- [CTO](../cto/README.md) — the thread every capture lands on, and the voice call a capture joins when one is live.
+- [CTO](../cto/README.md) — the thread every capture lands on.
 - [Onboarding and settings](../onboarding-and-settings/README.md#capturing-a-window-with-a-key-gesture) — the switch, the health card, and where the preference is stored.
 - [Chat](../chat/README.md) — `saveTempAttachment` and the composer attachment path a staged capture uses.

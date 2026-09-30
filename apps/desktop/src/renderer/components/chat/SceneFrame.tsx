@@ -10,7 +10,6 @@ import {
   SCENE_LIMITS,
   SCENE_SETTLE_MAX_MS,
   SCENE_SETTLE_QUIET_MS,
-  type SceneStillRecord,
   type SceneTheme,
 } from "../../../shared/chatScene";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -90,7 +89,7 @@ function readSceneTheme(): SceneTheme {
 
 export type SceneFrameProps = {
   source: string;
-  /** True while the turn or call that produced this scene is still running. */
+  /** True while the turn that produced this scene is still running. */
   live?: boolean;
   /**
    * True while this scene's ```scene fence is still ARRIVING — live AND not
@@ -103,8 +102,7 @@ export type SceneFrameProps = {
    * answer it: fence state is a property of the markdown body, not of this
    * component, and the two flags were never independently meaningful here —
    * `sealed` mattered only while `live`. Defaults false: every caller that does
-   * not stream (the voice HUD, a settled transcript row) is complete by
-   * construction.
+   * not stream (a settled transcript row) is complete by construction.
    */
   streaming?: boolean;
   /**
@@ -112,25 +110,12 @@ export type SceneFrameProps = {
    * what separates two byte-identical scenes at different positions.
    *
    * Required, and explicitly null for a scene that has none — a reasoning body,
-   * a scene drawn outside a call. Null means the scene runs and leaves nothing
+   * a reasoning body. Null means the scene runs and leaves nothing
    * behind, which is a decision each caller has to make rather than fall into
    * by omitting a prop.
    */
   scopeKey: string | null;
-  /**
-   * The call this scene was drawn on, or null. Stored with the still so the
-   * finished call's card can find its pictures again from the broker rather
-   * than from anything this window kept.
-   */
-  voiceCallId: string | null;
   onEmit?: (name: string, payload: unknown) => void;
-  /**
-   * Called once, with the stored record, the first time this scene's still
-   * lands on disk. The voice HUD is the caller that needs it: its scene is
-   * unmounted with the HUD when the call ends, so the still has to be handed to
-   * something that outlives it before that happens.
-   */
-  onStill?: (record: SceneStillRecord) => void;
 };
 
 type Status = "loading" | "running" | "frozen";
@@ -155,16 +140,12 @@ export function SceneFrame({
   live = false,
   streaming = false,
   scopeKey,
-  voiceCallId,
   onEmit,
-  onStill,
 }: SceneFrameProps) {
   // Proof in ADE is chat-scoped, so a snapshot filed with no owner is an
   // artifact nobody can trace back to a conversation. Read from the chat scope
   // rather than taken as a prop: the value is session-constant, and threading
-  // it here meant two components in between carrying a prop neither reads. A
-  // caller outside a chat subtree that does know its chat — the voice HUD —
-  // says so by providing a scope, not by overriding one from the side.
+  // it here meant two components in between carrying a prop neither reads.
   const { sessionId } = useChatRuntimeScope();
   const parsed = useMemo(() => parseSceneFence(source), [source]);
   const failed = isSceneParseFailure(parsed);
@@ -208,9 +189,8 @@ export function SceneFrame({
   /**
    * The document that has reported it is done animating — not a boolean.
    *
-   * The voice HUD is why: it keeps ONE mounted frame for a whole call and swaps
-   * the source each time the CTO draws, and on a swap the reset below and the
-   * capture effect run in the SAME commit, with the reset's `setSettled(false)`
+   * A caller can keep ONE mounted frame and swap its source, and on a swap the
+   * reset below and the capture effect run in the SAME commit, with the reset's `setSettled(false)`
    * still only scheduled. The capture therefore fired against the previous
    * view's `settled`, took a picture of a document that had just been replaced,
    * threw it away (its own effect was torn down a tick later) and burned the
@@ -222,10 +202,6 @@ export function SceneFrame({
   const [stillAttempt, setStillAttempt] = useState(0);
   /** One still per mounted scene: a second capture would only cost a window grab. */
   const stillTakenRef = useRef(false);
-  // Read through a ref so a caller passing an inline arrow does not restart the
-  // capture effect on every render of its parent.
-  const onStillRef = useRef(onStill);
-  onStillRef.current = onStill;
 
   /**
    * Show the picture this scene already left behind, or run its code? The whole
@@ -256,8 +232,8 @@ export function SceneFrame({
    * The document the frame is currently showing, and the nonce that document
    * stamps its messages with — one piece of state, never two.
    *
-   * The pair has to move together. The voice HUD keeps ONE mounted frame for a
-   * whole call and swaps its `src`, and an iframe's `contentWindow` is the SAME
+   * The pair has to move together. When one mounted frame has its `src`
+   * swapped, an iframe's `contentWindow` is the SAME
    * object across that swap — so the `event.source` check below cannot tell the
    * outgoing document from the incoming one. A `settled` or `ready` the old
    * document posted after the swap was therefore stamped onto the new one,
@@ -361,11 +337,9 @@ export function SceneFrame({
   // A new document is a new scene and gets its own wait; an expired deadline
   // from the previous one would freeze it uncaptured on sight.
   //
-  // The still is reset with it, and so is the one-capture latch. The voice HUD
-  // is the caller that proves this matters: it keeps ONE mounted frame for the
-  // whole call and swaps the source each time the CTO draws, so a latch that
-  // survived the swap meant every call kept a picture of its first view and
-  // none of the rest.
+  // The still is reset with it, and so is the one-capture latch: a latch that
+  // survived a source swap on one mounted frame would keep a picture of the
+  // first view and none of the rest.
   useEffect(() => {
     freezeDeadlineRef.current = null;
     stillTakenRef.current = false;
@@ -383,9 +357,9 @@ export function SceneFrame({
    * quiet window longer than the frame's own cap, so a frame that IS going to
    * report gets to do it first and the two do not race.
    *
-   * Armed PER DOCUMENT, and it stamps the document it was armed for. The voice
-   * HUD swaps the source on one mounted frame, and `status` stays `running`
-   * across the swap — so a deadline left over from a view that never settled
+   * Armed PER DOCUMENT, and it stamps the document it was armed for. When the
+   * source is swapped on one mounted frame, `status` stays `running` across the
+   * swap — so a deadline left over from a view that never settled
    * survived it and stamped the NEW document settled almost immediately,
    * capturing a barely-painted view and burning the one-still latch on it.
    */
@@ -468,11 +442,9 @@ export function SceneFrame({
           // still per key, so a scene that settles twice supersedes its own
           // picture instead of leaving a trail of them on disk.
           scopeKey,
-          voiceCallId,
         }).catch(() => null);
         if (cancelled || !record) return;
         if (scopeKey) rememberSceneStill(scopeKey, { record });
-        onStillRef.current?.(record);
       })
       .catch(() => {
         // A failed capture is not a failed scene. Allow another attempt if the
@@ -480,7 +452,7 @@ export function SceneFrame({
         stillTakenRef.current = false;
       });
     return () => { cancelled = true; };
-  }, [settled, status, src, stillAttempt, scopeKey, voiceCallId, failed, parsed, sessionId]);
+  }, [settled, status, src, stillAttempt, scopeKey, failed, parsed, sessionId]);
 
   // Freeze: capture the frame's rect, then swap the image in and drop the frame
   // so nothing keeps executing in scrollback.

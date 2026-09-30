@@ -2,7 +2,6 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
-import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -135,24 +134,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * fleet already depends on.
    */
   cto_state: { only: ["startFreshSession"] },
-  /*
-   * Fail-closed, with no exceptions at all.
-   *
-   * A voice call opens a billed socket to OpenAI on the user's own key, puts the
-   * CTO thread into confirm-first mode for its duration, and carries a live
-   * microphone and speaker in a desktop window. None of that is something an
-   * agent has any business starting, driving, or listening to — `pullAudio`
-   * alone would let a session-bound agent drain the audio out from under the
-   * user mid-sentence, and `getState` returns the call's running transcript.
-   *
-   * Desktop main is the only intended caller and reaches this at `cto` role:
-   * `buildLocalRuntimeNodeEnv` launches the project runtime with
-   * `ADE_DEFAULT_ROLE=cto`, and the pool refuses to connect to a runtime whose
-   * default role is anything else. `allExcept: []` therefore denies every
-   * agent-role caller while leaving the router untouched — and a voice action
-   * added later is CTO-only by omission, which is the polarity this gate wants.
-   */
-  cto_voice: { allExcept: [] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -307,18 +288,6 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
 }
-
-/**
- * Every voice action, spread from the one list that defines them.
- *
- * Exhaustive by construction rather than by review: a tenth action added to
- * `CTO_VOICE_ACTIONS` is on the bus the moment it exists, and cannot sit on the
- * service unreachable because nobody remembered this file. Sorted at read time,
- * because the allowlist is read as documentation as well as policy — the
- * ordering is presentation, the membership is not.
- */
-const CTO_VOICE_ALLOWED_ACTIONS: readonly CtoVoiceAction[] =
-  [...CTO_VOICE_ACTIONS].sort();
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: [
@@ -626,6 +595,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setCodexGoal",
     "setCodexGoalStatus",
     "clearCodexGoal",
+    "startCodexRealtime",
+    "stopCodexRealtime",
+    "getCodexRealtimeState",
     "getCodexGoal",
     "resetCodexMemory",
     "terminateCodexBackgroundTerminal",
@@ -803,10 +775,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
-  // The desktop router's whole surface. Every one of these is CTO-only — see
-  // `ADE_ACTION_CTO_ONLY.cto_voice`, which is `allExcept: []` so a voice action
-  // added later is operator-only by omission rather than by remembering.
-  cto_voice: CTO_VOICE_ALLOWED_ACTIONS,
   session: [
     "backfillDeltas",
     "clearWokeMarker",

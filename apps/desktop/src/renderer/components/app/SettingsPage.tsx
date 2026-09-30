@@ -37,7 +37,6 @@ import { BrowserAgentAccessSection } from "../settings/BrowserAgentAccessSection
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
-import { OpenAiKeySection } from "../settings/OpenAiKeySection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
@@ -201,8 +200,8 @@ function providerIdFromHash(hash: string): string | null {
  * Agents & Models. One provider's page is a sub-view of this tab rather than a
  * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
  * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the OpenAI voice key below the
- * provider list is not part of the provider you drilled into. Dictation lives
+ * is open the tab shows only that page — the budget cap below the provider
+ * list is not part of the provider you drilled into. Dictation lives
  * on the chat tab; scheduled work lives on notifications.
  */
 function AgentsTabContent() {
@@ -247,9 +246,6 @@ function AgentsTabContent() {
           // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
           harnessesParam={harnessesOpen}
         />
-      </WebSettingsSection>
-      <WebSettingsSection entryIds={["agents.openai-key"]}>
-        <OpenAiKeySection />
       </WebSettingsSection>
       {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime. */}
       <WebSettingsSection entryIds={["agents.budget"]}>

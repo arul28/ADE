@@ -291,8 +291,6 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           <SceneFrame
             source={text}
             scopeKey={sceneScopeKey ? sceneScopeKeyFor(sceneScopeKey, text) : null}
-            // A transcript scene belongs to a chat, never to a call.
-            voiceCallId={null}
             live={sceneLive}
             streaming={sceneStreaming}
           />

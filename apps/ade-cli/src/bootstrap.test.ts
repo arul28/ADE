@@ -573,7 +573,7 @@ describe("createEventBuffer", () => {
 
   it("preserves event category and payload through push and drain", () => {
     const buffer = createEventBuffer();
-    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "pty", "cto_voice"];
+    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "pty"];
 
     for (const category of categories) {
       buffer.push({ timestamp: "t", category, payload: { kind: category } });

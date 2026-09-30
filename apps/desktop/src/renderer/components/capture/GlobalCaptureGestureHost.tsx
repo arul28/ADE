@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CTO_VOICE_CAPTURE_EVENT } from "../../../shared/types/ctoVoice";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import type {
@@ -12,17 +11,12 @@ import { readStoredProjectRoute } from "../app/projectRouteStorage";
 import { filesProjectSessionKey } from "../files/treeHelpers";
 import { useEditorGroupsStore } from "../files/v2/editorGroupsStore";
 import { supportsCaptureGesturePlatform } from "../../lib/platform";
-import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { cachedCtoHomeResolution, waitForCtoHomeResolution } from "../../state/ctoHome";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
 import { Banner } from "../ui/notice/Banner";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
-import {
-  describeShot,
-  isCallJoinable,
-  planCaptureAttachments,
-} from "./captureGestureDelivery";
+import { planCaptureAttachments } from "./captureGestureDelivery";
 import {
   captureGestureBridgeAvailable,
   readCaptureGestureEnabled,
@@ -37,9 +31,8 @@ import { CaptureFlyIn } from "./CaptureFlyIn";
  * while ADE is in the BACKGROUND, so nothing that only exists on the CTO tab
  * could receive it.
  *
- * The target is always the CTO. If a voice call is on air the shot goes into
- * the call and the composer is left alone; otherwise it is staged as a
- * composer attachment, alongside a structured note about ADE's own view when
+ * The target is always the CTO. The shot is staged as a composer attachment,
+ * alongside a structured note about ADE's own view when
  * ADE's own window is what got captured.
  */
 
@@ -54,16 +47,8 @@ export function GlobalCaptureGestureHost() {
   const [flyIn, setFlyIn] = useState<{ id: number; dataUrl: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Live call state, tracked out of band. A ref rather than state: the shot
-  // handler reads it at the moment a capture lands, and re-rendering this host
-  // on every phase change would restart the fly-in animation mid-flight.
-  const voiceLiveRef = useRef(false);
   const locationRef = useRef(location);
   locationRef.current = location;
-
-  useEffect(() => subscribeVoiceState((state) => {
-    voiceLiveRef.current = isCallJoinable(state);
-  }), []);
 
   /** Everything the view-state composer needs, read at capture time. */
   const readViewState = useCallback((): string | null => {
@@ -88,20 +73,6 @@ export function GlobalCaptureGestureHost() {
       laneNamesById: Object.fromEntries(state.lanes.map((lane) => [lane.id, lane.name])),
       activeWorkItemId: workView?.activeItemId ?? null,
       openFilePath: activeTab?.path ?? null,
-    }));
-  }, []);
-
-  /**
-   * One delivery path, not two.
-   *
-   * This used to call `attachImage` directly AND dispatch the event the call
-   * hook listens for, so a single capture reached the live model two or three
-   * times over. The event is the path: the voice hook owns the bridge, and this
-   * host does not need to know whether a bridge method exists.
-   */
-  const deliverToCall = useCallback((shot: CaptureGestureShot): void => {
-    window.dispatchEvent(new CustomEvent(CTO_VOICE_CAPTURE_EVENT, {
-      detail: { shot, note: describeShot(shot) },
     }));
   }, []);
 
@@ -174,18 +145,10 @@ export function GlobalCaptureGestureHost() {
     if (typeof bridge?.onShot !== "function" || typeof bridge.onFailure !== "function") return;
 
     const offShot = bridge.onShot((shot) => {
-      // No separate "is there a bridge" check: the store only ever leaves
-      // `idle` through the bridge's own state push, so a live phase already
-      // means a bridge existed.
-      const toLiveCall = voiceLiveRef.current;
       if (!prefersReducedMotion()) {
         setFlyIn({ id: Date.now(), dataUrl: `data:image/png;base64,${shot.pngBase64}` });
       }
       setNotice(null);
-      if (toLiveCall) {
-        deliverToCall(shot);
-        return;
-      }
       void deliverToComposer(shot);
     });
     const offFailure = bridge.onFailure((failure: CaptureGestureFailure) => {
@@ -195,7 +158,7 @@ export function GlobalCaptureGestureHost() {
       if (typeof offShot === "function") offShot();
       if (typeof offFailure === "function") offFailure();
     };
-  }, [deliverToCall, deliverToComposer]);
+  }, [deliverToComposer]);
 
   // Push the stored preference down on mount. The setting lives in this
   // renderer's localStorage, so the main process cannot know whether to run the

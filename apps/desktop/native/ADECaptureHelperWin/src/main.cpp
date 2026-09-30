@@ -324,7 +324,7 @@ void PerformCapture() {
   std::string payload = "{\"type\":\"captured\",\"path\":\"";
   payload += JsonEscape(Utf8From(destination));
   payload += "\"";
-  // `describeShot` names the app before the window title, and the macOS helper
+  // A shot names the app alongside the window title, and the macOS helper
   // supplies it from kCGWindowOwnerName. Windows has no equivalent, so the
   // closest honest answer is the owning process's executable base name -
   // "Chrome", "Xcode", "Slack" - which is what the user calls the app anyway.

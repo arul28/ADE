@@ -27,8 +27,6 @@ export const Z_LAYERS = {
   sidebar: 100,
   /** Top-bar dropdown sheets (Connections, usage, activity). */
   sheet: 120,
-  /** The CTO voice-call HUD; above sheets so End call is always reachable. */
-  hud: 130,
   /** Floating top-center banners. */
   floatingBanner: 140,
   /**

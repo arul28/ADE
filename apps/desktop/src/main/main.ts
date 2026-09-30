@@ -357,7 +357,6 @@ import {
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
-import { createCtoVoiceRuntimeService } from "./services/cto/ctoVoiceRuntimeService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
@@ -1560,7 +1559,7 @@ app.whenReady().then(async () => {
     return subscriptionProxyService;
   };
   setHarnessProxyStarter(() => getSubscriptionProxyService().ensureRunning());
-  // Machine-scoped API keys (the CTO voice key) belong to this install, not to
+  // Machine-scoped API keys belong to this install, not to
   // whichever project happens to be open — a window with no project bound, a
   // remote-bound window and the in-process mode all reach the machine-key IPC.
   // Registered here, at app start, so they never fall through to a project-less
@@ -5467,40 +5466,6 @@ app.whenReady().then(async () => {
       mirrorDesktopRecentProjectToMachineCatalog(project.rootPath);
     }
 
-    /*
-     * The in-process twin of the runtime's own voice service — built ONLY when
-     * this desktop is itself the project runtime.
-     *
-     * This constructor is not the test path alone: `ensureProjectContextForMobileSync`
-     * reaches it in production, caches the context, and a later window open
-     * reuses it. Building a call brain there would put a second one in desktop
-     * main while the daemon owns the real one for the same project — two
-     * sockets, two confirm-first holds, two transcripts. A call is the one
-     * service in this context that must not exist twice, so it is gated on the
-     * mode rather than on the constructor being reached.
-     *
-     * Everything else here (`agentChatService` above all) genuinely IS needed by
-     * a mobile-sync context: the phone drives the CTO chat through it.
-     */
-    const ctoVoiceCallService = shouldUseInProcessProjectRuntime()
-      ? createCtoVoiceRuntimeService({
-        projectRoot,
-        logger,
-        laneService,
-        ctoStateService,
-        agentChatService,
-        // The views a call drew: it reads its own stills back out of the store
-        // at hang-up, to name them in the durable record.
-        computerUseArtifactBrokerService,
-        ctoMemoryService,
-        // See the note at the other construction site: a live call owns the CTO
-        // row's status line, because the generated one lands seconds late.
-        sessionService,
-        productAnalyticsService,
-        eventBuffer: rpcEventBuffer,
-      })
-      : null;
-
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
     const rpcRuntime = {
       projectRoot,
@@ -5548,7 +5513,6 @@ app.whenReady().then(async () => {
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
-      ctoVoiceCallService,
       linearCredentialService,
       linearIssueTracker,
       githubService,
@@ -5825,7 +5789,6 @@ app.whenReady().then(async () => {
       testService,
       ctoStateService,
       ctoMemoryService,
-      ctoVoiceCallService,
       adeProjectService,
       linearCredentialService,
       linearIssueTracker,
@@ -6352,13 +6315,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.ptyService?.disposeAll();
-    } catch {
-      // ignore
-    }
-    // Before the chat service is gone is too late — a live call holds the CTO
-    // in confirm-first mode, and a project closed mid-call must give that back.
-    try {
-      ctx.ctoVoiceCallService?.dispose();
     } catch {
       // ignore
     }

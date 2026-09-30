@@ -1082,6 +1082,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
    * rather than assigning new work, so it never reassigns ownership of a
    * spawned child's current mission. */
   hostContinuation?: AgentChatHostContinuationMetadata;
+  /** Marks a request the user spoke in a Codex voice conversation. */
+  voiceInput?: { realtimeSessionId: string };
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
@@ -2300,17 +2302,6 @@ export type AgentChatEventEnvelope = {
     stepKey?: string | null;
     laneId?: string | null;
     runId?: string | null;
-    /**
-     * The CTO voice call this event was produced by.
-     *
-     * A call runs its thinking on the CTO's own thread, so its turns are real
-     * turns and its tool calls are real tool calls — hiding them would be a
-     * lie. Instead every event a voice turn emits carries the call it belongs
-     * to, and the transcript folds a consecutive run of them into one call
-     * card. Stamped by `agentChatService` while a voice turn is running; no
-     * client may set it.
-     */
-    voiceCallId?: string | null;
     /**
      * True when `timestamp` is a deterministic ordering placeholder rather than
      * a provider or local wall-clock time. Set by the subagent transcript
@@ -4826,6 +4817,55 @@ export type AgentChatCodexGetGoalArgs = {
 export type AgentChatCodexSetGoalArgs = {
   sessionId: string;
   objective: string;
+};
+
+/**
+ * Experimental Codex voice: the renderer's WebRTC offer for a realtime
+ * session on this chat's Codex thread. Audio flows between the renderer and
+ * OpenAI; ADE only relays the SDP and tracks the session's transcript.
+ */
+export type AgentChatCodexRealtimeStartArgs = {
+  sessionId: string;
+  sdp: string;
+  /** The user's voice settings; the brain normalizes whatever arrives. */
+  preferences?: import("../codexVoice").CodexVoicePreferences | null;
+};
+
+export type AgentChatCodexRealtimeStartResult = {
+  threadId: string;
+  /** The remote SDP answer to apply with `setRemoteDescription`. */
+  sdp: string;
+  /** Names this voice session; later reads and stops carry it. */
+  token: string;
+};
+
+export type AgentChatCodexRealtimeStopArgs = {
+  sessionId: string;
+  /** When set, stop only if this session is still the chat's current one. */
+  token?: string;
+};
+
+export type AgentChatCodexRealtimeStateArgs = {
+  sessionId: string;
+  token: string;
+};
+
+export type AgentChatCodexRealtimeCaption = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  final: boolean;
+};
+
+export type AgentChatCodexRealtimeState = {
+  /** `ended` once the session is gone: stopped, closed by OpenAI, or replaced. */
+  status: "live" | "ended";
+  /** True while Codex runs a turn on this chat, e.g. work handed off by voice. */
+  working: boolean;
+  /** The latest few spoken lines, oldest first. */
+  captions: AgentChatCodexRealtimeCaption[];
+  handoffs: number;
+  error: string | null;
 };
 
 export type AgentChatCodexSetGoalStatusArgs = {

@@ -156,19 +156,11 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
  * Categories a RENDERER may name when it subscribes.
  *
  * Derived from the shared list rather than restated, so a category added there
- * reaches renderers by default and only a deliberate exclusion has to be
- * written down. `cto_voice` is that exclusion.
- *
- * This is one of FOUR places that exclusion has to hold, because refusing the
- * name alone lets an uncategorised subscription through: `shouldForwardRuntimeEvent`
- * drops pushed events on the way out, `withRendererVisibleEvents` strips polled
- * batches, and the preload drops them again on both paths inbound. No renderer
- * consumes them — the voice router subscribes in the main process and pushes
- * `IPC.ctoVoiceState` — so all four are closed doors rather than one door and
- * three open windows.
+ * reaches renderers by default. A category the list does not know (one an older
+ * runtime still emits) is refused on subscribe and stripped from batches.
  */
 function isRendererRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return isRemoteRuntimeEventCategory(value) && value !== "cto_voice";
+  return isRemoteRuntimeEventCategory(value);
 }
 
 function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStreamEventsRequest {
@@ -183,8 +175,7 @@ function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStrea
   if (value.category !== undefined && value.category !== null) {
     // REFUSED, not dropped. Silently discarding the category turned a
     // subscription for one category into an UNCATEGORISED one — every category
-    // the buffer carries, which is the opposite of what the caller asked for
-    // and, for `cto_voice`, the exact stream this guard exists to withhold.
+    // the buffer carries, which is the opposite of what the caller asked for.
     // A renderer naming a category it may not have gets an error it can see.
     if (!isRendererRuntimeEventCategory(value.category)) {
       throw new Error("Unknown runtime event category.");
@@ -641,13 +632,9 @@ export function registerRuntimeBridge({
     sender: WebContents,
     event: RemoteRuntimeBufferedEvent,
   ): boolean => {
-    // The other half of the `cto_voice` exclusion. Refusing the SUBSCRIPTION is
-    // not enough: an uncategorised subscription receives every category, so a
-    // call's state — phase, captions, the running transcript — would reach any
-    // renderer watching runtime events at all. Nothing in the renderer consumes
-    // it; the voice router subscribes in the main process and pushes
-    // `IPC.ctoVoiceState` to the windows that should see it.
-    if (event.category === "cto_voice") return false;
+    // Only categories the renderer knows; an older runtime may still emit
+    // one this build dropped.
+    if (!isRendererRuntimeEventCategory(event.category)) return false;
     if (event.category !== "pty") return true;
     if (event.payload.type !== "pty_data") return true;
     const ptyEvent = isObjectRecord(event.payload.event)

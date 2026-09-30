@@ -7,12 +7,12 @@ import { ViewportOverlayHost, createViewportOverlayHost } from "./ViewportOverla
 describe("ViewportOverlayHost", () => {
   it("renders its child in the overlay host", () => {
     render(
-      <ViewportOverlayHost layer="hud" testId="viewport-overlay">
-        <button type="button">End call</button>
+      <ViewportOverlayHost layer="floatingBanner" testId="viewport-overlay">
+        <button type="button">Dismiss</button>
       </ViewportOverlayHost>,
     );
 
-    expect(screen.getByRole("button", { name: "End call" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
   });
 
   it("marks DOM-only animation layers as hidden and inert", () => {

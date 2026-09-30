@@ -13,7 +13,7 @@ where the machinery lives.
 | `apps/desktop/src/shared/chatModelSwitching.ts` | `canSwitchChatSessionModel` / `filterChatModelIdsForSession` -- rules for mid-session model changes. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | `handoffSession`, permission translation, per-provider adapter. |
 | `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels (`plan` → `ask` → `auto-edit` → `full-auto`) and their mapping onto every provider's own vocabulary, so switching model family keeps the level instead of landing on that family's default. Nearest-**lower** on a miss. Deliberately separate from the abstract `AgentChatPermissionMode` words below; see [The permission ladder](#the-permission-ladder). |
-| `apps/desktop/src/main/services/chat/identitySessionPolicy.ts` | The CTO permission pin. `normalizeIdentityPermissionMode` returns `full-auto` for the `cto` identity, or `default` while a voice call holds `beginIdentityConfirmHold(sessionId)`. The holds are a counter per session key, so overlapping calls cannot release each other early and a call on one project does not downgrade every other project's CTO — one brain process hosts every open project's scopes and this module is a singleton across all of them. A hold taken before its session id is known is filed unscoped and still answers for everyone, because a caller that could not name its session cannot be narrowed after the fact. Also owns `isPrimaryPinnedIdentity`, `isIdentityConfirmHeld`, and `resolveIdentityExecutionLane`. |
+| `apps/desktop/src/main/services/chat/identitySessionPolicy.ts` | The CTO permission pin. `normalizeIdentityPermissionMode` returns `full-auto` for the `cto` identity. Also owns `isPrimaryPinnedIdentity` and `resolveIdentityExecutionLane`. |
 | `apps/desktop/src/main/services/chat/crossProviderReplayFork.ts` | The transcript replay budget for a cross-provider handoff: `REPLAY_CHARS_PER_TOKEN` (3), `REPLAY_RESERVE_MIN_TOKENS` (32,000), `REPLAY_RESERVE_WINDOW_FRACTION` (0.15), and `REPLAY_MAX_WINDOW_FRACTION` (0.6), plus the `replayReserveTokens` / `replayBudgetTokens` / `replayBudgetChars` derivations, `CODEX_REPLAY_MAX_CHARS` and `CODEX_APP_SERVER_INPUT_MAX_CHARS`, and the fitters `fitTranscriptReplayToBudget` / `buildFittedTranscriptReplay` that return a `TranscriptReplayFit`. |
 | `apps/desktop/src/main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only repair for a handoff replay that does not fit, as one factory taking every dependency by injection (`createClaudeReplayOverflowRecovery`). Owns `TranscriptReplayOrigin` + `normalizeTranscriptReplayOrigin`, the `ReplayForkProvenance` shape, the `CLAUDE_REPLAY_OVERFLOW_MIN_BUDGET_CHARS` floor (2,000), and the four entry points the chat service calls: `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, and `reportRetryFailed`. The consumed and staged records live in `WeakMap`s keyed by the runtime, so they die with it rather than being persisted or leaking across a rebind. |
 | `apps/desktop/src/main/services/chat/providerThreadContinuity.ts` | Which provider-side thread a chat is talking to, and whether it has moved. `persistedPointerState()` is the one complete pointer mapping across every provider's thread field (`threadId`, `sdkSessionId`, `providerSessionId`, `droidSdkSessionId`, `piSessionId`/`piSessionFile`, `cursorSdkAgentId`/`cursorCloudAgentId`, `acpSessionId`) and is shared with the thread-pointer ledger, so the two cannot disagree; `providerThreadRef()` renders it, with `UNOPENED_PROVIDER_THREAD_REF` (`"none"`) meaning unknown rather than absent, and `providerThreadContinuityChanged()` is the verdict. On top of it sits `StagedSection` and its four operations — `newStagedSection()`, `armIfStale()`, `resetStagedSection()` (the thread is gone; re-stage) and `suppressStagedSection()` — which decide whether a large static block or the conversation tail rides a turn at all. The CTO's ~21 KB context block is the heaviest caller; see [CTO](../cto/README.md). |
@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.156.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.159.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
@@ -197,24 +197,32 @@ resolve to Fable 5.1.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
-### GPT-6 and GPT-5.6 Codex models
+### GPT-6.x and GPT-5.6 Codex models
 
-The OpenAI section is pinned in this order on every ADE model surface:
+The OpenAI section follows the Codex catalog's own order on every ADE model surface:
 
-1. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
-2. `openai/gpt-6-sol` (`gpt-6-sol`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$2/$10`. Alias `sol`.
-3. `openai/gpt-6-luna` (`gpt-6-luna`) — added by the model manifest; 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
-4. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`. Codex advertises `gpt-6-sol` as its upgrade.
-5. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
-6. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+1. `openai/gpt-6.1-sol` (`gpt-6.1-sol`) — 1,050,000 context; default effort `low`; `$2/$10`. Alias `sol`. Released builds get it from the model manifest.
+2. `openai/gpt-6-astra` (`gpt-6-astra`) — default Codex model; 1,050,000 context; default effort `low`. No `none` and no `ultra` on the API ladder.
+3. `openai/gpt-6-sol` (`gpt-6-sol`) — 1,050,000 context; default effort `medium`; `$2/$10`.
+4. `openai/gpt-6-luna` (`gpt-6-luna`) — 1,050,000 context; default effort `medium`; `$0.10/$0.50`. Alias `luna`.
+5. `openai/gpt-5.6-sol` (`gpt-5.6-sol`) — 372k context; default effort `low`.
+6. `openai/gpt-5.6-terra` (`gpt-5.6-terra`) — 372k context; default effort `medium`.
+7. `openai/gpt-5.6-luna` (`gpt-5.6-luna`) — 372k context; default effort `medium`.
+8. `openai/gpt-5.5` (`gpt-5.5`) — legacy; still runs on a ChatGPT sign-in.
 
-GPT-5.5 remains selectable below them. Astra and both Lunas expose `low |
-medium | high | xhigh | max`; both Sols and Terra expose `low | medium | high |
-xhigh | max | ultra`. Desktop, ADE Code, and iOS label those values Light,
-Medium, High, Extra High, Max, and (for the Sols/Terra) Ultra. Runtime app-server ladders retain
-their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. The pinned Codex app-server (0.156.1) advertises Astra; older PATH
-installs without Astra metadata cannot start it.
+Astra and both Lunas expose `low | medium | high | xhigh | max`; the Sols and
+Terra expose `low | medium | high | xhigh | max | ultra`. Desktop, ADE Code,
+and iOS label those values Light, Medium, High, Extra High, Max, and (for the
+Sols/Terra) Ultra. Runtime app-server ladders retain their advertised order.
+`ultra` is the multi-agent tier and carries a usage warning.
+
+The picker shows only the Codex rows that the app server's `model/list`
+reports for the signed-in account. OpenAI rolls a new model out per account,
+so a registry row such as GPT-6.1 Sol appears on the next catalog refresh
+after the account gets access, with no ADE release. A ChatGPT sign-in can no
+longer run GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.3-Codex-Spark, or
+GPT-5.2; those rows are `deprecated` so persisted chats still resolve, but no
+picker offers them.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle
@@ -1780,10 +1788,7 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    `identitySessionPolicy.ts` pins the CTO to `full-auto` on every
    provider. The mode is not a default a caller can override.
    `ensureIdentitySession` re-normalizes the session before every turn,
-   so a mode written once is snapped back. A live voice call is the one
-   exception: `beginIdentityConfirmHold()` holds the CTO in `default`
-   for the life of the call, so reads run and writes raise an approval.
-   The hold is a counter, so overlapping calls cannot release it early.
+   so a mode written once is snapped back.
 6. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's

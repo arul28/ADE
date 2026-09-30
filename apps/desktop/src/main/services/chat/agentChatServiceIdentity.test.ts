@@ -1,6 +1,5 @@
 import {
   SCHEDULED_WORK_STATE_KEY,
-  beginIdentityConfirmHold,
   buildCodingAgentSystemPrompt,
   claudeSdkCreateSessionCompat,
   claudeSdkResumeSessionCompat,
@@ -587,58 +586,6 @@ describe("createAgentChatService", () => {
       }));
     });
 
-    it("scopes a CTO confirm hold to the session that is on the call", async () => {
-      // The file-wide mapPermissionToClaude mock collapses every mode to
-      // "plan", which would hide the pinned full-auto entirely.
-      vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
-        if (mode === "full-auto") return "bypassPermissions";
-        if (mode === "edit") return "acceptEdits";
-        if (mode === "default") return "default";
-        return "plan";
-      });
-      const { service } = createService();
-      const onCall = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-sonnet-5",
-        modelId: "anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-      const elsewhere = await service.createSession({
-        laneId: "lane-2",
-        provider: "claude",
-        model: "claude-sonnet-5",
-        modelId: "anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-      expect(onCall.permissionMode).toBe("full-auto");
-      expect(elsewhere.permissionMode).toBe("full-auto");
-
-      const release = beginIdentityConfirmHold(onCall.id);
-      try {
-        // One brain hosts every open project. A call on one CTO chat must not
-        // make a CTO chat in another project ask before it writes.
-        const held = await service.updateSession({
-          sessionId: onCall.id,
-          permissionMode: "full-auto",
-        });
-        const free = await service.updateSession({
-          sessionId: elsewhere.id,
-          permissionMode: "full-auto",
-        });
-        expect(held.permissionMode).toBe("default");
-        expect(free.permissionMode).toBe("full-auto");
-      } finally {
-        release();
-      }
-
-      const afterCall = await service.updateSession({
-        sessionId: onCall.id,
-        permissionMode: "full-auto",
-      });
-      expect(afterCall.permissionMode).toBe("full-auto");
-    });
-
     it("excludes identity sessions by default", async () => {
       const { service } = createService();
 
@@ -1161,7 +1108,7 @@ describe("createAgentChatService", () => {
      * architecture document, the capability manifest) is ~21 KB that a live
      * provider thread already holds; re-staging it every turn grew a real CTO
      * thread from 46k to 237k input tokens in 18 turns and tripped Codex
-     * auto-compaction mid-voice-call.
+     * auto-compaction.
      */
     /**
      * One Claude SDK double for every test in this block, typed at the seam
@@ -1637,9 +1584,8 @@ describe("createAgentChatService", () => {
     });
 
     /**
-     * `runSessionTurn` is the headless path, and the CTO voice's `ask_cto`
-     * turns run on it. It used to skip `refreshCtoLiveStateForTurn` entirely,
-     * so a voice turn reached the model with whatever live state the last
+     * `runSessionTurn` is the headless path. It used to skip
+     * `refreshCtoLiveStateForTurn` entirely, so a headless turn reached the model with whatever live state the last
      * interactive send left behind — and with no reconstruction context at all
      * once that send had consumed it. Stale lanes/PRs/dirty flags are worse
      * than none here, because the doctrine tells the CTO not to re-derive them.

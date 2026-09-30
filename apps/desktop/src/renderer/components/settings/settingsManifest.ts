@@ -663,20 +663,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Connections",
   },
-  // The only key on this page that follows the MACHINE rather than the project:
-  // it is stored in `~/.ade/secrets`, so it survives switching repos. Hence the
-  // scope chip — "machine" is the surprise here, next to ten project-bound
-  // provider connections.
-  {
-    id: "agents.openai-key",
-    label: "OpenAI API key",
-    keywords: ["openai", "voice", "realtime", "speech", "talk", "cto", "byok", "api key", "platform.openai.com"],
-    tab: "agents",
-    anchor: "openai-api-key",
-    scope: "machine",
-    web: "hidden",
-    group: "Connections",
-  },
   {
     id: "agents.scheduled-work",
     label: "Pause all scheduled work",
@@ -706,6 +692,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "hidden",
     group: "Voice input",
+  },
+  {
+    id: "chat.voice-conversations",
+    label: "Voice conversations",
+    keywords: ["voice", "talk", "speak", "realtime", "codex voice", "personality", "call", "conversation"],
+    tab: "chat",
+    anchor: "voice-conversations",
+    scope: "account",
+    web: "hidden",
+    group: "Voice conversations",
   },
 
   // ── Lanes ────────────────────────────────────────────────────────────────

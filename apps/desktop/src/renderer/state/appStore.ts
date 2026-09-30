@@ -2,6 +2,11 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
+import {
+  DEFAULT_CODEX_VOICE_PREFERENCES,
+  normalizeCodexVoicePreferences,
+  type CodexVoicePreferences,
+} from "../../shared/codexVoice";
 import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
@@ -1014,6 +1019,7 @@ type PersistedUserPreferences = {
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -1114,6 +1120,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
       voiceInputEnabled: parsed.voiceInputEnabled !== false,
+      codexVoice: normalizeCodexVoicePreferences(parsed.codexVoice),
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -1167,6 +1174,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     launchPromptClipboardNoticeEnabled: true,
     promptStashButtonEnabled: true,
     voiceInputEnabled: true,
+    codexVoice: { ...DEFAULT_CODEX_VOICE_PREFERENCES },
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -1207,6 +1215,7 @@ function persistUserPreferencesFrom(state: {
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -1232,6 +1241,7 @@ function persistUserPreferencesFrom(state: {
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: state.promptStashButtonEnabled,
     voiceInputEnabled: state.voiceInputEnabled,
+    codexVoice: state.codexVoice,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -1457,6 +1467,7 @@ export type AppState = {
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
   voiceInputEnabled: boolean;
+  codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
   dictationPhase: DictationPhase;
   dictationElapsed: number;
@@ -1623,6 +1634,7 @@ export type AppState = {
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setPromptStashButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
+  setCodexVoicePreferences: (patch: Partial<CodexVoicePreferences>) => void;
   // ── Voice-dictation session setters (ephemeral; never persisted) ──
   setDictationPhase: (phase: DictationPhase) => void;
   setDictationElapsed: (seconds: number) => void;
@@ -2026,6 +2038,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
+  codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
   dictationElapsed: 0,
   dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
@@ -2624,6 +2637,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
       return { voiceInputEnabled: enabled };
+    }),
+  setCodexVoicePreferences: (patch) =>
+    set((prev) => {
+      const codexVoice = normalizeCodexVoicePreferences({ ...prev.codexVoice, ...patch });
+      persistUserPreferencesFrom({ ...prev, codexVoice });
+      return { codexVoice };
     }),
   // Ephemeral dictation setters: NO persistUserPreferencesFrom — these describe
   // a live capture session, not a saved preference.
@@ -3466,6 +3485,7 @@ export function createProjectAppStore(
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: rootState.promptStashButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
+    codexVoice: rootState.codexVoice,
     setTheme: rootState.setTheme,
     setCustomThemes: rootState.setCustomThemes,
     setThemeFollowsSystem: rootState.setThemeFollowsSystem,
@@ -3489,6 +3509,7 @@ export function createProjectAppStore(
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
+    setCodexVoicePreferences: rootState.setCodexVoicePreferences,
     workViewByProject: hydratedWorkViewByProject,
     laneWorkViewByScope: hydratedLaneWorkViewByScope,
     laneSelectionByProject: rootState.laneSelectionByProject,

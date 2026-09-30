@@ -12,10 +12,11 @@ export type UserMessageStatus = {
     | "steer_unprocessed"
     | "steer_failed"
     | "send_failed"
-    | "launch_retrying";
+    | "launch_retrying"
+    | "spoken";
   label: string;
   tone: UserMessageStatusTone;
-  icon: "steer" | "clock" | "warning";
+  icon: "steer" | "clock" | "warning" | "microphone";
   title?: string;
 };
 
@@ -85,8 +86,11 @@ export function describeUserMessageStatus(event: UserMessageEvent): UserMessageS
     case "queued":
       return null;
     case undefined:
-      return isSteer && event.processed === true
-        ? { kind: "steered", label: "Steered", tone: "muted", icon: "steer" }
+      if (isSteer && event.processed === true) {
+        return { kind: "steered", label: "Steered", tone: "muted", icon: "steer" };
+      }
+      return event.metadata?.voiceInput
+        ? { kind: "spoken", label: "Spoken", tone: "muted", icon: "microphone", title: "Said in a voice conversation." }
         : null;
     default: {
       const _exhaustive: never = event.deliveryState;

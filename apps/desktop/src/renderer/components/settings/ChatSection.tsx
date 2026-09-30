@@ -25,6 +25,7 @@ import {
   type PreviewProviderKey,
 } from "./ChatAppearancePreview";
 import { DictationSection } from "./DictationSection";
+import { VoiceConversationSection } from "./VoiceConversationSection";
 import { LaunchPromptSection } from "./LaunchPromptSection";
 import {
   SettingsColumn,
@@ -220,6 +221,9 @@ export function ChatSection() {
 
           {/* Voice input is chat dictation, so it lives with chat. */}
           <DictationSection />
+
+          {/* Spoken conversations with a chat, carried by Codex voice. */}
+          <VoiceConversationSection />
           </>
         )}
       />

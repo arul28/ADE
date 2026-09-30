@@ -26,7 +26,6 @@ import {
   loginCursorSdk,
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
-import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import {
   deleteMachineApiKey,
   getApiCredentialSummary,
@@ -1150,41 +1149,6 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
 }
 
 /**
- * The CTO voice call's action surface.
- *
- * Thin on purpose: the call brain is a singleton on the runtime (it owns a live
- * socket, a confirm-first hold and an audio queue that must survive between
- * action calls), so this domain only names what the desktop router may ask of
- * it. `getAdeActionDomainServices` is called per action call, which is exactly
- * why the service itself cannot be built here.
- *
- * `pushAudio` and `pullAudio` are the audio path, and deliberately are NOT
- * events: the runtime event buffer is a bounded, replayable log, and PCM at ten
- * chunks a second would evict every real event in it.
- */
-function buildCtoVoiceDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const voice = runtime.ctoVoiceCallService;
-  if (!voice) return null;
-  // Exhaustive by type: a tenth voice action added to `CtoVoiceAction` fails to
-  // compile here until it is published, rather than existing on the service and
-  // being silently unreachable over the bus. `satisfies` rather than an
-  // annotation, because the annotation widened every method to `(args?: never)`
-  // and then needed a cast back out of its own declared type.
-  const domain = {
-    getState: () => voice.getState(),
-    hasKey: () => voice.hasKey(),
-    start: (args?: Parameters<typeof voice.start>[0]) => voice.start(args),
-    end: (args?: Parameters<typeof voice.end>[0]) => voice.end(args),
-    setMuted: (args?: Parameters<typeof voice.setMuted>[0]) => voice.setMuted(args),
-    pushAudio: (args?: Parameters<typeof voice.pushAudio>[0]) => voice.pushAudio(args),
-    pullAudio: (args?: Parameters<typeof voice.pullAudio>[0]) => voice.pullAudio(args),
-    resolveApproval: (args?: Parameters<typeof voice.resolveApproval>[0]) => voice.resolveApproval(args),
-    sendCapture: (args?: Parameters<typeof voice.sendCapture>[0]) => voice.sendCapture(args),
-  } satisfies Record<CtoVoiceAction, (args?: never) => unknown>;
-  return domain as unknown as OpaqueService;
-}
-
-/**
  * Deliberately NOT a spread of the broker.
  *
  * Spreading it published every broker method as an action, including `ingest` —
@@ -1233,17 +1197,11 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
       title?: unknown;
       sessionId?: unknown;
       sceneScopeKey?: unknown;
-      voiceCallId?: unknown;
     }): Promise<{ filed: boolean; ownerSessionId: string | null; artifactId: string | null }> =>
       ingestSceneSnapshot({
         projectRoot: runtime.projectRoot,
         broker,
         agentChatService: runtime.agentChatService ?? null,
-        // The call brain lives in THIS process on a runtime-backed build, so
-        // this is the side that can say which chat a live call is on — the
-        // desktop HUD that files the still cannot.
-        resolveVoiceCallSessionId: (callId) =>
-          runtime.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
         args,
       }),
   };
@@ -2259,9 +2217,8 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
      * writes through `createDesktopCredentialStore`, whose primary is Electron
      * `safeStorage`, while the project runtime reads through
      * `EncryptedFileCredentialStore`. A key saved in Settings therefore landed
-     * in a store the runtime cannot open — so the runtime-hosted voice call
-     * went on answering "no OpenAI key on this machine" with a key visibly
-     * configured in the UI. The renderer now routes the machine trio to the
+     * in a store the runtime cannot open — so the runtime went on answering
+     * "no OpenAI key on this machine" with a key visibly configured in the UI. The renderer now routes the machine trio to the
      * LOCAL runtime, which puts the write and the read in one process and one
      * store.
      *
@@ -3541,7 +3498,6 @@ export function getAdeActionDomainServices(
     automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
     cto_memory: toService(buildCtoMemoryDomainService(runtime)),
-    cto_voice: toService(buildCtoVoiceDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),

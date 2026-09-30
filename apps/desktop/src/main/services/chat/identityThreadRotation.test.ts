@@ -25,9 +25,9 @@ type Managed = { id: string };
 /**
  * The thread rotation creates, as the fields rotation actually touches.
  *
- * Same doctrine as `ServiceDouble` in the voice doubles: an `AgentChatSession`
- * carries sixty fields and this module reads one of them, so the fixture is
- * typed as a `Pick` — a rename breaks it — and widened exactly once, here,
+ * An `AgentChatSession` carries sixty fields and this module reads one of
+ * them, so the fixture is typed as a `Pick` — a rename breaks it — and widened
+ * exactly once, here,
  * rather than as a bare cast at the use site.
  */
 const NEW_SESSION: Pick<AgentChatSession, "id"> = { id: "session-new" };

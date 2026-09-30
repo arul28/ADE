@@ -273,13 +273,17 @@ const RUNTIME_DISCOVERED_ACP_FAMILIES: readonly ProviderFamily[] = [
   "moonshot",
   "xai",
   "github-copilot",
+  // Codex is not ACP, but its app server's `model/list` is the same kind of
+  // live verdict: a registry row it does not report cannot run on the account.
+  "openai",
 ];
 
 /**
- * Remove static ACP fallback rows once a live catalog has reported the models
+ * Remove static fallback rows once a live catalog has reported the models
  * that provider can actually reach. Unauthenticated providers keep their
  * curated rows (so the picker can still explain how to connect), while a
- * connected provider such as Qwen no longer defaults to a stale catalog row.
+ * connected provider such as Qwen no longer defaults to a stale catalog row,
+ * and Codex no longer shows retired or not-yet-enabled rows in a second tab.
  */
 export function filterAcpFallbackModelsToRuntimeCatalog(
   models: readonly ModelDescriptor[],

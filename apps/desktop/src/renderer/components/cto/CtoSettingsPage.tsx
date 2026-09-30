@@ -5,15 +5,12 @@ import {
   Cpu,
   FileText,
   IdentificationCard,
-  Microphone,
   Notebook,
 } from "@phosphor-icons/react";
 
 import type { CtoIdentity, CtoSessionLogEntry, CtoStartFreshSessionResult } from "../../../shared/types";
-import { CTO_VOICE_DEFAULT, CTO_VOICE_VOICES } from "../../../shared/types/ctoVoice";
 import { getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { OpenAiKeySection } from "../settings/OpenAiKeySection";
 import { SettingsSectionShell, SettingsToggle } from "../settings/settingsSectionUi";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import {
@@ -74,13 +71,6 @@ const SECTIONS: Array<{
     description: "The CTO thinks with this model, and only models that handle interruptions are listed.",
   },
   {
-    id: "voice",
-    label: "Voice",
-    icon: Microphone,
-    title: "Voice calls",
-    description: "Calls use your own OpenAI key, and the CTO still thinks with the model you picked.",
-  },
-  {
     id: "memory",
     label: "Memory",
     icon: Notebook,
@@ -107,16 +97,6 @@ const SECTIONS: Array<{
     description: CTO_PAST_THREADS_DESCRIPTION,
   },
 ];
-
-/**
- * How many voice tiles sit in a row.
- *
- * Ten voices, five columns: two full rows, no tile left alone on a line, and
- * no tile 460px wide holding one word — which is what two columns became once
- * the page stopped being a 560px strip. It must divide `CTO_VOICE_VOICES`;
- * the test beside it is what says so.
- */
-export const VOICE_GRID_COLUMNS = 5;
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
@@ -342,8 +322,8 @@ export type CtoSettingsPageProps = {
    */
   onStartFreshSession?: () => Promise<CtoStartFreshSessionResult>;
   /**
-   * Every field on this page is one field of the CTO's identity, voice
-   * included, and they all go to `cto.updateIdentity`. Two props pointed at
+   * Every field on this page is one field of the CTO's identity, and they
+   * all go to `cto.updateIdentity`. Two props pointed at
    * the same handler only made it look as though there were two ways in.
    */
   onIdentityChange: (patch: CtoIdentityPatch) => void;
@@ -359,8 +339,6 @@ export type CtoSettingsPageProps = {
 export type CtoIdentityPatch = {
   name?: string;
   systemPromptExtension?: string;
-  voiceName?: string;
-  voiceBackchannels?: boolean;
   crossMachineEnabled?: boolean;
 };
 
@@ -424,8 +402,6 @@ export function CtoSettingsPage({
   /** A model is actually configured, so there are facts worth printing. */
   const modelReady = !loadingModels && availableModelIds.length > 0;
 
-  const voiceName = identity?.voiceName ?? CTO_VOICE_DEFAULT;
-  const backchannels = identity?.voiceBackchannels !== false;
   // Absent means on.
   const crossMachineEnabled = identity?.crossMachineEnabled !== false;
   const accent = CTO_SECTION_COLORS[section];
@@ -591,90 +567,6 @@ export function CtoSettingsPage({
       {onStartFreshSession ? (
         <FreshSessionCard accent={accent} onStartFreshSession={onStartFreshSession} />
       ) : null}
-      </div>
-    ),
-
-    voice: (
-      <div style={{ display: "grid", gap: 16 }}>
-        <OpenAiKeySection />
-
-        <CtoCard
-          title="Voice"
-          description="The CTO speaks with this voice on your next call."
-          accent={accent}
-        >
-          <div
-            role="radiogroup"
-            aria-label="Voice"
-            style={{
-              display: "grid",
-              gridTemplateColumns: `repeat(${VOICE_GRID_COLUMNS}, minmax(0, 1fr))`,
-              gap: 8,
-            }}
-          >
-            {CTO_VOICE_VOICES.map((option) => {
-              const selected = voiceName === option;
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => onIdentityChange({ voiceName: option })}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    minWidth: 0,
-                    height: 36,
-                    padding: "0 12px",
-                    borderRadius: 10,
-                    textAlign: "left",
-                    textTransform: "capitalize",
-                    cursor: "pointer",
-                    fontFamily: SANS_FONT,
-                    fontSize: 12.5,
-                    color: selected ? COLORS.textPrimary : COLORS.textSecondary,
-                    background: selected ? `color-mix(in srgb, ${accent} 14%, transparent)` : COLORS.recessedBg,
-                    border: `1px solid ${selected ? accent : COLORS.borderMuted}`,
-                    transition: "background 140ms ease, border-color 140ms ease",
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: 4,
-                      flexShrink: 0,
-                      background: selected ? accent : COLORS.outlineBorder,
-                    }}
-                  />
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {option}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </CtoCard>
-
-        <CtoCard
-          title="Say what it's doing"
-          description={
-            backchannels
-              ? "Before the CTO does real work, it says one short sentence about it."
-              : "The CTO stays quiet until it has your answer."
-          }
-          accent={accent}
-          right={
-            <SettingsToggle
-              id="cto-backchannels"
-              checked={backchannels}
-              onChange={(next) => onIdentityChange({ voiceBackchannels: next })}
-            />
-          }
-        />
       </div>
     ),
 

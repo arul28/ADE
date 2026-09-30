@@ -213,7 +213,6 @@ import {
 } from "./claudeReplayOverflowRecovery";
 import {
   isPrimaryPinnedIdentity,
-  isIdentityConfirmHeld,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -325,6 +324,12 @@ import {
 import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { startCodexVoiceHost, type CodexVoiceHost } from "./codexVoiceHost";
+import {
+  buildCodexVoiceStyleInstructions,
+  normalizeCodexVoicePreferences,
+  type CodexVoicePreferences,
+} from "../../../shared/codexVoice";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
   evictOldestEntries,
@@ -394,6 +399,12 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexGetGoalArgs,
   AgentChatCodexSandbox,
+  AgentChatCodexRealtimeCaption,
+  AgentChatCodexRealtimeStartArgs,
+  AgentChatCodexRealtimeStartResult,
+  AgentChatCodexRealtimeState,
+  AgentChatCodexRealtimeStateArgs,
+  AgentChatCodexRealtimeStopArgs,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
@@ -1853,8 +1864,7 @@ type PersistedChatState = {
    *
    * Durable because the one failure that matters here — the thread is over its
    * context limit — is a property of the CONVERSATION, and survives every
-   * restart until the thread is rotated. It is what the CTO voice pre-flight
-   * reads to refuse a call the thread could not answer.
+   * restart until the thread is rotated.
    */
   lastTurnFailure?: AgentChatLastTurnFailure | null;
   /** How full the thread was at the last settled turn. See the type. */
@@ -4122,15 +4132,6 @@ type ManagedChatSession = {
    * which is where it becomes the durable `lastTurnFailure`.
    */
   liveTurnErrorText: string | null;
-  /**
-   * The CTO voice call whose turn is running on this session right now.
-   *
-   * Set for the life of one `runSessionTurn` call and stamped onto every
-   * envelope committed while it is set, so the transcript can fold a call into
-   * one card without anybody fabricating a message. Never persisted: a call
-   * does not survive a restart.
-   */
-  activeVoiceCallId: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -8336,13 +8337,8 @@ function syncLegacyPermissionMode(session: Pick<
  *
  * Three paths leave plan mode — approving an `ExitPlanMode`, typing the
  * approval, and the safety net that follows the SDK's own status report — and
- * every one of them must re-assert the identity policy afterwards. As three
- * separate `applyClaudePlanModeTransition` calls, the third was written without
- * the re-assert and silently handed a held CTO its write access back.
- *
- * The exit itself always takes: a held CTO lands in confirm-first mode, where a
- * mutation asks out loud, rather than in plan mode, which refused writes
- * outright and left spoken confirmation unreachable.
+ * every one of them must re-assert the identity policy afterwards, so they
+ * share this one function.
  */
 function exitPlanModeForSession(session: AgentChatSession): void {
   applyClaudePlanModeTransition(session, "default");
@@ -8354,12 +8350,10 @@ function exitPlanModeForSession(session: AgentChatSession): void {
  *
  * Plan approval and the `ExitPlanMode` interception both hand a session full
  * access without going through `normalizeIdentityPermissionMode`. That is right
- * for an ordinary chat, and wrong for an identity session that something is
- * holding read-only: during a CTO voice call, one click on an approval card in
- * the chat would give the call write access for the rest of the turn.
+ * for an ordinary chat, and wrong for an identity session whose policy pins a
+ * different mode.
  *
- * A no-op whenever the policy agrees with what was just written, which is every
- * session that is not a held identity.
+ * A no-op whenever the policy agrees with what was just written.
  */
 function reassertIdentityPermissionMode(session: AgentChatSession): void {
   if (!session.identityKey) return;
@@ -8367,9 +8361,6 @@ function reassertIdentityPermissionMode(session: AgentChatSession): void {
     session.identityKey,
     session.permissionMode,
     session.provider,
-    // Named, because a voice call on one project's CTO must not change the
-    // access mode of a CTO chat in another.
-    session.id,
   );
   if (next === session.permissionMode) return;
   applyLegacyPermissionModeToNativeControls(session, next);
@@ -14010,7 +14001,7 @@ export function createAgentChatService(args: {
       // identical on turn 2 and turn 200, and a live provider thread holds it
       // from the first send. Re-sending it every turn is what grew a real CTO
       // thread from 46k to 237k input tokens in 18 turns and tripped codex
-      // auto-compaction mid-voice-call. It is staged once per provider thread
+      // auto-compaction. It is staged once per provider thread
       // and re-staged when the thread changes (rotation, handoff, resume onto a
       // new thread, provider/model switch, fresh session) or when the prompt's
       // own content changes — the section's `key` covers an identity rename or
@@ -17863,12 +17854,6 @@ export function createAgentChatService(args: {
   ): void => {
     if (!turnStartedAt) return;
     if (managed.deleted) return;
-    // A live voice call owns this row's second line and writes it itself
-    // ("Voice call · 3 exchanges"). Generating one here takes a model round trip
-    // per settled turn, which on a call always lands after the next question has
-    // already been asked — that is how the row came to read "hey there?" three
-    // exchanges into a call. The generated line resumes when the call ends.
-    if (isIdentityConfirmHeld(managed.session.id)) return;
     const noteUpdatedAt = sessionService.getStatusNoteUpdatedAt?.(managed.session.id);
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);
@@ -18785,13 +18770,6 @@ export function createAgentChatService(args: {
       timestamp,
       event: storedEvent,
       sequence,
-      // A voice call's turns are real turns on the CTO's real thread, so they
-      // are written exactly like every other event — and carry the call they
-      // belong to, which is all the transcript needs to fold them into one
-      // card instead of a stream of messages nobody typed.
-      ...(managed.activeVoiceCallId
-        ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
-        : {}),
     };
     const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
       ? storedEnvelope
@@ -18800,9 +18778,6 @@ export function createAgentChatService(args: {
           timestamp,
           event: liveEvent,
           sequence,
-          ...(managed.activeVoiceCallId
-            ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
-            : {}),
         };
 
     writeTranscript(managed, storedEnvelope);
@@ -19249,6 +19224,10 @@ export function createAgentChatService(args: {
     managedSessions.get(sessionId)?.activityDetector?.reset();
   };
 
+  // Set by the Codex voice code further down; lets a live voice session hear
+  // about subagents without every subagent emit site knowing about voice.
+  let observeChatEventForCodexRealtime: ((managed: ManagedChatSession, event: AgentChatEvent) => void) | null = null;
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -19273,6 +19252,7 @@ export function createAgentChatService(args: {
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
+    observeChatEventForCodexRealtime?.(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
@@ -23141,7 +23121,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -34966,6 +34945,714 @@ export function createAgentChatService(args: {
     };
   };
 
+  // ===========================================================================
+  // Codex voice
+  //
+  // One realtime voice session per chat, always on Codex with the user's
+  // ChatGPT sign-in. The renderer owns the WebRTC connection, so audio never
+  // passes through ADE; the app server answers the offer with a
+  // `thread/realtime/sdp` notification.
+  //
+  // Two modes:
+  // - native: a Codex chat hosts voice on its own thread. Codex runs each
+  //   hand-off as a turn on that thread; ADE adopts the turn so the thread
+  //   shows it, with the spoken request as its user message.
+  // - host: any other chat gets a private Codex app-server (codexVoiceHost).
+  //   Hand-offs are client-managed: ADE sends the spoken request into the real
+  //   chat as a message, relays its progress, and speaks its final answer.
+  //
+  // The brain keeps live captions for the renderer's voice bar and writes one
+  // summary line to the chat when the session ends.
+  // ===========================================================================
+  const CODEX_REALTIME_ANSWER_TIMEOUT_MS = 20_000;
+  const CODEX_REALTIME_CAPTION_LIMIT = 4;
+  const CODEX_REALTIME_ENDED_RETENTION_MS = 60_000;
+  const CODEX_REALTIME_REQUEST_CLAIM_MS = 15_000;
+  const CODEX_REALTIME_STATUS_INTERVAL_MS = 8_000;
+  const CODEX_REALTIME_ANSWER_CHARS = 2_000;
+  const CODEX_REALTIME_HISTORY_ENTRIES = 12;
+  const CODEX_REALTIME_HISTORY_ENTRY_CHARS = 1_500;
+  const CODEX_VOICE_REQUEST_FRAME = "[The user said this aloud in an ADE voice conversation with this chat. Answer as you would a typed message; a voice assistant reads your reply to them, so lead with the answer.]";
+  type CodexRealtimeSessionState = {
+    token: string;
+    mode: "native" | "host";
+    threadId: string;
+    /** native mode: the chat's own Codex runtime. */
+    runtime: CodexRuntime | null;
+    /** host mode: the private app-server carrying the session. */
+    host: CodexVoiceHost | null;
+    startedAt: number;
+    live: boolean;
+    answer: { resolve: (sdp: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout } | null;
+    captions: AgentChatCodexRealtimeCaption[];
+    transcript: Array<{ role: "user" | "assistant"; text: string }>;
+    handoffs: number;
+    realtimeSessionId: string | null;
+    /**
+     * native mode: spoken requests voice handed to Codex, oldest first. Each
+     * becomes the user message of the turn it starts, or of the running turn
+     * it steers (`shownInTurnId` set), so the thread shows what was asked.
+     */
+    voiceRequests: Array<{ text: string; shownInTurnId: string | null; at: number }>;
+    /** host mode: a routed request still waits for the chat's answer. */
+    awaitingAnswer: boolean;
+    /** host mode: the chat's assistant text for the turn in progress. */
+    answerText: string;
+    lastStatusAt: number;
+    /**
+     * Codex sends transcript items (`item/*`) in native mode but only the flat
+     * `transcript/delta` / `transcript/done` pair with client-managed hand-offs.
+     * The flat pair drives captions until an item event arrives.
+     */
+    sawTranscriptItems: boolean;
+    flatCaptionSeq: number;
+  };
+  const codexRealtimeBySession = new Map<string, CodexRealtimeSessionState>();
+  // How a recent session ended, so its renderer can show why after the state is gone.
+  const codexRealtimeEnded = new Map<string, { error: string | null; at: number }>();
+
+  /** OpenAI errors arrive as a JSON body inside the message; keep only its sentence. */
+  const humanizeCodexRealtimeError = (raw: string): string => {
+    const text = raw.trim();
+    const start = text.indexOf("{");
+    if (start >= 0) {
+      try {
+        const parsed = JSON.parse(text.slice(start)) as { error?: { message?: unknown }; message?: unknown };
+        const message = parsed.error?.message ?? parsed.message;
+        if (typeof message === "string" && message.trim()) return message.trim();
+      } catch {
+        // Not JSON; fall through to the raw text.
+      }
+    }
+    return text || "Codex voice failed.";
+  };
+
+  const summarizeCodexRealtimeParams = (params: Record<string, unknown>): Record<string, unknown> => {
+    const summary: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "threadId") continue;
+      if (key === "sdp" && typeof value === "string") {
+        summary.sdpBytes = value.length;
+      } else if (key === "audio") {
+        summary.audio = "[omitted]";
+      } else {
+        const text = typeof value === "string" ? value : JSON.stringify(value);
+        summary[key] = text && text.length > 400 ? `${text.slice(0, 400)}…` : value;
+      }
+    }
+    return summary;
+  };
+
+  const formatCodexRealtimeDuration = (ms: number): string => {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+
+  /** Sends a request to whichever app-server carries this voice session. */
+  const codexRealtimeRequest = (
+    state: CodexRealtimeSessionState,
+    method: string,
+    params: unknown,
+  ): Promise<unknown> => {
+    if (state.mode === "host") {
+      return state.host ? state.host.request(method, params) : Promise.reject(new Error("Voice host is gone."));
+    }
+    return state.runtime
+      ? state.runtime.request(method, params, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
+      : Promise.reject(new Error("Codex is not running."));
+  };
+
+  /** Ends the chat's voice session once and records it as a single chat line. */
+  const finishCodexRealtime = (
+    managed: ManagedChatSession,
+    state: CodexRealtimeSessionState,
+    error: string | null,
+  ): void => {
+    if (codexRealtimeBySession.get(managed.session.id) !== state) return;
+    codexRealtimeBySession.delete(managed.session.id);
+    if (state.answer) {
+      clearTimeout(state.answer.timer);
+      state.answer.reject(new Error(error ?? "Voice was stopped."));
+      state.answer = null;
+    }
+    const now = Date.now();
+    for (const [sessionId, ended] of codexRealtimeEnded) {
+      if (now - ended.at > CODEX_REALTIME_ENDED_RETENTION_MS) codexRealtimeEnded.delete(sessionId);
+    }
+    codexRealtimeEnded.set(managed.session.id, { error, at: now });
+    logger.info("agent_chat.codex_realtime_finished", {
+      sessionId: managed.session.id,
+      mode: state.mode,
+      threadId: state.threadId,
+      durationMs: now - state.startedAt,
+      lines: state.transcript.length,
+      handoffs: state.handoffs,
+      error,
+    });
+    // A host is private to this session; the stop request goes out before it closes.
+    if (state.host) {
+      const host = state.host;
+      void host.request("thread/realtime/stop", { threadId: state.threadId })
+        .catch(() => {})
+        .finally(() => host.close());
+    }
+    // A session that never went live failed to start; the renderer shows why.
+    if (!state.live) return;
+    if (!state.transcript.length && !error) return;
+    const exchanges = state.transcript.filter((line) => line.role === "user").length;
+    const parts = [`Voice conversation · ${formatCodexRealtimeDuration(now - state.startedAt)}`];
+    if (exchanges) parts.push(`${exchanges} ${exchanges === 1 ? "request" : "requests"}`);
+    if (state.handoffs) parts.push(`${state.handoffs} handed to the agent`);
+    const transcript = state.transcript
+      .map((line) => `${line.role === "user" ? "You" : "Voice"}: ${line.text}`)
+      .join("\n");
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: error ? "warning" : "info",
+      message: error ? `${parts.join(" · ")} · ended: ${error}` : parts.join(" · "),
+      ...(transcript ? { detail: transcript } : {}),
+    });
+  };
+
+  const upsertCodexRealtimeCaption = (
+    state: CodexRealtimeSessionState,
+    id: string,
+    patch: { role?: "user" | "assistant"; delta?: string; text?: string; final?: boolean },
+  ): AgentChatCodexRealtimeCaption | null => {
+    let caption = state.captions.find((entry) => entry.id === id);
+    if (!caption) {
+      if (!patch.role) return null;
+      caption = { id, role: patch.role, text: "", final: false };
+      state.captions.push(caption);
+      if (state.captions.length > CODEX_REALTIME_CAPTION_LIMIT) {
+        state.captions.splice(0, state.captions.length - CODEX_REALTIME_CAPTION_LIMIT);
+      }
+    }
+    if (patch.delta) caption.text += patch.delta;
+    if (typeof patch.text === "string") caption.text = patch.text;
+    if (patch.final) caption.final = true;
+    return caption;
+  };
+
+  const codexVoiceInputMetadata = (state: CodexRealtimeSessionState): AgentChatEventMetadata => ({
+    voiceInput: { realtimeSessionId: state.realtimeSessionId ?? state.threadId },
+  });
+
+  const emitCodexRealtimeUserMessage = (
+    managed: ManagedChatSession,
+    state: CodexRealtimeSessionState,
+    text: string,
+    turnId: string,
+  ): void => {
+    emitChatEvent(managed, { type: "user_message", text, turnId, metadata: codexVoiceInputMetadata(state) });
+  };
+
+  /**
+   * native mode. A Codex turn ADE did not start: while voice is live on this
+   * chat, it is a voice hand-off. Adopt it as the chat's turn and show the
+   * spoken request as its user message. Returns false when no voice session
+   * explains the turn.
+   */
+  const adoptCodexRealtimeTurn = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string,
+  ): boolean => {
+    const state = codexRealtimeBySession.get(managed.session.id);
+    if (!state || state.mode !== "native" || state.runtime !== runtime) return false;
+    // A hand-off starts its turn within a second or two. An older unclaimed
+    // request never got a turn of its own; attaching it to this one would put
+    // the words under the wrong answer.
+    const now = Date.now();
+    const request = state.voiceRequests.find(
+      (entry) => entry.shownInTurnId === null && now - entry.at <= CODEX_REALTIME_REQUEST_CLAIM_MS,
+    );
+    if (request) {
+      request.shownInTurnId = turnId;
+      emitCodexRealtimeUserMessage(managed, state, request.text, turnId);
+    }
+    logger.info("agent_chat.codex_realtime_turn_adopted", {
+      sessionId: managed.session.id,
+      turnId,
+      hadRequestText: Boolean(request),
+    });
+    return true;
+  };
+
+  const codexRealtimeStateIsCurrent = (managed: ManagedChatSession, state: CodexRealtimeSessionState): boolean =>
+    state.mode === "host" ? Boolean(state.host) : managed.runtime === state.runtime;
+
+  /** Gives the live voice session one line: context for later, or something to say now. */
+  const tellCodexRealtime = (
+    managed: ManagedChatSession,
+    mode: "context" | "speak",
+    text: string,
+  ): void => {
+    const state = codexRealtimeBySession.get(managed.session.id);
+    if (!state?.live || !codexRealtimeStateIsCurrent(managed, state)) return;
+    const method = mode === "speak" ? "thread/realtime/appendSpeech" : "thread/realtime/appendText";
+    const params = mode === "speak"
+      ? { threadId: state.threadId, text }
+      : { threadId: state.threadId, text, role: "developer" };
+    void codexRealtimeRequest(state, method, params).catch((error: unknown) => {
+      logger.warn("agent_chat.codex_realtime_tell_failed", {
+        sessionId: managed.session.id,
+        method,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /** A short, speakable description of what the agent is doing, or null. */
+  const describeCodexVoiceProgress = (event: AgentChatEvent): string | null => {
+    switch (event.type) {
+      case "command": {
+        const command = event.command.trim().split("\n")[0] ?? "";
+        return command ? `running a command: ${command.slice(0, 80)}` : "running a command";
+      }
+      case "tool_call":
+        return event.tool.trim() ? `using ${event.tool.trim()}` : "using a tool";
+      case "file_change":
+        return "editing files";
+      case "web_search":
+        return "searching the web";
+      default:
+        return null;
+    }
+  };
+
+  /**
+   * Sends the spoken request into the chat the same way typing does: a new
+   * turn when the chat is idle, into the running turn when the provider can
+   * take it, otherwise queued for after it.
+   */
+  const routeCodexVoiceRequest = async (
+    managed: ManagedChatSession,
+    state: CodexRealtimeSessionState,
+    text: string,
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    const metadata = codexVoiceInputMetadata(state);
+    // The agent gets a one-line frame so "you" and "this" read right; the
+    // thread shows only the spoken words.
+    const framed = `${CODEX_VOICE_REQUEST_FRAME}\n\n${text}`;
+    state.awaitingAnswer = true;
+    state.answerText = "";
+    try {
+      const provider = managed.session.provider;
+      const running = canRouteActiveSendToSteer(managed);
+      if (running && activeTurnDispatchModes(provider).includes("inline")) {
+        await steer({ sessionId, text: framed, displayText: text, metadata, dispatchMode: "inline" });
+      } else {
+        await sendMessage({ sessionId, text: framed, displayText: text, metadata }, { routeActiveToSteer: true });
+      }
+      logger.info("agent_chat.codex_realtime_routed", { sessionId, provider, running, chars: text.length });
+    } catch (error) {
+      state.awaitingAnswer = false;
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.codex_realtime_route_failed", { sessionId, error: message });
+      tellCodexRealtime(managed, "speak", `That did not reach the chat: ${message}`);
+    }
+  };
+
+  observeChatEventForCodexRealtime = (managed, event) => {
+    const state = codexRealtimeBySession.get(managed.session.id);
+    if (!state?.live) return;
+    if (event.type === "subagent_started" || event.type === "subagent_result") {
+      const name = (event as { label?: string | null }).label?.trim()
+        || (event as { description?: string | null }).description?.trim()
+        || "The subagent";
+      if (event.type === "subagent_started") {
+        tellCodexRealtime(
+          managed,
+          "context",
+          `[ADE] Subagent "${name}" started. It keeps running after the agent's turn ends; it is not done until ADE says it finished.`,
+        );
+        return;
+      }
+      const outcome = event.status === "completed" ? "finished" : event.status === "failed" ? "failed" : "was stopped";
+      tellCodexRealtime(managed, "speak", `${name} ${outcome}.`);
+      const summary = (event.finalSummary ?? event.summary ?? "").trim();
+      if (summary) {
+        tellCodexRealtime(
+          managed,
+          "context",
+          `[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${summary.slice(0, 1_500)}`,
+        );
+      }
+      return;
+    }
+    // The rest relays a non-Codex chat's work; a Codex chat's voice gets it from Codex.
+    if (state.mode !== "host") return;
+    if (event.type === "text") {
+      state.answerText += event.text;
+      return;
+    }
+    if (event.type === "status" && event.turnStatus === "started") {
+      state.answerText = "";
+      return;
+    }
+    const progress = describeCodexVoiceProgress(event);
+    if (progress && state.awaitingAnswer) {
+      const now = Date.now();
+      if (now - state.lastStatusAt >= CODEX_REALTIME_STATUS_INTERVAL_MS) {
+        state.lastStatusAt = now;
+        tellCodexRealtime(managed, "context", `[STATUS] The agent is ${progress}.`);
+      }
+      return;
+    }
+    if (event.type === "error" && state.awaitingAnswer) {
+      state.awaitingAnswer = false;
+      const message = event.message.trim();
+      tellCodexRealtime(managed, "speak", `The agent hit an error${message ? `: ${message.slice(0, 200)}` : "."}`);
+      return;
+    }
+    if (event.type === "done" && state.awaitingAnswer) {
+      state.awaitingAnswer = false;
+      const answer = state.answerText.trim();
+      state.answerText = "";
+      // Codex prefixes this as a [BACKEND] message; voice presents it briefly
+      // under its own instructions instead of reading it word for word.
+      tellCodexRealtime(
+        managed,
+        "speak",
+        answer
+          ? answer.length > CODEX_REALTIME_ANSWER_CHARS ? `${answer.slice(0, CODEX_REALTIME_ANSWER_CHARS)}…` : answer
+          : "The agent finished without a written answer.",
+      );
+    }
+  };
+
+  const handleCodexRealtimeNotification = (
+    managed: ManagedChatSession,
+    method: string,
+    params: Record<string, unknown>,
+  ): void => {
+    const sessionId = managed.session.id;
+    const state = codexRealtimeBySession.get(sessionId);
+    if (
+      method !== "thread/realtime/outputAudio/delta"
+      && method !== "thread/realtime/transcript/delta"
+      && method !== "thread/realtime/item/transcript/delta"
+    ) {
+      logger.info("agent_chat.codex_realtime_event", {
+        sessionId,
+        method,
+        active: Boolean(state),
+        ...summarizeCodexRealtimeParams(params),
+      });
+    }
+    if (!state) return;
+    const item = params.item && typeof params.item === "object" ? params.item as Record<string, unknown> : null;
+    switch (method) {
+      case "thread/realtime/sdp": {
+        const sdp = typeof params.sdp === "string" ? params.sdp : "";
+        if (state.answer && sdp) {
+          clearTimeout(state.answer.timer);
+          state.answer.resolve(sdp);
+          state.answer = null;
+        }
+        return;
+      }
+      case "thread/realtime/error": {
+        const message = humanizeCodexRealtimeError(typeof params.message === "string" ? params.message : "");
+        finishCodexRealtime(managed, state, message);
+        return;
+      }
+      case "thread/realtime/closed": {
+        const reason = typeof params.reason === "string" ? params.reason : "";
+        finishCodexRealtime(managed, state, reason && reason !== "requested" ? `closed (${reason})` : null);
+        return;
+      }
+      case "thread/realtime/started": {
+        if (typeof params.realtimeSessionId === "string") state.realtimeSessionId = params.realtimeSessionId;
+        return;
+      }
+      case "thread/realtime/item/started": {
+        if (item?.type !== "transcriptSegment" || typeof item.id !== "string") return;
+        state.sawTranscriptItems = true;
+        const role = item.role === "user" ? "user" : "assistant";
+        upsertCodexRealtimeCaption(state, item.id, {
+          role,
+          text: typeof item.text === "string" ? item.text : "",
+        });
+        return;
+      }
+      case "thread/realtime/transcript/delta": {
+        if (state.mode === "native" || state.sawTranscriptItems) return;
+        const role = params.role === "user" ? "user" : "assistant";
+        const delta = typeof params.delta === "string" ? params.delta : "";
+        if (!delta) return;
+        const id = `flat-${role}-${state.flatCaptionSeq}`;
+        const open = state.captions.find((caption) => caption.id === id && !caption.final);
+        upsertCodexRealtimeCaption(state, id, open ? { delta } : { role, delta });
+        return;
+      }
+      case "thread/realtime/transcript/done": {
+        if (state.mode === "native" || state.sawTranscriptItems) return;
+        const role = params.role === "user" ? "user" : "assistant";
+        const text = typeof params.text === "string" ? params.text.trim() : "";
+        const id = `flat-${role}-${state.flatCaptionSeq}`;
+        state.flatCaptionSeq += 1;
+        if (!text) return;
+        upsertCodexRealtimeCaption(state, id, { role, text, final: true });
+        state.transcript.push({ role, text });
+        return;
+      }
+      case "thread/realtime/item/transcript/delta": {
+        const itemId = typeof params.itemId === "string" ? params.itemId : "";
+        const delta = typeof params.delta === "string" ? params.delta : "";
+        if (itemId && delta) upsertCodexRealtimeCaption(state, itemId, { delta });
+        return;
+      }
+      case "thread/realtime/item/completed": {
+        if (item?.type !== "transcriptSegment" || typeof item.id !== "string") return;
+        const role = item.role === "user" ? "user" : "assistant";
+        const text = typeof item.text === "string" ? item.text.trim() : "";
+        upsertCodexRealtimeCaption(state, item.id, { role, text, final: true });
+        if (text) state.transcript.push({ role, text });
+        return;
+      }
+      case "thread/realtime/itemAdded": {
+        const raw = params.item;
+        const added = typeof raw === "string"
+          ? (() => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })()
+          : item;
+        if (added?.type !== "handoff_request") return;
+        state.handoffs += 1;
+        const text = typeof added.input_transcript === "string" ? added.input_transcript.trim() : "";
+        if (!text) return;
+        if (state.mode === "host") {
+          void routeCodexVoiceRequest(managed, state, text);
+          return;
+        }
+        const runningTurnId = state.runtime?.activeTurnId ?? null;
+        if (runningTurnId && managed.runtime === state.runtime) {
+          // Codex steers the running turn with it; show it there now.
+          emitCodexRealtimeUserMessage(managed, state, text, runningTurnId);
+          state.voiceRequests.push({ text, shownInTurnId: runningTurnId, at: Date.now() });
+        } else {
+          state.voiceRequests.push({ text, shownInTurnId: null, at: Date.now() });
+        }
+        if (state.voiceRequests.length > 16) state.voiceRequests.splice(0, state.voiceRequests.length - 16);
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
+  // What the voice model knows before the first word. Codex's own startup
+  // context covers the workspace and recent threads; this adds what only ADE
+  // knows (which chat, lane, and worktree), the user's voice style, and the
+  // chat's latest messages, so voice continues the typed conversation.
+  const buildCodexRealtimeInitialItems = (
+    managed: ManagedChatSession,
+    preferences: CodexVoicePreferences,
+  ): Array<{ role: "user" | "developer" | "assistant"; text: string }> => {
+    const summary = sessionService.get(managed.session.id);
+    const provider = managed.session.provider;
+    const context = [
+      `You are the voice of the ${providerDisplayLabel(provider, String(provider))} agent in an ADE chat. ADE is the user's desktop app for running coding agents in lanes (git worktrees).`,
+      `Chat: ${summary?.title?.trim() || "Untitled"}`,
+      `Lane: ${summary?.laneName ?? "unknown"}`,
+      `Worktree: ${managed.laneWorktreePath}`,
+      `Model doing the work: ${managed.session.model}`,
+      "The messages that follow are this chat's most recent turns. For anything about the code, files, lane, or tasks, pass the request to the agent instead of answering from memory.",
+      "Do not read file paths, IDs, code, or long output aloud unless asked; the chat shows them.",
+      "Everything you hand to the agent appears in the chat as the user's message, followed by the agent's work. Only say work is done when the agent's result says so.",
+      "A subagent the agent starts keeps running after the agent's turn ends. Say it is running; say it finished only when a message from ADE reports that. Never make up a subagent's result.",
+      "Questions about you (the voice) are yours to answer, not the agent's. Your settings (personality, voice, progress updates, what you call the user, language) are in ADE under Settings, Chat, Voice conversations. The waveform button in the prompt box starts and ends a conversation.",
+      buildCodexVoiceStyleInstructions(preferences),
+    ].join("\n");
+    const history = managed.recentConversationEntries
+      .slice(-CODEX_REALTIME_HISTORY_ENTRIES)
+      .map((entry) => {
+        const text = (entry.displayText ?? entry.text).trim();
+        return {
+          role: entry.role,
+          text: text.length > CODEX_REALTIME_HISTORY_ENTRY_CHARS
+            ? `${text.slice(0, CODEX_REALTIME_HISTORY_ENTRY_CHARS)}…`
+            : text,
+        };
+      })
+      .filter((entry) => entry.text.length > 0);
+    return [{ role: "developer", text: context }, ...history];
+  };
+
+  const startCodexRealtime = async ({
+    sessionId,
+    sdp,
+    preferences: rawPreferences,
+  }: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
+    // Pass the offer through byte for byte: SDP lines end in CRLF, and a trimmed
+    // offer loses the last one, which OpenAI's parser rejects as "EOF".
+    const offer = typeof sdp === "string" ? sdp : "";
+    if (!offer.trim()) throw new Error("Voice needs a WebRTC offer.");
+    const preferences = normalizeCodexVoicePreferences(rawPreferences);
+    const managed = ensureManagedSession(sessionId.trim());
+    const previous = codexRealtimeBySession.get(managed.session.id);
+    if (previous) await stopCodexRealtime({ sessionId: managed.session.id, token: previous.token });
+    const mode: CodexRealtimeSessionState["mode"] = managed.session.provider === "codex" ? "native" : "host";
+    const state: CodexRealtimeSessionState = {
+      token: randomUUID(),
+      mode,
+      threadId: "",
+      runtime: null,
+      host: null,
+      startedAt: Date.now(),
+      live: false,
+      answer: null,
+      captions: [],
+      transcript: [],
+      handoffs: 0,
+      realtimeSessionId: null,
+      voiceRequests: [],
+      awaitingAnswer: false,
+      answerText: "",
+      lastStatusAt: 0,
+      sawTranscriptItems: false,
+      flatCaptionSeq: 0,
+    };
+    if (mode === "native") {
+      const runtime = managed.runtime?.kind === "codex"
+        ? managed.runtime
+        : await ensureCodexSessionRuntime(managed);
+      state.runtime = runtime;
+      state.threadId = await ensureCodexControlThread(managed, runtime, "voice");
+    } else {
+      const env = buildAgentRuntimeEnv(managed);
+      const executable = resolveCodexExecutable({ env }).path;
+      if (!executable) throw new Error("Voice needs Codex installed. Install Codex and sign in with ChatGPT.");
+      const host = await startCodexVoiceHost({
+        executable,
+        env,
+        cwd: managed.laneWorktreePath,
+        logger,
+        sessionId: managed.session.id,
+        onNotification: ({ method, params }) => {
+          if (codexRealtimeBySession.get(managed.session.id) !== state) return;
+          if (method.startsWith("thread/realtime/")) handleCodexRealtimeNotification(managed, method, params);
+        },
+        onExit: (reason) => finishCodexRealtime(managed, state, reason),
+      });
+      state.host = host;
+      state.threadId = host.threadId;
+    }
+    const threadId = state.threadId;
+    const answer = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finishCodexRealtime(managed, state, "Codex did not answer the voice offer in time.");
+      }, CODEX_REALTIME_ANSWER_TIMEOUT_MS);
+      state.answer = { resolve, reject, timer };
+    });
+    // Rejections are delivered through `await answer` below; this keeps an
+    // early one (a stop before the request returns) from going unhandled.
+    answer.catch(() => {});
+    codexRealtimeBySession.set(managed.session.id, state);
+    codexRealtimeEnded.delete(managed.session.id);
+    const initialItems = buildCodexRealtimeInitialItems(managed, preferences);
+    logger.info("agent_chat.codex_realtime_start", {
+      sessionId: managed.session.id,
+      mode,
+      threadId,
+      offerBytes: offer.length,
+      voice: preferences.voice,
+      personality: preferences.personality,
+      initialItems: initialItems.length,
+      initialChars: initialItems.reduce((total, item) => total + item.text.length, 0),
+    });
+    try {
+      // Based on the Codex TUI's voice start. WebRTC defaults to realtime v1,
+      // which OpenAI's call endpoint now rejects (it wants the v3 "quicksilver
+      // v2" protocol). Unlike the TUI, ADE keeps Codex's startup context and
+      // seeds ADE's own context. A Codex chat leaves hand-offs to the app
+      // server; any other chat manages them itself (see routeCodexVoiceRequest).
+      await codexRealtimeRequest(state, "thread/realtime/start", {
+        threadId,
+        outputModality: "audio",
+        includeStartupContext: true,
+        initialItems,
+        delegationAckFiller: true,
+        backendReasoningStatus: mode === "native",
+        ...(mode === "host" ? { clientManagedHandoffs: true } : {}),
+        voice: preferences.voice,
+        version: "v3",
+        transport: { type: "webrtc", sdp: offer },
+      });
+      const answerSdp = await answer;
+      state.live = true;
+      logger.info("agent_chat.codex_realtime_answered", {
+        sessionId: managed.session.id,
+        threadId,
+        answerBytes: answerSdp.length,
+        latencyMs: Date.now() - state.startedAt,
+      });
+      return { threadId, sdp: answerSdp, token: state.token };
+    } catch (error) {
+      const message = humanizeCodexRealtimeError(error instanceof Error ? error.message : String(error));
+      finishCodexRealtime(managed, state, message);
+      logger.warn("agent_chat.codex_realtime_start_failed", {
+        sessionId: managed.session.id,
+        threadId,
+        error: message,
+      });
+      // Tell a native app server too: a start it accepted must not keep a call
+      // open. (A host is closed by finishCodexRealtime.)
+      if (state.mode === "native") {
+        void codexRealtimeRequest(state, "thread/realtime/stop", { threadId }).catch(() => {});
+      }
+      throw new Error(message);
+    }
+  };
+
+  const stopCodexRealtime = async ({ sessionId, token }: AgentChatCodexRealtimeStopArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId.trim());
+    const state = codexRealtimeBySession.get(managed.session.id);
+    if (!state || (token && state.token !== token)) return;
+    logger.info("agent_chat.codex_realtime_stop", {
+      sessionId: managed.session.id,
+      mode: state.mode,
+      threadId: state.threadId,
+      durationMs: Date.now() - state.startedAt,
+    });
+    finishCodexRealtime(managed, state, null);
+    if (state.mode === "native") {
+      try {
+        await codexRealtimeRequest(state, "thread/realtime/stop", { threadId: state.threadId });
+      } catch (error) {
+        logger.warn("agent_chat.codex_realtime_stop_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  const getCodexRealtimeState = ({ sessionId, token }: AgentChatCodexRealtimeStateArgs): AgentChatCodexRealtimeState => {
+    const managed = ensureManagedSession(sessionId.trim());
+    const state = codexRealtimeBySession.get(managed.session.id);
+    // A restarted or replaced Codex process takes the realtime call with it.
+    if (state && state.mode === "native" && managed.runtime !== state.runtime) {
+      finishCodexRealtime(managed, state, "Codex stopped during the voice session.");
+    }
+    const current = codexRealtimeBySession.get(managed.session.id);
+    if (!current || current.token !== token) {
+      const ended = codexRealtimeEnded.get(managed.session.id);
+      return { status: "ended", working: false, captions: [], handoffs: 0, error: ended?.error ?? null };
+    }
+    const working = current.mode === "native"
+      ? Boolean(current.runtime?.activeTurnId || current.runtime?.awaitingTurnStart)
+      : canRouteActiveSendToSteer(managed) || current.awaitingAnswer;
+    return {
+      status: "live",
+      working,
+      captions: current.captions.map((caption) => ({ ...caption })),
+      handoffs: current.handoffs,
+      error: null,
+    };
+  };
+
   const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
@@ -34999,6 +35686,11 @@ export function createAgentChatService(args: {
         threadId: threadIdFromParams,
         expectedThreadId: managed.session.threadId,
       });
+      return;
+    }
+
+    if (method.startsWith("thread/realtime/")) {
+      handleCodexRealtimeNotification(managed, method, params);
       return;
     }
 
@@ -35181,7 +35873,23 @@ export function createAgentChatService(args: {
         logger.warn(`[codex] ignoring turn/started without turnId (pending planning guard preserved) for session ${managed.session.id}`);
         return;
       }
-      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
+      // A turn ADE did not start: a voice hand-off when voice is live. Check it
+      // before the resumed-turn path too, because starting voice resumes the
+      // thread and would otherwise take the first voice turn as a resumed one.
+      const isVoiceTurn = Boolean(
+        turnId
+        && !runtime.awaitingTurnStart
+        && !runtime.activeTurnId
+        && !runtime.startedTurnId
+        && adoptCodexRealtimeTurn(managed, runtime, turnId),
+      );
+      if (
+        !runtime.awaitingTurnStart
+        && !runtime.activeTurnId
+        && !runtime.startedTurnId
+        && !isResumedInProgressTurnStart
+        && !isVoiceTurn
+      ) {
         logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
         if (turnId) {
           runtime.ignoredTurnIds.add(turnId);
@@ -38595,7 +39303,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -39935,7 +40642,7 @@ export function createAgentChatService(args: {
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider, sessionId)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
     let requestedOpenCodePermissionMode = permissionsPinned ? undefined : requestedOpenCodePermissionModeArg;
@@ -40158,7 +40865,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -54137,7 +54843,6 @@ export function createAgentChatService(args: {
         args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
-        managed.session.id,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -56933,7 +57638,6 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
-          managed.session.id,
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
@@ -57121,7 +57825,6 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           permissionMode,
           managed.session.provider,
-          managed.session.id,
         )
         : permissionMode;
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
@@ -59454,19 +60157,10 @@ export function createAgentChatService(args: {
     executionMode,
     timeoutMs,
     idleTimeoutMs,
-    voiceCallId,
   }: AgentChatSendArgs & {
     timeoutMs?: number | null;
     /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
     idleTimeoutMs?: number | null;
-    /**
-     * The CTO voice call this turn belongs to, when one is driving it.
-     *
-     * Stamped onto every envelope the turn commits so the transcript can fold
-     * the call into one card. Nothing else changes: the turn runs on the same
-     * session, with the same tools and the same approvals.
-     */
-    voiceCallId?: string | null;
   }): Promise<AgentChatBackgroundTurnResult> => {
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
@@ -59519,15 +60213,7 @@ export function createAgentChatService(args: {
     const normalizedIdleTimeoutMs = idleTimeoutMs != null && Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
       ? clampTurnTimerMs(Number(idleTimeoutMs))
       : null;
-    // Held for the life of the turn, and given back however it ends: an
-    // abandoned id would stamp the user's NEXT typed message with a call that
-    // is already over.
-    const trimmedVoiceCallId = typeof voiceCallId === "string" && voiceCallId.trim().length
-      ? voiceCallId.trim()
-      : null;
-    if (trimmedVoiceCallId) managed.activeVoiceCallId = trimmedVoiceCallId;
-    try {
-      return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
+    return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
         resolve,
         reject,
@@ -59551,9 +60237,8 @@ export function createAgentChatService(args: {
       // Armed before the provider starts, so a turn that never begins counts as idle too.
       armSessionTurnIdleTimer(sessionId, collector);
 
-      // The headless path is a real CTO turn, not a side channel: the voice's
-      // `ask_cto` reaches the thread through here, and without this refresh it
-      // answered off whatever the live-state block held when the last
+      // The headless path is a real CTO turn, not a side channel, and without
+      // this refresh it answered off whatever the live-state block held when the last
       // interactive send ran — lanes, PR state, dirty flags and scheduled work
       // as they were minutes or hours ago. That is worse than no block, because
       // the doctrine tells the CTO not to re-derive them. It is the same call
@@ -59583,12 +60268,7 @@ export function createAgentChatService(args: {
           }
           reject(error instanceof Error ? error : new Error(String(error)));
         });
-      });
-    } finally {
-      if (trimmedVoiceCallId && managed.activeVoiceCallId === trimmedVoiceCallId) {
-        managed.activeVoiceCallId = null;
-      }
-    }
+    });
   };
 
   /**
@@ -60352,6 +61032,9 @@ export function createAgentChatService(args: {
     setCodexGoal,
     setCodexGoalStatus,
     clearCodexGoal,
+    startCodexRealtime,
+    stopCodexRealtime,
+    getCodexRealtimeState,
     resetCodexMemory,
     terminateCodexBackgroundTerminal,
     runSessionTurn,

@@ -444,28 +444,6 @@ export type SubagentCardGridEvent = {
 };
 
 /**
- * One CTO voice call, folded into a single row. Produced by the grouping pass
- * only — nothing persists it and no emitter produces it. Deliberately NOT part
- * of `ChatTranscriptRenderEvent`: it can only exist after grouping, so it lives
- * in `ChatTranscriptGroupedEnvelope["event"]`.
- * Row key: `voice-call:${callId}`.
- */
-export type VoiceCallGroupRenderEvent = {
-  type: "voice_call_group";
-  callId: string;
-  /** Wall-clock the folded rows span, ms. Null when only one timestamp exists. */
-  durationMs: number | null;
-  /** How many things the user said in the call (user_message rows). */
-  exchanges: number;
-  /** The first thing the user said, one line, clipped. Null if nothing was said. */
-  openingLine: string | null;
-  /** True when the call raised at least one approval. */
-  hadApproval: boolean;
-  /** The folded rows, in order, already grouped by the normal passes. */
-  rows: ChatTranscriptGroupedEnvelope[];
-};
-
-/**
  * The one row a finished turn's intermediate work folds into
  * (`Worked for 4m 12s · 18 tools`). Presentation only and produced last, by
  * {@link applyChatTranscriptTurnFolds}: nothing persists it, no emitter produces
@@ -578,12 +556,6 @@ export type ChatTranscriptRenderEnvelope = {
    */
   repeatCount?: number;
   /**
-   * The CTO voice call this row was produced by, copied off the source
-   * envelope's `provenance.voiceCallId`. Consecutive rows sharing one id fold
-   * into a single `voice_call_group` row (see {@link groupVoiceCallRows}).
-   */
-  voiceCallId?: string;
-  /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
    * row still sorts on it but must not show it as a clock (subagent drill-in).
@@ -617,12 +589,9 @@ export type ChatTranscriptGroupedEnvelope = {
     | SubagentStoppedGroupEvent
     | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | VoiceCallGroupRenderEvent
     | TurnFoldRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
-  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
-  voiceCallId?: string;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
@@ -1029,19 +998,13 @@ function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanT
   };
 }
 
-/**
- * Replace a row in place while keeping its voice-call stamp. The stamp is
- * applied by the collapse callers AFTER `appendCollapsedChatTranscriptEvent`
- * returns, so a later event that rewrites an earlier row wholesale (rather than
- * spreading it) would otherwise drop the id and split the call's fold.
- */
-function replaceRowPreservingVoiceCall(
+/** Replace a row in place, re-deriving its scene scope key. */
+function replaceRowInPlace(
   rows: ChatTranscriptRenderEnvelope[],
   index: number,
   next: ChatTranscriptRenderEnvelope,
 ): void {
-  const voiceCallId = rows[index]?.voiceCallId;
-  rows[index] = stampSceneScopeKey(voiceCallId ? { ...next, voiceCallId } : next);
+  rows[index] = stampSceneScopeKey(next);
 }
 
 /**
@@ -2063,7 +2026,7 @@ function upsertBackgroundJobLine(
     if (event.status === "running") return;
   }
   context?.backgroundJobRowIndexByKey.set(expectedKey, rowIndex);
-  replaceRowPreservingVoiceCall(rows, rowIndex, { key: expectedKey, timestamp, event });
+  replaceRowInPlace(rows, rowIndex, { key: expectedKey, timestamp, event });
 }
 
 /**
@@ -2249,7 +2212,6 @@ function handleSubagentLifecycleEvent(
   event: NormalizedSubagentLifecycleEvent,
   timestamp: string,
   context: CollapseTranscriptContext,
-  eventVoiceCallId: string | undefined,
 ): boolean {
   const anchors = context.subagentAnchors;
   const agentKey = subagentAgentKey(event);
@@ -2413,7 +2375,7 @@ function handleSubagentLifecycleEvent(
     // Mutate the anchor row IN PLACE — a NEW object with the SAME key.
     const rowIndex = resolveSubagentCardRowIndex(rows, state);
     if (rowIndex != null) {
-      replaceRowPreservingVoiceCall(rows, rowIndex, {
+      replaceRowInPlace(rows, rowIndex, {
         key: state.cardKey!,
         timestamp,
         event: spawnAnchorEvent(state, anchors),
@@ -2502,26 +2464,22 @@ function handleSubagentLifecycleEvent(
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
   };
-  // Settle IN PLACE: the card row keeps its position and key (and the voice
-  // call it was stamped with), so a grid keeps its cards in order and React
+  // Settle IN PLACE: the card row keeps its position and key, so a grid keeps
+  // its cards in order and React
   // keeps the row mounted with its measured height. Late results — after the
   // parent's `done`, even during a later turn — land here the same way.
   const rowIndex = resolveSubagentCardRowIndex(rows, state);
   if (rowIndex != null) {
-    replaceRowPreservingVoiceCall(rows, rowIndex, { key: state.cardKey!, timestamp, event: resultEvent });
+    replaceRowInPlace(rows, rowIndex, { key: state.cardKey!, timestamp, event: resultEvent });
     return true;
   }
   // No card in the window: the spawn sits in an unloaded older page (or the
   // result is the agent's only lifecycle event). Append the card where the
-  // result arrives. The row claims the call this terminal event was spoken
-  // under: a splice above (a dropped job line) can net the append to zero new
-  // rows, and `appendCollapsedEventWithVoiceStamp` stamps only appended rows.
+  // result arrives.
   const cardKey = subagentResultKey(state.renderKeyBase);
   state.cardKey = cardKey;
   state.rowIndex = rows.length;
-  rows.push(eventVoiceCallId
-    ? { key: cardKey, timestamp, event: resultEvent, voiceCallId: eventVoiceCallId }
-    : { key: cardKey, timestamp, event: resultEvent });
+  rows.push({ key: cardKey, timestamp, event: resultEvent });
   return true;
 }
 
@@ -3104,7 +3062,7 @@ export function appendCollapsedChatTranscriptEvent(
     const existingIndex = resolveAdeCardRowIndex(rows, context, cardId, key);
     const existing = existingIndex != null ? rows[existingIndex] : null;
     if (existingIndex != null && existing?.event.type === "ade_card") {
-      replaceRowPreservingVoiceCall(rows, existingIndex, {
+      replaceRowInPlace(rows, existingIndex, {
         key,
         timestamp: envelope.timestamp,
         event: mergeAdeCardEvent(existing.event, event, cardId),
@@ -3126,7 +3084,6 @@ export function appendCollapsedChatTranscriptEvent(
       normalizedSubagentEvent,
       envelope.timestamp,
       activeContext,
-      envelope.provenance?.voiceCallId?.trim() || undefined,
     );
     return;
   }
@@ -3303,30 +3260,23 @@ export type CollapseTranscriptResult = {
 };
 
 /**
- * Append one collapsed event and stamp whatever rows it produced with the voice
- * call it belongs to. Stamping happens HERE rather than inside
- * `appendCollapsedChatTranscriptEvent` because that function pushes rows from
- * dozens of branches; the caller only has to look at what the row count did.
+ * Append one collapsed event and stamp whatever rows it produced. Stamping
+ * happens HERE rather than inside `appendCollapsedChatTranscriptEvent` because
+ * that function pushes rows from dozens of branches; the caller only has to
+ * look at what the row count did.
  */
-function appendCollapsedEventWithVoiceStamp(
+function appendCollapsedEventWithStamp(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
   context: CollapseTranscriptContext,
 ): void {
-  const callId = envelope.provenance?.voiceCallId?.trim() || null;
   const timestampSynthetic = envelope.provenance?.timestampSynthetic === true;
   const before = rows.length;
   const rowKey = allocateTranscriptEventRowKey(envelope, context.eventRowKeyOrdinals);
   appendCollapsedChatTranscriptEvent(rows, envelope, rowKey, context);
   for (let index = before; index < rows.length; index += 1) {
     const row = rows[index]!;
-    const stamped = callId || timestampSynthetic
-      ? {
-        ...row,
-        ...(callId ? { voiceCallId: callId } : {}),
-        ...(timestampSynthetic ? { timestampSynthetic: true } : {}),
-      }
-      : row;
+    const stamped = timestampSynthetic ? { ...row, timestampSynthetic: true } : row;
     rows[index] = stampSceneScopeKey(stamped);
   }
 }
@@ -3337,7 +3287,7 @@ export function collapseChatTranscriptEventsWithContext(
   const rows: ChatTranscriptRenderEnvelope[] = [];
   const context = createCollapseTranscriptContext();
   for (const envelope of events) {
-    appendCollapsedEventWithVoiceStamp(rows, envelope, context);
+    appendCollapsedEventWithStamp(rows, envelope, context);
   }
   return { rows, context };
 }
@@ -3373,7 +3323,7 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
 
   const rows = previousRows.slice();
   for (let index = previousEvents.length; index < events.length; index += 1) {
-    appendCollapsedEventWithVoiceStamp(rows, events[index]!, previousContext);
+    appendCollapsedEventWithStamp(rows, events[index]!, previousContext);
   }
   return { rows, context: previousContext };
 }
@@ -3735,87 +3685,6 @@ function groupChatTranscriptRowsCore(
   );
 }
 
-/**
- * Split `rows` into maximal consecutive runs that share one `voiceCallId` (rows
- * with no id form their own runs), group each run with `groupRun`, and fold each
- * voice run into a single `voice_call_group` row carrying its grouped rows.
- *
- * With no voice-stamped rows present there is exactly ONE run — the whole array —
- * so the output is identical to calling `groupRun(rows)` directly. That property
- * is what makes this safe to wrap the existing passes with.
- */
-export function groupVoiceCallRows(
-  rows: ChatTranscriptRenderEnvelope[],
-  groupRun: (run: ChatTranscriptRenderEnvelope[]) => ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope[] {
-  if (!rows.some((row) => row.voiceCallId)) return groupRun(rows);
-
-  const result: ChatTranscriptGroupedEnvelope[] = [];
-  let index = 0;
-  while (index < rows.length) {
-    const callId = rows[index]!.voiceCallId ?? null;
-    let end = index + 1;
-    while (end < rows.length && (rows[end]!.voiceCallId ?? null) === callId) end += 1;
-    const grouped = groupRun(rows.slice(index, end));
-    if (callId) {
-      const folded = foldVoiceCallRun(callId, grouped);
-      if (folded) result.push(folded);
-    } else {
-      result.push(...grouped);
-    }
-    index = end;
-  }
-  return result;
-}
-
-/**
- * Derive the one card a call's rows collapse into. A call that produced no rows
- * cannot reach here — no rows means no run — which is how "a call that said
- * nothing posts no card" falls out for free.
- */
-function foldVoiceCallRun(
-  callId: string,
-  grouped: ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope | null {
-  const first = grouped[0];
-  const last = grouped[grouped.length - 1];
-  if (!first || !last) return null;
-
-  let exchanges = 0;
-  let openingLine: string | null = null;
-  let hadApproval = false;
-  for (const row of grouped) {
-    if (row.event.type === "user_message") {
-      exchanges += 1;
-      if (openingLine === null) {
-        const text = row.event.displayText?.trim() || row.event.text.trim();
-        openingLine = text ? summarizeInlineText(text, 120) : null;
-      }
-    } else if (row.event.type === "approval_request") {
-      hadApproval = true;
-    }
-  }
-
-  const startedAt = Date.parse(first.timestamp);
-  const endedAt = Date.parse(last.timestamp);
-  const span = Number.isFinite(startedAt) && Number.isFinite(endedAt) ? endedAt - startedAt : null;
-
-  return {
-    key: `voice-call:${callId}`,
-    timestamp: last.timestamp,
-    voiceCallId: callId,
-    event: {
-      type: "voice_call_group",
-      callId,
-      durationMs: span !== null && span >= 0 ? span : null,
-      exchanges,
-      openingLine,
-      hadApproval,
-      rows: grouped,
-    },
-  };
-}
-
 export {
   applyChatTranscriptTurnFolds,
   deriveChatTranscriptTurnFolds,
@@ -3836,7 +3705,7 @@ export function groupChatTranscriptRows(
   rows: ChatTranscriptRenderEnvelope[],
   previousRows: readonly ChatTranscriptGroupedEnvelope[] = [],
 ): ChatTranscriptGroupedEnvelope[] {
-  return groupVoiceCallRows(rows, (run) => groupChatTranscriptRowsCore(run, previousRows));
+  return groupChatTranscriptRowsCore(rows, previousRows);
 }
 
 /**

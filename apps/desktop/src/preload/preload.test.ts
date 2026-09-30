@@ -2286,7 +2286,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
   });
 
-  it("drops a cto_voice event that arrives in a polled batch", async () => {
+  it("drops an unknown-category event that arrives in a polled batch", async () => {
     // The polled path casts the batch rather than normalizing it, so the guard
     // on the PUSHED path does not cover it. Without the same filter here, the
     // poller simply walks around the door the push path closes.
@@ -2305,7 +2305,7 @@ describe("preload Apple device input routing", () => {
           {
             id: 1,
             timestamp: "2026-05-10T12:00:01.000Z",
-            category: "cto_voice",
+            category: "not_a_category",
             payload: { type: "conflict_event", event: conflictEvent },
           },
           {
@@ -2353,7 +2353,7 @@ describe("preload Apple device input routing", () => {
       await vi.advanceTimersByTimeAsync(2_000);
 
       // The `dag_mutation` twin proves the batch was processed at all; the
-      // `cto_voice` one carries the identical payload and must not arrive.
+      // unknown one carries the identical payload and must not arrive.
       expect(conflicts).toHaveBeenCalledTimes(1);
       expect(conflicts).toHaveBeenCalledWith(conflictEvent);
       stopConflicts();
@@ -4957,14 +4957,10 @@ describe("preload Apple device input routing", () => {
     expect(iosSimulator).toHaveBeenCalledWith(iosEvent);
     expect(appControl).toHaveBeenCalledWith(appControlEvent);
 
-    // `cto_voice` is the one category a renderer may NOT receive, and the two
-    // halves of this boundary have to agree: main refuses renderer
-    // subscriptions to it and nothing pushes it down this pipe, so admitting it
-    // inbound would only open a path for a call's transcript to reach a
-    // renderer. The dispatch is category-agnostic, so the guard is the whole
-    // enforcement — the event is dropped entire.
+    // A category this build does not know is dropped entire: the dispatch is
+    // category-agnostic, so the guard is the whole enforcement.
     conflicts.mockClear();
-    emit(12, { type: "conflict_event", event: conflictEvent }, "cto_voice");
+    emit(12, { type: "conflict_event", event: conflictEvent }, "not_a_category");
     expect(conflicts).not.toHaveBeenCalled();
 
     const localUsageListener = on.mock.calls.find(([channel]) => channel === IPC.usageEvent)?.[1];
@@ -9417,8 +9413,8 @@ describe("preload machine-scoped API key routing", () => {
   it("writes and reads the machine key through the LOCAL runtime when one is bound", async () => {
     // The store desktop main writes (Electron safeStorage) is not the store the
     // runtime reads (EncryptedFileCredentialStore), so a key saved through
-    // desktop IPC is invisible to the runtime-hosted voice call. One process
-    // has to own both ends.
+    // desktop IPC is invisible to the runtime. One process has to own both
+    // ends.
     const binding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Project" };
     const invoke = vi.fn(async (channel: string, arg?: unknown) => {
       if (channel === IPC.appGetWindowSession) {

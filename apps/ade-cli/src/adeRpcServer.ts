@@ -10,11 +10,6 @@ import {
   type SessionHomeLane,
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
-import {
-  refusesVoiceCategory,
-  voiceCategoryRefusalMessage,
-  withoutVoiceEvents,
-} from "../../desktop/src/shared/runtimeEventPolicy";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
   createComputerUseArtifactPath,
@@ -7446,15 +7441,6 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
-    // The rule and its wording live in `shared/runtimeEventPolicy.ts`.
-    // Refused by name, filtered when not named.
-    const ctoVoiceVisible = callerHasRoleAtLeast(callerCtx.role, "cto");
-    if (refusesVoiceCategory(category, ctoVoiceVisible)) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidRequest,
-        voiceCategoryRefusalMessage("stream_events")
-      );
-    }
     if (category) {
       // The drain looks at up to ten times `limit` events and returns only this
       // category. Its cursor moves past the events it skipped, so polling
@@ -7473,13 +7459,7 @@ async function runTool(args: {
         oldestCursor: result.oldestCursor ?? null
       };
     }
-    const drained = runtime.eventBuffer.drain(cursor, limit);
-    // Filtered, not refused: every other category is still readable, and the
-    // cursor still advances past what was withheld so polling cannot stall.
-    return {
-      ...drained,
-      events: withoutVoiceEvents(drained.events, ctoVoiceVisible)
-    };
+    return runtime.eventBuffer.drain(cursor, limit);
   }
 
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);

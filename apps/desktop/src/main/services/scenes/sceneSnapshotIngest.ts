@@ -13,16 +13,6 @@ export type IngestSceneSnapshotArgs = {
   projectRoot: string;
   broker: ComputerUseArtifactBroker;
   agentChatService: AgentChatService | null;
-  /**
-   * The chat a LIVE call is running on, asked by call id.
-   *
-   * A scene drawn on a call is filed from the voice HUD, which is mounted at
-   * the shell of a desktop window and sits outside every chat scope — so the
-   * caller often cannot name the owning chat, and when it can it is still a
-   * renderer. This is the side that owns the call, so it answers from the call
-   * itself. Null for any id that is not the call that is actually up.
-   */
-  resolveVoiceCallSessionId?: ((callId: string) => string | null) | null;
   args?: {
     path?: unknown;
     title?: unknown;
@@ -34,7 +24,6 @@ export type IngestSceneSnapshotArgs = {
      * tells the two apart on a runtime-backed build.
      */
     sceneScopeKey?: unknown;
-    voiceCallId?: unknown;
   };
 };
 
@@ -61,7 +50,6 @@ export async function ingestSceneSnapshot({
   projectRoot,
   broker,
   agentChatService,
-  resolveVoiceCallSessionId,
   args,
 }: IngestSceneSnapshotArgs): Promise<{
   filed: boolean;
@@ -119,14 +107,11 @@ export async function ingestSceneSnapshot({
   if (!stat.isFile() || stat.size === 0) throw new Error("The scene snapshot is missing.");
   const title = (typeof args?.title === "string" ? args.title.trim() : "") || "Generated view";
 
-  const voiceCallId = typeof args?.voiceCallId === "string" ? args.voiceCallId.trim() : "";
-  // The same two-source resolution the desktop handler runs, from the same
-  // function: the two sides file into one drawer and must agree about whose.
+  // The same resolution the desktop handler runs, from the same function: the
+  // two sides file into one drawer and must agree about whose.
   const ownerSessionId = await resolveSceneStillOwner({
     agentChatService,
     claimedSessionId: args?.sessionId,
-    voiceCallId,
-    resolveVoiceCallSessionId,
   });
 
   if (sceneScopeKey) {
@@ -140,7 +125,6 @@ export async function ingestSceneSnapshot({
       title,
       ownerSessionId,
       sceneScopeKey,
-      voiceCallId,
     });
     return { filed: true, ownerSessionId, artifactId: still.artifactId };
   }
