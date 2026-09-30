@@ -1639,7 +1639,11 @@ export function createLaneService({
    */
   /** True when any lane in this project is linked to a Linear issue. */
   const hasLinearLinkedLanes = (): boolean =>
-    Boolean(db.get<{ one: number }>("select 1 as one from lane_linear_issues where project_id = ? limit 1", [projectId]));
+    Boolean(db.get<{ one: number }>(
+      `select 1 as one from lane_linear_issues where project_id = ?
+       union all select 1 as one from lane_linear_issue_links where project_id = ? limit 1`,
+      [projectId, projectId],
+    ));
 
   const refreshLinearIssueSnapshots = (patch: LinearIssueSnapshotPatch): string[] => {
     const touched = new Set<string>();

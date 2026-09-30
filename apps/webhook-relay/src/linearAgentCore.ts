@@ -89,6 +89,8 @@ type LinearAgentResult<T> = ({ ok: true } & T) | LinearAgentFailure;
 type LinearAgentToken = { accessToken: string; install: LinearAgentInstallRow };
 
 const MAX_LINEAR_AGENT_BODY_BYTES = 64 * 1024;
+const LINEAR_AGENT_INVALID_GRANT_GRACE_MS = 45_000;
+const LINEAR_AGENT_REFRESH_LEASE_MS = 35_000;
 export const MAX_LINEAR_AGENT_TEXT_BYTES = 20 * 1024;
 export const MAX_LINEAR_AGENT_TOKEN_LENGTH = 4096;
 export const MAX_LINEAR_AGENT_ID_LENGTH = 200;
@@ -108,6 +110,7 @@ export const LINEAR_AGENT_ELICITATION_SIGNALS = new Set(["select", "auth"]);
 export const LINEAR_AGENT_PLAN_STATUSES = new Set(["pending", "inProgress", "completed", "canceled"]);
 export const LINEAR_AGENT_SETTLED_STATE_TYPES = new Set(["started", "completed", "canceled"]);
 const linearViewerIdentityByTokenHash = new Map<string, LinearViewerIdentity & { expiresAt: number }>();
+const linearAgentRefreshByOrganization = new Map<string, Promise<LinearAgentResult<{ accessToken: string }>>>();
 
 export function linearAgentError(status: number, error: string): Response {
   return json({ ok: false, error }, { status });
@@ -393,14 +396,58 @@ async function refreshLinearAgentToken(
   install: LinearAgentInstallRow,
   refreshToken: string,
 ): Promise<LinearAgentResult<{ accessToken: string }>> {
+  const inFlight = linearAgentRefreshByOrganization.get(install.org_id);
+  if (inFlight) return await inFlight;
+  const refresh = refreshLinearAgentTokenOnce(env, key, install, refreshToken);
+  linearAgentRefreshByOrganization.set(install.org_id, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (linearAgentRefreshByOrganization.get(install.org_id) === refresh) {
+      linearAgentRefreshByOrganization.delete(install.org_id);
+    }
+  }
+}
+
+async function refreshLinearAgentTokenOnce(
+  env: RelayEnv,
+  key: CryptoKey,
+  install: LinearAgentInstallRow,
+  refreshToken: string,
+): Promise<LinearAgentResult<{ accessToken: string }>> {
   const clientId = env.LINEAR_APP_CLIENT_ID?.trim();
   if (!clientId) return { ok: false, status: 503, error: "agent_not_configured" };
+  const updatedAt = Date.parse(install.updated_at);
+  if (Number.isFinite(updatedAt) && Date.now() - updatedAt < LINEAR_AGENT_REFRESH_LEASE_MS) {
+    return { ok: false, status: 502, error: "Linear token refresh is already in progress" };
+  }
+  const refreshStartedAt = new Date().toISOString();
+  const lease = await env.DB
+    .prepare(`
+      update linear_agent_installs
+         set updated_at = ?
+       where org_id = ? and access_token_enc = ? and refresh_token_enc = ? and updated_at = ?
+    `)
+    .bind(refreshStartedAt, install.org_id, install.access_token_enc, install.refresh_token_enc, install.updated_at)
+    .run();
+  if (lease.meta?.changes !== 1) {
+    const latest = await readLinearAgentInstall(env, install.org_id);
+    if (latest?.access_token_enc && (
+      latest.access_token_enc !== install.access_token_enc
+      || latest.refresh_token_enc !== install.refresh_token_enc
+    )) {
+      const rotated = await decryptLinearAgentToken(key, install.org_id, latest.access_token_enc);
+      if (rotated) return { ok: true, accessToken: rotated };
+    }
+    return { ok: false, status: 502, error: "Linear token refresh is already in progress" };
+  }
   let response: Response;
   try {
     response = await fetch(linearOAuthTokenUrl(env), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId }).toString(),
+      signal: AbortSignal.timeout(30_000),
     });
   } catch {
     return { ok: false, status: 502, error: "Linear token refresh failed" };
@@ -417,18 +464,39 @@ async function refreshLinearAgentToken(
     // moment ago. Its rotated token is valid, so only a row nobody rotated is
     // really dead.
     const current = await readLinearAgentInstall(env, install.org_id);
-    if (current?.access_token_enc && current.access_token_enc !== install.access_token_enc) {
+    if (current?.access_token_enc && (
+      current.access_token_enc !== install.access_token_enc
+      || current.refresh_token_enc !== install.refresh_token_enc
+    )) {
       const rotated = await decryptLinearAgentToken(key, install.org_id, current.access_token_enc);
       if (rotated) return { ok: true, accessToken: rotated };
     }
-    await env.DB
+    const expiresAt = install.expires_at ? Date.parse(install.expires_at) : Number.NaN;
+    if (Number.isFinite(expiresAt) && Date.now() - expiresAt < LINEAR_AGENT_INVALID_GRANT_GRACE_MS) {
+      // Give a refresh already in flight in another isolate time to persist its
+      // rotated credentials before invalid_grant can clear the install.
+      return { ok: false, status: 502, error: "Linear token refresh failed" };
+    }
+    const cleared = await env.DB
       .prepare(`
         update linear_agent_installs
            set access_token_enc = null, refresh_token_enc = null, expires_at = null, updated_at = ?
          where org_id = ? and access_token_enc = ?
+           and refresh_token_enc = ? and updated_at = ?
       `)
-      .bind(now, install.org_id, install.access_token_enc)
+      .bind(now, install.org_id, install.access_token_enc, install.refresh_token_enc, refreshStartedAt)
       .run();
+    if (cleared.meta?.changes !== 1) {
+      const latest = await readLinearAgentInstall(env, install.org_id);
+      if (latest?.access_token_enc && (
+        latest.access_token_enc !== install.access_token_enc
+        || latest.refresh_token_enc !== install.refresh_token_enc
+      )) {
+        const rotated = await decryptLinearAgentToken(key, install.org_id, latest.access_token_enc);
+        if (rotated) return { ok: true, accessToken: rotated };
+      }
+      return { ok: false, status: 502, error: "Linear token refresh changed concurrently" };
+    }
     return { ok: false, status: 409, error: "agent_not_installed" };
   }
 
@@ -437,11 +505,11 @@ async function refreshLinearAgentToken(
   const expiresAt = Number.isFinite(expiresIn) && expiresIn > 0
     ? new Date(Date.now() + expiresIn * 1000).toISOString()
     : null;
-  await env.DB
+  const persisted = await env.DB
     .prepare(`
       update linear_agent_installs
          set access_token_enc = ?, refresh_token_enc = ?, expires_at = ?, updated_at = ?
-       where org_id = ? and access_token_enc = ?
+       where org_id = ? and access_token_enc = ? and refresh_token_enc = ? and updated_at = ?
     `)
     .bind(
       await encryptLinearAgentToken(key, install.org_id, accessToken),
@@ -450,8 +518,21 @@ async function refreshLinearAgentToken(
       now,
       install.org_id,
       install.access_token_enc,
+      install.refresh_token_enc,
+      refreshStartedAt,
     )
     .run();
+  if (persisted.meta?.changes !== 1) {
+    const latest = await readLinearAgentInstall(env, install.org_id);
+    if (latest?.access_token_enc && (
+      latest.access_token_enc !== install.access_token_enc
+      || latest.refresh_token_enc !== install.refresh_token_enc
+    )) {
+      const rotated = await decryptLinearAgentToken(key, install.org_id, latest.access_token_enc);
+      if (rotated) return { ok: true, accessToken: rotated };
+    }
+    return { ok: false, status: 502, error: "Linear token refresh changed concurrently" };
+  }
   return { ok: true, accessToken };
 }
 

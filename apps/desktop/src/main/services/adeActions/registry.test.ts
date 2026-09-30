@@ -1019,6 +1019,7 @@ describe("runtime Linear issue tracker actions", () => {
       listUsers: vi.fn(async () => users),
       listLabels: vi.fn(async () => labels),
       listWorkflowStates: vi.fn(async () => states),
+      getIssuePickerData: vi.fn(async () => ({ projects, users, states, labels })),
       runGraphQL: vi.fn(async (args: unknown) => ({ data: args })),
     };
     const runtime = {
@@ -1065,7 +1066,7 @@ describe("runtime Linear issue tracker actions", () => {
     });
     expect(tracker.getConnectionStatus).toHaveBeenCalledTimes(2);
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
-    await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
+    await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states, labels });
   });
 
   it("prechecks Linear connection before GraphQL actions", async () => {

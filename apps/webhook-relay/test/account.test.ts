@@ -272,9 +272,13 @@ async function mintToken(
   authorizedParty: string | null = audience,
   expires = true,
   issuer = ISSUER,
+  clientId?: string,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  let token = new SignJWT(authorizedParty ? { azp: authorizedParty } : {})
+  let token = new SignJWT({
+    ...(authorizedParty ? { azp: authorizedParty } : {}),
+    ...(clientId ? { client_id: clientId } : {}),
+  })
     .setProtectedHeader({ alg: "RS256", kid: "account-test" })
     .setIssuer(issuer)
     .setSubject(sub)
@@ -396,6 +400,8 @@ describe("account integration re-keying", () => {
     const env = makeEnv();
     await expect(verifyAccountToken(await mintToken("user_1"), env)).resolves.toBe("user_1");
     await expect(verifyAccountToken(await mintToken("user_1", null, OAUTH_CLIENT_ID), env)).resolves.toBe("user_1");
+    await expect(verifyAccountToken(await mintToken("user_1", null, null, true, ISSUER, OAUTH_CLIENT_ID), env))
+      .resolves.toBe("user_1");
     await expect(verifyAccountToken(await mintToken("user_1", OAUTH_CLIENT_ID, OAUTH_CLIENT_ID, false), env))
       .rejects.toThrow('missing required "exp" claim');
     await expect(verifyAccountToken(await mintToken("user_1", "wrong-client"), env)).rejects.toThrow(
@@ -407,6 +413,18 @@ describe("account integration re-keying", () => {
     await expect(verifyAccountToken(await mintToken("user_1", null, null), env)).rejects.toThrow(
       "Token audience is not allowed",
     );
+  });
+
+  it("accepts configured additional public OAuth clients through the client_id claim", async () => {
+    const env = { ...makeEnv(), CLERK_EXTRA_OAUTH_CLIENT_IDS: " client_desktop , client_mobile " };
+    await expect(verifyAccountToken(
+      await mintToken("user_1", null, null, true, ISSUER, "client_mobile"),
+      env,
+    )).resolves.toBe("user_1");
+    await expect(verifyAccountToken(
+      await mintToken("user_1", null, null, true, ISSUER, "unconfigured-client"),
+      env,
+    )).rejects.toThrow("Token audience is not allowed");
   });
 
   it("accepts a fully pinned secondary Clerk instance without weakening either client binding", async () => {

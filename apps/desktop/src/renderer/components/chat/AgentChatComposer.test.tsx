@@ -28,6 +28,23 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: (options: { count: number; estimateSize: () => number; getItemKey?: (index: number) => string | number }) => {
+    const size = options.estimateSize();
+    return {
+      getTotalSize: () => options.count * size,
+      getVirtualItems: () => Array.from({ length: options.count }, (_, index) => ({
+        index,
+        key: options.getItemKey?.(index) ?? index,
+        start: index * size,
+        size,
+      })),
+      measureElement: vi.fn(),
+      scrollToIndex: vi.fn(),
+    };
+  },
+}));
+
 function installMatchMediaMock(): void {
   if (typeof window.matchMedia === "function") return;
   Object.defineProperty(window, "matchMedia", {
@@ -2898,10 +2915,10 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
-    const issueIdentifier = (await screen.findAllByText("ADE-123"))[0]!;
+    await screen.findByRole("button", { name: /ADE-123/ });
     // The issue row is a `div role="button"` (the checkbox is a real <button>
     // sibling, so the row can't be a nested <button>).
-    const issueRow = issueIdentifier.closest('[role="button"]');
+    const issueRow = screen.getByRole("button", { name: /ADE-123/ });
     expect(issueRow).toBeTruthy();
     fireEvent.click(issueRow!);
     fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
@@ -2964,13 +2981,11 @@ describe("AgentChatComposer", () => {
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
-    await new Promise((resolve) => window.setTimeout(resolve, 260));
     expect(searchLinearIssues).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0));
     expect(searchLinearIssues).toHaveBeenLastCalledWith(expect.objectContaining({ after: "cursor-1" }));
-    await new Promise((resolve) => window.setTimeout(resolve, 260));
 
     expect(searchLinearIssues).toHaveBeenCalledTimes(2);
     expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);

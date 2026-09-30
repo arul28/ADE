@@ -379,8 +379,11 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       const matched = pending.options.find((option) => option.label.toLowerCase() === answer.toLowerCase() || option.value.toLowerCase() === answer.toLowerCase());
       try {
         if (pending.kind === "approval") {
-          // Anything that is not a clear yes declines.
-          const decision: AgentChatApprovalDecision = /^(accept|allow|approve|yes|ok)\b/i.test(matched?.value ?? answer) ? "accept" : "decline";
+          const explicit = matched?.value
+            ?? (/^(yes|allow|accept|approve)\b/i.test(answer) ? "accept"
+              : /^(no|deny|decline|reject|stop|cancel)\b/i.test(answer) ? "decline" : null);
+          if (explicit !== "accept" && explicit !== "decline") throw new Error("not an approval answer");
+          const decision: AgentChatApprovalDecision = explicit;
           await deps.chat.respondToInput({ sessionId: chatSessionId, itemId: pending.itemId, decision });
         } else {
           await deps.chat.respondToInput({

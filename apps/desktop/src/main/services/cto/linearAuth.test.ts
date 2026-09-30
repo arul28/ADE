@@ -1688,35 +1688,19 @@ describe("linearClient", () => {
   });
 
   it("searches issues with picker filters and pagination", async () => {
+    const observedSearchVariables: Record<string, unknown>[] = [];
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string; variables?: Record<string, unknown> };
-      if (!body.query?.includes("SearchIssues")) {
+      if (!body.query?.includes("SearchIssuesFullText")) {
         return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      expect(body.query).toContain("$filter: IssueFilter");
-      expect(body.variables).toMatchObject({
-        first: 25,
-        after: "cursor-1",
-        includeArchived: false,
-        filter: {
-          project: { id: { eq: "project-1" } },
-          state: { type: { in: ["unstarted", "started"] } },
-          assignee: { id: { eq: "user-1" } },
-          priority: { eq: 2 },
-          // Linear's IssueFilter has no `identifier` field, so a text query
-          // expands only to title/description (a numeric query would also add a
-          // `number` eq clause).
-          or: [
-            { title: { containsIgnoreCase: "auth" } },
-            { description: { containsIgnoreCase: "auth" } },
-          ],
-        },
-      });
+      observedSearchVariables.push(body.variables ?? {});
       return new Response(
         JSON.stringify({
           data: {
-            issues: {
+            searchIssues: {
               pageInfo: { hasNextPage: true, endCursor: "cursor-2" },
+              totalCount: 1,
               nodes: [makeIssueNode("7", "2026-03-05T00:07:00.000Z")],
             },
           },
@@ -1744,6 +1728,19 @@ describe("linearClient", () => {
       after: "cursor-1",
     });
 
+    expect(observedSearchVariables).toHaveLength(1);
+    expect(observedSearchVariables[0]).toMatchObject({
+      term: "auth",
+      first: 25,
+      after: "cursor-1",
+      includeArchived: false,
+      filter: {
+        project: { id: { eq: "project-1" } },
+        state: { type: { in: ["unstarted", "started"] } },
+        assignee: { id: { eq: "user-1" } },
+        priority: { eq: 2 },
+      },
+    });
     expect(result.pageInfo).toEqual({ hasNextPage: true, endCursor: "cursor-2" });
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]?.identifier).toBe("ABC-7");
@@ -1799,6 +1796,17 @@ describe("linearClient", () => {
                       },
                     ],
                   },
+                  inverseRelations: {
+                    nodes: [{
+                      type: "blocks",
+                      issue: {
+                        id: "blocker-1",
+                        identifier: "ABC-99",
+                        title: "Open blocker",
+                        state: { id: "s-ip", name: "In Progress", type: "started" },
+                      },
+                    }],
+                  },
                 },
               ],
             },
@@ -1825,8 +1833,8 @@ describe("linearClient", () => {
     expect(issues).toHaveLength(1);
     const issue = issues[0]!;
     expect(issue.labelColors).toEqual([
-      { name: "Bug", color: "#EF4444" },
-      { name: "P0", color: null },
+      { id: "l1", name: "Bug", color: "#EF4444" },
+      { id: "l2", name: "P0", color: null },
     ]);
     expect(issue.cycleId).toBe("cycle-1");
     expect(issue.cycleName).toBe("Sprint 42");
@@ -1872,7 +1880,7 @@ describe("linearClient", () => {
     expect(issues[0]!.cycleId).toBeNull();
     expect(issues[0]!.cycleName).toBeNull();
     expect(issues[0]!.childIssues).toEqual([]);
-    expect(issues[0]!.labelColors).toEqual([{ name: "bug", color: null }]);
+    expect(issues[0]!.labelColors).toEqual([{ id: "label-1", name: "bug", color: null }]);
   });
 
   it("fetches issue comments with user attribution", async () => {

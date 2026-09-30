@@ -302,6 +302,12 @@ function createMockLinearIssueTracker() {
     listProjects: vi.fn().mockResolvedValue([{ id: "project-1", name: "Mobile", slug: "MOB" }]),
     listUsers: vi.fn().mockResolvedValue([{ id: "user-1", name: "Ada" }]),
     listWorkflowStates: vi.fn().mockResolvedValue([{ id: "state-1", name: "Todo", type: "todo" }]),
+    getIssuePickerData: vi.fn().mockResolvedValue({
+      projects: [{ id: "project-1", name: "Mobile", slug: "MOB" }],
+      users: [{ id: "user-1", name: "Ada" }],
+      states: [{ id: "state-1", name: "Todo", type: "todo" }],
+      labels: [],
+    }),
     searchIssues: vi.fn().mockResolvedValue({
       issues: [{ id: "issue-1", identifier: "ADE-42", title: "Mobile parity" }],
       pageInfo: { hasNextPage: false, endCursor: null },
@@ -2700,6 +2706,7 @@ describe("createSyncRemoteCommandService", () => {
         projects: [{ id: "project-1" }],
         users: [{ id: "user-1" }],
         states: [{ id: "state-1" }],
+        labels: [],
       });
 
       const search = await service.execute(makePayload("cto.searchLinearIssues", {
@@ -2730,7 +2737,7 @@ describe("createSyncRemoteCommandService", () => {
       });
 
       const picker = await service.execute(makePayload("cto.getLinearIssuePickerData", {}));
-      expect(picker).toEqual({ projects: [], users: [], states: [] });
+      expect(picker).toEqual({ projects: [], users: [], states: [], labels: [] });
       expect(linearIssueTracker.listProjects).not.toHaveBeenCalled();
 
       const search = await service.execute(makePayload("cto.searchLinearIssues", {
