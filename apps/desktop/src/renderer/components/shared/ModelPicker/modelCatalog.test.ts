@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PERSONAL_CHAT_CATALOG_SCOPE,
   descriptorsFromAgentChatModelCatalog,
-  filterAcpFallbackModelsToRuntimeCatalog,
+  filterFallbackModelsToRuntimeCatalog,
   getRuntimeCatalogModelDescriptor,
   mergeSelectorModels,
   requestModelCatalog,
@@ -143,7 +143,7 @@ describe("mergeSelectorModels", () => {
       catalogAvailable: true,
     };
 
-    const filtered = filterAcpFallbackModelsToRuntimeCatalog(
+    const filtered = filterFallbackModelsToRuntimeCatalog(
       [...qwenFallbacks, liveQwen],
       [liveQwen],
     );

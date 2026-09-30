@@ -9,7 +9,7 @@ import { MarkdownBlock } from "./chatMarkdownBlock";
 import { SceneFrame } from "./SceneFrame";
 import { SCENE_SETTLE_MAX_MS, SCENE_SETTLE_QUIET_MS } from "../../../shared/chatScene";
 import { SCENE_STILL_INDEX_WAIT_MS } from "./useSceneStillLatch";
-import { readSceneStill, rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
+import { rememberSceneStill, resetSceneStillsForTest } from "./sceneStillStore";
 import {
   postSceneMessage,
   SCENE_STILL_DATA_URL,
@@ -54,7 +54,7 @@ describe("SceneFrame", () => {
    * a later edit.
    */
   it("sandboxes scripts without ever granting same-origin", async () => {
-    render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+    render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
     const frame = await screen.findByTestId("chat-scene-frame");
     const sandbox = frame.getAttribute("sandbox") ?? "";
     expect(sandbox).toContain("allow-scripts");
@@ -63,7 +63,7 @@ describe("SceneFrame", () => {
   });
 
   it("shows the title and marks the view as agent-drawn", async () => {
-    render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live scopeKey={null} voiceCallId={null} />);
+    render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live scopeKey={null} />);
     await screen.findByTestId("chat-scene-frame");
     const scene = screen.getByTestId("chat-scene");
     expect(scene.textContent).toContain("Merged pull requests");
@@ -73,7 +73,7 @@ describe("SceneFrame", () => {
   });
 
   it("falls back to a readable code block when the scene cannot be parsed", () => {
-    render(<SceneFrame source={"   "} live scopeKey={null} voiceCallId={null} />);
+    render(<SceneFrame source={"   "} live scopeKey={null} />);
     expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
     expect(screen.getByText(/could not be rendered/i)).toBeTruthy();
   });
@@ -95,7 +95,7 @@ describe("SceneFrame", () => {
     const prepare = vi.fn(async () => null);
     (window as unknown as { ade?: unknown }).ade = { scene: { prepare } };
     try {
-      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       expect(prepare).toHaveBeenCalled();
       expect(frame.getAttribute("src")).toBe("blob:scene-1");
@@ -147,7 +147,7 @@ describe("SceneFrame", () => {
 
     async function renderRunningScene(snapshot: (rect: unknown) => Promise<string | null>) {
       (window as unknown as { ade?: unknown }).ade = { scene: { snapshot } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       // The frame reports ready, which is the draw gate: a capture before the
       // first paint snapshots a blank rect.
@@ -163,7 +163,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
@@ -180,7 +180,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene-frame")).toBeTruthy(),
       );
@@ -200,7 +200,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
 
       // Still partial — a different partial, but partial.
@@ -223,7 +223,7 @@ describe("SceneFrame", () => {
       const rerender = await renderRunningScene(snapshot);
 
       vi.useFakeTimers();
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       // No scroll, no new intersection: the deadline timer is the only thing
       // that can wake this up.
       await act(async () => { await vi.advanceTimersByTimeAsync(4_100); });
@@ -241,7 +241,7 @@ describe("SceneFrame", () => {
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
       const rerender = await renderRunningScene(snapshot);
 
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
 
       stubShellRect({});
@@ -253,9 +253,9 @@ describe("SceneFrame", () => {
     /** No capture route at all: keep the working view rather than nothing. */
     it("leaves the frame mounted when the host cannot snapshot", async () => {
       stubShellRect({});
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
       await screen.findByTestId("chat-scene-frame");
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });
@@ -284,8 +284,6 @@ describe("SceneFrame", () => {
       snapshot?: () => Promise<string | null>;
       storeStill?: (args: unknown) => Promise<{ uri: string; artifactId: string | null; title: string } | null>;
       scopeKey?: string;
-      voiceCallId?: string;
-      onStill?: (record: { uri: string; artifactId: string | null; title: string }) => void;
     } = {}) {
       const bridge = stubSceneCaptureBridge({
         ...(options.snapshot ? { snapshot: options.snapshot } : {}),
@@ -298,8 +296,6 @@ describe("SceneFrame", () => {
         // Always keyed: a scene with no scope key is deliberately never
         // stored, so a default-less harness would test the wrong path.
         scopeKey: options.scopeKey ?? "row-default",
-        voiceCallId: options.voiceCallId ?? null,
-        ...(options.onStill ? { onStill: options.onStill } : {}),
       };
       const { rerender } = render(<SceneFrame {...props} />);
       const frame = await screen.findByTestId("chat-scene-frame");
@@ -364,7 +360,7 @@ describe("SceneFrame", () => {
       (window as unknown as { ade?: unknown }).ade = {
         scene: { snapshot: vi.fn(async () => "data:image/png;base64,STILL") },
       };
-      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       const frame = screen.getByTestId("chat-scene-frame");
       act(() => { postSceneMessage(frame, "ready"); });
@@ -376,16 +372,6 @@ describe("SceneFrame", () => {
       expect(snapshot).toHaveBeenCalledTimes(1);
     });
 
-    it("hands the stored record to a caller that outlives the frame", async () => {
-      stubShellRect({});
-      const onStill = vi.fn();
-      const { settle } = await renderSettlingScene({ scopeKey: "call-1", onStill });
-      settle();
-      await waitFor(() => expect(onStill).toHaveBeenCalledTimes(1));
-      expect(onStill.mock.calls[0]?.[0]).toMatchObject({ uri: ".ade/artifacts/computer-use/s.png" });
-      expect(readSceneStill("call-1")?.record?.artifactId).toBe("a1");
-    });
-
     /**
      * A reopened chat: the code must NOT run again. A scene is code an agent
      * wrote and the still exists precisely so scrollback never re-executes it.
@@ -394,7 +380,7 @@ describe("SceneFrame", () => {
       rememberSceneStill("row-9", {
         record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a9", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-9" />);
 
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
@@ -408,7 +394,7 @@ describe("SceneFrame", () => {
       rememberSceneStill("row-10", {
         record: { uri: ".ade/artifacts/computer-use/old.png", artifactId: "a10", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-10" voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey="row-10" />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
     });
 
@@ -417,7 +403,7 @@ describe("SceneFrame", () => {
       const attachProof = vi.fn(async (_args: { dataUrl?: string | null }) => true);
       const snapshot = vi.fn(async () => "data:image/png;base64,STILL");
       (window as unknown as { ade?: unknown }).ade = { scene: { snapshot, attachProof } };
-      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} voiceCallId={null} />);
+      const { rerender } = render(<SceneFrame source={'<div id="n">3</div>'} live scopeKey={null} />);
       const frame = await screen.findByTestId("chat-scene-frame");
       act(() => {
         for (const type of ["ready", "settled"]) postSceneMessage(frame, type);
@@ -427,7 +413,7 @@ describe("SceneFrame", () => {
       // Out of view at the end of the turn, so `snapshot` state is null — the
       // Proof button used to file nothing at all here.
       stubShellRect({ top: -120, y: -120, bottom: 80 });
-      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       act(() => { screen.getByTestId("chat-scene-proof").click(); });
       await waitFor(() => expect(attachProof).toHaveBeenCalledTimes(1));
@@ -436,25 +422,22 @@ describe("SceneFrame", () => {
 
     /**
      * The still's identity in main's index. Without it main cannot tell one
-     * scene's picture from another's, so it can neither supersede a redraw nor
-     * hand a finished call its own views back.
+     * scene's picture from another's, so it cannot supersede a redraw.
      */
-    it("stores the still under the scene's own key and call", async () => {
+    it("stores the still under the scene's own key", async () => {
       stubShellRect({});
       const { storeStill, settle } = await renderSettlingScene({
         scopeKey: "row-4:zz",
-        voiceCallId: "call-9",
       });
       settle();
       await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
       expect(storeStill.mock.calls[0]?.[0]).toMatchObject({
         scopeKey: "row-4:zz",
-        voiceCallId: "call-9",
       });
     });
 
     /**
-     * One mounted frame, many documents — the voice HUD's shape.
+     * One mounted frame, many documents.
      *
      * A source swap resets the one-capture latch and the settle flag in the
      * same commit, and the reset's state update is only SCHEDULED: the capture
@@ -471,7 +454,7 @@ describe("SceneFrame", () => {
       settle();
       await waitFor(() => expect(storeStill).toHaveBeenCalledTimes(1));
 
-      // The same frame, a new view — exactly what the HUD does mid-call.
+      // The same frame, a new view — a caller that reuses one frame.
       rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="view-2" />);
       const frame = await screen.findByTestId("chat-scene-frame");
       await waitFor(() => expect(frame.getAttribute("src")).toBe("blob:scene-2"));
@@ -500,7 +483,7 @@ describe("SceneFrame", () => {
       const staleNonce = screen.getByTestId("chat-scene-frame").getAttribute("data-scene-nonce");
       expect(staleNonce).toBeTruthy();
 
-      // The same frame, a new view — exactly what the HUD does mid-call.
+      // The same frame, a new view — a caller that reuses one frame.
       rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="stale-2" />);
       const frame = await screen.findByTestId("chat-scene-frame");
       await waitFor(() => expect(frame.getAttribute("src")).toBe("blob:scene-2"));
@@ -535,7 +518,6 @@ describe("SceneFrame", () => {
           source: '<div id="n">3</div>',
           live: true,
           scopeKey: "view-deadline-a",
-          voiceCallId: null,
         };
         const { rerender } = render(<SceneFrame {...props} />);
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -546,7 +528,7 @@ describe("SceneFrame", () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(deadline - 300); });
         expect(bridge.snapshot).not.toHaveBeenCalled();
 
-        // The same frame, a new document — exactly what the HUD does mid-call.
+        // The same frame, a new document — a caller that reuses one frame.
         rerender(<SceneFrame {...props} source={"<p>second view</p>"} scopeKey="view-deadline-b" />);
         await act(async () => { await vi.advanceTimersByTimeAsync(400); });
         // The first view's deadline has passed; it must not speak for this one.
@@ -617,7 +599,7 @@ describe("SceneFrame", () => {
           laneId={null}
           sessionId="chat-remote"
         >
-          <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-remote" voiceCallId={null} />
+          <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-remote" />
         </ChatRuntimeScopeProvider>,
       );
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot").getAttribute("src"))
@@ -646,7 +628,7 @@ describe("SceneFrame", () => {
      * — and the latch waited for one forever, leaving a permanently blank box.
      */
     it("runs a settled scene immediately when there is no scope key to look up", async () => {
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
     });
 
@@ -660,7 +642,7 @@ describe("SceneFrame", () => {
         // Absolute paths never resolve through `ade-artifact://project/`.
         record: { uri: "/somewhere/else/old.png", artifactId: "a12", title: "Merged PRs" },
       });
-      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" voiceCallId={null} />);
+      render(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-unresolvable" />);
       expect(await screen.findByTestId("chat-scene-frame")).toBeTruthy();
       expect(screen.queryByTestId("chat-scene-snapshot")).toBeNull();
     });
@@ -696,7 +678,6 @@ describe("SceneFrame", () => {
             source={'<div id="n">3</div>'}
             live={false}
             scopeKey="row-failed-preview"
-            voiceCallId={null}
           />
         </ChatRuntimeScopeProvider>,
       );
@@ -745,7 +726,6 @@ describe("SceneFrame", () => {
               source={'<div id="n">3</div>'}
               live={false}
               scopeKey="row-slow-bytes"
-              voiceCallId={null}
             />
           </ChatRuntimeScopeProvider>,
         );
@@ -783,7 +763,7 @@ describe("SceneFrame", () => {
             laneId={null}
             sessionId="chat-slow"
           >
-            <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-slow" voiceCallId={null} />
+            <SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey="row-slow" />
           </ChatRuntimeScopeProvider>,
         );
         expect(screen.queryByTestId("chat-scene-frame")).toBeNull();

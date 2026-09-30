@@ -397,22 +397,11 @@ export const IPC = {
   agentChatCodexSetGoal: "ade.agentChat.codex.goal.set",
   agentChatCodexSetGoalStatus: "ade.agentChat.codex.goal.setStatus",
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
+  agentChatCodexRealtimeStart: "ade.agentChat.codex.realtime.start",
+  agentChatCodexRealtimeStop: "ade.agentChat.codex.realtime.stop",
+  agentChatCodexRealtimeState: "ade.agentChat.codex.realtime.state",
   agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
   agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
-  // CTO voice call. The renderer owns only the microphone and the speaker; the
-  // socket, the delegation loop and every confirmation decision stay in main.
-  ctoVoiceStart: "cto-voice:start",
-  ctoVoiceEnd: "cto-voice:end",
-  ctoVoicePushAudio: "cto-voice:push-audio",
-  ctoVoiceSetMuted: "cto-voice:set-muted",
-  ctoVoiceApprove: "cto-voice:approve",
-  ctoVoiceDeny: "cto-voice:deny",
-  ctoVoiceAttachImage: "cto-voice:attach-image",
-  ctoVoiceHasKey: "cto-voice:has-key",
-  /** Main → renderer: the whole call state, on every change. */
-  ctoVoiceState: "cto-voice:state",
-  /** Main → renderer: one chunk of output audio, base64 PCM16. */
-  ctoVoiceAudio: "cto-voice:audio",
   // Scenes — agent-authored HTML rendered in a sandboxed frame. `prepare` mints
   // an ade-scene:// URL, `snapshot` freezes the drawn frame, `attachProof`
   // files that snapshot into the proof drawer.
@@ -785,14 +774,6 @@ export const IPC = {
   apiCredentialsStore: "ade.apiCredentials.store",
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
-  /**
-   * Machine-scoped API keys — the key follows this machine's ADE home, not the
-   * open project, so these deliberately do NOT route through the project
-   * runtime action the way the `ai` calls above do.
-   */
-  aiGetMachineApiKeyStatus: "ade.ai.getMachineApiKeyStatus",
-  aiStoreMachineApiKey: "ade.ai.storeMachineApiKey",
-  aiDeleteMachineApiKey: "ade.ai.deleteMachineApiKey",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
   /**

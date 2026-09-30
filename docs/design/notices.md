@@ -159,7 +159,6 @@ Pick a named layer and never type a z-index:
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
-| `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
 | `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
 | `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |
@@ -176,7 +175,7 @@ z-index, transform, filter or `isolation` would trap toasts under dialogs again.
 
 `ViewportOverlayHost` owns viewport anchoring and pointer passthrough for
 transient overlays that are not banners, sheets, dialogs, or toasts, including
-the call HUD, capture notice, and chat handoff animation. The hosts
+the capture notice and chat handoff animation. The hosts
 (`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`, and
 `ViewportOverlayHost`) already use named layers. If you need a z-index at all,
 you are probably building an overlay the hosts already provide. A new layer

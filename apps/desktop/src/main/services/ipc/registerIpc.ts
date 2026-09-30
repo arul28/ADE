@@ -412,6 +412,11 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexRealtimeStartArgs,
+  AgentChatCodexRealtimeStartResult,
+  AgentChatCodexRealtimeStopArgs,
+  AgentChatCodexRealtimeState,
+  AgentChatCodexRealtimeStateArgs,
   AgentChatCodexResetMemoryArgs,
   AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
@@ -620,7 +625,6 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
-  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -908,8 +912,6 @@ import type {
 
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
-import type { CtoVoiceRuntimeService } from "../cto/ctoVoiceRuntimeService";
-import { registerCtoVoiceIpc } from "../cto/ctoVoiceWiring";
 import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "../capture/captureGestureState";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
@@ -1219,17 +1221,6 @@ export type AppContext = {
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
-  /**
-   * The in-process CTO voice call.
-   *
-   * Built only under `shouldUseInProcessProjectRuntime()`, and deliberately not
-   * merely "wherever this constructor runs": `ensureProjectContextForMobileSync`
-   * reaches the same constructor in production, and a call brain built there
-   * would be a second one for a project whose daemon already owns the real
-   * one. Null in every real build; the router reaches the runtime's instance
-   * over the `cto_voice` action domain instead.
-   */
-  ctoVoiceCallService?: CtoVoiceRuntimeService | null;
   adeProjectService?: AdeProjectService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -5239,55 +5230,6 @@ export function registerIpc({
     },
   );
 
-  // Machine-scoped keys. Like the agent-CLI cache above, these belong to THIS
-  // machine's install rather than to the bound project's runtime, so they are
-  // deliberately not routed through a project runtime action. Nothing here ever
-  // returns, logs, or echoes the key itself — only whether one resolves and
-  // where from.
-  ipcMain.handle(
-    IPC.aiGetMachineApiKeyStatus,
-    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
-      const { getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiStoreMachineApiKey,
-    async (_event, arg: { provider: string; key: string }): Promise<MachineApiKeyStatus> => {
-      const { getMachineApiKeyStatus, storeMachineApiKey } = await import("../ai/apiKeyStore");
-      storeMachineApiKey(arg.provider, arg.key);
-      try {
-        // The key store mutation already succeeded; invalidation is a freshness
-        // step so a saved key should not fail because a runtime cache is gone.
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
-          provider: arg.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDeleteMachineApiKey,
-    async (_event, arg: { provider: string }): Promise<MachineApiKeyStatus> => {
-      const { deleteMachineApiKey, getMachineApiKeyStatus } = await import("../ai/apiKeyStore");
-      deleteMachineApiKey(arg.provider);
-      try {
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        getCtx().logger.warn("ai.machine_api_key_cache_invalidation_failed", {
-          provider: arg.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return getMachineApiKeyStatus(arg.provider);
-    },
-  );
-
   ipcMain.handle(
     IPC.aiVerifyApiKey,
     async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
@@ -8802,6 +8744,35 @@ export function registerIpc({
     return ctx.agentChatService.setCodexGoalStatus(arg);
   });
 
+  ipcMain.handle(IPC.agentChatCodexRealtimeStart, async (_event, arg: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
+    const ctx = ensureAgentChatContext();
+    if (!arg || typeof arg.sessionId !== "string" || typeof arg.sdp !== "string") {
+      throw new Error("A chat session id and a WebRTC offer are required.");
+    }
+    return ctx.agentChatService.startCodexRealtime({
+      sessionId: arg.sessionId,
+      sdp: arg.sdp,
+      preferences: arg.preferences ?? null,
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatCodexRealtimeStop, async (_event, arg: AgentChatCodexRealtimeStopArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    if (!arg || typeof arg.sessionId !== "string") throw new Error("A chat session id is required.");
+    await ctx.agentChatService.stopCodexRealtime({
+      sessionId: arg.sessionId,
+      ...(typeof arg.token === "string" ? { token: arg.token } : {}),
+    });
+  });
+
+  ipcMain.handle(IPC.agentChatCodexRealtimeState, async (_event, arg: AgentChatCodexRealtimeStateArgs): Promise<AgentChatCodexRealtimeState> => {
+    const ctx = ensureAgentChatContext();
+    if (!arg || typeof arg.sessionId !== "string" || typeof arg.token !== "string") {
+      throw new Error("A chat session id and voice token are required.");
+    }
+    return ctx.agentChatService.getCodexRealtimeState({ sessionId: arg.sessionId, token: arg.token });
+  });
+
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.clearCodexGoal(arg);
@@ -9312,8 +9283,6 @@ export function registerIpc({
         sessionId?: string | null;
         /** Identity of the scene the picture is of: one still per key. */
         scopeKey?: string | null;
-        /** Set when the scene was drawn on a voice call. */
-        voiceCallId?: string | null;
       },
     ): Promise<SceneStillRecord | null> => {
       try {
@@ -9323,7 +9292,6 @@ export function registerIpc({
         const bytes = decodeScenePngDataUrl(arg?.dataUrl ?? null);
         if (!bytes) return null;
         const title = (typeof arg?.title === "string" ? arg.title.trim() : "") || "Generated view";
-        const voiceCallId = typeof arg?.voiceCallId === "string" ? arg.voiceCallId.trim() : "";
         // No scope key is no identity, and the two sides disagreed about what
         // to do with one: in process it filed an index row nothing could ever
         // look up, and over the runtime action the missing key is exactly what
@@ -9358,19 +9326,12 @@ export function registerIpc({
         // written must not cost the user the picture.
         try {
           const broker = ctx.computerUseArtifactBrokerService;
-          // A scene drawn on a CALL is filed from the HUD, which is mounted at
-          // the shell and outside every chat scope — so the renderer may not
-          // know the owning chat, and when it does it is still a renderer. The
-          // call id is resolved against the call that is actually up, on this
-          // side, and only after the renderer's own claim has failed the same
-          // ownership check every other filing goes through.
+          // The renderer's claim goes through the same ownership check every
+          // other filing goes through.
           if (broker) {
             const sessionId = await resolveSceneStillOwner({
               agentChatService: ctx.agentChatService,
               claimedSessionId: arg?.sessionId,
-              voiceCallId,
-              resolveVoiceCallSessionId: (callId) =>
-                ctx.ctoVoiceCallService?.getCallSessionId(callId) ?? null,
             });
             record.artifactId = fileSceneStill({
               broker,
@@ -9378,7 +9339,6 @@ export function registerIpc({
               title: record.title,
               ownerSessionId: sessionId,
               sceneScopeKey: scopeKey,
-              voiceCallId,
             }).artifactId;
           } else if (localRuntimeConnectionPool) {
             // Runtime-backed build: this process owns neither the broker nor
@@ -9394,10 +9354,6 @@ export function registerIpc({
                 // Present only here, never on the Proof button's call: it is
                 // what tells the daemon this is a still and not proof.
                 sceneScopeKey: scopeKey,
-                // The daemon owns the call on a runtime-backed build, so it
-                // resolves the owner from this id the same way the branch
-                // above does — the renderer's claim is checked, never trusted.
-                voiceCallId,
               },
             });
             const answered = (response.result as { artifactId?: unknown } | null)?.artifactId;
@@ -12599,28 +12555,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
-  });
-
-  // -- CTO voice call --
-
-  registerCtoVoiceIpc(ipcMain, {
-    getCtx,
-    // Null only when this desktop IS the project runtime. Whenever a pool
-    // exists the daemon owns this project's call, and the router routes there —
-    // `ctx.ctoVoiceCallService` is the fallback for the no-pool case, not a
-    // preference.
-    getLocalRuntimePool: () => localRuntimeConnectionPool ?? null,
-    // A remote-bound window is connected — just not to a runtime on this
-    // machine — so it gets its own sentence instead of the local pool's.
-    getBindingKind: (senderId) => {
-      const windowId = BrowserWindow.getAllWindows()
-        .find((win) => win.webContents.id === senderId)?.id ?? null;
-      return getWindowSession?.(windowId)?.binding?.kind ?? null;
-    },
-    logger: {
-      warn: (msg, meta) => getCtx().logger.warn(msg, meta),
-      info: (msg, meta) => getCtx().logger.info(msg, meta),
-    },
   });
 
   // -- Smart memory --

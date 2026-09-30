@@ -130,27 +130,6 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
-- `apps/desktop/src/renderer/components/settings/openAiKey.tsx` — the
-  machine-scoped OpenAI key parts, shared by the settings card and the modal
-  the CTO's **Talk** button opens: `useMachineOpenAiKey` (status in, secret
-  only out), `OpenAiKeyCostLine` (`OPENAI_VOICE_COST_LINE` + the
-  `platform.openai.com` link, opened through ADE's own opener so it honours
-  the "open links in" preference), and `OpenAiKeyField`.
-  `OPENAI_VOICE_PROVIDER` is `"openai"` — the same secret as the
-  `OPENAI_API_KEY` provider key, not a second one.
-- `apps/desktop/src/renderer/components/settings/OpenAiKeySheet.tsx` — the
-  modal sheet, composed from those parts.
-- `apps/desktop/src/renderer/components/settings/OpenAiKeySection.tsx` — the
-  card, with `OPENAI_KEY_ANCHOR` pinned to the `agents.openai-key` manifest
-  entry. Add → store → **Connected** → Replace / Delete, and Replace/Delete
-  offered only when `status.source === "store"`.
-- `apps/desktop/src/main/services/ai/apiKeyStore.ts` — the machine-scope half:
-  `initMachineApiKeyStore`, `createMachineScopeState` (store path under
-  `resolveMachineAdeLayout().secretsDir`, `projectRootPath: null`),
-  `storeMachineApiKey` / `deleteMachineApiKey` / `listMachineStoredProviders`,
-  and `getMachineApiKeyStatus`, which reports `store` vs `env` without ever
-  handing the value back. Every helper takes its `ApiKeyScopeState` as the
-  first argument, so each call names the store it reads.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
   machine's provider accounts (Claude and Codex only): the plain-JSON registry,
   the always-present base account whose `configHome` is recomputed on every read,
@@ -1891,65 +1870,6 @@ For what happens when the machine sleeps anyway, see
 [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
 and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
 
-### The OpenAI key follows the machine
-
-**Settings > Agents & Models > Connections > OpenAI API key** (anchor
-`openai-api-key`, `OpenAiKeySection.tsx`) is the only key on that page
-bound to the **machine** rather than the project. It resolves through the
-machine-scoped half of `apiKeyStore.ts`. The machine-scoped exports pass an
-`ApiKeyScopeState` that points at `resolveMachineAdeLayout().secretsDir` —
-`~/.ade/secrets`, or `$ADE_HOME` — instead of `<project>/.ade/secrets`. It
-sets `projectRootPath: null`, so the per-project legacy migration, the one
-step that makes a key follow a project, never runs. `initMachineApiKeyStore`
-registers the credential store at app start, so a window with no project open
-still writes where the runtime and the `ade` CLI read, and it registers an
-`EncryptedFileCredentialStore` over `~/.ade/secrets` rather than
-`createDesktopCredentialStore`'s safeStorage-primary routed store — the headless
-runtime and the `ade` CLI cannot decrypt an Electron safeStorage file, which is
-how Settings once answered `configured: true` while Talk answered "no OpenAI key
-on this machine", both honestly, about two different stores. The
-credential store itself is already machine-wide, so both scopes share it: one
-provider key is one secret, whichever door it came in by.
-
-The scope is the point, not an implementation detail. This key pays for
-CTO voice calls *this machine* makes, and scoping it to a project would
-mean asking the same person for the same secret in every repo they open.
-Hence `scope: "machine"` with `showScopeChip: true` in
-`settingsManifest.ts` — "machine" is the surprise here, sitting next to
-ten project-bound provider connections.
-
-Three rules govern the secret itself:
-
-- **It is never returned to the renderer.** `storeMachineApiKey` takes a
-  key and gives back only a `MachineApiKeyStatus` — `{ provider,
-  configured, source, envVar }` — which carries a *source*, not a value.
-  `useMachineOpenAiKey` drops the draft from React state the instant the
-  save succeeds, so a re-render cannot put it back on screen, and a
-  failed save reports a deliberately generic message because the thrown
-  error can quote the request.
-- **It states its cost before it asks.** `OPENAI_VOICE_COST_LINE` renders
-  above the field in both surfaces: about $0.05 a minute, billed by the
-  second, and — the sentence that actually unblocks people — the CTO's own
-  thinking stays on whatever model and plan it already runs on. One
-  constant, shared by the settings card and the modal sheet, so the two
-  cannot drift.
-- **An inherited key is read-only.** `status.source` distinguishes a key
-  ADE stored (`store`) from an `OPENAI_API_KEY` the machine's environment
-  owns (`env`). Replace and Delete are offered only for the former,
-  because deleting an environment variable from a settings card would
-  delete nothing while leaving the user believing otherwise; the `env`
-  case gets a line saying where to go instead.
-
-`openAiKey.tsx` exports the cost line and the field, and `OpenAiKeySheet.tsx`
-composes them into the modal another surface can mount. The CTO's **Talk**
-button mounts it the first time someone starts a call with no key stored. One
-implementation of the ask, so the never-re-display rule has one enforcement
-point.
-
-The manifest entry is `web: "hidden"`, like every other machine-scoped
-setting on this page: a machine secret has no meaning in a browser tab,
-and the write would resolve against nothing.
-
 ### Capturing a window with a key gesture
 
 **Settings > General > Screen capture > "Capture with a key gesture"**
@@ -1997,7 +1917,6 @@ proxy fabricates callable namespaces for missing properties, so
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
 | Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
 | Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
-| OpenAI API key (CTO voice) | Machine ADE home — `~/.ade/secrets` (or `$ADE_HOME`) via `resolveMachineAdeLayout` | machine-scoped, never read back to the renderer; an `OPENAI_API_KEY` in the environment is the read-only last tier |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior

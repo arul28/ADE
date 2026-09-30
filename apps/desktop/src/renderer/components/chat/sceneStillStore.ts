@@ -18,7 +18,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  *
  * THIS MODULE IS A CACHE, NOT THE INDEX. The index is the artifact broker: main
  * files every still as an artifact tagged `metadata.kind = "scene_still"`,
- * carrying the scene's scope key and, for a scene drawn on a call, the call id.
+ * carrying the scene's scope key.
  * Durable renderer state duplicating that was a second source of truth which
  * could not be pruned with the bytes, went stale the moment main deleted one,
  * and was scoped to a window rather than to a project. So a reopened window
@@ -26,7 +26,7 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  * themselves live and die with the window.
  *
  * Keyed by the caller's `scopeKey` — the per-block scene key for a transcript
- * row, or the call id for a scene drawn on a call. That key is what makes two
+ * row. That key is what makes two
  * byte-identical scenes at different positions keep their own picture, and it
  * is stable across a reopen because it is stored with the artifact.
  */
@@ -39,29 +39,10 @@ export type SceneStill = {
 };
 
 const stills = new Map<string, SceneStill>();
-/**
- * The stills a voice call left behind, oldest first.
- *
- * Call scope is its own map rather than a second lookup over the scene one: a
- * call draws several scenes over its length and the card wants all of them,
- * while a transcript row wants exactly the one it drew.
- */
-const callStills = new Map<string, SceneStillRecord[]>();
-
-/**
- * One listener set per map. A settling scene notifies every subscriber, and a
- * transcript showing a long call's card re-rendered each of its tiles on every
- * unrelated still in the chat.
- */
 const sceneListeners = new Set<() => void>();
-const callListeners = new Set<() => void>();
 
 function notifyScenes(): void {
   sceneListeners.forEach((listener) => listener());
-}
-
-function notifyCalls(): void {
-  callListeners.forEach((listener) => listener());
 }
 
 /** Remember a still. The data URL is this window's; the record is durable. */
@@ -89,23 +70,6 @@ export function rememberSceneStill(
 export function readSceneStill(scopeKey: string | null | undefined): SceneStill | null {
   if (!scopeKey) return null;
   return stills.get(scopeKey) ?? null;
-}
-
-export function rememberCallStill(callId: string, record: SceneStillRecord): void {
-  if (!callId || !record?.uri) return;
-  const existing = callStills.get(callId) ?? [];
-  // A call redraws the same scene as it talks, and each redraw settles into its
-  // own still; the same uri twice is the same picture and is dropped.
-  if (existing.some((entry) => entry.uri === record.uri)) return;
-  callStills.set(callId, [...existing, record]);
-  notifyCalls();
-}
-
-const NO_STILLS: SceneStillRecord[] = [];
-
-export function readCallStills(callId: string | null | undefined): SceneStillRecord[] {
-  if (!callId) return NO_STILLS;
-  return callStills.get(callId) ?? NO_STILLS;
 }
 
 /* ───────────────────────── the broker-backed index ───────────────────────── */
@@ -166,7 +130,7 @@ async function loadSessionStills(
       },
       pin,
     ).catch(() => []);
-    // Newest first from the broker; a call's tiles read oldest first.
+    // Newest first from the broker; read oldest first.
     for (const artifact of [...artifacts].reverse()) {
       const uri = typeof artifact?.uri === "string" ? artifact.uri.trim() : "";
       if (!uri) continue;
@@ -179,13 +143,10 @@ async function loadSessionStills(
       // Never over a still this window took: that one has a data URL, which is
       // the only picture available with no round trip at all.
       if (scopeKey && !stills.get(scopeKey)) stills.set(scopeKey, { dataUrl: null, record });
-      const voiceCallId = readStringField(artifact.metadata, "voiceCallId");
-      if (voiceCallId) rememberCallStill(voiceCallId, record);
     }
   })().finally(() => {
     settledSessions.add(owner);
     notifyScenes();
-    notifyCalls();
   });
   sessionReads.set(owner, read);
   return read;
@@ -194,11 +155,6 @@ async function loadSessionStills(
 function subscribeScenes(listener: () => void): () => void {
   sceneListeners.add(listener);
   return () => { sceneListeners.delete(listener); };
-}
-
-function subscribeCalls(listener: () => void): () => void {
-  callListeners.add(listener);
-  return () => { callListeners.delete(listener); };
 }
 
 /**
@@ -221,23 +177,6 @@ export function useSceneStillRecord(
     subscribeScenes,
     () => readSceneStill(scopeKey),
     () => readSceneStill(scopeKey),
-  );
-}
-
-/** Re-render when a call's stills arrive — the card mounts before they do. */
-export function useCallStills(
-  sessionId: string | null | undefined,
-  callId: string | null | undefined,
-): SceneStillRecord[] {
-  const { pin } = useChatRuntimeScope();
-  useEffect(() => {
-    if (!callId) return;
-    void loadSessionStills(sessionId, pin);
-  }, [sessionId, pin, callId]);
-  return useSyncExternalStore(
-    subscribeCalls,
-    () => readCallStills(callId),
-    () => readCallStills(callId),
   );
 }
 
@@ -342,10 +281,8 @@ export function useSceneStillPreview(still: SceneStill | null | undefined): Scen
 /** Test seam: forget everything this window remembers. */
 export function resetSceneStillsForTest(): void {
   stills.clear();
-  callStills.clear();
   sessionReads.clear();
   // Cleared with the reads it mirrors: "asked" and "answered" are one fact.
   settledSessions.clear();
   notifyScenes();
-  notifyCalls();
 }

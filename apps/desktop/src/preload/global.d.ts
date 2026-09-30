@@ -207,6 +207,11 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexRealtimeStartArgs,
+  AgentChatCodexRealtimeStartResult,
+  AgentChatCodexRealtimeStopArgs,
+  AgentChatCodexRealtimeState,
+  AgentChatCodexRealtimeStateArgs,
   AgentChatCodexResetMemoryArgs,
   AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
@@ -345,7 +350,6 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
-  MachineApiKeyStatus,
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
@@ -1335,17 +1339,6 @@ declare global {
         storeApiKey: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<void>;
         deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
         listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
-        /**
-         * Machine-scoped keys: stored in this machine's ADE home, not the open
-         * project, so a key pasted once is still there in the next repo. Each
-         * returns the resulting status — never the key.
-         *
-         * Optional: shipped after this group did, so an older preload will not
-         * have it and callers must guard before reaching for it.
-         */
-        getMachineApiKeyStatus?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
-        storeMachineApiKey?: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
-        deleteMachineApiKey?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
         verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**
@@ -2356,6 +2349,19 @@ declare global {
             args: AgentChatCodexClearGoalArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
+          /** Experimental: relay a WebRTC offer for Codex voice; returns the SDP answer. */
+          realtimeStart: (
+            args: AgentChatCodexRealtimeStartArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<AgentChatCodexRealtimeStartResult>;
+          realtimeStop: (
+            args: AgentChatCodexRealtimeStopArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<void>;
+          realtimeState: (
+            args: AgentChatCodexRealtimeStateArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<AgentChatCodexRealtimeState>;
           resetMemory: (
             args: AgentChatCodexResetMemoryArgs,
             pin?: OpenProjectBinding | null,
@@ -2371,16 +2377,6 @@ declare global {
           since?: string;
         }) => Promise<unknown>;
       };
-      /**
-       * CTO voice call. Absent on a build without the main-process half, which
-       * is how `voiceAvailable()` decides whether to offer the feature.
-       *
-       * The shape is NOT restated here. `CtoVoiceBridge` exists so the voice
-       * surface and the capture surface cannot drift into two shapes of
-       * `attachImage`, and a second copy of it in this file had already drifted
-       * — `onAudio` was required here and optional there.
-       */
-      ctoVoice?: import("../shared/types/ctoVoice").CtoVoiceBridge;
       /**
        * Agent-authored scenes. Local-only; see `shared/chatScene.ts`.
        * Absent on a host without the scene protocol; SceneFrame falls back.
@@ -2416,8 +2412,6 @@ declare global {
            * it is how a reopened window finds the bytes back.
            */
           scopeKey?: string | null;
-          /** Set when the scene was drawn on a voice call; the call card reads by it. */
-          voiceCallId?: string | null;
         }) => Promise<import("../shared/chatScene").SceneStillRecord | null>;
       };
       computerUse: {

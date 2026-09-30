@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import {
@@ -11,12 +11,10 @@ import {
   sessionRetirementNote,
   sessionTitle,
 } from "./CtoHistoryList";
-import { CTO_PAST_THREADS_DESCRIPTION, CtoSettingsPage, VOICE_GRID_COLUMNS } from "./CtoSettingsPage";
+import { CTO_PAST_THREADS_DESCRIPTION, CtoSettingsPage } from "./CtoSettingsPage";
 import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
-import { CTO_VOICE_INITIAL_STATE, CTO_VOICE_VOICES, type CtoVoiceState } from "../../../shared/types/ctoVoice";
-import { CtoVoiceHud } from "./CtoVoiceHud";
 
 /* AgentChatPane is heavy; stub it so CtoPage renders synchronously. */
 vi.mock("../chat/AgentChatPane", () => ({
@@ -221,20 +219,6 @@ describe("CtoPage settings", () => {
     expect(screen.getByTestId("model-picker")).toBeTruthy();
   });
 
-  it("offers every voice in one grid rather than a wrapping row", async () => {
-    render(<MemoryRouter><CtoPage /></MemoryRouter>);
-    await screen.findByTestId("cto-agent-chat-pane");
-    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
-    fireEvent.click(screen.getByRole("button", { name: /^Voice/ }));
-
-    // A wrapping pill row left the last voice alone on a line of its own. The
-    // grid's column count has to divide the voice count for that to be
-    // impossible, which is the part worth asserting.
-    const voices = within(screen.getByRole("radiogroup", { name: "Voice" })).getAllByRole("radio");
-    expect(voices).toHaveLength(CTO_VOICE_VOICES.length);
-    expect(CTO_VOICE_VOICES.length % VOICE_GRID_COLUMNS).toBe(0);
-  });
-
   it("says what the chosen model is, not just its name", async () => {
     render(<MemoryRouter><CtoPage /></MemoryRouter>);
     await screen.findByTestId("cto-agent-chat-pane");
@@ -248,90 +232,6 @@ describe("CtoPage settings", () => {
     expect(card.textContent).toContain("Reasoning");
     expect(card.textContent).toContain("Fast mode");
     expect(card.textContent).toContain("Runs on");
-  });
-
-  it("keeps saying why a call failed after the HUD has gone", async () => {
-    // The bridge the renderer half reads. Only `onState` matters here: the
-    // service pushes the whole call state, and the page has to keep the
-    // reason once the call is over and the HUD has unmounted.
-    let push: ((state: Record<string, unknown>) => void) | null = null;
-    const ade = globalThis.window.ade as Record<string, unknown>;
-    // The settings button is macOS and Windows only — there is no vetted pane
-    // URL on Linux — so the platform has to be a real one for it to appear.
-    ade.app = { ...(ade.app as Record<string, unknown> | undefined), runtimeTarget: { platform: "darwin", arch: "arm64" } };
-    ade.ctoVoice = {
-      start: vi.fn().mockResolvedValue({ ok: true }),
-      end: vi.fn().mockResolvedValue(undefined),
-      pushAudio: vi.fn(),
-      setMuted: vi.fn().mockResolvedValue(undefined),
-      approve: vi.fn().mockResolvedValue(undefined),
-      deny: vi.fn().mockResolvedValue(undefined),
-      attachImage: vi.fn().mockResolvedValue(undefined),
-      hasKey: vi.fn().mockResolvedValue(true),
-      onState: (handler: (state: Record<string, unknown>) => void) => {
-        push = handler;
-        return () => { push = null; };
-      },
-      onAudio: () => () => {},
-    };
-
-    render(<MemoryRouter><CtoPage /></MemoryRouter>);
-    await screen.findByTestId("cto-agent-chat-pane");
-
-    const emit = (patch: Record<string, unknown>) => {
-      act(() => {
-        push?.({
-          callId: "call-1",
-          elapsedMs: 0,
-          muted: false,
-          inputLevel: 0,
-          interrupted: false,
-          captions: [],
-          pendingConfirmation: null,
-          sceneSource: null,
-          isCallOwner: true,
-          error: null,
-          ...patch,
-        });
-      });
-    };
-
-    emit({ phase: "connecting" });
-    // The HUD says "Call failed" inside its pill and nothing more, so the page
-    // is the one surface that gives the reason — from the moment it is known.
-    emit({ phase: "failed", error: "The voice connection failed." });
-    expect(screen.getByTestId("cto-talk-error").textContent)
-      .toBe("The voice connection failed.");
-
-    // The sentence must outlive the call: it stays on the page after the
-    // service has dropped the error and the HUD has unmounted.
-    emit({ phase: "ended", error: null });
-    expect(screen.getByTestId("cto-talk-error").textContent)
-      .toBe("The voice connection failed.");
-
-    // A new call is not the old call's failure.
-    emit({ phase: "connecting" });
-    expect(screen.queryByTestId("cto-talk-error")).toBeNull();
-
-    // A microphone verdict arrives with its KIND on the state, and the kind is
-    // what puts a button beside the sentence. It used to be recovered by
-    // matching the sentence against the renderer's own store word for word,
-    // which meant a reworded sentence silently lost the button.
-    emit({
-      phase: "failed",
-      error: "No microphone is connected to this Mac. Plug one in, or choose an input under macOS System Settings › Sound › Input.",
-      errorKind: "no-device",
-    });
-    expect(screen.getByTestId("cto-talk-error").textContent)
-      .toContain("No microphone is connected");
-    expect(screen.getByRole("button", { name: /Open (sound|microphone) settings/ })).toBeTruthy();
-
-    // And a failure with no kind gets the sentence and nothing to press.
-    emit({ phase: "connecting" });
-    emit({ phase: "failed", error: "The voice connection failed." });
-    expect(screen.queryByRole("button", { name: /Open (sound|microphone) settings/ })).toBeNull();
-
-    emit({ phase: "idle" });
   });
 
   it("shows the prompt itself, under headings in plain words", async () => {
@@ -349,16 +249,6 @@ describe("CtoPage settings", () => {
     expect(preview.textContent).toContain("Project state");
     expect(preview.textContent).not.toContain("IMMUTABLE ADE DOCTRINE");
     expect(preview.textContent).toContain("doctrine text");
-  });
-
-  it("puts the voice key somewhere other than the Talk button", async () => {
-    render(<MemoryRouter><CtoPage /></MemoryRouter>);
-    await screen.findByTestId("cto-agent-chat-pane");
-    fireEvent.click(screen.getByRole("button", { name: "CTO settings" }));
-    fireEvent.click(screen.getByRole("button", { name: /^Voice/ }));
-
-    // Before this, the only way to reach the key was to press Talk without one.
-    expect(screen.getByText(/\$0.05 a minute/i)).toBeTruthy();
   });
 
   it("routes a settings model switch through agentChat.updateSession on the locked session", async () => {
@@ -895,102 +785,5 @@ describe("CtoSettingsPage identity fields", () => {
       name: "Ada L",
       systemPromptExtension: "We ship on Fridays.",
     });
-  });
-});
-
-/* --- The call HUD (CtoVoiceHud.tsx). --- */
-
-/**
- * What the person on the call can see about what was heard.
- *
- * Two failures from the call of 2026-09-16, both of them the HUD's to answer: a
- * user who said three sentences and watched nothing appear until the finals
- * arrived at once, and an answer cut off by a barge-in whose caption claimed
- * the half sentence was the whole of it.
- */
-
-function renderHud(patch: Partial<CtoVoiceState>) {
-  const state: CtoVoiceState = { ...CTO_VOICE_INITIAL_STATE, phase: "listening", ...patch };
-  render(
-    <CtoVoiceHud
-      state={state}
-      onToggleMute={vi.fn()}
-      onEnd={vi.fn()}
-      onApproveConfirmation={vi.fn()}
-      onDenyConfirmation={vi.fn()}
-    />,
-  );
-}
-
-describe("the call HUD's captions", () => {
-  afterEach(cleanup);
-
-  it("shows the words still being transcribed", () => {
-    renderHud({ pendingUserText: "what merged yester" });
-    expect(screen.getByTestId("cto-voice-pending-caption").textContent)
-      .toContain("what merged yester");
-  });
-
-  it("shows nothing extra when nothing is part-heard", () => {
-    renderHud({ captions: [{ role: "user", text: "hello", atMs: 10 }] });
-    expect(screen.queryByTestId("cto-voice-pending-caption")).toBeNull();
-    expect(screen.getByTestId("cto-voice-caption").textContent).toContain("hello");
-  });
-
-  it("marks a caption the user cut off", () => {
-    renderHud({
-      captions: [{ role: "assistant", text: "I'm the CTO", atMs: 10, interrupted: true }],
-    });
-    expect(screen.getByTestId("cto-voice-caption-cut")).toBeTruthy();
-  });
-
-  it("leaves a finished answer unmarked", () => {
-    renderHud({ captions: [{ role: "assistant", text: "Three merged yesterday.", atMs: 10 }] });
-    expect(screen.queryByTestId("cto-voice-caption-cut")).toBeNull();
-  });
-});
-
-/**
- * A call is a surface where nothing is clicked and everything moves on its own.
- *
- * The captions are the only record of what was said and the phase label is the
- * only word for what the call is doing, so both have to be announced; and a
- * strip that can authorise a destructive action must arrive where the keyboard
- * already is rather than somewhere the user has to go and find — without the
- * destructive answer itself being one keypress away.
- */
-describe("the call HUD's announcements", () => {
-  afterEach(cleanup);
-
-  it("announces the captions and the phase without interrupting", () => {
-    renderHud({ captions: [{ role: "assistant", text: "Two checks are red.", atMs: 10 }] });
-    expect(screen.getByTestId("cto-voice-captions").getAttribute("aria-live")).toBe("polite");
-    expect(screen.getByTestId("cto-voice-phase-label").getAttribute("aria-live")).toBe("polite");
-  });
-
-  it("keeps an empty caption live region available to assistive technology", () => {
-    renderHud({ captions: [] });
-    const captions = screen.getByTestId("cto-voice-captions");
-    expect(captions.getAttribute("aria-live")).toBe("polite");
-  });
-
-  it("raises the confirmation strip as an alert, and puts the keyboard on the strip", () => {
-    renderHud({
-      phase: "confirming",
-      pendingConfirmation: {
-        id: "confirm-1",
-        prompt: "Force-push the sync lane?",
-        toolName: "gitForcePush",
-        destructive: true,
-        utteranceId: null,
-        expiresAtMs: 0,
-      },
-    });
-    const strip = screen.getByTestId("cto-voice-confirm");
-    expect(strip.getAttribute("role")).toBe("alert");
-    // The STRIP, never the approve button: a focused "Yes, do it" turns one
-    // stray Enter or Space into an authorised force-push.
-    expect(document.activeElement).toBe(strip);
-    expect(document.activeElement).not.toBe(screen.getByTestId("cto-voice-confirm-approve"));
   });
 });

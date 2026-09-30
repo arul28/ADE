@@ -5016,12 +5016,6 @@ button, [role="button"] {
   .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
 
-/* Bottom-right toast viewport (ToastViewport): cards animate through motion;
-   the viewport itself only glides when it lifts above the CTO call HUD. */
-.ade-toast-viewport {
-  transition: bottom 180ms cubic-bezier(0.2, 0, 0, 1);
-}
-
 /* New-lane launches. A launched chat's sidebar row slides in once; the
    launch progress rail (thread card + Launches slide-out) sheens its running
    segment. Both are transform/opacity only. */
@@ -5234,7 +5228,6 @@ button, [role="button"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-toast-viewport { transition: none; }
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],

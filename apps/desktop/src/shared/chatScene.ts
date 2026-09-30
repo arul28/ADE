@@ -657,7 +657,7 @@ export type SceneDocumentArgs = {
    * This DOCUMENT's identity, echoed back on every message the frame sends.
    *
    * The scope key cannot do this job: it names a scene's position in the
-   * transcript, and the voice HUD swaps document after document into one frame
+   * transcript, and a caller may swap document after document into one frame
    * under one key. What the host has to tell apart is the outgoing document
    * from the incoming one, and only a value minted per build can do that.
    *
@@ -715,7 +715,7 @@ export function buildSceneDocument(args: SceneDocumentArgs): string {
  * A scene's still, once the bytes are on disk.
  *
  * The picture, not the code: a still is what a scene leaves behind so that
- * scrollback, a reopened chat and a finished voice call all show SOMETHING
+ * scrollback and a reopened chat both show SOMETHING
  * rather than an empty gap where a view used to be.
  *
  * `uri` is project-relative (`.ade/artifacts/computer-use/…png`) because that

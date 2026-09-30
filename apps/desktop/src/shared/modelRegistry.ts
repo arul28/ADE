@@ -278,10 +278,10 @@ export function resolveOpenCodeFastEffortSelection(
   return { modelId: ownModelId, variant: effortVariant, fastApplied: false, fastUnavailableReason };
 }
 
-/** The named GPT-6 and GPT-5.6 models (Astra, Sol, Terra, Luna) label `low` as Light. */
+/** The named GPT-6.x and GPT-5.6 models (Astra, Sol, Terra, Luna) label `low` as Light. */
 export function usesCodexNamedEffortLabels(providerModelId: string | null | undefined): boolean {
   const normalized = (providerModelId?.trim() ?? "").replace(/^openai\//i, "");
-  return /^(?:gpt-6-[a-z]+|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
+  return /^(?:gpt-6(?:\.\d+)?-[a-z]+|gpt-5\.6-(?:sol|terra|luna))$/i.test(normalized);
 }
 
 function normalizeCursorControlValue(value: string | null | undefined): string | null {
@@ -590,7 +590,31 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ---- OpenAI (CLI-wrapped via codex) ----
   // ADE codex chat surfaces use real OpenAI model ids as the canonical
   // registry ids; older ADE-internal "-codex" wrapper ids remain aliases so
-  // persisted sessions continue to resolve.
+  // persisted sessions continue to resolve. Rows follow the Codex catalog's own
+  // order. The deprecated rows below are ones a ChatGPT sign-in can no longer
+  // run; they stay so persisted chats still resolve.
+  {
+    id: "openai/gpt-6.1-sol",
+    shortId: "gpt-6.1-sol",
+    aliases: ["sol", "gpt-6.1-sol"],
+    displayName: "GPT-6.1 Sol",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6.1-sol",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
   {
     id: "openai/gpt-6-astra",
     shortId: "gpt-6-astra",
@@ -614,9 +638,53 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
+    id: "openai/gpt-6-sol",
+    shortId: "gpt-6-sol",
+    aliases: ["gpt-6-sol"],
+    displayName: "GPT-6 Sol",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "medium",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6-sol",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-6-luna",
+    shortId: "gpt-6-luna",
+    aliases: ["luna", "gpt-6-luna"],
+    displayName: "GPT-6 Luna",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
+    serviceTiers: ["fast"],
+    color: "#34D399",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6-luna",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 0.1,
+    outputPricePer1M: 0.5,
+    costTier: "low",
+  },
+  {
     id: "openai/gpt-5.6-sol",
     shortId: "gpt-5.6-sol",
-    aliases: ["sol", "gpt-5.6-sol"],
+    aliases: ["gpt-5.6-sol"],
     displayName: "GPT-5.6 Sol",
     family: "openai",
     authTypes: ["cli-subscription"],
@@ -660,7 +728,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   {
     id: "openai/gpt-5.6-luna",
     shortId: "gpt-5.6-luna",
-    aliases: ["luna", "gpt-5.6-luna"],
+    aliases: ["gpt-5.6-luna"],
     displayName: "GPT-5.6 Luna",
     family: "openai",
     authTypes: ["cli-subscription"],
@@ -720,6 +788,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 2.5,
     outputPricePer1M: 15,
     costTier: "high",
+    deprecated: true,
   },
   {
     id: "openai/gpt-5.4-mini",
@@ -740,6 +809,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 0.75,
     outputPricePer1M: 4.5,
     costTier: "low",
+    deprecated: true,
   },
   {
     id: "openai/gpt-5.3-codex",
@@ -760,6 +830,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1.75,
     outputPricePer1M: 14,
     costTier: "high",
+    deprecated: true,
   },
   {
     id: "openai/gpt-5.3-codex-spark",
@@ -780,6 +851,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1.75,
     outputPricePer1M: 14,
     costTier: "low",
+    deprecated: true,
   },
   {
     id: "openai/gpt-5.2",
@@ -800,6 +872,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1.75,
     outputPricePer1M: 14,
     costTier: "medium",
+    deprecated: true,
   },
 
   // ---- Qwen (CLI-wrapped via `qwen`, ACP) ----

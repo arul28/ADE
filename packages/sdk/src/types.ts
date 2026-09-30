@@ -515,10 +515,9 @@ export type AgentChatEventEnvelope = {
    *
    * ADE stamps more than this — orchestration routing (`targetKind`,
    * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
-   * (`replayFork`), and the CTO voice call a turn belongs to (`voiceCallId`).
-   * Every one of those describes an ADE surface this package does not have: a
-   * sidecar drives its own thread with the `agent` role, so it is never the
-   * orchestrator reading routing keys, and never the CTO reading call keys.
+   * (`replayFork`), and other ADE-only metadata. These describe surfaces this
+   * package does not have: a sidecar drives its own thread with the `agent`
+   * role, so it is never the orchestrator reading routing keys or ADE metadata.
    * Naming them here would advertise surfaces that do not exist.
    *
    * The index signature is what makes that narrowing safe rather than lossy:

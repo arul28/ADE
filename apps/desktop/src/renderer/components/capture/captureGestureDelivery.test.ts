@@ -2,11 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { encodeUtf8Base64 } from "../../lib/base64";
 import type { CaptureGestureShot } from "../../../shared/types/captureGesture";
-import {
-  describeShot,
-  isCallJoinable,
-  planCaptureAttachments,
-} from "./captureGestureDelivery";
+import { planCaptureAttachments } from "./captureGestureDelivery";
 
 function shot(overrides: Partial<CaptureGestureShot> = {}): CaptureGestureShot {
   return {
@@ -21,35 +17,6 @@ function shot(overrides: Partial<CaptureGestureShot> = {}): CaptureGestureShot {
     ...overrides,
   };
 }
-
-describe("isCallJoinable", () => {
-  it("is false for a call that has not started or has finished", () => {
-    expect(isCallJoinable(null)).toBe(false);
-    expect(isCallJoinable({ phase: "idle", callId: null })).toBe(false);
-    // `callId` survives into ended/failed, which is exactly why the phase has
-    // to be consulted: keying off the id alone routes captures into a call the
-    // user already hung up.
-    expect(isCallJoinable({ phase: "ended", callId: "call-1" })).toBe(false);
-    expect(isCallJoinable({ phase: "failed", callId: "call-1" })).toBe(false);
-  });
-
-  it("is true for every on-air phase", () => {
-    for (const phase of ["connecting", "listening", "thinking", "speaking", "confirming"]) {
-      expect(isCallJoinable({ phase, callId: "call-1" })).toBe(true);
-    }
-  });
-
-  it("treats a phase this build has never heard of as live", () => {
-    // Failing open here means a capture reaches a call; failing closed would
-    // silently file it in a composer nobody is looking at mid-conversation.
-    expect(isCallJoinable({ phase: "transferring", callId: "call-1" })).toBe(true);
-  });
-
-  it("needs a call id, not just a phase", () => {
-    expect(isCallJoinable({ phase: "listening", callId: null })).toBe(false);
-    expect(isCallJoinable({ phase: "listening" })).toBe(false);
-  });
-});
 
 describe("planCaptureAttachments", () => {
   const encode = (value: string) => Buffer.from(value, "utf8").toString("base64");
@@ -73,21 +40,6 @@ describe("planCaptureAttachments", () => {
     const plan = planCaptureAttachments(shot(), null, encode);
     expect(plan.image.data).toBe("UE5H");
     expect(plan.image.data.startsWith("data:")).toBe(false);
-  });
-});
-
-describe("describeShot", () => {
-  it("names the app and window when the OS gave them", () => {
-    expect(describeShot(shot({ appName: "Safari", windowTitle: "Docs" })))
-      .toBe("Screenshot of Safari — Docs");
-    expect(describeShot(shot({ appName: "Safari" }))).toBe("Screenshot of Safari");
-    expect(describeShot(shot({ windowTitle: "Docs" }))).toBe("Screenshot of Docs");
-    expect(describeShot(shot())).toBe("Screenshot of the window in front");
-  });
-
-  it("says ADE for ADE, whatever the window title happened to be", () => {
-    expect(describeShot(shot({ isAdeWindow: true, appName: "Electron", windowTitle: "x" })))
-      .toBe("Screenshot of ADE");
   });
 });
 

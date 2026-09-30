@@ -31,7 +31,7 @@
     "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.156.1",
+    "@openai/codex": "0.159.0",
     "@opencode/cli": "2.0.18",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",

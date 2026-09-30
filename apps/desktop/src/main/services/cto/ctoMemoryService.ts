@@ -217,7 +217,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const logger = args.logger ?? null;
   const ctoDir = path.join(args.adeDir, "cto");
   const dailyDir = path.join(ctoDir, "daily");
-  const callsDir = path.join(ctoDir, "calls");
   const memoryPath = path.join(ctoDir, "MEMORY.md");
   const threadStatePath = path.join(ctoDir, "thread-state.md");
   const memoryArchivePath = path.join(ctoDir, "memory-archive.md");
@@ -837,21 +836,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     };
   };
 
-  /**
-   * Write one voice call's transcript to `.ade/cto/calls/<id>.md`.
-   *
-   * A call is one unit, not a run of chat messages, so it lives in its own file
-   * rather than as turns in the thread. Secrets are scrubbed on the way in for
-   * the same reason every other memory write is: this is plaintext on disk and
-   * it gets re-injected into prompts.
-   */
-  const writeCallTranscript = (callId: string, body: string): void => {
-    const safeId = String(callId).replace(/[^a-zA-Z0-9_-]/g, "");
-    if (!safeId.length) return;
-    fs.mkdirSync(callsDir, { recursive: true });
-    writeTextAtomic(path.join(callsDir, `${safeId}.md`), `${redactSecrets(body)}\n`);
-  };
-
   let lastContextPullMs = Date.now();
   const pullContext = (): void => {
     const nowMs = Date.now();
@@ -865,7 +849,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   return {
     readMemory,
-    writeCallTranscript,
     writeMemory,
     appendMemoryFact,
     setProjectBrief: (

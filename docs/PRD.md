@@ -108,8 +108,8 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Automation and CTO
 
 - [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → agent-session and built-in execution surfaces. Confidence + verification + human review.
-- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator: one chat thread with a smart memory system, first-class mid-thread model switching, a settings page of its own, and a light Linear read/write surface. **Talk** opens a spoken voice call on OpenAI's Realtime API: the realtime model is the conversational front and the existing CTO thread is the brain, joined by an `ask_cto` tool, with the CTO held in confirm-first mode for the call's whole length.
-- [**Capture gesture**](./features/capture-gesture/README.md) — Both ⌘ keys on macOS, both Ctrl keys on Windows, anywhere on the OS: the window in front is captured by a supervised native helper and handed to the CTO — into a live voice call if one is on air, otherwise staged on the CTO composer. Over ADE's own window the shot travels with a note describing what ADE was showing. Desktop-only by construction; Linux ships nothing.
+- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator: one chat thread with a smart memory system, first-class mid-thread model switching, a settings page of its own, and a light Linear read/write surface. Voice comes from the chat composer's Codex voice button, like every other chat.
+- [**Capture gesture**](./features/capture-gesture/README.md) — Both ⌘ keys on macOS, both Ctrl keys on Windows, anywhere on the OS: the window in front is captured by a supervised native helper and handed to the CTO, staged on the CTO composer. Over ADE's own window the shot travels with a note describing what ADE was showing. Desktop-only by construction; Linux ships nothing.
 
 ### Workspace surfaces
 

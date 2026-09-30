@@ -20596,7 +20596,8 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(6).map(\.id), [
+    XCTAssertEqual(codexModels?.prefix(7).map(\.id), [
+      "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
@@ -20633,7 +20634,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
     XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
-    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6.1-sol"))
+    XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
     XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-5.6-terra"))
     XCTAssertTrue(workModelIdsEquivalent("luna", "openai/gpt-6-luna"))
@@ -20647,7 +20649,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogResolvesGPT6SolLunaAndOpus55() {
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-sol"), "GPT-6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-6-sol"), "GPT-6 Sol")
-    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6.1 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-sol"), "GPT-5.6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-luna"), "GPT-6 Luna")
     XCTAssertEqual(workKnownModelDisplayName("luna"), "GPT-6 Luna")

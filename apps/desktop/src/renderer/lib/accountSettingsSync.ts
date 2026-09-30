@@ -134,6 +134,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
   pref("promptStashButtonEnabled", (state) => state.promptStashButtonEnabled, (state, value) => state.setPromptStashButtonEnabled(value)),
   pref("voiceInputEnabled", (state) => state.voiceInputEnabled, (state, value) => state.setVoiceInputEnabled(value)),
+  pref("codexVoice", (state) => state.codexVoice, (state, value) => state.setCodexVoicePreferences(value)),
   pref("codeBlockCopyButtonPosition", (state) => state.codeBlockCopyButtonPosition, (state, value) => state.setCodeBlockCopyButtonPosition(value)),
   pref("agentTurnCompletionSound", (state) => state.agentTurnCompletionSound, (state, value) => state.setAgentTurnCompletionSound(value)),
   pref("agentTurnCompletionSoundVolume", (state) => state.agentTurnCompletionSoundVolume, (state, value) => state.setAgentTurnCompletionSoundVolume(value)),

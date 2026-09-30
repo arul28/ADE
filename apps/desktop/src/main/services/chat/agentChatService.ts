@@ -213,7 +213,6 @@ import {
 } from "./claudeReplayOverflowRecovery";
 import {
   isPrimaryPinnedIdentity,
-  isIdentityConfirmHeld,
   normalizeIdentityPermissionMode,
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
@@ -325,6 +324,8 @@ import {
 import { HARNESS_PRESET_BODIES } from "../../../shared/harnessPresets";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
+import { createCodexVoiceSessions } from "./codexVoiceSession";
+import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
   evictOldestEntries,
@@ -1853,8 +1854,7 @@ type PersistedChatState = {
    *
    * Durable because the one failure that matters here — the thread is over its
    * context limit — is a property of the CONVERSATION, and survives every
-   * restart until the thread is rotated. It is what the CTO voice pre-flight
-   * reads to refuse a call the thread could not answer.
+   * restart until the thread is rotated.
    */
   lastTurnFailure?: AgentChatLastTurnFailure | null;
   /** How full the thread was at the last settled turn. See the type. */
@@ -4122,15 +4122,6 @@ type ManagedChatSession = {
    * which is where it becomes the durable `lastTurnFailure`.
    */
   liveTurnErrorText: string | null;
-  /**
-   * The CTO voice call whose turn is running on this session right now.
-   *
-   * Set for the life of one `runSessionTurn` call and stamped onto every
-   * envelope committed while it is set, so the transcript can fold a call into
-   * one card without anybody fabricating a message. Never persisted: a call
-   * does not survive a restart.
-   */
-  activeVoiceCallId: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -8336,13 +8327,8 @@ function syncLegacyPermissionMode(session: Pick<
  *
  * Three paths leave plan mode — approving an `ExitPlanMode`, typing the
  * approval, and the safety net that follows the SDK's own status report — and
- * every one of them must re-assert the identity policy afterwards. As three
- * separate `applyClaudePlanModeTransition` calls, the third was written without
- * the re-assert and silently handed a held CTO its write access back.
- *
- * The exit itself always takes: a held CTO lands in confirm-first mode, where a
- * mutation asks out loud, rather than in plan mode, which refused writes
- * outright and left spoken confirmation unreachable.
+ * every one of them must re-assert the identity policy afterwards, so they
+ * share this one function.
  */
 function exitPlanModeForSession(session: AgentChatSession): void {
   applyClaudePlanModeTransition(session, "default");
@@ -8354,12 +8340,10 @@ function exitPlanModeForSession(session: AgentChatSession): void {
  *
  * Plan approval and the `ExitPlanMode` interception both hand a session full
  * access without going through `normalizeIdentityPermissionMode`. That is right
- * for an ordinary chat, and wrong for an identity session that something is
- * holding read-only: during a CTO voice call, one click on an approval card in
- * the chat would give the call write access for the rest of the turn.
+ * for an ordinary chat, and wrong for an identity session whose policy pins a
+ * different mode.
  *
- * A no-op whenever the policy agrees with what was just written, which is every
- * session that is not a held identity.
+ * A no-op whenever the policy agrees with what was just written.
  */
 function reassertIdentityPermissionMode(session: AgentChatSession): void {
   if (!session.identityKey) return;
@@ -8367,9 +8351,6 @@ function reassertIdentityPermissionMode(session: AgentChatSession): void {
     session.identityKey,
     session.permissionMode,
     session.provider,
-    // Named, because a voice call on one project's CTO must not change the
-    // access mode of a CTO chat in another.
-    session.id,
   );
   if (next === session.permissionMode) return;
   applyLegacyPermissionModeToNativeControls(session, next);
@@ -9437,6 +9418,8 @@ export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 
 export function createAgentChatService(args: {
   projectRoot: string;
+  /** Optional main-process analytics sink for successful desktop voice starts. */
+  analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
   runtimeSocketPath?: string | null;
   /** Activity reports require an RPC endpoint that this process actually serves. */
@@ -14010,7 +13993,7 @@ export function createAgentChatService(args: {
       // identical on turn 2 and turn 200, and a live provider thread holds it
       // from the first send. Re-sending it every turn is what grew a real CTO
       // thread from 46k to 237k input tokens in 18 turns and tripped codex
-      // auto-compaction mid-voice-call. It is staged once per provider thread
+      // auto-compaction. It is staged once per provider thread
       // and re-staged when the thread changes (rotation, handoff, resume onto a
       // new thread, provider/model switch, fresh session) or when the prompt's
       // own content changes — the section's `key` covers an identity rename or
@@ -17863,12 +17846,6 @@ export function createAgentChatService(args: {
   ): void => {
     if (!turnStartedAt) return;
     if (managed.deleted) return;
-    // A live voice call owns this row's second line and writes it itself
-    // ("Voice call · 3 exchanges"). Generating one here takes a model round trip
-    // per settled turn, which on a call always lands after the next question has
-    // already been asked — that is how the row came to read "hey there?" three
-    // exchanges into a call. The generated line resumes when the call ends.
-    if (isIdentityConfirmHeld(managed.session.id)) return;
     const noteUpdatedAt = sessionService.getStatusNoteUpdatedAt?.(managed.session.id);
     if (noteUpdatedAt) {
       const noteMs = Date.parse(noteUpdatedAt);
@@ -18785,13 +18762,6 @@ export function createAgentChatService(args: {
       timestamp,
       event: storedEvent,
       sequence,
-      // A voice call's turns are real turns on the CTO's real thread, so they
-      // are written exactly like every other event — and carry the call they
-      // belong to, which is all the transcript needs to fold them into one
-      // card instead of a stream of messages nobody typed.
-      ...(managed.activeVoiceCallId
-        ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
-        : {}),
     };
     const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
       ? storedEnvelope
@@ -18800,9 +18770,6 @@ export function createAgentChatService(args: {
           timestamp,
           event: liveEvent,
           sequence,
-          ...(managed.activeVoiceCallId
-            ? { provenance: { voiceCallId: managed.activeVoiceCallId } }
-            : {}),
         };
 
     writeTranscript(managed, storedEnvelope);
@@ -19273,6 +19240,7 @@ export function createAgentChatService(args: {
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
+    codexVoice.observeChatEvent(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
@@ -19436,6 +19404,29 @@ export function createAgentChatService(args: {
       notifyTurnSettled(managed, normalizedEvent);
     }
   };
+
+  // Voice conversations on any chat (see codexVoiceSession.ts). Created right
+  // after emitChatEvent, which relays every chat event to it; the chat-side
+  // dependencies below are late-bound, so they resolve when first called.
+  const codexVoice = createCodexVoiceSessions<ManagedChatSession, CodexRuntime>({
+    logger,
+    analytics: args.analytics,
+    requestTimeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS,
+    ensureChat: (sessionId) => ensureManagedSession(sessionId),
+    emitChatEvent: (managed, event) => emitChatEvent(managed, event),
+    sendMessage: (args) => sendMessage(args, { routeActiveToSteer: true }),
+    steer: (args) => steer(args),
+    chatIsRunning: (managed) => canRouteActiveSendToSteer(managed),
+    ensureCodexRuntime: async (managed) => (
+      managed.runtime?.kind === "codex" ? managed.runtime : await ensureCodexSessionRuntime(managed)
+    ),
+    ensureCodexThread: (managed, runtime) => ensureCodexControlThread(managed, runtime, "voice"),
+    resolveCodexExecutable: (managed) => {
+      const env = buildAgentRuntimeEnv(managed);
+      return { executable: resolveCodexExecutable({ env }).path, env };
+    },
+    chatSummary: (sessionId) => sessionService.get(sessionId) ?? null,
+  });
 
   /**
    * Opens and closes the lane's time-lapse clip around one agent turn.
@@ -23141,7 +23132,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -35002,6 +34992,11 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method.startsWith("thread/realtime/")) {
+      codexVoice.handleNotification(managed, method, params);
+      return;
+    }
+
     if (method === "serverRequest/resolved") {
       const requestId = params.requestId;
       if (typeof requestId === "string" || typeof requestId === "number") {
@@ -35181,7 +35176,12 @@ export function createAgentChatService(args: {
         logger.warn(`[codex] ignoring turn/started without turnId (pending planning guard preserved) for session ${managed.session.id}`);
         return;
       }
-      if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
+      const unsolicitedStart = !runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId;
+      // A turn ADE did not start: a voice hand-off when voice is live. Check it
+      // before the resumed-turn path too, because starting voice resumes the
+      // thread and would otherwise take the first voice turn as a resumed one.
+      const isVoiceTurn = Boolean(turnId && unsolicitedStart && codexVoice.adoptTurn(managed, runtime, turnId));
+      if (unsolicitedStart && !isResumedInProgressTurnStart && !isVoiceTurn) {
         logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
         if (turnId) {
           runtime.ignoredTurnIds.add(turnId);
@@ -36220,6 +36220,7 @@ export function createAgentChatService(args: {
 
     proc.on("exit", (code, signal) => {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      codexVoice.onRuntimeExit(managed, runtime);
       const hadPendingRequests = pending.size > 0;
       const cleanExit = code === 0 && signal == null && !hadPendingRequests;
       if (runtime.killTimer) {
@@ -38595,7 +38596,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -39935,7 +39935,7 @@ export function createAgentChatService(args: {
     const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider, sessionId)
+      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
     const chatConfig = resolveChatConfig();
     let requestedOpenCodePermissionMode = permissionsPinned ? undefined : requestedOpenCodePermissionModeArg;
@@ -40158,7 +40158,6 @@ export function createAgentChatService(args: {
       lastTurnFailure: null,
       contextHealth: null,
       liveTurnErrorText: null,
-      activeVoiceCallId: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -54137,7 +54136,6 @@ export function createAgentChatService(args: {
         args.identityKey,
         args.permissionMode ?? managed.session.permissionMode,
         managed.session.provider,
-        managed.session.id,
       );
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -56002,6 +56000,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
+    codexVoice.endForChat(managed, "The chat closed.");
 
     // Interrupt active codex turn before teardown
     if (managed.runtime?.kind === "codex") {
@@ -56313,6 +56312,7 @@ export function createAgentChatService(args: {
   const forceDisposeAll = (): void => {
     beginDispose();
     disposeModelManifestListener();
+    codexVoice.endAll((sessionId) => managedSessions.get(sessionId));
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
       rejectActiveSessionTurnCollector(sessionId, `Chat session '${sessionId}' was closed during shutdown.`);
     }
@@ -56933,7 +56933,6 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           managed.session.permissionMode,
           nextProvider,
-          managed.session.id,
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
@@ -57121,7 +57120,6 @@ export function createAgentChatService(args: {
           managed.session.identityKey,
           permissionMode,
           managed.session.provider,
-          managed.session.id,
         )
         : permissionMode;
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
@@ -59454,19 +59452,10 @@ export function createAgentChatService(args: {
     executionMode,
     timeoutMs,
     idleTimeoutMs,
-    voiceCallId,
   }: AgentChatSendArgs & {
     timeoutMs?: number | null;
     /** Interrupt the turn after this long with no activity. Absent, null or 0 means no idle watch. */
     idleTimeoutMs?: number | null;
-    /**
-     * The CTO voice call this turn belongs to, when one is driving it.
-     *
-     * Stamped onto every envelope the turn commits so the transcript can fold
-     * the call into one card. Nothing else changes: the turn runs on the same
-     * session, with the same tools and the same approvals.
-     */
-    voiceCallId?: string | null;
   }): Promise<AgentChatBackgroundTurnResult> => {
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
@@ -59519,15 +59508,7 @@ export function createAgentChatService(args: {
     const normalizedIdleTimeoutMs = idleTimeoutMs != null && Number.isFinite(Number(idleTimeoutMs)) && Number(idleTimeoutMs) > 0
       ? clampTurnTimerMs(Number(idleTimeoutMs))
       : null;
-    // Held for the life of the turn, and given back however it ends: an
-    // abandoned id would stamp the user's NEXT typed message with a call that
-    // is already over.
-    const trimmedVoiceCallId = typeof voiceCallId === "string" && voiceCallId.trim().length
-      ? voiceCallId.trim()
-      : null;
-    if (trimmedVoiceCallId) managed.activeVoiceCallId = trimmedVoiceCallId;
-    try {
-      return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
+    return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
         resolve,
         reject,
@@ -59551,9 +59532,8 @@ export function createAgentChatService(args: {
       // Armed before the provider starts, so a turn that never begins counts as idle too.
       armSessionTurnIdleTimer(sessionId, collector);
 
-      // The headless path is a real CTO turn, not a side channel: the voice's
-      // `ask_cto` reaches the thread through here, and without this refresh it
-      // answered off whatever the live-state block held when the last
+      // The headless path is a real CTO turn, not a side channel, and without
+      // this refresh it answered off whatever the live-state block held when the last
       // interactive send ran — lanes, PR state, dirty flags and scheduled work
       // as they were minutes or hours ago. That is worse than no block, because
       // the doctrine tells the CTO not to re-derive them. It is the same call
@@ -59583,12 +59563,7 @@ export function createAgentChatService(args: {
           }
           reject(error instanceof Error ? error : new Error(String(error)));
         });
-      });
-    } finally {
-      if (trimmedVoiceCallId && managed.activeVoiceCallId === trimmedVoiceCallId) {
-        managed.activeVoiceCallId = null;
-      }
-    }
+    });
   };
 
   /**
@@ -60352,6 +60327,9 @@ export function createAgentChatService(args: {
     setCodexGoal,
     setCodexGoalStatus,
     clearCodexGoal,
+    startCodexRealtime: codexVoice.start,
+    stopCodexRealtime: codexVoice.stop,
+    getCodexRealtimeState: codexVoice.getState,
     resetCodexMemory,
     terminateCodexBackgroundTerminal,
     runSessionTurn,

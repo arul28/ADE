@@ -4787,27 +4787,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       storeApiKey: resolvedArg(undefined),
       deleteApiKey: resolvedArg(undefined),
       listApiKeys: resolved([]),
-      // Machine-scoped provider keys. The preview has no credential store, so
-      // report "not configured" rather than letting the card show a key-store
-      // failure the user cannot act on in a browser.
-      getMachineApiKeyStatus: async (provider: string) => ({
-        provider,
-        configured: false,
-        source: null,
-        envVar: "OPENAI_API_KEY",
-      }),
-      storeMachineApiKey: async (provider: string) => ({
-        provider,
-        configured: true,
-        source: "store" as const,
-        envVar: "OPENAI_API_KEY",
-      }),
-      deleteMachineApiKey: async (provider: string) => ({
-        provider,
-        configured: false,
-        source: null,
-        envVar: "OPENAI_API_KEY",
-      }),
       verifyApiKey: resolvedArg({
         provider: "mock",
         ok: false,

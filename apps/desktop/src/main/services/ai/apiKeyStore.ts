@@ -11,7 +11,6 @@ import {
   normalizeCredentialProvenance,
   type CredentialProvenance,
 } from "../../../shared/types/credentialProvenance";
-import type { MachineApiKeySource, MachineApiKeyStatus } from "../../../shared/types/config";
 import {
   DEFAULT_API_CREDENTIAL_ID,
   type ApiCredentialStoreArgs,
@@ -81,12 +80,6 @@ export type InitApiKeyStoreOptions = {
   launchHomeAdeDir?: string;
   /** Brain/main-owned product analytics; omitted by isolated store tests. */
   analytics?: FeatureAnalytics | null;
-};
-
-export type InitMachineApiKeyStoreOptions = {
-  credentialStore: ApiKeyCredentialStore | null;
-  /** Test seam; production resolves the machine ADE home. */
-  launchHomeAdeDir?: string;
 };
 
 export type ApiKeyStoreStatus = {
@@ -171,12 +164,9 @@ function resolveAccountVault(operation: string, provider: string): AccountVaultB
 /**
  * Everything the store resolves from one root, held in one object.
  *
- * One object rather than nine separate `let`s because there are two of these
- * alive at once — the project scope and the machine scope — and every helper
- * below takes the one it must act on as its first argument. As separate globals
- * the two scopes could only exist by swapping the globals in and out, which
- * made "which store am I reading?" a property of the call stack rather than of
- * the call.
+ * Every helper below takes the scope it must act on as its first argument, so
+ * "which store am I reading?" is a property of the call rather than of
+ * module-level globals.
  */
 type ApiKeyScopeState = {
   storePath: string | null;
@@ -191,19 +181,6 @@ type ApiKeyScopeState = {
   macosKeychainError: string | null;
   missingMacosKeychainProviders: Set<string>;
   missingCredentialProviders: Set<string>;
-  /**
-   * Files whose mtime/size decide whether `cache` is still the truth.
-   *
-   * Empty for the project scope, which has exactly one writer in one process.
-   * The MACHINE scope does not: the desktop app, the `ade` CLI and the project
-   * runtime all read the same `~/.ade/secrets` files, so a key stored by one of
-   * them is invisible to the others' in-memory cache for the life of the
-   * process. That is not theoretical — it is why a key saved in Settings left
-   * the runtime still answering "no OpenAI key on this machine".
-   */
-  watchedPaths: readonly string[];
-  /** The stamp `cache` was read at; null when nothing is cached. */
-  cacheStamp: string | null;
 };
 
 function emptyScopeState(): ApiKeyScopeState {
@@ -220,38 +197,7 @@ function emptyScopeState(): ApiKeyScopeState {
     macosKeychainError: null,
     missingMacosKeychainProviders: new Set<string>(),
     missingCredentialProviders: new Set<string>(),
-    watchedPaths: [],
-    cacheStamp: null,
   };
-}
-
-/**
- * A cheap fingerprint of the files a cached store was read from.
- *
- * Never the contents, which are encrypted and would have to be decrypted to
- * compare. Size and mtime are the obvious pair, but a same-size rewrite inside
- * one mtime tick is invisible to them on a coarse-granularity filesystem — and
- * a replaced (rather than rewritten) file is exactly what an atomic
- * write-then-rename produces. The inode catches the rename, and ctime moves on
- * a metadata change even when mtime is quantised. On Windows `ctimeMs` is the
- * creation time rather than a change time, which still distinguishes a replaced
- * file; it is combined with size and mtime rather than trusted alone.
- *
- * A missing file is a value too ("-"), so deleting the store invalidates as
- * loudly as writing it. Every call is `statSync` on at most four small paths,
- * which is the budget a per-read freshness check has.
- */
-function readStoreStamp(paths: readonly string[]): string {
-  const parts: string[] = [];
-  for (const candidate of paths) {
-    try {
-      const stat = fs.statSync(candidate);
-      parts.push(`${stat.size}:${stat.mtimeMs}:${stat.ino}:${stat.ctimeMs}`);
-    } catch {
-      parts.push("-");
-    }
-  }
-  return parts.join("|");
 }
 
 /** The project the app currently has open. Rebuilt by `initApiKeyStore`. */
@@ -266,7 +212,6 @@ export function __setSafeStorageForTests(next: SafeStorage | null): void {
   projectScope.summaries = null;
   projectScope.provenance = null;
   projectScope.missingMacosKeychainProviders = new Set<string>();
-  machineScopeState = null;
 }
 
 function isSecureStorageAvailable(): boolean {
@@ -715,14 +660,12 @@ function persistProvenance(
 ): void {
   if (scope.credentialStore) {
     writeCredentialSecret(scope, CREDENTIAL_PROVIDER_PROVENANCE_KEY, JSON.stringify(next));
-    noteStoreWriteCommitted(scope);
     return;
   }
   const target = provenancePath(scope);
   if (!target || !isSecureStorageAvailable()) return;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   writeFileAtomic(target, safeStorage!.encryptString(JSON.stringify(next)), { mode: 0o600 });
-  noteStoreWriteCommitted(scope);
 }
 
 function ensureProvenance(scope: ApiKeyScopeState, credentialKeys: Iterable<string>): Record<string, ApiKeyProvenance> {
@@ -802,7 +745,6 @@ function writeApiCredentialIndex(scope: ApiKeyScopeState, summaries: Iterable<Ap
   scope.summaries = normalizedSummaries;
   if (scope.credentialStore) {
     writeCredentialSecret(scope, API_CREDENTIALS_INDEX_KEY, JSON.stringify(normalizedSummaries));
-    noteStoreWriteCommitted(scope);
     return;
   }
   if (scope.cache && canPersistEncryptedStore(scope)) persistEncryptedStore(scope, scope.cache);
@@ -1052,37 +994,10 @@ function migrateLegacyMacosKeychainIntoEncryptedStore(
   return nextStore;
 }
 
-/**
- * Re-stamp the cache after THIS process wrote the store.
- *
- * Without it every write invalidates the writer's own cache on the next read —
- * the file it just wrote has a new mtime — and the store is decrypted again to
- * learn what it already knows. Worse for the credential tier, where a write
- * mutates the cached map in place rather than replacing it.
- */
-function noteStoreWriteCommitted(scope: ApiKeyScopeState): void {
-  if (!scope.watchedPaths.length) return;
-  scope.cacheStamp = readStoreStamp(scope.watchedPaths);
-}
-
 function ensureStore(scope: ApiKeyScopeState): StoredKeys {
-  // A scope with no watched paths has one writer in one process, so its cache
-  // can only go stale through a path that already invalidates it by hand.
-  const stamp = scope.watchedPaths.length ? readStoreStamp(scope.watchedPaths) : null;
-  if (scope.cache && (stamp === null || stamp === scope.cacheStamp)) return scope.cache;
-  if (scope.cache) {
-    // Another process wrote the store. Drop what we read and read it again.
-    //
-    // `missingCredentialProviders` goes with it — it records "the store had no
-    // key for this provider", which is exactly the answer that just changed.
-    // `missingMacosKeychainProviders` deliberately does NOT: that one records
-    // "this process deleted the Keychain copy", which no external write undoes,
-    // and clearing it would resurrect a stale Keychain value.
-    scope.cache = null;
-    scope.provenance = null;
-    scope.missingCredentialProviders = new Set<string>();
-  }
-  scope.cacheStamp = stamp;
+  // One writer in one process: the cache only goes stale through a path that
+  // already invalidates it by hand.
+  if (scope.cache) return scope.cache;
   ensureInitialized(scope);
 
   if (scope.credentialStore) {
@@ -1100,7 +1015,6 @@ function ensureStore(scope: ApiKeyScopeState): StoredKeys {
     const summariesChanged = JSON.stringify(mergedSummaries) !== JSON.stringify(credentialIndex.summaries);
     scope.summaries = mergedSummaries;
     if (summariesChanged) writeApiCredentialIndex(scope, mergedSummaries);
-    else noteStoreWriteCommitted(scope);
     ensureProvenance(scope, Object.keys(scope.cache));
     return scope.cache;
   }
@@ -1198,7 +1112,6 @@ function persistEncryptedStore(scope: ApiKeyScopeState, nextStore: StoredKeys = 
   } catch {
     // Best effort
   }
-  noteStoreWriteCommitted(scope);
 }
 
 export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOptions = {}): void {
@@ -1218,182 +1131,6 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
   vaultLogger = options.logger ?? null;
   productAnalytics = options.analytics ?? null;
   cursorKeyOrigin = null;
-  // A re-init can hand over a different credential store instance. The machine
-  // scope may be borrowing the project's one (when no machine store was
-  // registered), so its cached view is dropped here rather than left pointing
-  // at the previous project's wiring.
-  machineScopeState = null;
-}
-
-// ─── Machine-scoped keys ─────────────────────────────────────────────────────
-//
-// Some keys are not the project's. `initApiKeyStore` resolves through
-// `resolveAdeLayout(projectRoot)`, so the encrypted fallback lands in
-// `<project>/.ade/secrets` and a key pasted once stops existing the moment the
-// user opens a different repo. The CTO voice key pays for calls THIS MACHINE
-// makes; scoping it to a project would mean asking the same person for the same
-// secret in every repo they open.
-//
-// This is the same store, read in the same three tiers (credential store →
-// macOS Keychain → env var), with two differences: the encrypted fallback lives
-// in the machine ADE home (`~/.ade/secrets`, or `$ADE_HOME`), and the
-// per-project legacy migration — the one step that makes a key follow a
-// project — never runs.
-
-let machineScopeState: ApiKeyScopeState | null = null;
-/**
- * The credential store machine-scoped keys belong in, registered once at app
- * start by `initMachineApiKeyStore`.
- *
- * It must be the SHARED file store (`credentials.json.enc`) rather than the
- * desktop's safeStorage-primary routed store: a machine key exists to be read
- * by the headless runtime and the `ade` CLI, neither of which can decrypt an
- * Electron safeStorage file. It is registered at app start rather than per
- * project because a window with no project bound, a remote-bound window and
- * the in-process mode all reach these functions, and every one of them must
- * write a store the runtime can read.
- */
-let machineCredentialStore: ApiKeyCredentialStore | null = null;
-
-/** Memoised so module load stays free of layout resolution. */
-let machineApiKeyFileNames: { encrypted: string; legacy: string } | null = null;
-
-/**
- * The api-key file names, taken from the same layout factory the project scope
- * resolves through, so the two scopes cannot drift apart. Only the basenames
- * are borrowed — the machine scope puts them in the machine secrets dir.
- */
-function resolveApiKeyFileNames(): { encrypted: string; legacy: string } {
-  if (machineApiKeyFileNames) return machineApiKeyFileNames;
-  const probeLayout = resolveAdeLayout(path.join(path.sep, "__ade_api_key_layout_probe__"));
-  machineApiKeyFileNames = {
-    encrypted: path.basename(probeLayout.apiKeysPath),
-    legacy: path.basename(probeLayout.legacyApiKeysPath),
-  };
-  return machineApiKeyFileNames;
-}
-
-function createMachineScopeState(): ApiKeyScopeState {
-  const { secretsDir } = resolveMachineAdeLayout();
-  const fileNames = resolveApiKeyFileNames();
-  const storePath = path.join(secretsDir, fileNames.encrypted);
-  const legacyStorePath = path.join(secretsDir, fileNames.legacy);
-  // `projectRootPath` stays at the factory's null on purpose:
-  // `migrateLegacyProjectStoreIntoCredentialStore` is what pulls a project's
-  // `.ade/secrets` into the credential store, and a machine-scoped read must
-  // never touch a project directory.
-  return {
-    ...emptyScopeState(),
-    launchHomeAdeDir: resolveMachineAdeLayout().adeDir,
-    storePath,
-    legacyStorePath,
-    // Every door into this machine's secrets: the encrypted key fallback and
-    // its legacy plaintext neighbour, plus both credential-store files — the
-    // shared one the CLI and the brain co-own (`credentials.json.enc`) and the
-    // Electron-only safeStorage one the desktop app may write
-    // (`credentials.safe.enc`). A write through any of them must be visible to
-    // a process that already cached the store.
-    watchedPaths: [
-      storePath,
-      legacyStorePath,
-      path.join(secretsDir, "credentials.json.enc"),
-      path.join(secretsDir, "credentials.safe.enc"),
-    ],
-  };
-}
-
-/**
- * The machine-scoped state, created on first use.
- *
- * The credential store is re-read on every call: `initMachineApiKeyStore` and
- * `initApiKeyStore` can both change which one is current, and holding a
- * torn-down one here would silently drop a stored key down to the
- * environment-variable tier.
- */
-function machineScope(): ApiKeyScopeState {
-  const state = machineScopeState ?? createMachineScopeState();
-  machineScopeState = state;
-  // The machine store wins when one is registered. Falling back to the
-  // project's keeps a test (or a host that never registered one) working, and
-  // keeps the two scopes sharing one secret per provider.
-  state.credentialStore = machineCredentialStore ?? projectScope.credentialStore;
-  return state;
-}
-
-/**
- * Register the credential store machine-scoped keys are read from and written
- * to. Call once at app start, before any window can reach the machine-key IPC.
- */
-export function initMachineApiKeyStore(options: InitMachineApiKeyStoreOptions): void {
-  machineCredentialStore = options.credentialStore ?? null;
-  machineScopeState = null;
-  if (options.launchHomeAdeDir !== undefined) {
-    machineScopeState = {
-      ...createMachineScopeState(),
-      launchHomeAdeDir: options.launchHomeAdeDir,
-    };
-  }
-}
-
-/**
- * Both scopes can read one credential store, so a write through either must not
- * leave the other holding a cached "no key for this provider". Called before
- * the mutation — nothing can observe the gap, since the store is synchronous.
- */
-function invalidatePeerScopeCache(scope: ApiKeyScopeState): void {
-  if (scope === machineScopeState) {
-    projectScope.cache = null;
-    projectScope.summaries = null;
-    projectScope.provenance = null;
-    projectScope.missingCredentialProviders = new Set<string>();
-    return;
-  }
-  machineScopeState = null;
-}
-
-export function storeMachineApiKey(provider: string, key: string): void {
-  storeApiKeyIn(machineScope(), provider, key, { deviceOnly: true });
-}
-
-export function getMachineApiKey(provider: string): string | null {
-  return getApiKeyIn(machineScope(), provider);
-}
-
-export function deleteMachineApiKey(provider: string): void {
-  removeApiCredentialIn(machineScope(), provider, DEFAULT_CREDENTIAL_ID);
-}
-
-export function listMachineStoredProviders(): string[] {
-  return listStoredProvidersIn(machineScope());
-}
-
-/**
- * What the UI needs to render without ever seeing the secret: whether a key
- * resolves, and whether it is one ADE can replace (`store`) or one the machine's
- * environment owns (`env`, read-only here).
- */
-export function getMachineApiKeyStatus(provider: string): MachineApiKeyStatus {
-  const normalizedProvider = normalizeProvider(provider);
-  const envVar = ENV_KEY_PROVIDERS[normalizedProvider] ?? null;
-  if (!normalizedProvider.length) {
-    return { provider: normalizedProvider, configured: false, source: null, envVar };
-  }
-  const scope = machineScope();
-  let resolved: string | null = null;
-  try {
-    resolved = getApiKeyIn(scope, normalizedProvider);
-  } catch {
-    // An unreadable store is "no key", not a crash in a settings render.
-    return { provider: normalizedProvider, configured: false, source: null, envVar };
-  }
-  if (!resolved) {
-    return { provider: normalizedProvider, configured: false, source: null, envVar };
-  }
-  // `getApiKeyIn` promotes a credential-store or Keychain hit into the in-memory
-  // map before returning it; only an env-var hit is absent from it.
-  const fromStore = Boolean(ensureStore(scope)[normalizedProvider]?.trim());
-  const source: MachineApiKeySource = fromStore ? "store" : "env";
-  return { provider: normalizedProvider, configured: true, source, envVar };
 }
 
 function getApiKeyStoreStatusIn(scope: ApiKeyScopeState): ApiKeyStoreStatus {
@@ -1468,9 +1205,8 @@ function storeApiCredentialIn(
   }
   const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
 
-  invalidatePeerScopeCache(scope);
   ensureStore(scope);
-  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
+  purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
   const caseInsensitiveCollision = findCaseInsensitiveCredentialCollision(
     scope,
@@ -1572,7 +1308,7 @@ function getApiCredentialKeyIn(
   const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
   if (!storageKey) return null;
   ensureStore(scope);
-  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
+  purgeForeignAccountApiKeys(scope);
   const store = ensureStore(scope);
   const stored = store[storageKey];
   if (stored) return stored;
@@ -1672,9 +1408,8 @@ function removeApiCredentialIn(
   const normalizedCredentialId = normalizeCredentialId(credentialId);
   const storageKey = credentialStorageKey(normalizedProvider, normalizedCredentialId);
   if (!storageKey) return false;
-  invalidatePeerScopeCache(scope);
   ensureStore(scope);
-  if (scope === projectScope && purgeForeignAccountApiKeys(scope).has(storageKey)) return false;
+  if (purgeForeignAccountApiKeys(scope).has(storageKey)) return false;
   const store = ensureStore(scope);
   // Captured before the removal runs: the cleanup below is deliberately
   // idempotent, so only this tells a real removal from a no-op.
@@ -1702,7 +1437,6 @@ function removeApiCredentialIn(
       scope.missingMacosKeychainProviders.add(storageKey);
     }
     scope.cache = nextStore;
-    noteStoreWriteCommitted(scope);
   }
   deleteProvenance(scope, storageKey);
   removeCredentialLaunchHome(
@@ -1711,13 +1445,8 @@ function removeApiCredentialIn(
     scope.launchHomeAdeDir ?? undefined,
     { logger: vaultLogger },
   );
-  // Only a credential that was here asks the vault to forget the name, and only
-  // when the vault does not already know. Queueing a delete for one this machine
-  // never held would re-stamp the account's tombstone on every hydration, and a
-  // fresh tombstone out-stamps a key another machine re-added — destroying it
-  // account-wide, with no way back. A removal the vault reported is already
-  // recorded there, so re-issuing it would only re-stamp that tombstone and
-  // out-date a key another machine re-adds.
+  // Only remove a key known here, and never reissue a tombstone already received
+  // from the vault: a newer delete could erase a key another device re-added.
   if (scope === projectScope && existed && options?.notifyVault !== false) {
     fireAndForgetVaultWrite(
       { getAccountVault: getAccountVault ?? undefined, logger: vaultLogger, logEvent: "ai.api_key_vault_sync_failed", context: { provider: storageKey } },
@@ -1747,7 +1476,7 @@ export function deleteApiKey(provider: string): void {
 
 function listStoredProvidersIn(scope: ApiKeyScopeState): string[] {
   ensureStore(scope);
-  if (scope === projectScope) purgeForeignAccountApiKeys(scope);
+  purgeForeignAccountApiKeys(scope);
   return Object.keys(ensureStore(scope))
     .filter((storageKey) => isDefaultCredentialStorageKey(storageKey))
     .map((storageKey) => parseCredentialStorageKey(storageKey)?.provider)
@@ -1804,23 +1533,10 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
     const storageKey = credentialStorageKey(parsed.provider, parsed.credentialId);
 
     if (item.deleted) {
-      // Deleted on another machine. The ACCOUNT's copy has to go with it, or
-      // "account-wide" stops being true: the key would keep working here while
-      // the account says it does not exist.
-      //
-      // Only a copy the account owns. A device-only value that happens to share
-      // the provider name is not the account's to delete, and removing it would
-      // destroy a credential with nothing to restore it from.
-      // `projectSecretService` draws the same line for a device-scoped secret,
-      // and `purgeAccountApiKeys` draws it on sign-out.
+      // Account deletion applies only to the account-owned copy; a device-only
+      // credential with the same name belongs to this machine.
       ensureStore(projectScope);
       if (ensureProvenance(projectScope, [])[storageKey]?.source !== "account") continue;
-      //
-      // The internal removal, not `removeApiCredential`: that one captures a
-      // `credential_removed` product event, and a sync tick is not a person
-      // removing a credential. Reporting one would count engagement nobody
-      // generated. It also must not re-issue the account delete: the vault
-      // already reported it, and a fresh tombstone would out-stamp a re-add.
       const removedLocally = removeApiCredentialIn(
         projectScope,
         parsed.provider,

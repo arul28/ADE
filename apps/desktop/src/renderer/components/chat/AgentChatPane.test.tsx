@@ -180,8 +180,8 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     sessionId,
     laneId: "lane-1",
     provider: "codex",
-    model: "gpt-5.4",
-    modelId: "openai/gpt-5.4",
+    model: "gpt-5.5",
+    modelId: "openai/gpt-5.5",
     endedAt: null,
     lastOutputPreview: null,
     summary: null,
@@ -249,8 +249,8 @@ function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSess
     id: sessionId,
     laneId: "lane-1",
     provider: "codex",
-    model: "gpt-5.4",
-    modelId: "openai/gpt-5.4",
+    model: "gpt-5.5",
+    modelId: "openai/gpt-5.5",
     status: "idle",
     sessionProfile: "workflow",
     reasoningEffort: "xhigh",
@@ -299,12 +299,12 @@ function seedRuntimeModelCatalog(): void {
             key: "default",
             label: "Codex",
             models: [{
-              id: "openai/gpt-5.4",
-              runtimeModelId: "gpt-5.4",
+              id: "openai/gpt-5.5",
+              runtimeModelId: "gpt-5.5",
               provider: "codex",
               providerKey: "codex",
               groupKey: "codex",
-              displayName: "GPT-5.4",
+              displayName: "GPT-5.5",
               isDefault: false,
               isAvailable: true,
             }],
@@ -469,7 +469,7 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
 }
 
 function seedFastOpenCodeRuntimeModelCatalog(): string {
-  const modelId = "opencode/openai/gpt-5.4";
+  const modelId = "opencode/openai/gpt-5.5";
   rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
@@ -485,7 +485,7 @@ function seedFastOpenCodeRuntimeModelCatalog(): string {
           label: "OpenCode",
           models: [{
             id: modelId,
-            runtimeModelId: "openai/gpt-5.4",
+            runtimeModelId: "openai/gpt-5.5",
             provider: "opencode",
             providerKey: "opencode",
             groupKey: "opencode",
@@ -718,7 +718,7 @@ function installAdeMocks(options?: {
     },
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
-        if (provider === "codex") return [{ id: "gpt-5.4" }];
+        if (provider === "codex") return [{ id: "gpt-5.5" }];
         if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-5" }] : [];
         if (provider === "cursor") return options?.cursorModels ?? [];
         if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
@@ -802,7 +802,7 @@ function installAdeMocks(options?: {
           id: "stash-1",
           text: "saved",
           provider: "codex",
-          modelId: "openai/gpt-5.4",
+          modelId: "openai/gpt-5.5",
           createdAt: "2026-07-28T12:00:00.000Z",
         }),
         delete: vi.fn().mockResolvedValue(true),
@@ -1471,7 +1471,7 @@ describe("AgentChatPane remote startup", () => {
       },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
-      availableModelIds: ["openai/gpt-5.4"],
+      availableModelIds: ["openai/gpt-5.5"],
     }) as any;
     const remoteRoot = seedRemoteChatStore();
     await getAiStatusCached({ projectRoot: remoteRoot });
@@ -1615,7 +1615,7 @@ describe("AgentChatPane remote startup", () => {
       detectedAuth: [
         { type: "cli-subscription", cli: "codex", authenticated: true },
       ],
-      availableModelIds: ["openai/gpt-5.4"],
+      availableModelIds: ["openai/gpt-5.5"],
     } as AiSettingsStatus;
     const authorizedStatus: AiSettingsStatus = {
       ...unauthorizedStatus,
@@ -1627,7 +1627,7 @@ describe("AgentChatPane remote startup", () => {
         { type: "cli-subscription", cli: "codex", authenticated: true },
         { type: "api-key", provider: "cursor" },
       ],
-      availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+      availableModelIds: ["openai/gpt-5.5", "cursor/auto"],
     } as AiSettingsStatus;
 
     const session = buildSession("session-1", { status: "idle" });
@@ -1710,7 +1710,7 @@ describe("AgentChatPane remote startup", () => {
         detectedAuth: [
           { type: "cli-subscription", cli: "codex", authenticated: true },
         ],
-        availableModelIds: ["openai/gpt-5.4"],
+        availableModelIds: ["openai/gpt-5.5"],
       } as AiSettingsStatus;
       const authorizedStatus: AiSettingsStatus = {
         ...unauthorizedStatus,
@@ -1722,7 +1722,7 @@ describe("AgentChatPane remote startup", () => {
           { type: "cli-subscription", cli: "codex", authenticated: true },
           { type: "api-key", provider: "cursor" },
         ],
-        availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+        availableModelIds: ["openai/gpt-5.5", "cursor/auto"],
       } as AiSettingsStatus;
 
       const session = buildSession("session-1", { status: "idle" });
@@ -1790,14 +1790,14 @@ describe("AgentChatPane remote startup", () => {
         models: { claude: [], codex: [], cursor: [], droid: [] },
         features: [],
         detectedAuth: [],
-        availableModelIds: ["opencode/openai/gpt-5.4"],
+        availableModelIds: ["opencode/openai/gpt-5.5"],
         opencodeBinaryInstalled: true,
       } as AiSettingsStatus;
 
       const session = buildSession("session-opencode-1", {
         status: "idle",
         provider: "opencode",
-        modelId: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.5",
       });
       installAdeMocks({ sessions: [session], aiStatus: openCodeStatus });
       useAppStore.setState({
@@ -3281,7 +3281,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(includedModel.getAttribute("aria-disabled")).not.toBe("true");
 
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
-    const excludedModelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const excludedModelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(screen.queryByRole("option", { name: new RegExp(escapeRegExp(excludedModelLabel), "i") })).toBeNull();
   });
 
@@ -3296,7 +3296,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       updatedAt: "2026-05-20T12:00:00.000Z",
       controls: {
         interactionMode: "default",
@@ -3315,7 +3315,7 @@ describe("AgentChatPane submit recovery", () => {
       availableModelIdsOverride: [],
     });
 
-    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This must not launch with a stale model." } });
@@ -3330,8 +3330,8 @@ describe("AgentChatPane submit recovery", () => {
   it("blocks active session submit when a constrained list excludes the current model", async () => {
     const session = buildSession("stale-model-session", {
       title: "Stale model chat",
-      model: "gpt-5.4",
-      modelId: "openai/gpt-5.4",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
     });
     const { send } = installAdeMocks({ sessions: [session] });
     seedDrawerStore();
@@ -3367,7 +3367,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: true,
       executionMode: "focused",
@@ -3386,10 +3386,10 @@ describe("AgentChatPane submit recovery", () => {
     }));
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
-    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const modelLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     expect((await findModelTrigger()).textContent).toMatch(/Fast/);
     expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
@@ -3401,7 +3401,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "xhigh",
         fastMode: true,
         permissionMode: "full-auto",
@@ -3432,7 +3432,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: false,
       executionMode: "focused",
@@ -3451,7 +3451,7 @@ describe("AgentChatPane submit recovery", () => {
     }));
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
     const approvalButton = await screen.findByRole("button", { name: "Codex permission mode" });
@@ -3467,7 +3467,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: "high",
         fastMode: true,
         permissionMode: "full-auto",
@@ -3509,7 +3509,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "xhigh",
       fastMode: false,
       executionMode: "focused",
@@ -3552,7 +3552,7 @@ describe("AgentChatPane submit recovery", () => {
 
     render(<DraftLaneHarness />);
 
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -3572,8 +3572,8 @@ describe("AgentChatPane submit recovery", () => {
       resolveLaneTwoSessions([
         buildSession("lane-2-previous", {
           laneId: "lane-2",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
           reasoningEffort: "high",
         }),
       ]);
@@ -4497,7 +4497,7 @@ describe("AgentChatPane submit recovery", () => {
   it("reports a failed queued-message removal instead of dropping the rejection", async () => {
     const session = buildSession("session-1", {
       provider: "codex",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
     });
     const { cancelSteer, emitChatEvent } = installAdeMocks({
       sessions: [session],
@@ -4702,7 +4702,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         timestamp: "2026-07-10T18:18:53.066Z",
         sequence: 5,
-        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+        event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
       },
     ];
     const { emitChatEvent, send } = installAdeMocks({
@@ -4760,7 +4760,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         timestamp: "2026-07-10T18:18:55.001Z",
         sequence: 8,
-        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.4" },
+        event: { type: "done", status: "completed", turnId: "turn-next", model: "gpt-5.5" },
       });
     });
     await waitFor(() => {
@@ -4940,7 +4940,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T18:18:53.066Z",
             sequence: 2,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.5" },
           },
         ],
       },
@@ -4996,7 +4996,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-resumed", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-resumed", model: "gpt-5.5" },
           },
         ],
       },
@@ -5057,7 +5057,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.5" },
           },
         ],
       },
@@ -5110,7 +5110,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T20:30:04.066Z",
             sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.4" },
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.5" },
           },
         ],
       },
@@ -5165,7 +5165,7 @@ describe("AgentChatPane submit recovery", () => {
             sessionId: session.sessionId,
             timestamp: "2026-07-10T18:18:53.066Z",
             sequence: 5,
-            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
           },
         ],
       },
@@ -5211,7 +5211,7 @@ describe("AgentChatPane submit recovery", () => {
               sessionId,
               timestamp: "2026-07-10T18:18:53.066Z",
               sequence: 2,
-              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.4" },
+              event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
             },
           ]
           : [],
@@ -5314,8 +5314,8 @@ describe("AgentChatPane submit recovery", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
         },
       });
     });
@@ -5677,7 +5677,7 @@ describe("AgentChatPane submit recovery", () => {
         type: "done",
         status: "completed",
         turnId: "turn-hydrated",
-        model: "gpt-5.4",
+        model: "gpt-5.5",
       },
     });
 
@@ -6427,11 +6427,11 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
 
-    const openAiModel = await screen.findByRole("option", { name: "GPT-5.4" });
-    expect(openAiModel.getAttribute("data-model-id")).toBe("openai/gpt-5.4");
+    const openAiModel = await screen.findByRole("option", { name: "GPT-5.5" });
+    expect(openAiModel.getAttribute("data-model-id")).toBe("openai/gpt-5.5");
     expect(openAiModel.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(openAiModel);
-    expect(await screen.findByRole("button", { name: /Select model \(current: GPT-5\.4\)/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
   });
 
   it("hides chat handoff when the pane cannot open the created work chat", async () => {
@@ -6536,6 +6536,10 @@ describe("AgentChatPane submit recovery", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(/GPT-5\.5/i);
     fireEvent.change(await screen.findByLabelText("Extra instructions"), {
       target: { value: "Prioritize the drawer regression before broad cleanup." },
     });
@@ -6544,7 +6548,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
-        targetModelId: "openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         mode: "brief",
         handoffNote: "Prioritize the drawer regression before broad cleanup.",
         reasoningEffort: "xhigh",
@@ -6576,6 +6580,10 @@ describe("AgentChatPane submit recovery", () => {
 
     openChatHandoff(session.sessionId, "local");
     fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(/GPT-5\.5/i);
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
@@ -6584,7 +6592,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(jobs[0]).toEqual(expect.objectContaining({
         sourceSessionId: session.sessionId,
         laneId: session.laneId,
-        targetModelLabel: "GPT-5.4-Mini",
+        targetModelLabel: "GPT-5.5",
         targetToolType: "codex-chat",
         status: "preparing-summary",
       }));
@@ -7095,7 +7103,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -7134,7 +7142,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7203,7 +7211,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7234,7 +7242,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7265,7 +7273,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7303,7 +7311,7 @@ describe("AgentChatPane submit recovery", () => {
       );
 
       const trigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
       fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -7345,7 +7353,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7362,7 +7370,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         prompt: "Fix auto create lane routing.",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         fallbackName: "Fix Auto Create Lane Routing",
       }), LOCAL_PROJECT_BINDING);
       // The lane is created instantly with the deterministic name; the backend
@@ -7407,7 +7415,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7457,7 +7465,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7497,7 +7505,7 @@ describe("AgentChatPane submit recovery", () => {
       renderAutoCreateDraftPane();
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
       fireEvent.pointerDown(modelTrigger, { button: 0 });
       fireEvent.click(modelTrigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7548,7 +7556,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7582,7 +7590,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       updatedAt: "2026-05-28T12:00:00.000Z",
       controls: {
         interactionMode: "default",
@@ -7600,7 +7608,7 @@ describe("AgentChatPane submit recovery", () => {
     renderParallelDraftPane({
       initialEntry: "/lanes?laneId=lane-1",
       suppressDraftLaunchNavigation: true,
-      availableModelIdsOverride: ["openai/gpt-5.4"],
+      availableModelIdsOverride: ["openai/gpt-5.5"],
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -7610,7 +7618,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
       }), LOCAL_PROJECT_BINDING);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
@@ -7773,7 +7781,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7903,7 +7911,7 @@ describe("AgentChatPane submit recovery", () => {
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "Create this on my MacBook." } });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -7964,7 +7972,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8017,7 +8025,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8067,7 +8075,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8110,7 +8118,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8156,7 +8164,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ onSessionCreated, projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8239,7 +8247,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ projectBinding: binding });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8261,14 +8269,14 @@ describe("AgentChatPane submit recovery", () => {
 
   it("restores the Work draft bucket after remount with text, model, and attachment refs", async () => {
     installAdeMocks({ sessions: [] });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     window.localStorage.setItem(composerDraftStorageKeyForTest({
       projectRoot: "/tmp/project-under-test",
       companionStateKey: "draft:lane-1",
     }), JSON.stringify({
       version: 1,
       text: "Persist this Work draft.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
@@ -8328,7 +8336,7 @@ describe("AgentChatPane submit recovery", () => {
     window.localStorage.setItem(storageKey, JSON.stringify({
       version: 1,
       text: "Persisted with visual context.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
@@ -8404,7 +8412,7 @@ describe("AgentChatPane submit recovery", () => {
     }), JSON.stringify({
       version: 1,
       text: "Persisted with bad refs.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       controls: {},
       attachments: [
         { type: "file" },
@@ -8445,7 +8453,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8499,7 +8507,7 @@ describe("AgentChatPane submit recovery", () => {
     const rendered = renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8552,7 +8560,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const firstPane = renderAutoCreateDraftPane({ draftContextTargetId });
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8640,7 +8648,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8688,7 +8696,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ draftContextTargetId: "work:draft:lane-1:chat" });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8737,7 +8745,7 @@ describe("AgentChatPane submit recovery", () => {
     window.localStorage.setItem(draftStorageKey, JSON.stringify({
       version: 1,
       text: submittedPrompt,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: null,
       fastMode: false,
       executionMode: "focused",
@@ -8773,7 +8781,7 @@ describe("AgentChatPane submit recovery", () => {
       snapshot: {
         text: submittedPrompt,
         draft: submittedPrompt,
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         reasoningEffort: null,
         fastMode: false,
         cursorCloudServiceTier: null,
@@ -8842,7 +8850,7 @@ describe("AgentChatPane submit recovery", () => {
           snapshot: {
             text: "Recover from a stuck launch.",
             draft: "Recover from a stuck launch.",
-            modelId: "openai/gpt-5.4",
+            modelId: "openai/gpt-5.5",
             reasoningEffort: null,
             fastMode: false,
             executionMode: "focused",
@@ -8885,7 +8893,7 @@ describe("AgentChatPane submit recovery", () => {
       renderAutoCreateDraftPane();
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+      const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
       fireEvent.pointerDown(modelTrigger, { button: 0 });
       fireEvent.click(modelTrigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8947,7 +8955,7 @@ describe("AgentChatPane submit recovery", () => {
     const rendered = renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -8987,7 +8995,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9073,7 +9081,7 @@ describe("AgentChatPane submit recovery", () => {
     const paneOne = screen.getByTestId("lane-one-pane");
     const paneTwo = screen.getByTestId("lane-two-pane");
     const modelTrigger = await within(paneOne).findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9103,7 +9111,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9143,7 +9151,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9198,7 +9206,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -9425,7 +9433,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       reasoningEffort: "medium",
       fastMode: false,
       executionMode: "focused",
@@ -9455,7 +9463,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
@@ -9763,7 +9771,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9780,7 +9788,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",
         prompt: "Launch a CLI agent on a new lane.",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
       }), LOCAL_PROJECT_BINDING);
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
         name: "Launch Cli Agent New Lane",
@@ -9822,7 +9830,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ workDraftKind: "cli", onLaunchCliSession });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -9890,7 +9898,7 @@ describe("AgentChatPane submit recovery", () => {
           type: "done",
           turnId: "turn-1",
           status: "completed",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
         },
       });
     });
@@ -9906,7 +9914,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
 
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -10765,14 +10773,14 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4",
+        "openai/gpt-5.5",
         "anthropic/claude-sonnet-5",
       ],
     });
     const launchBinding = useAppStore.getState().projectBinding;
 
     const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -10796,19 +10804,19 @@ describe("AgentChatPane submit recovery", () => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         prompt: "Fix the login bug",
-        modelId: "openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
         fallbackName: "Fix Login Bug",
       }), launchBinding);
       expect(createChild).toHaveBeenCalledTimes(2);
     });
     // Child lanes are created instantly with the deterministic base name…
     expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
-      "Fix Login Bug-codex-gpt-5-4",
+      "Fix Login Bug-codex-gpt-5-5",
       "Fix Login Bug-claude-sonnet-5",
     ]);
     // …then renamed to the AI base name in the background.
     await waitFor(() => {
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" }, launchBinding);
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-5" }, launchBinding);
       expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet-5" }, launchBinding);
     });
 
@@ -10821,7 +10829,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
       laneId: "lane-child-1",
       provider: "codex",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
     }), launchBinding);
     expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
       laneId: "lane-child-2",
@@ -10946,13 +10954,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderParallelDraftPane({
       availableModelIdsOverride: [
-        "openai/gpt-5.4",
+        "openai/gpt-5.5",
         "anthropic/claude-sonnet-5",
       ],
     });
 
     const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -11036,7 +11044,7 @@ describe("AgentChatPane Work draft launches", () => {
 
   async function sendOnAutoCreateLane(text: string, options: { background?: boolean } = {}) {
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -11072,10 +11080,10 @@ describe("AgentChatPane Work draft launches", () => {
       laneName: "Fix Auto Create Lane Routing",
       prompt: "Fix auto create lane routing.",
       displayPrompt: "Fix auto create lane routing.",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
       originClientId: expect.stringMatching(/^desktop-window:/),
     });
-    expect(args.chat?.create).toMatchObject({ provider: "codex", modelId: "openai/gpt-5.4" });
+    expect(args.chat?.create).toMatchObject({ provider: "codex", modelId: "openai/gpt-5.5" });
     expect(args.chat?.create).not.toHaveProperty("laneId");
     expect(args.chat?.message).toMatchObject({
       text: "Fix auto create lane routing.",
@@ -11162,7 +11170,7 @@ describe("AgentChatPane Work draft launches", () => {
     renderAutoCreateDraftPane();
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
@@ -11227,7 +11235,7 @@ describe("AgentChatPane Work draft launches", () => {
       laneId: "lane-new",
       laneName: "Fix Login Redirect",
       prompt: "Fix the login redirect",
-      modelId: "openai/gpt-5.4",
+      modelId: "openai/gpt-5.5",
     });
     applyChatLaunchSnapshot(LOCAL_PROJECT_BINDING, launch);
     // The host answers a queued message with the launch holding its own copy.
@@ -12129,8 +12137,8 @@ describe("subagent auto-open storage", () => {
 
 describe("parallel launch helpers", () => {
   it("keeps same-family model lane suffixes distinct", () => {
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4"))).toBe("codex-gpt-5-4");
-    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.4-mini"))).toBe("codex-gpt-5-4-mini");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.5"))).toBe("codex-gpt-5-5");
+    expect(parallelLaneModelSuffix(getModelById("openai/gpt-5.6-sol"))).toBe("codex-gpt-5-6-sol");
   });
 
   it("preserves the default attachment review request when project docs are prepended", () => {
@@ -13696,7 +13704,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const status = cursorAvailableAiStatus();
     (status as unknown as { availableModelIds: string[] }).availableModelIds = [
       CURSOR_MODEL_ID,
-      "gpt-5.4",
+      "gpt-5.5",
     ];
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: status });
     installCursorCloudMocks();
@@ -13706,7 +13714,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     fireEvent.click(await findModelTrigger());
     await waitFor(() => expect(screen.getAllByText(/Composer Cloud/).length).toBeGreaterThan(0));
-    expect(screen.queryByText("gpt-5.4")).toBeNull();
+    expect(screen.queryByText("gpt-5.5")).toBeNull();
   });
 
   async function revealRowTooltip(row: HTMLElement) {

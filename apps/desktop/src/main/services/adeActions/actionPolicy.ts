@@ -2,7 +2,6 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
-import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -84,17 +83,14 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
-  // `storeMachineApiKey` / `deleteMachineApiKey` join the project-scoped pair
-  // for the same reason: writing or destroying a provider credential is
-  // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
-  // answers "is a key configured and where from", never the key.
+  // Writing or destroying a provider credential is operator work.
   // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
   // operator-only like the updater it pairs with.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
   // Both are operator work, like `project_secret.exportEnv`.
-  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  ai: { only: ["harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -135,24 +131,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * fleet already depends on.
    */
   cto_state: { only: ["startFreshSession"] },
-  /*
-   * Fail-closed, with no exceptions at all.
-   *
-   * A voice call opens a billed socket to OpenAI on the user's own key, puts the
-   * CTO thread into confirm-first mode for its duration, and carries a live
-   * microphone and speaker in a desktop window. None of that is something an
-   * agent has any business starting, driving, or listening to — `pullAudio`
-   * alone would let a session-bound agent drain the audio out from under the
-   * user mid-sentence, and `getState` returns the call's running transcript.
-   *
-   * Desktop main is the only intended caller and reaches this at `cto` role:
-   * `buildLocalRuntimeNodeEnv` launches the project runtime with
-   * `ADE_DEFAULT_ROLE=cto`, and the pool refuses to connect to a runtime whose
-   * default role is anything else. `allExcept: []` therefore denies every
-   * agent-role caller while leaving the router untouched — and a voice action
-   * added later is CTO-only by omission, which is the polarity this gate wants.
-   */
-  cto_voice: { allExcept: [] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -180,8 +158,19 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   },
   // Stashes are unsent user-authored drafts. Desktop runtime clients connect
   // without a chat binding at CTO role; session-bound agents must never read
-  // or mutate this private composer state through `ade actions`.
-  chat: { only: ["listPromptStashes", "createPromptStash", "deletePromptStash"] },
+  // or mutate this private composer state through `ade actions`. Voice is the
+  // user's microphone and a session billed to their ChatGPT plan: an agent
+  // must not start, stop, or watch it.
+  chat: {
+    only: [
+      "listPromptStashes",
+      "createPromptStash",
+      "deletePromptStash",
+      "startCodexRealtime",
+      "stopCodexRealtime",
+      "getCodexRealtimeState",
+    ],
+  },
   // ── Domain-coverage decisions (deliberately NOT added here) ──
   // The CTO gained curated tools over automation planning, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
@@ -307,18 +296,6 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
 }
-
-/**
- * Every voice action, spread from the one list that defines them.
- *
- * Exhaustive by construction rather than by review: a tenth action added to
- * `CTO_VOICE_ACTIONS` is on the bus the moment it exists, and cannot sit on the
- * service unreachable because nobody remembered this file. Sorted at read time,
- * because the allowlist is read as documentation as well as policy — the
- * ordering is presentation, the membership is not.
- */
-const CTO_VOICE_ALLOWED_ACTIONS: readonly CtoVoiceAction[] =
-  [...CTO_VOICE_ACTIONS].sort();
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: [
@@ -626,6 +603,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setCodexGoal",
     "setCodexGoalStatus",
     "clearCodexGoal",
+    "startCodexRealtime",
+    "stopCodexRealtime",
+    "getCodexRealtimeState",
     "getCodexGoal",
     "resetCodexMemory",
     "terminateCodexBackgroundTerminal",
@@ -731,13 +711,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
-    // Machine-scoped keys (this install's ADE home, not the project's). On the
-    // bus so the renderer can reach the store the RUNTIME reads — desktop main
-    // writes through a different credential store and the runtime cannot open
-    // it. The secret travels one way, in; only a status comes back.
-    "getMachineApiKeyStatus",
-    "storeMachineApiKey",
-    "deleteMachineApiKey",
     "updateConfig",
     "opencodeAuthMethods",
     "opencodeOAuthStart",
@@ -803,10 +776,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
-  // The desktop router's whole surface. Every one of these is CTO-only — see
-  // `ADE_ACTION_CTO_ONLY.cto_voice`, which is `allExcept: []` so a voice action
-  // added later is operator-only by omission rather than by remembering.
-  cto_voice: CTO_VOICE_ALLOWED_ACTIONS,
   session: [
     "backfillDeltas",
     "clearWokeMarker",

@@ -143,9 +143,9 @@ export function createIdentityThreadRotation<TManaged>(
    * Can this chat take another turn, and is it close to the edge?
    *
    * Read-only and cheap on purpose — it reads the session's own persisted
-   * bookkeeping rather than asking a provider anything, so the CTO voice
-   * pre-flight can call it on every Talk without opening a query, and the
-   * answer survives a restart the way the problem it describes does.
+   * bookkeeping rather than asking a provider anything, so a caller can ask
+   * before drawing a banner without opening a query, and the answer survives
+   * a restart the way the problem it describes does.
    */
   const getSessionTurnHealth = ({ sessionId }: { sessionId: string }): AgentChatSessionTurnHealth => {
     const managed = deps.ensureManagedSession(sessionId);

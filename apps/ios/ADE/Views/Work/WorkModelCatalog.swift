@@ -199,7 +199,7 @@ func workPrioritizeGPT56ChatModels(
   func priority(_ model: AgentChatModelInfo) -> Int {
     let canonicalId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
       ?? workCanonicalCodexRegistryId(for: model.id)
-    return workCodexFamilySortPriority(canonicalId) ?? 6
+    return workCodexFamilySortPriority(canonicalId) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -405,7 +405,7 @@ private func workVisibleReasoningEfforts(
     return fallback
   }
   switch canonicalId {
-  case "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
+  case "openai/gpt-6.1-sol", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
   case "openai/gpt-6-astra", "openai/gpt-6-luna", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
@@ -432,7 +432,7 @@ private func workVisibleDefaultReasoningEffort(
     return normalizedFallback
   }
   switch canonicalId {
-  case "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
+  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
   case "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
@@ -540,6 +540,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "OpenAI",
         models: [
           WorkModelOption(
+            id: "gpt-6.1-sol",
+            displayName: "GPT-6.1 Sol",
+            tier: .flagship,
+            tagline: "Near-Astra · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
             id: "gpt-6-astra",
             displayName: "GPT-6 Astra",
             tier: .flagship,
@@ -600,11 +610,6 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex", serviceTiers: ["fast"]),
-          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex", serviceTiers: ["fast"]),
-          WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
-          WorkModelOption(id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", tier: .fast, tagline: "Text-only Codex fast path", provider: "codex"),
-          WorkModelOption(id: "gpt-5.2", displayName: "GPT-5.2", tier: .balanced, tagline: "Prior-gen GPT-5", provider: "codex"),
         ]
       )
     ]
@@ -1196,14 +1201,18 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   }
 }
 
+/// Sorts after every named Codex model, so a new family member never ties with an older model.
+private let workCodexUnrankedSortPriority = Int.max
+
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
-  case "openai/gpt-6-astra": return 0
-  case "openai/gpt-6-sol": return 1
-  case "openai/gpt-6-luna": return 2
-  case "openai/gpt-5.6-sol": return 3
-  case "openai/gpt-5.6-terra": return 4
-  case "openai/gpt-5.6-luna": return 5
+  case "openai/gpt-6.1-sol": return 0
+  case "openai/gpt-6-astra": return 1
+  case "openai/gpt-6-sol": return 2
+  case "openai/gpt-6-luna": return 3
+  case "openai/gpt-5.6-sol": return 4
+  case "openai/gpt-5.6-terra": return 5
+  case "openai/gpt-5.6-luna": return 6
   default: return nil
   }
 }
@@ -1216,7 +1225,9 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "openai/gpt-6-astra"
-  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    return "openai/gpt-6.1-sol"
+  case "gpt-6-sol", "openai/gpt-6-sol":
     return "openai/gpt-6-sol"
   case "luna", "gpt-6-luna", "openai/gpt-6-luna":
     return "openai/gpt-6-luna"
@@ -1340,7 +1351,9 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "Claude Haiku 4.5"
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "GPT-6 Astra"
-  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    return "GPT-6.1 Sol"
+  case "gpt-6-sol", "openai/gpt-6-sol":
     return "GPT-6 Sol"
   case "luna", "gpt-6-luna", "openai/gpt-6-luna":
     return "GPT-6 Luna"
@@ -1765,7 +1778,7 @@ private func workPrioritizeCodex56Models(
   }
 
   func priority(_ modelId: String) -> Int {
-    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 6
+    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? workCodexUnrankedSortPriority
   }
 
   return models.enumerated().sorted { lhs, rhs in

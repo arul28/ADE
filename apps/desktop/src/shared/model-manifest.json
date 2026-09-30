@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-22T21:00:00Z",
+  "updatedAt": "2026-09-29T20:00:00Z",
   "defaults": {
     "app": [
       {
@@ -22,12 +22,55 @@
   },
   "models": [
     {
+      "id": "openai/gpt-6.1-sol",
+      "after": "anthropic/claude-opus-5",
+      "fields": {
+        "shortId": "gpt-6.1-sol",
+        "aliases": [
+          "sol",
+          "gpt-6.1-sol"
+        ],
+        "displayName": "GPT-6.1 Sol",
+        "family": "openai",
+        "authTypes": [
+          "cli-subscription"
+        ],
+        "contextWindow": 1050000,
+        "maxOutputTokens": 128000,
+        "capabilities": {
+          "tools": true,
+          "vision": true,
+          "reasoning": true,
+          "streaming": true
+        },
+        "reasoningTiers": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "defaultReasoningEffort": "low",
+        "serviceTiers": [
+          "fast"
+        ],
+        "color": "#10A37F",
+        "providerRoute": "codex-cli",
+        "providerModelId": "gpt-6.1-sol",
+        "cliCommand": "codex",
+        "isCliWrapped": true,
+        "inputPricePer1M": 2,
+        "outputPricePer1M": 10,
+        "costTier": "medium"
+      }
+    },
+    {
       "id": "openai/gpt-6-sol",
       "after": "openai/gpt-6-astra",
       "fields": {
         "shortId": "gpt-6-sol",
         "aliases": [
-          "sol",
           "gpt-6-sol"
         ],
         "displayName": "GPT-6 Sol",
@@ -122,6 +165,36 @@
         "aliases": [
           "gpt-5.6-luna"
         ]
+      }
+    },
+    {
+      "id": "openai/gpt-5.4",
+      "fields": {
+        "deprecated": true
+      }
+    },
+    {
+      "id": "openai/gpt-5.4-mini",
+      "fields": {
+        "deprecated": true
+      }
+    },
+    {
+      "id": "openai/gpt-5.3-codex",
+      "fields": {
+        "deprecated": true
+      }
+    },
+    {
+      "id": "openai/gpt-5.3-codex-spark",
+      "fields": {
+        "deprecated": true
+      }
+    },
+    {
+      "id": "openai/gpt-5.2",
+      "fields": {
+        "deprecated": true
       }
     }
   ]

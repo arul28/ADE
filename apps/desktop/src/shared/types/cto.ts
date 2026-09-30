@@ -60,16 +60,6 @@ export type CtoIdentity = {
    */
   modelPreferences: CtoModelPreferences | null;
   /**
-   * How a call sounds, and whether it makes listening noises.
-   *
-   * Optional and additive: an identity written before voice existed has
-   * neither, and both fall back to the defaults in `shared/types/ctoVoice`.
-   * Stored on the identity rather than in machine settings because it is a
-   * property of THIS CTO — a different project may want a different voice.
-   */
-  voiceName?: string | null;
-  voiceBackchannels?: boolean | null;
-  /**
    * "Let the CTO reach my other machines" (Settings › CTO). Absent means on.
    * Off, every cross-machine tool answers that it is turned off, nothing is
    * paired, and the live-state roster is left out.

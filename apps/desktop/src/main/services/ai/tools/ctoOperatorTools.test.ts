@@ -1174,7 +1174,7 @@ describe("createCtoOperatorTools", () => {
 
   // A project-wide listScheduledWork returned every field of every job with
   // full prompts — one real call came back at 50 KB and tipped a live CTO
-  // thread into provider auto-compaction mid-voice-call.
+  // thread into provider auto-compaction.
   describe("listScheduledWork result size", () => {
     const makeItem = (index: number) => ({
       id: `sched-${index}`,

@@ -18,8 +18,6 @@ import { pinKey } from "../../state/projectMachines";
 import { CtoHomeChooser } from "./CtoHomeChooser";
 import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
 import { cn } from "../ui/cn";
-import { CtoTalkButton } from "./CtoTalkButton";
-import { CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkNoticeLine";
 import { CtoSettingsPage, type CtoIdentityPatch } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -76,8 +74,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /** Why the last call could not start. Its own line, so the header never moves. */
-  const [talkNotice, setTalkNotice] = useState<CtoTalkNotice | null>(null);
   const [switchingModel, setSwitchingModel] = useState(false);
   /**
    * Whether ADE thinks this thread should be rotated, and whether it can still
@@ -446,9 +442,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     () => ({ pin: ctoPin, machineName: ctoHome.homeName, ready: homeReady }),
     [ctoHome.homeName, ctoPin, homeReady],
   );
-  // Voice runs through this computer's main process and cannot be routed, so
-  // it is offered only when the CTO lives on the tab's own machine.
-  const voiceAvailable = homeReady && ctoPin == null;
 
   return (
     <CtoHomeProvider scope={homeScope}>
@@ -467,7 +460,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {voiceAvailable ? <CtoTalkButton onNotice={setTalkNotice} /> : null}
             <button
               type="button"
               disabled={!homeReady}
@@ -482,7 +474,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             </button>
           </div>
         </div>
-        {talkNotice ? <CtoTalkNoticeLine notice={talkNotice} /> : null}
       </div>
 
       {showRotationPrompt && threadHealth ? (
