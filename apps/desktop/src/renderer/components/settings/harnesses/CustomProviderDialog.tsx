@@ -105,6 +105,13 @@ function keepAgentKeys<T extends Partial<Record<HarnessPresetAgentKey, unknown>>
   return kept;
 }
 
+/** One sentence for a save that threw, rather than a form that froze. */
+function saveFailureText(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  return detail.trim()
+    || "The save could not be completed. Try again.";
+}
+
 function normalizeHex(value: string): string {
   const trimmed = value.trim().toLowerCase();
   return /^#[0-9a-f]{6}$/.test(trimmed) ? trimmed : DEFAULT_HARNESS_PRESET_ACCENT;
@@ -383,6 +390,10 @@ export function CustomProviderDialog({
                       // leaving Save on screen would invite a second write.
                       if (!error) onClose();
                     })
+                    // A rejected push is reported like a refused one. Letting
+                    // it escape would leave the warning cleared and the form
+                    // frozen with nothing on screen to explain either.
+                    .catch((error: unknown) => setAccountError(saveFailureText(error)))
                     .finally(() => setSaving(false));
                 },
               }
@@ -398,6 +409,7 @@ export function CustomProviderDialog({
                     setWritten(true);
                     void onSave(finalDraft)
                       .then((error) => setAccountError(error))
+                      .catch((error: unknown) => setAccountError(saveFailureText(error)))
                       .finally(() => setSaving(false));
                   },
                 },

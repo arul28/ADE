@@ -115,6 +115,25 @@ export async function ensureHarnessPresetOnBrain(
 ): Promise<HarnessPresetAccountSyncOutcome> {
   const id = presetId?.trim() ?? "";
   if (!id || isRoutePresetId(id)) return { ok: true, message: null };
+  // WHY the catch is here rather than at each call site: every caller treats
+  // this as a best-effort step it runs *before* something else, and a throw
+  // from it would abort that something else — a launch that skips its own
+  // cleanup, a batch whose item never starts. One guarantee, enforced in one
+  // place, is what those callers are actually relying on.
+  try {
+    return await ensureHarnessPresetOnBrainUnchecked(id, options);
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : String(error ?? ""),
+    };
+  }
+}
+
+async function ensureHarnessPresetOnBrainUnchecked(
+  id: string,
+  options: { targetsAnotherMachine?: boolean },
+): Promise<HarnessPresetAccountSyncOutcome> {
   if (options.targetsAnotherMachine) {
     return {
       ok: false,

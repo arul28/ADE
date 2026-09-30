@@ -174,11 +174,18 @@ describe("harnessPresetAccountSync", () => {
 
   it("does not block a launch when the brain cannot be asked", async () => {
     // An unreadable cache is "we don't know", never "it is missing": pushing
-    // on a guess would overwrite a list this machine has not read.
-    rootAppStoreApi.setState({ harnessPresets: [preset("hp_new")] });
-    installApi({ machineIds: null });
-
-    await expect(ensureHarnessPresetOnBrain("hp_new")).resolves.toEqual({ ok: true, message: null });
-    expect(flush).not.toHaveBeenCalled();
+    // on a guess would overwrite a list this machine has not read. A bridge
+    // that THROWS is the same answer, and it must not escape either — every
+    // caller runs this as a best-effort step before a launch or a batch item.
+    for (const list of [
+      async () => ({ ok: false as const, unavailable: true as const, message: "no brain" }),
+      async () => { throw new Error("the bridge went away"); },
+    ]) {
+      rootAppStoreApi.setState({ harnessPresets: [preset("hp_new")] });
+      const api = installApi({ machineIds: [] });
+      api.list.mockImplementation(list as typeof api.list);
+      await expect(ensureHarnessPresetOnBrain("hp_new")).resolves.toEqual({ ok: true, message: null });
+      expect(flush).not.toHaveBeenCalled();
+    }
   });
 });
