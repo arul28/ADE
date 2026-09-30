@@ -527,6 +527,9 @@ describe("deriveTurnFolds — a short postscript does not hide the answer", () =
     ["a commentary text between answer and postscript", [history("tool"), long("answer"), prose("c", "C".repeat(500), "t1", "commentary"), short("ps")], "ps"],
     ["an empty text row stepped over", [history("tool"), long("answer"), prose("blank", "   "), short("ps")], "answer"],
     ["a text row from another turn stepped over", [history("tool"), long("answer"), prose("stray", "S".repeat(50), "t0"), short("ps")], "answer"],
+    // 150 emoji are 300 UTF-16 code units: long enough to be a full answer, so
+    // the earlier text is not the answer. iOS matches this unit (`.utf16.count`).
+    ["an emoji postscript capped in UTF-16 code units", [history("tool"), long("answer"), prose("ps", "\u{1F600}".repeat(150))], "ps"],
     ["no prose supplied at all", [history("tool"), text("a"), text("b")], "b"],
   ] as const)("%s", (_name, rows, expected) => {
     const [fold] = deriveTurnFolds([user("u"), ...rows, done("d")], snapshots());

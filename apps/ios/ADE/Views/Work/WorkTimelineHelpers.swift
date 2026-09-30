@@ -2439,7 +2439,10 @@ private func workTurnFoldAnswerBeforePostscript(
   guard lastText >= 0 else { return lastText }
   func proseLength(_ index: Int) -> Int {
     guard case .message(let message) = entries[index].payload else { return 0 }
-    return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).count
+    // UTF-16 code units, matching desktop `String.length`. Grapheme-cluster
+    // counts (`String.count`) disagree for emoji and combining marks, which
+    // would make the two platforms fold the same turn differently.
+    return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
   }
   let postscriptLength = proseLength(lastText)
   guard postscriptLength > 0, postscriptLength <= workTurnFoldPostscriptMaxChars else { return lastText }
