@@ -1814,7 +1814,7 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
       // `projectSecretService` draws the same line for a device-scoped secret,
       // and `purgeAccountApiKeys` draws it on sign-out.
       ensureStore(projectScope);
-      if (ensureProvenance(projectScope, [storageKey])[storageKey]?.source !== "account") continue;
+      if (ensureProvenance(projectScope, [])[storageKey]?.source !== "account") continue;
       //
       // The internal removal, not `removeApiCredential`: that one captures a
       // `credential_removed` product event, and a sync tick is not a person

@@ -10,8 +10,8 @@ export function projectSecretPullSummary(result: ProjectSecretPullResult): strin
   if (result.state === "unavailable") {
     return "Could not pull account secrets. Sign in, keep the background service running, and check this repository has a Git remote.";
   }
-  const added = result.added ?? 0;
-  const updated = result.updated ?? 0;
+  const { added, updated } = result;
+  // A runtime from before account-wide deletes answers without this count.
   const removed = result.removed ?? 0;
   if (added === 0 && updated === 0 && removed === 0) {
     return "Account secrets are already up to date on this machine.";
