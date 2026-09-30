@@ -8,11 +8,11 @@ export default {
     try {
       return await handleRequest(request, env, ctx);
     } catch (error) {
-      // Log the cause and answer with JSON, so clients can show a reason
-      // instead of Cloudflare's bare 500 page.
+      // Log the cause and answer with JSON instead of Cloudflare's bare 500
+      // page. The message stays in the log: it can name config or D1 details.
       const message = error instanceof Error ? error.message : String(error);
       console.error("relay.unhandled_error", { path: new URL(request.url).pathname, message });
-      return new Response(JSON.stringify({ ok: false, error: "internal_error", reason: message.slice(0, 200) }), {
+      return new Response(JSON.stringify({ ok: false, error: "internal_error" }), {
         status: 500,
         headers: { "content-type": "application/json" },
       });

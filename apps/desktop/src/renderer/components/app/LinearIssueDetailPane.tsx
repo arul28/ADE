@@ -21,6 +21,7 @@ import type { IssueConflict } from "../../lib/linearBatchLaunch";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { buildChatMarkdownComponents } from "../chat/chatMarkdown";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
 import { BranchIcon } from "../ui/vcsIcons";
 import { LinearStateIcon } from "../lanes/linearBrand";
 import { issueProjectLabel, issueUpdatedLabel } from "../lanes/linearIssueDisplay";
@@ -307,16 +308,12 @@ function DockButton({
   ...rest
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { primary?: boolean }) {
   return (
-    <button
+    <Button
       type="button"
+      variant={primary ? "primary" : "outline"}
+      casing="sentence"
+      className={cn("shrink-0 gap-1.5 px-3", className)}
       {...rest}
-      className={cn(
-        "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-3 text-[12px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-45",
-        primary
-          ? "bg-[color:var(--color-accent,#A78BFA)] text-[#0F0D14] hover:brightness-110"
-          : "border border-white/[0.09] text-fg/80 hover:border-white/[0.16] hover:bg-white/[0.05] hover:text-fg",
-        className,
-      )}
     />
   );
 }

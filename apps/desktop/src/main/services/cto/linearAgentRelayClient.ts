@@ -82,7 +82,13 @@ export function createLinearAgentRelayClient(deps: LinearAgentRelayClientDeps) {
 
     uninstall: () => call<{ ok: true }>({ method: "DELETE", path: "/linear/agent/install", withLinear: true }),
 
-    registerMember: () => call<{ ok: true }>({ method: "POST", path: "/linear/agent/members/register", withLinear: true }),
+    /** `replace` moves this Linear user's delegations from another ADE account to this one. */
+    registerMember: (options?: { replace?: boolean }) =>
+      call<{ ok: true }>({
+        method: "POST",
+        path: `/linear/agent/members/register${options?.replace ? "?replace=1" : ""}`,
+        withLinear: true,
+      }),
 
     unregisterMember: () => call<{ ok: true }>({ method: "DELETE", path: "/linear/agent/members/register", withLinear: true }),
 

@@ -1,5 +1,4 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { WebSocket, type RawData } from "ws";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
 import type { AutomationLinearIngressStatus } from "../../../shared/types/automations";
 import { linearIngressKindFromParts } from "../../../shared/types/linearSync";
@@ -7,6 +6,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { LinearWebhookSummary } from "../cto/linearClient";
 import { ACCOUNT_RELAY_TOKEN_HEADER } from "../github/githubRelayConfig";
+import { createRelayWakeSocket, type RelayWakeSocket, type RelayWakeTarget } from "./relayWakeSocket";
 import {
   LINEAR_RELAY_LAST_ERROR_REF,
   LINEAR_RELAY_LAST_EVENT_AT_REF,
@@ -23,8 +23,6 @@ import {
 const DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS = 45_000;
 // While a wake-up socket is connected, polling is only a safety net.
 const SUBSCRIBED_SAFETY_POLL_INTERVAL_MS = 5 * 60_000;
-const WAKE_SOCKET_CONNECT_TIMEOUT_MS = 10_000;
-const WAKE_SOCKET_MAX_BACKOFF_MS = 60_000;
 const LINEAR_RELAY_PAGE_LIMIT = 500;
 const LINEAR_RELAY_MAX_PAGES_PER_POLL = 20;
 // Sentinel webhook id for workspaces whose events arrive through the ADE
@@ -548,8 +546,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   // sessions routed to this person) and the organization topic (every Linear
   // event in the workspace). Each frame only means "poll now"; the durable
   // cursor and replay guard above stay the source of truth.
-  type WakeSocket = { stop: () => void; connected: () => boolean };
-  const wakeSockets: WakeSocket[] = [];
+  const wakeSockets: RelayWakeSocket[] = [];
 
   const reschedulePolling = (): void => {
     if (!pollTimer || stopped) return;
@@ -561,97 +558,21 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
 
   const createWakeSocket = (
     name: string,
-    resolveTarget: () => Promise<{ url: string; headers: Record<string, string> } | null>,
-  ): WakeSocket => {
-    let socket: WebSocket | null = null;
-    let isConnected = false;
-    let halted = false;
-    let attempt = 0;
-    let retryTimer: NodeJS.Timeout | null = null;
-
-    const scheduleRetry = (): void => {
-      if (halted || retryTimer) return;
-      const delay = Math.min(WAKE_SOCKET_MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt, 6)) + Math.floor(Math.random() * 500);
-      attempt += 1;
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        void connect();
-      }, delay);
-      retryTimer.unref?.();
-    };
-
-    const connect = async (): Promise<void> => {
-      if (halted || socket) return;
-      const target = wantsEvents() ? await resolveTarget().catch(() => null) : null;
-      if (halted || socket) return;
-      if (!target) {
-        scheduleRetry();
-        return;
-      }
-      let next: WebSocket;
-      try {
-        next = new WebSocket(target.url, { headers: target.headers });
-      } catch {
-        scheduleRetry();
-        return;
-      }
-      socket = next;
-      const connectTimer = setTimeout(() => {
-        if (socket === next && next.readyState === WebSocket.CONNECTING) next.terminate();
-      }, WAKE_SOCKET_CONNECT_TIMEOUT_MS);
-      connectTimer.unref?.();
-      next.on("open", () => {
-        if (socket !== next) return;
-        clearTimeout(connectTimer);
-        attempt = 0;
-        isConnected = true;
+    resolveTarget: () => Promise<RelayWakeTarget | null>,
+  ): RelayWakeSocket =>
+    createRelayWakeSocket({
+      resolveTarget: async () => (wantsEvents() ? await resolveTarget() : null),
+      frameType: "linear_delivery",
+      onWake: () => void pollNow(),
+      onConnectedChange: (connected) => {
         reschedulePolling();
-        void pollNow();
-      });
-      next.on("message", (raw: RawData) => {
-        if (socket !== next) return;
-        try {
-          const frame = JSON.parse(Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw)) as unknown;
-          if (isRecord(frame) && frame.t === "linear_delivery") void pollNow();
-        } catch {
-          // Frames are hints; ignore anything unexpected.
-        }
-      });
-      next.on("error", () => {
-        // `close` owns reconnects.
-      });
-      next.on("close", () => {
-        clearTimeout(connectTimer);
-        if (socket !== next) return;
-        socket = null;
-        const wasConnected = isConnected;
-        isConnected = false;
-        if (wasConnected) reschedulePolling();
-        scheduleRetry();
-      });
-      deps.logger.debug?.("automations.linear_wake_socket_connecting", { name });
-    };
-
-    void connect();
-    return {
-      connected: () => isConnected,
-      stop: () => {
-        halted = true;
-        if (retryTimer) clearTimeout(retryTimer);
-        retryTimer = null;
-        const current = socket;
-        socket = null;
-        isConnected = false;
-        try {
-          current?.close();
-        } catch {
-          // Already closing.
-        }
+        // The relay may hold events from while the socket was down.
+        if (connected) void pollNow();
       },
-    };
-  };
+      onConnecting: () => deps.logger.debug?.("automations.linear_wake_socket_connecting", { name }),
+    });
 
-  const resolveOrgSubscribeTarget = async (): Promise<{ url: string; headers: Record<string, string> } | null> => {
+  const resolveOrgSubscribeTarget = async (): Promise<RelayWakeTarget | null> => {
     const status = getStatus();
     if (!status.organizationId) return null;
     const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";

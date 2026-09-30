@@ -20,7 +20,7 @@ import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
-import { LinearPaneHeader } from "./LinearPaneHeader";
+import { LinearPaneModal } from "./LinearPaneModal";
 import {
   clearLinearQuickViewSelection,
   LinearIssueBrowser,
@@ -143,7 +143,8 @@ export function LinearQuickViewButton({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
   const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
-  const occludesNativeBrowser = open || batchModalOpen;
+  // The pane's own modal hides the native browser while it is open.
+  const occludesNativeBrowser = batchModalOpen && !open;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   // The machine each issue's batch went to, so "Retry failed" re-runs it there.
@@ -715,60 +716,36 @@ export function LinearQuickViewButton({
       {showTrigger ? trigger : null}
       {connectionPromptModal}
 
-      <Dialog
+      <LinearPaneModal
         open={open}
-        onOpenChange={(next) => {
-          if (!next) close();
-        }}
-        title="Linear quick view"
-        hideHeader
-        // Keeps clear of the window edges and the macOS window buttons.
-        width="min(1680px, calc(100vw - 112px))"
-        height="min(900px, calc(100dvh - 104px))"
-        maxHeight="calc(100dvh - 104px)"
-        bodyPadding={false}
-        scrollBody={false}
-        bodyStyle={{ display: "flex", flexDirection: "column" }}
-        // Nothing in the pane grabs focus on open; the panel holds it.
-        preventAutoFocus
-        panelStyle={{
-          background: "var(--ade-shell-surface, #121019)",
-          borderRadius: 12,
-          borderColor: "rgba(123, 138, 240, 0.55)",
-          boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
-        }}
+        ariaLabel="Linear quick view"
+        quickView={quickView}
+        loading={browserLoading}
+        onRefresh={() => setRefreshKey((key) => key + 1)}
+        onClose={close}
       >
-        <LinearPaneHeader
-          quickView={quickView}
-          loading={browserLoading}
-          onRefresh={() => setRefreshKey((key) => key + 1)}
-          onClose={close}
+        <LinearIssueBrowser
+          projectRoot={project?.rootPath}
+          actionLabel="Create lane"
+          actionBusyLabel="Creating lane"
+          refreshKey={refreshKey}
+          onIssueAction={async () => undefined}
+          onConnectionVisibilityChange={setVisible}
+          onOpenLinearSettings={openLinearSettings}
+          requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
+          requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
+          onQuickViewChange={(data) => {
+            cachedQuickViewRef.current = data;
+            setQuickView(data);
+          }}
+          onLoadingChange={setBrowserLoading}
+          batchActions={{
+            onBatchLaunch: handleBatchLaunchOpen,
+            conflicts,
+            batchProgress,
+          }}
         />
-
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <LinearIssueBrowser
-            projectRoot={project?.rootPath}
-            actionLabel="Create lane"
-            actionBusyLabel="Creating lane"
-            refreshKey={refreshKey}
-            onIssueAction={async () => undefined}
-            onConnectionVisibilityChange={setVisible}
-            onOpenLinearSettings={openLinearSettings}
-            requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
-            requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
-            onQuickViewChange={(data) => {
-              cachedQuickViewRef.current = data;
-              setQuickView(data);
-            }}
-            onLoadingChange={setBrowserLoading}
-            batchActions={{
-              onBatchLaunch: handleBatchLaunchOpen,
-              conflicts,
-              batchProgress,
-            }}
-          />
-        </div>
-      </Dialog>
+      </LinearPaneModal>
 
       <BatchLaunchModal
         onOpenHarnessSettings={onOpenHarnessSettings}

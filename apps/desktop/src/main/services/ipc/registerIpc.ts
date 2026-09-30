@@ -12740,13 +12740,7 @@ export function registerIpc({
     if (!ctx.linearIssueTracker) {
       return { projects: [], users: [], states: [], labels: [] };
     }
-    const [projects, users, states, labels] = await Promise.all([
-      ctx.linearIssueTracker.listProjects().catch(() => []),
-      ctx.linearIssueTracker.listUsers().catch(() => []),
-      ctx.linearIssueTracker.listWorkflowStates().catch(() => []),
-      ctx.linearIssueTracker.listLabels().catch(() => []),
-    ]);
-    return { projects, users, states, labels };
+    return await ctx.linearIssueTracker.getIssuePickerData();
   });
 
   ipcMain.handle(

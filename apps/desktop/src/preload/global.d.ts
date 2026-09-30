@@ -4228,6 +4228,8 @@ declare global {
         updateLinearIssue: (
           args: CtoUpdateLinearIssueArgs,
         ) => Promise<NormalizedLinearIssue | null>;
+        /** Moves the issue to its team's Canceled state unless it is already done or canceled. */
+        cancelLinearIssue: (issueId: string) => Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }>;
         countLinearIssues: (
           args: CtoCountLinearIssuesArgs,
         ) => Promise<CtoCountLinearIssuesResult>;
@@ -4235,7 +4237,7 @@ declare global {
         getLinearAgentOverview: () => Promise<LinearAgentOverview>;
         startLinearAgentInstall: () => Promise<LinearAgentInstallStart>;
         getLinearAgentInstallSession: (sessionId: string) => Promise<LinearAgentInstallSession>;
-        registerLinearAgentMember: () => Promise<LinearAgentOverview>;
+        registerLinearAgentMember: (args?: { replace?: boolean }) => Promise<LinearAgentOverview>;
         unregisterLinearAgentMember: () => Promise<LinearAgentOverview>;
         updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }) => Promise<LinearAgentOverview>;
         uninstallLinearAgent: () => Promise<LinearAgentOverview>;

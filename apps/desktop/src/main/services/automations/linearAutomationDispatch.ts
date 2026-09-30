@@ -105,18 +105,6 @@ function mapLinearActionToTriggerType(
 }
 
 /**
- * Translate a Linear relay event into the automation ingress dispatches it
- * implies. Returns an empty array for events without a resolvable issue.
- *
- * Label semantics (mirrors `githubPollingService` `github.issue_labeled`): when
- * a webhook reveals newly *added* labels (current `labelIds` minus
- * `updatedFrom.labelIds`), we emit a one-shot `linear.issue_labeled` whose
- * matchable `labels` are the added names only. To avoid a single label add
- * counting twice we suppress the generic `linear.issue_updated` fallthrough; an
- * assignment or status change that happened in the same payload still emits its
- * own event alongside the labeled one.
- */
-/**
  * Dispatches for Linear activity that is not an issue change: comments,
  * project and initiative updates, and new workspace members. Returns null when
  * the event is an issue event (handled below) or not one ADE triggers on.
@@ -195,6 +183,18 @@ function buildNonIssueDispatches(event: LinearIngressEventRecord): LinearAutomat
   return entity === "issue" || entity === "issuelabel" ? null : [];
 }
 
+/**
+ * Translate a Linear relay event into the automation ingress dispatches it
+ * implies. Returns an empty array for events without a resolvable issue.
+ *
+ * Label semantics (mirrors `githubPollingService` `github.issue_labeled`): when
+ * a webhook reveals newly *added* labels (current `labelIds` minus
+ * `updatedFrom.labelIds`), we emit a one-shot `linear.issue_labeled` whose
+ * matchable `labels` are the added names only. To avoid a single label add
+ * counting twice we suppress the generic `linear.issue_updated` fallthrough; an
+ * assignment or status change that happened in the same payload still emits its
+ * own event alongside the labeled one.
+ */
 export function buildLinearAutomationDispatches(event: LinearIngressEventRecord): LinearAutomationDispatch[] {
   const nonIssue = buildNonIssueDispatches(event);
   if (nonIssue) return nonIssue;

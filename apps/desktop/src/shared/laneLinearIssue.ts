@@ -4,6 +4,15 @@ import { resolveLinearIssueBranchName } from "./linearIssueBranch";
 
 const VALID_PRIORITY_LABELS = new Set<LinearPriorityLabel>(["urgent", "high", "normal", "low", "none"]);
 
+/** Linear's priority number (0–4) as ADE's label. */
+export function linearPriorityLabel(priority: number): LinearPriorityLabel {
+  if (priority === 1) return "urgent";
+  if (priority === 2) return "high";
+  if (priority === 3) return "normal";
+  if (priority === 4) return "low";
+  return "none";
+}
+
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>

@@ -1,5 +1,6 @@
 import type { Logger } from "../logging/logger";
 import type { LaneSummary, LinearInboxNotification } from "../../../shared/types";
+import { LINEAR_ATTENTION_TYPES, linearNotificationVerb } from "../../../shared/linearInbox";
 
 /**
  * Raises "needs you" on a lane's chat when the connected person gets a Linear
@@ -11,25 +12,6 @@ import type { LaneSummary, LinearInboxNotification } from "../../../shared/types
  */
 const WATERMARK_KEY = "linear.inbox.attentionWatermark.v1";
 const POLL_INTERVAL_MS = 2 * 60_000;
-// Types worth interrupting a lane for. Reactions and subscriptions are not.
-const ATTENTION_TYPES = new Set([
-  "issueMention",
-  "issueCommentMention",
-  "issueNewComment",
-  "issueAssignedToYou",
-  "issueStatusChanged",
-  "issuePriorityUrgent",
-]);
-
-const VERBS: Record<string, string> = {
-  issueMention: "mentioned you on",
-  issueCommentMention: "mentioned you in a comment on",
-  issueNewComment: "commented on",
-  issueAssignedToYou: "assigned you",
-  issueStatusChanged: "changed the status of",
-  issuePriorityUrgent: "marked urgent",
-};
-
 export function createLinearInboxAttentionService(deps: {
   logger: Logger;
   kv: { getJson<T>(key: string): T | null; setJson(key: string, value: unknown): void };
@@ -55,7 +37,7 @@ export function createLinearInboxAttentionService(deps: {
         deps.kv.setJson(WATERMARK_KEY, newest ?? new Date().toISOString());
         return;
       }
-      const fresh = notifications.filter((item) => item.createdAt > watermark && item.issueId && ATTENTION_TYPES.has(item.type));
+      const fresh = notifications.filter((item) => item.createdAt > watermark && item.issueId && LINEAR_ATTENTION_TYPES.has(item.type));
       if (fresh.length > 0) {
         const lanes = await deps.listLanes();
         const laneByIssue = new Map<string, string>();
@@ -70,7 +52,7 @@ export function createLinearInboxAttentionService(deps: {
           if (!laneId) continue;
           const sessionId = deps.latestSessionInLane(laneId);
           if (!sessionId) continue;
-          const verb = VERBS[item.type] ?? "updated";
+          const verb = linearNotificationVerb(item.type);
           const preview = item.commentBody ? `: “${item.commentBody.replace(/\s+/g, " ").slice(0, 160)}”` : "";
           deps.requestAttention(sessionId, `${item.actorName ?? "Someone"} ${verb} ${item.issueIdentifier ?? "the issue"} in Linear${preview}`);
         }

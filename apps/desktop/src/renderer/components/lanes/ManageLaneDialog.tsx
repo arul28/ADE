@@ -396,7 +396,8 @@ export function ManageLaneDialog({
   laneActionStatus: string | null;
   laneActionError: string | null;
   laneActionKind?: "delete" | "archive" | null;
-  onArchive: () => void;
+  /** Resolves true when every lane was archived. */
+  onArchive: () => Promise<boolean>;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
@@ -430,16 +431,14 @@ export function ManageLaneDialog({
   useEffect(() => {
     setCancelLinearIssue(false);
   }, [singleLaneId]);
+  // Runs only after the archive succeeded.
   const cancelLinkedIssueIfAsked = async (): Promise<void> => {
     if (!openLinearIssue || !cancelLinearIssue) return;
-    const cto = window.ade?.cto;
     try {
-      const catalog = await cto?.getLinearIssuePickerData?.();
-      const canceled = (catalog?.states ?? [])
-        .filter((state) => state.type === "canceled" && state.teamKey === openLinearIssue.teamKey)[0];
-      if (!canceled || !cto?.updateLinearIssue) throw new Error(`No Canceled state found for team ${openLinearIssue.teamKey}.`);
-      await cto.updateLinearIssue({ issueId: openLinearIssue.id, stateId: canceled.id });
-      showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
+      const cancel = window.ade?.cto?.cancelLinearIssue;
+      if (!cancel) throw new Error("Linear is not available in this window.");
+      const result = await cancel(openLinearIssue.id);
+      if (result.canceled) showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
     } catch (err) {
       showToast({
         tone: "warning",
@@ -553,6 +552,7 @@ export function ManageLaneDialog({
       await (runtimePin
         ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
         : window.ade.lanes.archiveAndReclaim(args));
+      void cancelLinkedIssueIfAsked();
       await onAppearanceChanged?.();
       onOpenChange(false);
     } catch (error) {
@@ -713,7 +713,9 @@ export function ManageLaneDialog({
                       variant="outline"
                       data-tour="lanes.manageDialog.archive"
                       disabled={laneActionBusy || reclaimBusy}
-                      onClick={() => { void cancelLinkedIssueIfAsked(); onArchive(); }}
+                      onClick={() => {
+                        void onArchive().then((archived) => (archived ? cancelLinkedIssueIfAsked() : undefined));
+                      }}
                     >
                       {isBatch ? `Archive ${lanes.length} lanes` : "Archive and keep files"}
                     </Button>
@@ -781,7 +783,7 @@ export function ManageLaneDialog({
                           || (reclaimRisk.dirty && !discardDirtyConfirmed)
                           || reclaimConfirm !== "RECLAIM"
                         }
-                        onClick={() => { void cancelLinkedIssueIfAsked(); void archiveAndReclaim(); }}
+                        onClick={() => { void archiveAndReclaim(); }}
                       >
                         {reclaimBusy ? <CircleNotch size={13} className="animate-spin" /> : <FolderDashed size={13} />}
                         {reclaimBusy

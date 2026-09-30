@@ -6181,13 +6181,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     if (!linearIssueTracker) {
       return { projects: [], users: [], states: [], labels: [] };
     }
-    const [projects, users, states, labels] = await Promise.all([
-      linearIssueTracker.listProjects().catch(() => []),
-      linearIssueTracker.listUsers().catch(() => []),
-      linearIssueTracker.listWorkflowStates().catch(() => []),
-      linearIssueTracker.listLabels().catch(() => []),
-    ]);
-    return { projects, users, states, labels };
+    return await linearIssueTracker.getIssuePickerData();
   });
   register("cto.searchLinearIssues", { viewerAllowed: true }, async (payload) => {
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);

@@ -3056,13 +3056,7 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       return { users, labels, states };
     },
     async getIssuePickerData() {
-      const [projects, users, states, labels] = await Promise.all([
-        tracker.listProjects().catch(() => []),
-        tracker.listUsers().catch(() => []),
-        tracker.listWorkflowStates().catch(() => []),
-        tracker.listLabels().catch(() => []),
-      ]);
-      return { projects, users, states, labels };
+      return await tracker.getIssuePickerData();
     },
   };
 }
@@ -3222,8 +3216,8 @@ function buildLinearAgentDomainService(runtime: AdeRuntime): OpaqueService | nul
       if (!oauth) throw new Error("Linear sign-in is unavailable in this runtime.");
       return oauth.getSession(readStringActionArg(args, "sessionId"));
     },
-    async registerMember() {
-      await agentRuntime.relay.registerMember();
+    async registerMember(args?: unknown) {
+      await agentRuntime.relay.registerMember({ replace: asActionRecord(args).replace === true });
       return agentRuntime.getOverview();
     },
     async unregisterMember() {

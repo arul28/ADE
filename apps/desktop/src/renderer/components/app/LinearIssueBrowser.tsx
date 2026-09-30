@@ -506,6 +506,12 @@ function useLinearIssueCounts(
   return state.key === requestKey ? state.counts : null;
 }
 
+/** The inbox reads at most 50 items, so 50 means "50 or more". */
+function formatInboxCount(unread: number | null): string | null {
+  if (!unread) return null;
+  return unread >= 50 ? "50+" : String(unread);
+}
+
 export function LinearIssueBrowser({
   projectRoot,
   featuredIssue,
@@ -1436,7 +1442,7 @@ export function LinearIssueBrowser({
                   active={scopeActive(SCOPE_INBOX)}
                   icon={<Tray size={14} />}
                   title="Inbox"
-                  count={inboxUnread ? (inboxUnread >= 50 ? "50+" : String(inboxUnread)) : null}
+                  count={formatInboxCount(inboxUnread)}
                   onClick={() => selectScope(SCOPE_INBOX)}
                 />
               ) : null}

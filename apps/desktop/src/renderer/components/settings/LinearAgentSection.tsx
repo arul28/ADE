@@ -1,82 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowSquareOut, CircleNotch, Robot, Warning } from "@phosphor-icons/react";
-import type { AiPermissionSettings, AutomationRuleDraft, LinearAgentOverview, ModelConfig } from "../../../shared/types";
+import { ArrowSquareOut, CircleNotch, Robot } from "@phosphor-icons/react";
+import type { AiPermissionSettings, LinearAgentOverview, ModelConfig } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../automations/permissionControls";
-import { defaultKickoffPrompt } from "../../lib/linearBatchLaunch";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { confirmDialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
+import { LINEAR_BRAND, LinearMark } from "../lanes/linearBrand";
+import { relativeTimeCompact } from "../../lib/format";
+import { buildLinearAgentRuleDraft } from "../automations/templates/templateData";
 
-const LINEAR_BRAND = "#5E6AD2";
 const INSTALL_POLL_MS = 1_500;
-
-const AGENT_RULE_PROMPT = [
-  defaultKickoffPrompt(),
-  "",
-  "You were started from Linear. Keep the person who asked informed: when you need a decision, ask it as a question (they answer in Linear); when you finish, end with a short summary of what changed and the PR link.",
-].join("\n");
 
 const LABEL: React.CSSProperties = { fontSize: 11, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textMuted };
 const HINT: React.CSSProperties = { fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" };
 const TEXT: React.CSSProperties = { fontSize: 12.5, fontFamily: SANS_FONT, color: COLORS.textSecondary };
 
-function relativeTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms)) return "—";
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+function ctoApi() {
+  const api = window.ade?.cto;
+  if (!api) throw new Error("ADE is still starting. Try again in a moment.");
+  return api;
 }
 
 function laneModeLabel(mode: string | null): string {
   if (mode === "create") return "New lane per issue";
   if (mode === "require-on-trigger") return "Lane from the trigger";
   return "Primary lane";
-}
-
-function buildAgentRuleDraft(args: {
-  name: string;
-  trigger: "linear.agent_delegated" | "linear.agent_mentioned";
-  laneMode: "create" | "reuse";
-  modelConfig: ModelConfig;
-  permissionConfig: AiPermissionSettings | undefined;
-}): AutomationRuleDraft {
-  const trigger = { type: args.trigger } as const;
-  return {
-    name: args.name,
-    description: args.trigger === "linear.agent_delegated"
-      ? "Runs when a Linear delegation to ADE reaches this ADE."
-      : "Answers when an @ADE mention in Linear reaches this ADE.",
-    enabled: true,
-    mode: args.trigger === "linear.agent_delegated" ? "fix" : "monitor",
-    triggers: [trigger],
-    trigger,
-    execution: { kind: "agent-session", laneMode: args.laneMode, session: {} },
-    executor: { mode: "automation-bot" },
-    modelConfig: args.modelConfig,
-    ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
-    prompt: args.trigger === "linear.agent_delegated"
-      ? AGENT_RULE_PROMPT
-      : "Answer the question in the mention. Read code as needed, but do not change files unless they ask you to.",
-    reviewProfile: "quick",
-    toolPalette: ["repo", "git"],
-    contextSources: [],
-    guardrails: {},
-    outputs: { disposition: "comment-only", createArtifact: true },
-    verification: { verifyBeforePublish: false, mode: "intervention" },
-    billingCode: "auto:linear-agent",
-    actions: [],
-    legacyActions: [],
-  } as AutomationRuleDraft;
 }
 
 function StatusDot({ on, label }: { on: boolean; label: string }) {
@@ -204,11 +158,11 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       ...(hasReasoning && effort ? { thinkingLevel: effort as ModelConfig["thinkingLevel"] } : {}),
     };
     await automations.saveDraft({
-      draft: buildAgentRuleDraft({ name: "Linear agent — delegations", trigger: "linear.agent_delegated", laneMode: "create", modelConfig, permissionConfig }),
+      draft: buildLinearAgentRuleDraft({ name: "Linear agent — delegations", trigger: "linear.agent_delegated", laneMode: "create", modelConfig, permissionConfig }),
     });
     if (answerMentions) {
       await automations.saveDraft({
-        draft: buildAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
+        draft: buildLinearAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
       });
     }
   }), [answerMentions, effectiveModelId, effort, hasReasoning, permissionConfig, run]);
@@ -221,7 +175,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       confirmLabel: "Remove",
       destructive: true,
     });
-    if (confirmed) await run("uninstall", () => window.ade.cto!.uninstallLinearAgent());
+    if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent());
   }, [overview?.status?.orgName, run]);
 
   if (!connected) return null;
@@ -235,7 +189,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
     <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-label="ADE agent">
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ display: "flex", gap: 10, minWidth: 0 }}>
-          <span style={{ marginTop: 1, color: LINEAR_BRAND }}><Robot size={16} weight="duotone" /></span>
+          <span style={{ marginTop: 1, color: LINEAR_BRAND.primary }}><Robot size={16} weight="duotone" /></span>
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 13.5, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>ADE agent</span>
@@ -268,14 +222,41 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       </div>
 
       {error ? (
-        <div role="alert" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger }}>
-          <Warning size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-          <span>{error}</span>
-        </div>
+        <Banner
+          layout="inline"
+          model={{ id: "linear-agent-error", tone: "error", icon: <LinearMark size={14} />, title: error }}
+        />
       ) : null}
 
       {overview && !overview.available ? (
-        <div style={HINT}>{overview.message ?? "The ADE agent service is not reachable."} Sign in to ADE in Settings → Account.</div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "linear-agent-unreachable",
+            tone: "warning",
+            icon: <LinearMark size={14} />,
+            title: "The ADE agent service is not reachable",
+            detail: `${overview.message ?? "No answer from the relay."} Sign in to ADE in Settings → Account.`,
+          }}
+        />
+      ) : null}
+
+      {status?.me.routedToOtherAccount ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "linear-agent-other-account",
+            tone: "warning",
+            icon: <LinearMark size={14} />,
+            title: "Your Linear delegations go to another ADE account",
+            detail: "Linear sends the issues you delegate to ADE to a different ADE sign-in. Route them here to run them on this account's machines.",
+            actions: [{
+              label: busy === "member" ? "Routing…" : "Route to this account",
+              variant: "secondary",
+              onClick: () => void run("member", () => ctoApi().registerLinearAgentMember({ replace: true })),
+            }],
+          }}
+        />
       ) : null}
 
       {status && !installed ? (
@@ -399,7 +380,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
               title={status.installedByMe ? undefined : "Only the person who installed the agent can change this."}
               onChange={(event) => {
                 const mode = event.target.value === "runner" ? "runner" : "reply";
-                void run("settings", () => window.ade.cto!.updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }));
+                void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }));
               }}
             >
               <option value="reply">Reply that they need ADE</option>
@@ -423,7 +404,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
               style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "6px 0", background: "none", border: "none", cursor: "pointer", ...TEXT, fontSize: 12 }}
             >
               <span style={{ color: COLORS.textPrimary }}>{session.issueIdentifier ?? "Issue"}</span>
-              <span style={{ color: COLORS.textDim }}>{relativeTime(session.startedAt)} · Open chat</span>
+              <span style={{ color: COLORS.textDim }}>{relativeTimeCompact(session.startedAt) || "—"} · Open chat</span>
             </button>
           ))}
         </div>

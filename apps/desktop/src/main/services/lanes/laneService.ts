@@ -57,6 +57,7 @@ import type {
   LaneBranchSwitchResult,
   LaneGitHubIssue,
   LaneLinearIssue,
+  LinearIssueSnapshotPatch,
   LaneLinearIssueLink,
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
@@ -1627,26 +1628,24 @@ export function createLaneService({
   const LINEAR_STATE_RANK: Record<string, number> = {
     triage: 0, backlog: 1, unstarted: 2, started: 3, completed: 4, canceled: 4,
   };
+  const REMOTE_CHANGE_KIND_BY_STATE_TYPE: Record<string, "completed" | "canceled"> = {
+    completed: "completed",
+    canceled: "canceled",
+  };
 
   /**
    * Applies a change made in Linear to every lane (and lane link) that holds a
    * copy of the issue. Returns the lane ids it touched.
    */
-  const refreshLinearIssueSnapshots = (patch: {
-    id: string;
-    title?: string | null;
-    stateId?: string | null;
-    stateName?: string | null;
-    stateType?: string | null;
-    assigneeId?: string | null;
-    assigneeName?: string | null;
-    priority?: number | null;
-    priorityLabel?: LaneLinearIssue["priorityLabel"] | null;
-    updatedAt?: string | null;
-    actorName?: string | null;
-  }): string[] => {
+  /** True when any lane in this project is linked to a Linear issue. */
+  const hasLinearLinkedLanes = (): boolean =>
+    Boolean(db.get<{ one: number }>("select 1 as one from lane_linear_issues where project_id = ? limit 1", [projectId]));
+
+  const refreshLinearIssueSnapshots = (patch: LinearIssueSnapshotPatch): string[] => {
     const touched = new Set<string>();
     const merge = (current: LaneLinearIssue): LaneLinearIssue | null => {
+      // A late or replayed webhook must not roll the snapshot back.
+      if (patch.updatedAt && current.updatedAt && patch.updatedAt < current.updatedAt) return null;
       const next: LaneLinearIssue = { ...current };
       let changed = false;
       const set = <K extends keyof LaneLinearIssue>(key: K, value: LaneLinearIssue[K] | null | undefined) => {
@@ -1671,10 +1670,9 @@ export function createLaneService({
       if (stateChanged && patch.stateType) {
         const before = LINEAR_STATE_RANK[current.stateType] ?? 0;
         const after = LINEAR_STATE_RANK[patch.stateType] ?? 0;
+        const kind = REMOTE_CHANGE_KIND_BY_STATE_TYPE[patch.stateType] ?? (after < before ? "moved_back" : "state");
         next.remoteChange = {
-          kind: patch.stateType === "completed" ? "completed"
-            : patch.stateType === "canceled" ? "canceled"
-              : after < before ? "moved_back" : "state",
+          kind,
           at,
           from: current.stateName,
           to: patch.stateName ?? patch.stateType,
@@ -4810,6 +4808,7 @@ export function createLaneService({
     },
 
     refreshLinearIssueSnapshots,
+    hasLinearLinkedLanes,
 
     async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {
       const row = getLaneRow(laneId);

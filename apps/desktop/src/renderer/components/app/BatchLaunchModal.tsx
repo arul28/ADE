@@ -169,6 +169,11 @@ export type BatchLaunchMachine = {
   pin: OpenProjectBinding | null;
 };
 
+function launchButtonLabel(laneOnly: boolean, count: number): string {
+  if (laneOnly) return count === 1 ? "Create lane" : `Create ${count} lanes`;
+  return count === 1 ? "Launch agent" : `Launch ${count} agents`;
+}
+
 export function BatchLaunchModal({
   open,
   projectRoot,
@@ -745,13 +750,7 @@ export function BatchLaunchModal({
         </Button>
         <Button type="button" variant="primary" casing="sentence" disabled={launchCount === 0 || !selectedMachineId} onClick={handleLaunch}>
           {laneOnly ? <Plus size={13} weight="fill" /> : <Rocket size={13} weight="fill" />}
-          {laneOnly
-            ? launchCount === 1
-              ? "Create lane"
-              : `Create ${launchCount} lanes`
-            : launchCount === 1
-              ? "Launch agent"
-              : `Launch ${launchCount} agents`}
+          {launchButtonLabel(laneOnly, launchCount)}
         </Button>
       </div>
     </LaneDialogShell>

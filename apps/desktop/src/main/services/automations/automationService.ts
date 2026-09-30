@@ -4621,6 +4621,9 @@ export function createAutomationService({
       const matches = rule.triggers.map((candidate) => triggerMatches(candidate, trigger, ingressLaneBranch, ingressLaneName));
       if (matches.some(Boolean)) matched.push(rule);
     }
+    // One Linear agent session drives one chat: the first matching rule (in
+    // rule order) answers it, and the others do not start a second run.
+    if (args.linearAgent && matched.length > 1) matched.splice(1);
     if (!matched.length) {
       updateIngressEvent(eventId, {
         automation_ids_json: JSON.stringify([]),

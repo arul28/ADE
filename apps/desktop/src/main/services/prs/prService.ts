@@ -1860,7 +1860,8 @@ export function createPrService({
     }
 
     if (linearPrPublishedHandler) {
-      await linearPrPublishedHandler({
+      // Proof uploads can take a while; PR creation does not wait for them.
+      void linearPrPublishedHandler({
         lane: args.lane,
         issueIds: refs.map((reference) => reference.issue.id),
         issueIdentifiers: refs.map((reference) => reference.issue.identifier),

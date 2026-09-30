@@ -2,6 +2,7 @@ import type { Logger } from "../logging/logger";
 import type {
   AgentChatEventEnvelope,
   AgentChatApprovalDecision,
+  AgentChatProvider,
   LaneLinearIssue,
   LinearAgentOverview,
   NormalizedLinearIssue,
@@ -44,6 +45,8 @@ type AgentSessionRecord = {
   runId: string | null;
   issueId: string | null;
   issueIdentifier: string | null;
+  /** The Linear user who started the session; only they may direct it. */
+  creatorId?: string | null;
   startedAt: string;
   /** The open question that a Linear reply should answer, if any. */
   pendingInput: { itemId: string; kind: "approval" | "question"; questionId: string | null; options: Array<{ label: string; value: string }> } | null;
@@ -78,11 +81,11 @@ export type LinearAgentServiceDeps = {
     sendMessage: (args: { sessionId: string; text: string; displayText?: string }) => Promise<unknown>;
     interrupt: (args: { sessionId: string }) => Promise<unknown>;
     respondToInput: (args: { sessionId: string; itemId: string; decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null }) => Promise<void>;
-    getAvailableModels: (args: { provider: string; activateRuntime?: boolean }) => Promise<Array<{ id: string; modelId?: string | null }>>;
+    getAvailableModels: (args: { provider: AgentChatProvider; activateRuntime?: boolean }) => Promise<Array<{ id: string; modelId?: string | null }>>;
   };
   lanes: {
     /** Creates a lane for the issue (issue linked, Linear's branch name). */
-    createLaneForIssue: (issue: LaneLinearIssue, args: { runId: string }) => Promise<string>;
+    createLaneForIssue: (issue: LaneLinearIssue) => Promise<string>;
     /** Attaches the issue to the chat so the agent gets its context file and ids. */
     attachIssueToSession: (args: { chatSessionId: string; issue: LaneLinearIssue }) => Promise<void>;
     getLaneName: (laneId: string) => Promise<string | null>;
@@ -94,6 +97,12 @@ const SESSIONS_KV_KEY = "linear.agent.sessions.v1";
 const MAX_REMEMBERED_SESSIONS = 200;
 /** A machine with no matching rule waits this long before it answers "no rule" itself. */
 const NO_RULE_CLAIM_DELAY_MS = 20_000;
+/**
+ * A brain that reads the relay's backlog for the first time (a new machine, a
+ * project that just connected Linear) sees old `created` events. Only recent
+ * ones start work; the relay lets anyone take a claim that has gone stale.
+ */
+const MAX_CREATED_EVENT_AGE_MS = 10 * 60_000;
 const THOUGHT_MIN_INTERVAL_MS = 8_000;
 const ACTION_MIN_INTERVAL_MS = 2_500;
 const MAX_THOUGHT_CHARS = 700;
@@ -163,7 +172,9 @@ function readAgentSession(payload: Record<string, unknown>) {
     teamKey: team ? asString(team.key) : null,
     projectName: project ? asString(project.name) : null,
     labels: labelNodes.map((entry: unknown) => (isRecord(entry) ? asString(entry.name) : null)).filter((entry: string | null): entry is string => Boolean(entry)),
+    creatorId: (session ? asString(session.creatorId) : null) ?? (creator ? asString(creator.id) : null),
     creatorName: creator ? (asString(creator.displayName) ?? asString(creator.name)) : null,
+    createdAt: (session ? asString(session.createdAt) : null) ?? asString(payload.createdAt),
     mentioned,
     commentBody: mentioned ? ((sourceComment ? asString(sourceComment.body) : null) ?? commentText) : null,
     promptContext: asString(payload.promptContext),
@@ -177,6 +188,9 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
   const lastClaimAt = new Map<string, number>();
   /** Sessions stopped from Linear: their "Stopped" response is already posted. */
   const stoppedFromLinear = new Set<string>();
+  /** "No rule" waits, cancelled on dispose. */
+  const noRuleTimers = new Set<NodeJS.Timeout>();
+  const cancelNoRuleWait = new WeakMap<NodeJS.Timeout, () => void>();
   const turnState = new Map<string, {
     text: string;
     lastThoughtAt: number;
@@ -194,6 +208,17 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     const all = [...sessions.values()]
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, MAX_REMEMBERED_SESSIONS);
+    if (all.length < sessions.size) {
+      const kept = new Set(all.map((entry) => entry.agentSessionId));
+      for (const id of [...sessions.keys()]) {
+        if (kept.has(id)) continue;
+        const chatId = sessions.get(id)?.chatSessionId;
+        if (chatId) byChat.delete(chatId);
+        sessions.delete(id);
+        lastClaimAt.delete(id);
+        stoppedFromLinear.delete(id);
+      }
+    }
     deps.kv.setJson(SESSIONS_KV_KEY, all);
   };
   for (const entry of deps.kv.getJson<AgentSessionRecord[]>(SESSIONS_KV_KEY) ?? []) {
@@ -218,6 +243,11 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     const info = readAgentSession(payload);
     if (!info.id) return;
     if (sessions.has(info.id)) return;
+    const createdAtMs = Date.parse(info.createdAt ?? record.createdAt);
+    if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs > MAX_CREATED_EVENT_AGE_MS) {
+      logger.info("linear_agent.skip_old_session", { agentSessionId: info.id, createdAt: info.createdAt ?? record.createdAt });
+      return;
+    }
     const triggerType: AutomationTriggerType = info.mentioned ? "linear.agent_mentioned" : "linear.agent_delegated";
     // The webhook's issue has no project or labels; read them so the rule's
     // project and label filters can match.
@@ -238,7 +268,16 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
     if (!hasRule) {
       // Let a machine that has a rule claim first. If nobody has claimed it by
       // then, this machine claims it only to explain why nothing started.
-      await new Promise((resolve) => setTimeout(resolve, NO_RULE_CLAIM_DELAY_MS));
+      const waited = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          noRuleTimers.delete(timer);
+          resolve(true);
+        }, NO_RULE_CLAIM_DELAY_MS);
+        timer.unref?.();
+        noRuleTimers.add(timer);
+        cancelNoRuleWait.set(timer, () => resolve(false));
+      });
+      if (!waited) return;
     }
     let claimed = false;
     try {
@@ -269,6 +308,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       runId: null,
       issueId: info.issueId,
       issueIdentifier: info.issueIdentifier,
+      creatorId: info.creatorId,
       startedAt: new Date().toISOString(),
       pendingInput: null,
     });
@@ -317,10 +357,21 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       await deps.chat.interrupt({ sessionId: chatSessionId }).catch((error) => {
         logger.warn("linear_agent.stop_failed", { agentSessionId: info.id, error: getErrorMessage(error) });
       });
-      post(info.id, { type: "response", body: `Stopped${info.creatorName ? ` by ${info.creatorName}` : ""}. The lane and chat are still in ADE if you want to pick it up again.` });
+      post(info.id, { type: "response", body: "Stopped. The lane and chat are still in ADE if you want to pick it up again." });
       return;
     }
     if (!body.trim()) return;
+    // The chat runs on the delegator's machine with their permissions, so only
+    // the delegator may answer its questions or direct it. Anyone may stop it.
+    const authorId = activity ? (asString(activity.userId) ?? (isRecord(activity.user) ? asString(activity.user.id) : null)) : null;
+    const creatorId = info.creatorId ?? record.creatorId ?? null;
+    if (!creatorId || authorId !== creatorId) {
+      post(info.id, {
+        type: "thought",
+        body: `Only ${info.creatorName ?? "the person who started this session"} can direct this session, so ADE ignored that reply.`,
+      });
+      return;
+    }
 
     const pending = record.pendingInput;
     if (pending) {
@@ -328,7 +379,8 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       const matched = pending.options.find((option) => option.label.toLowerCase() === answer.toLowerCase() || option.value.toLowerCase() === answer.toLowerCase());
       try {
         if (pending.kind === "approval") {
-          const decision: AgentChatApprovalDecision = /^(no|deny|decline|reject|stop|cancel)/i.test(matched?.value ?? answer) ? "decline" : "accept";
+          // Anything that is not a clear yes declines.
+          const decision: AgentChatApprovalDecision = /^(accept|allow|approve|yes|ok)\b/i.test(matched?.value ?? answer) ? "accept" : "decline";
           await deps.chat.respondToInput({ sessionId: chatSessionId, itemId: pending.itemId, decision });
         } else {
           await deps.chat.respondToInput({
@@ -380,13 +432,13 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
       }
     },
 
-    async resolveLane({ rule, trigger, runId }) {
+    async resolveLane({ rule, trigger }) {
       if ((rule.execution?.laneMode ?? "reuse") !== "create") return null;
       const issueId = trigger.linear?.issue.id;
       if (!issueId) return null;
       const issue = await deps.fetchIssue(issueId).catch(() => null);
       if (!issue) return null;
-      return await deps.lanes.createLaneForIssue(normalizedLinearIssueToLaneIssue(issue), { runId });
+      return await deps.lanes.createLaneForIssue(normalizedLinearIssueToLaneIssue(issue));
     },
 
     async onSessionCreated({ trigger, runId, sessionId, laneId }) {
@@ -400,6 +452,7 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         runId,
         issueId: existing?.issueId ?? trigger.linear?.issue.id ?? null,
         issueIdentifier: existing?.issueIdentifier ?? null,
+        creatorId: existing?.creatorId ?? null,
         startedAt: existing?.startedAt ?? new Date().toISOString(),
         pendingInput: null,
       });
@@ -590,7 +643,6 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
   return {
     handleEvent,
     onChatEvent,
-    hooks,
     async getOverview(): Promise<LinearAgentOverview> {
       const rules = deps.automation.listAgentRules();
       const activeSessions = [...sessions.values()]
@@ -611,14 +663,15 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
         return { available: false, message: getErrorMessage(error), status: null, rules, activeSessions };
       }
     },
-    /** For tests and the settings pane: is this chat driven by a Linear agent session? */
-    agentSessionForChat(chatSessionId: string): string | null {
-      return byChat.get(chatSessionId) ?? null;
-    },
     dispose(): void {
       deps.automation.setLinearAgentHooks(null);
       for (const state of turnState.values()) if (state.thoughtTimer) clearTimeout(state.thoughtTimer);
       turnState.clear();
+      for (const timer of noRuleTimers) {
+        clearTimeout(timer);
+        cancelNoRuleWait.get(timer)?.();
+      }
+      noRuleTimers.clear();
     },
   };
 }

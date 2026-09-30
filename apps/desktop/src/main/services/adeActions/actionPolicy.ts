@@ -843,6 +843,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   linear_issue_tracker: [
     "addIssueLabel",
     "addLabel",
+    "cancelIssue",
     "countIssues",
     "createComment",
     "createFollowUpIssue",

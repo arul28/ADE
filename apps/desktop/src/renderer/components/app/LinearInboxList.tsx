@@ -1,46 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Archive, ChatCircle, CircleNotch, Tray } from "@phosphor-icons/react";
 import type { LinearInboxNotification, LinearIssueRef } from "../../../shared/types";
-import { LinearStateIcon } from "../lanes/linearBrand";
+import { LinearMark, LinearStateIcon } from "../lanes/linearBrand";
+import { linearNotificationVerb } from "../../../shared/linearInbox";
+import { relativeTimeCompact } from "../../lib/format";
+import { LinearAssigneeAvatar } from "./LinearIssueBrowserRows";
 import { cn } from "../ui/cn";
 import { showToast } from "./toast/toastStore";
-
-const VERBS: Record<string, string> = {
-  issueMention: "mentioned you on",
-  issueCommentMention: "mentioned you in a comment on",
-  issueNewComment: "commented on",
-  issueCommentReaction: "reacted to your comment on",
-  issueAssignedToYou: "assigned you",
-  issueUnassignedFromYou: "unassigned you from",
-  issueStatusChanged: "changed the status of",
-  issueCreated: "created",
-  issueDue: "is due:",
-  issueBlocking: "is blocked by your issue:",
-  issueUnblocked: "unblocked",
-  issueEmojiReaction: "reacted on",
-  issuePriorityUrgent: "marked urgent",
-  issueSubscribed: "subscribed you to",
-};
-
-function verbFor(type: string): string {
-  if (VERBS[type]) return VERBS[type]!;
-  return type.replace(/^issue/, "").replace(/([A-Z])/g, " $1").trim().toLowerCase() || "updated";
-}
-
-function timeAgo(iso: string): string {
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms)) return "";
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-function initials(name: string | null): string {
-  return (name ?? "?").split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase();
-}
 
 /**
  * The connected person's Linear inbox inside the Linear pane. Opening an item
@@ -92,7 +58,12 @@ export function LinearInboxList({
       if (!includeRead) onUnreadCountChange?.(Math.max(0, (previous?.length ?? 1) - 1));
     } catch (err) {
       setItems(previous);
-      showToast({ tone: "error", title: "Linear inbox", message: err instanceof Error ? err.message : "That did not work." });
+      showToast({
+        tone: "error",
+        icon: <LinearMark size={14} />,
+        title: action === "archive" ? "Couldn't archive the notification" : "Couldn't mark the notification read",
+        message: err instanceof Error ? err.message : "Linear did not accept the change.",
+      });
     }
   }, [includeRead, items, onUnreadCountChange]);
 
@@ -154,13 +125,9 @@ export function LinearInboxList({
                   !item.readAt && "bg-[color:var(--color-accent,#A78BFA)]/[0.03]",
                 )}
               >
-                {item.actorAvatarUrl ? (
-                  <img src={item.actorAvatarUrl} alt="" className="mt-0.5 h-6 w-6 shrink-0 rounded-full object-cover" />
-                ) : (
-                  <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/[0.08] text-[9.5px] font-medium text-fg/70">
-                    {item.actorInitials ?? initials(item.actorName)}
-                  </span>
-                )}
+                <span className="mt-0.5 shrink-0">
+                  <LinearAssigneeAvatar name={item.actorName ?? "Linear"} avatarUrl={item.actorAvatarUrl} size={24} />
+                </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5 text-[12px] text-fg/85">
                     {!item.readAt ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-accent,#A78BFA)]" aria-label="Unread" /> : null}
@@ -170,12 +137,12 @@ export function LinearInboxList({
                       ) : (
                         <>
                           <span className="font-medium text-fg/95">{item.actorName ?? "Linear"}</span>{" "}
-                          <span className="text-muted-fg/70">{verbFor(item.type)}</span>{" "}
+                          <span className="text-muted-fg/70">{linearNotificationVerb(item.type)}</span>{" "}
                           {item.issueIdentifier ? <span className="font-mono text-[11px] text-muted-fg/80">{item.issueIdentifier}</span> : null}
                         </>
                       )}
                     </span>
-                    <span className="ml-auto shrink-0 text-[10.5px] tabular-nums text-muted-fg/45">{timeAgo(item.createdAt)}</span>
+                    <span className="ml-auto shrink-0 text-[10.5px] tabular-nums text-muted-fg/45">{relativeTimeCompact(item.createdAt)}</span>
                   </span>
                   {item.issueTitle || item.title ? (
                     <span className="mt-0.5 flex items-center gap-1.5 text-[12px] text-fg/70">

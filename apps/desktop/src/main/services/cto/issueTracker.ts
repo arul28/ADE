@@ -1,5 +1,6 @@
 import type {
   CtoCountLinearIssuesResult,
+  CtoGetLinearIssuePickerDataResult,
   CtoLinearCustomView,
   CtoLinearProject,
   CtoLinearQuickView,
@@ -147,6 +148,13 @@ export type IssueTracker = {
    * `allowDuplicate`), then creates it and links it to the source issue.
    */
   createFollowUpIssue(args: IssueTrackerFollowUpInput): Promise<IssueTrackerFollowUpResult>;
+  /** Projects, users, workflow states and labels for issue pickers; each list is empty when its read fails. */
+  getIssuePickerData(): Promise<CtoGetLinearIssuePickerDataResult>;
+  /**
+   * Moves the issue to its team's Canceled state. Reads the live issue first,
+   * so an issue that is already completed or canceled is left as it is.
+   */
+  cancelIssue(issueId: string): Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }>;
   listNotifications(args?: { first?: number; includeRead?: boolean }): Promise<LinearInboxNotification[]>;
   markNotification(args: { notificationId: string; action: "read" | "archive" }): Promise<void>;
   createProjectUpdate(args: { projectId: string; body: string; health?: "onTrack" | "atRisk" | "offTrack" | null }): Promise<{ id: string; url: string | null }>;

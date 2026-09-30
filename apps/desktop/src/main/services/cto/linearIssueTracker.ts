@@ -1,6 +1,7 @@
 import type { IssueTracker } from "./issueTracker";
 import type { LinearClient } from "./linearClient";
 import { getErrorMessage } from "../shared/utils";
+import { OPEN_ISSUE_STATE_TYPES } from "./linearClientShared";
 
 // Titles this close (word overlap) to an open issue in the same team count as a
 // duplicate follow-up.
@@ -140,26 +141,10 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       if (!input.allowDuplicate) {
         // Two reads: full-text search ranks similar titles, and a direct title
         // filter sees issues filed seconds ago (the search index lags).
-        const openStates = ["triage", "backlog", "unstarted", "started"];
-        type RecentIssues = { issues?: { nodes?: Array<{ id: string; identifier: string; title: string; url: string | null; state?: { name?: string } }> } };
-        const [ranked, recent] = await Promise.all([
-          args.client.searchIssues({ query: input.title, teamKey: input.teamKey, stateTypes: openStates, first: 10 }).catch(() => null),
-          (args.client.runGraphQL({
-            query: `query RecentSimilarIssues($title: String!, $team: String!, $states: [String!]) {
-              issues(first: 10, filter: { title: { containsIgnoreCase: $title }, team: { key: { eqIgnoreCase: $team } }, state: { type: { in: $states } } }) {
-                nodes { id identifier title url state { name } }
-              }
-            }`,
-            variables: { title: input.title.trim().slice(0, 80), team: input.teamKey, states: openStates },
-          }) as Promise<RecentIssues>).catch(() => null),
+        const [ranked, direct] = await Promise.all([
+          args.client.searchIssues({ query: input.title, teamKey: input.teamKey, stateTypes: OPEN_ISSUE_STATE_TYPES, first: 10 }).catch(() => null),
+          args.client.findOpenIssuesByTitle(input.title, input.teamKey).catch(() => []),
         ]);
-        const direct = (recent?.issues?.nodes ?? []).map((node) => ({
-          id: node.id,
-          identifier: node.identifier,
-          title: node.title,
-          url: node.url,
-          stateName: node.state?.name ?? "",
-        }));
         const duplicate = [...direct, ...(ranked?.issues ?? [])]
           .find((issue) => titleSimilarity(issue.title, input.title) >= FOLLOW_UP_DUPLICATE_THRESHOLD);
         if (duplicate) {
@@ -194,6 +179,27 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
         await args.client.createIssueRelation({ issueId: issue.id, relatedIssueId: sourceIssueId, type: relation });
       }
       return { created: true, issue, relation };
+    },
+
+    async getIssuePickerData() {
+      const [projects, users, states, labels] = await Promise.all([
+        args.client.listProjects().catch(() => []),
+        args.client.listUsers().catch(() => []),
+        args.client.listWorkflowStates().catch(() => []),
+        args.client.listLabels().catch(() => []),
+      ]);
+      return { projects, users, states, labels };
+    },
+
+    async cancelIssue(issueId) {
+      const issue = await args.client.fetchIssueById(issueId);
+      if (!issue) throw new Error(`Linear issue ${issueId} was not found.`);
+      if (issue.stateType === "completed" || issue.stateType === "canceled") return { canceled: false, issue };
+      const states = await args.client.listWorkflowStates(issue.teamKey);
+      const canceled = states.find((state) => state.type === "canceled" && state.teamKey === issue.teamKey);
+      if (!canceled) throw new Error(`Team ${issue.teamKey} has no Canceled state.`);
+      await args.client.updateIssueState(issue.id, canceled.id);
+      return { canceled: true, issue: await args.client.fetchIssueById(issue.id) };
     },
 
     listNotifications(params) {

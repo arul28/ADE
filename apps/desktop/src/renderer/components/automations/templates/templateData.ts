@@ -4,7 +4,8 @@
  * the gallery; the flagship subset is featured in the empty state.
  */
 
-import type { AutomationRuleDraft } from "../../../../shared/types";
+import type { AiPermissionSettings, AutomationRuleDraft, ModelConfig } from "../../../../shared/types";
+import { defaultKickoffPrompt } from "../../../lib/linearBatchLaunch";
 
 export type AutomationTemplate = {
   id: string;
@@ -446,3 +447,46 @@ export const TEMPLATE_GROUPS: Array<{ title: string; templates: AutomationTempla
 ).filter((group) => group.templates.length > 0);
 
 export const FLAGSHIP_TEMPLATES: AutomationTemplate[] = TEMPLATES.filter((t) => t.isFlagship);
+
+const LINEAR_AGENT_RULE_PROMPT = [
+  defaultKickoffPrompt(),
+  "",
+  "You were started from Linear. Keep the person who asked informed: when you need a decision, ask it as a question (they answer in Linear); when you finish, end with a short summary of what changed and the PR link.",
+].join("\n");
+
+/** The rule Settings → Linear → ADE agent creates for delegations or mentions. */
+export function buildLinearAgentRuleDraft(args: {
+  name: string;
+  trigger: "linear.agent_delegated" | "linear.agent_mentioned";
+  laneMode: "create" | "reuse";
+  modelConfig: ModelConfig;
+  permissionConfig: AiPermissionSettings | undefined;
+}): AutomationRuleDraft {
+  const trigger = { type: args.trigger } as const;
+  return {
+    name: args.name,
+    description: args.trigger === "linear.agent_delegated"
+      ? "Runs when a Linear delegation to ADE reaches this ADE."
+      : "Answers when an @ADE mention in Linear reaches this ADE.",
+    enabled: true,
+    mode: args.trigger === "linear.agent_delegated" ? "fix" : "monitor",
+    triggers: [trigger],
+    trigger,
+    execution: { kind: "agent-session", laneMode: args.laneMode, session: {} },
+    executor: { mode: "automation-bot" },
+    modelConfig: args.modelConfig,
+    ...(args.permissionConfig ? { permissionConfig: args.permissionConfig } : {}),
+    prompt: args.trigger === "linear.agent_delegated"
+      ? LINEAR_AGENT_RULE_PROMPT
+      : "Answer the question in the mention. Read code as needed, but do not change files unless they ask you to.",
+    reviewProfile: "quick",
+    toolPalette: ["repo", "git"],
+    contextSources: [],
+    guardrails: {},
+    outputs: { disposition: "comment-only", createArtifact: true },
+    verification: { verifyBeforePublish: false, mode: "intervention" },
+    billingCode: "auto:linear-agent",
+    actions: [],
+    legacyActions: [],
+  };
+}

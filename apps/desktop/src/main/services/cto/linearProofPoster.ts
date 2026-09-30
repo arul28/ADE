@@ -19,10 +19,16 @@ function isPostable(artifact: ComputerUseArtifactView): boolean {
   return mime.startsWith("image/") || mime === "video/mp4";
 }
 
+function escapeMarkdownLabel(text: string): string {
+  return text.replace(/[\\[\]()*_`<>]/g, (char) => `\\${char}`).replace(/\s+/g, " ").trim();
+}
+
 export function createLinearProofPoster(deps: {
   logger: Logger;
   kv: { getJson<T>(key: string): T | null; setJson(key: string, value: unknown): void };
   listLaneProof: (laneId: string) => ComputerUseArtifactView[];
+  /** The artifact's file, confined to the project's artifacts directory (null when it is not a local file). */
+  resolveFilePath: (artifact: ComputerUseArtifactView) => string | null;
   uploadAttachment: (args: { issueId: string; filePath: string; title?: string }) => Promise<{ url: string; id?: string }>;
   createComment: (issueId: string, body: string) => Promise<unknown>;
 }) {
@@ -36,14 +42,14 @@ export function createLinearProofPoster(deps: {
       const posted = new Set(deps.kv.getJson<string[]>(key) ?? []);
       const fresh = proof.filter((artifact) => !posted.has(artifact.id)).slice(0, MAX_PER_PR);
       if (fresh.length === 0) continue;
-      const uploaded: Array<{ title: string; url: string; video: boolean }> = [];
+      const uploaded: Array<{ id: string; title: string; url: string; video: boolean }> = [];
       for (const artifact of fresh) {
         try {
-          const size = fs.statSync(artifact.uri).size;
-          if (size > MAX_BYTES) continue;
-          const result = await deps.uploadAttachment({ issueId, filePath: artifact.uri, title: artifact.title });
-          uploaded.push({ title: artifact.title, url: result.url, video: artifact.mimeType === "video/mp4" });
-          posted.add(artifact.id);
+          const filePath = deps.resolveFilePath(artifact);
+          if (!filePath) continue;
+          if (fs.statSync(filePath).size > MAX_BYTES) continue;
+          const result = await deps.uploadAttachment({ issueId, filePath, title: artifact.title });
+          uploaded.push({ id: artifact.id, title: artifact.title, url: result.url, video: artifact.mimeType === "video/mp4" });
         } catch (error) {
           deps.logger.warn("linear_proof.upload_failed", {
             issueId,
@@ -52,16 +58,24 @@ export function createLinearProofPoster(deps: {
           });
         }
       }
-      deps.kv.setJson(key, [...posted].slice(-200));
       if (uploaded.length === 0) continue;
       const lines = [
-        `**Proof from ADE** · [PR #${args.prNumber}](${args.githubUrl}) · lane ${args.laneName}`,
+        `**Proof from ADE** · [PR #${args.prNumber}](${args.githubUrl}) · lane ${escapeMarkdownLabel(args.laneName)}`,
         "",
-        ...uploaded.map((item) => (item.video ? `- 🎬 [${item.title}](${item.url})` : `- ![${item.title}](${item.url})`)),
+        ...uploaded.map((item) => {
+          const label = escapeMarkdownLabel(item.title);
+          return item.video ? `- 🎬 [${label}](${item.url})` : `- ![${label}](${item.url})`;
+        }),
       ];
-      await deps.createComment(issueId, lines.join("\n")).catch((error) => {
+      try {
+        await deps.createComment(issueId, lines.join("\n"));
+      } catch (error) {
+        // Not marked posted, so the next PR event tries again.
         deps.logger.warn("linear_proof.comment_failed", { issueId, error: error instanceof Error ? error.message : String(error) });
-      });
+        continue;
+      }
+      for (const item of uploaded) posted.add(item.id);
+      deps.kv.setJson(key, [...posted].slice(-200));
     }
   };
 }

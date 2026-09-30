@@ -330,7 +330,12 @@ export type LinearAgentStatus = {
   fallbackMode: "reply" | "runner";
   runnerIsMe: boolean;
   runnerConfigured: boolean;
-  me: { linearUserId: string | null; registered: boolean };
+  me: {
+    linearUserId: string | null;
+    registered: boolean;
+    /** This Linear user's delegations go to a different ADE account. */
+    routedToOtherAccount?: boolean;
+  };
   members: Array<{
     linearUserId: string;
     displayName: string | null;

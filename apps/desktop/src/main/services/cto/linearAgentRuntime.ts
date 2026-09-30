@@ -6,7 +6,7 @@ import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { resolveLinearRelayBaseUrl, type LinearRelayKvStore } from "../automations/linearRelayConfig";
 import { normalizeTriggerType, type createAutomationService } from "../automations/automationService";
 import { createLinearAgentRelayClient, type LinearAgentRelayClient } from "./linearAgentRelayClient";
-import { createLinearAgentService, type LinearAgentService, type LinearAgentServiceDeps } from "./linearAgentService";
+import { createLinearAgentService, type LinearAgentServiceDeps } from "./linearAgentService";
 
 type AutomationService = ReturnType<typeof createAutomationService>;
 
@@ -21,18 +21,18 @@ export function createLinearAgentRuntime(args: {
   getLinearAccessToken: () => Promise<string | null>;
   getAccountAccessToken: () => Promise<string | null>;
   getAccountId: () => string | null;
+  /** The machine's sync device id; the claim id adds the project so two projects on one machine never both claim. */
   getMachineId: () => string | null;
+  projectId: string;
   chat: LinearAgentServiceDeps["chat"];
   laneService: {
     create(args: { name: string; linearIssue?: LaneLinearIssue | null; branchName?: string }): Promise<{ id: string; name: string }>;
     attachLinearIssueToSession(args: { chatSessionId: string; issues: LaneLinearIssue[]; source?: "chat_attach" }): unknown;
-    list?: (args?: { includeArchived?: boolean }) => Promise<Array<{ id: string; name: string }>>;
-    getLaneName?: (laneId: string) => string | null;
+    list: (args?: { includeArchived?: boolean }) => Promise<Array<{ id: string; name: string }>>;
   };
   fetchIssue: (issueId: string) => Promise<NormalizedLinearIssue | null>;
 }): {
   relay: LinearAgentRelayClient;
-  agent: LinearAgentService;
   /** Hand every Linear ingress record here; only agent session events are handled. */
   dispatch: (record: LinearIngressEventRecord) => void;
   onChatEvent: (envelope: AgentChatEventEnvelope) => void;
@@ -50,7 +50,7 @@ export function createLinearAgentRuntime(args: {
   const agent = createLinearAgentService({
     relay,
     logger: args.logger,
-    machine: { id: args.getMachineId() ?? `host:${os.hostname()}`, name: machineName },
+    machine: { id: `${args.getMachineId() ?? `host:${os.hostname()}`}:${args.projectId}`, name: machineName },
     getAccountId: args.getAccountId,
     kv: args.db,
     automation: {
@@ -83,9 +83,9 @@ export function createLinearAgentRuntime(args: {
         args.laneService.attachLinearIssueToSession({ chatSessionId, issues: [issue], source: "chat_attach" });
       },
       getLaneName: async (laneId) => {
-        const known = laneNames.get(laneId) ?? args.laneService.getLaneName?.(laneId) ?? null;
+        const known = laneNames.get(laneId);
         if (known) return known;
-        const lanes = await args.laneService.list?.({ includeArchived: false }).catch(() => []) ?? [];
+        const lanes = await args.laneService.list({ includeArchived: false }).catch(() => []);
         const lane = lanes.find((entry) => entry.id === laneId);
         if (lane) laneNames.set(lane.id, lane.name);
         return lane?.name ?? null;
@@ -96,7 +96,6 @@ export function createLinearAgentRuntime(args: {
 
   return {
     relay,
-    agent,
     dispatch: (record) => {
       if ((record.entityType ?? "").toLowerCase() !== "agentsessionevent") return;
       // Not awaited: a machine without a matching rule waits before it

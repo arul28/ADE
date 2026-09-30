@@ -105,6 +105,8 @@ function patchLinearMethods(ade: any) {
     bridgePost("/action", { domain: "linear_issue_tracker", action: "fetchIssueById", arg: args.issueId });
   ade.cto.updateLinearIssue = async ({ issueId, ...patch }: { issueId: string } & Record<string, unknown>) =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "updateIssue", argsList: [issueId, patch] });
+  ade.cto.cancelLinearIssue = async (issueId: string) =>
+    bridgePost("/action", { domain: "linear_issue_tracker", action: "cancelIssue", argsList: [issueId] });
   ade.cto.countLinearIssues = async (args: Record<string, unknown> = {}) =>
     bridgePost("/action", { domain: "linear_issue_tracker", action: "countIssues", args });
   ade.cto.getLinearCustomViews = async () =>

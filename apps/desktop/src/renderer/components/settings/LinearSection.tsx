@@ -184,6 +184,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       return { ...candidate, configured, command };
     });
   }, [githubAutolinks, githubRepoSlug, teamKeys, workspaceUrlKey]);
+  const configuredAutolinkCount = autolinkCandidates.filter((candidate) => candidate.configured).length;
 
   /* ── Load helpers ── */
   const loadProjects = useCallback(async (requestIdArg?: number) => {
@@ -670,9 +671,9 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           <summary style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, cursor: "pointer", listStyle: "none" }}>
             <span style={{ fontSize: 12.5, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>GitHub reference links</span>
             <span style={{ display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-              {autolinkCandidates.length > 0 && autolinkCandidates.filter((candidate) => candidate.configured).length === autolinkCandidates.length
+              {autolinkCandidates.length > 0 && configuredAutolinkCount === autolinkCandidates.length
                 ? "All set up"
-                : `${autolinkCandidates.filter((candidate) => candidate.configured).length} of ${autolinkCandidates.length} set up`}
+                : `${configuredAutolinkCount} of ${autolinkCandidates.length} set up`}
               <CaretDown size={11} style={{ marginLeft: 6, flexShrink: 0 }} />
             </span>
           </summary>
@@ -778,7 +779,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
               {autolinkError}
             </div>
           ) : null}
-                  </div>
+          </div>
         </details>
 
         {/* ── Error ── */}

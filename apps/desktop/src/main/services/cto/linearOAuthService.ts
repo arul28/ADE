@@ -368,6 +368,11 @@ export function createLinearOAuthService(args: {
 
   const startSessionOnce = async (purpose: LinearOAuthPurpose): Promise<CtoStartLinearOAuthResult> => {
     assertActive();
+    if (purpose === "agent-install" && args.credentials.getOAuthClientSource() !== "ade-app") {
+      // The relay refreshes the app token with ADE's own OAuth app; a token
+      // from a custom client could never be refreshed and would stop working.
+      throw new Error("The ADE agent installs only through ADE's own Linear app. Remove the custom OAuth client in Settings → Integrations → Linear, then try again.");
+    }
     pruneExpiredSessions();
     // Close any leftover pending sessions so the fixed port is available.
     // This handles the case where the user closed the browser tab without

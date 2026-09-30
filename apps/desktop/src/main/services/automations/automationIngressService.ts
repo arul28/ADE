@@ -20,6 +20,7 @@ import {
   classifyGitHubAuthFailure,
   githubRateLimitRetryAtMs,
 } from "../github/githubRateLimit";
+import { computeRelayReconnectBackoffMs, rawDataToText } from "./relayWakeSocket";
 
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
@@ -181,18 +182,11 @@ export function computeGithubRelaySubscriptionBackoffMs(
   attempt: number,
   random: () => number = Math.random,
 ): number {
-  const ceiling = Math.min(
-    GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS,
-    GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt),
+  return computeRelayReconnectBackoffMs(
+    attempt,
+    { baseMs: GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS, capMs: GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS },
+    random,
   );
-  return Math.floor(random() * ceiling);
-}
-
-function rawDataToText(raw: RawData): string {
-  if (typeof raw === "string") return raw;
-  if (Buffer.isBuffer(raw)) return raw.toString("utf8");
-  if (Array.isArray(raw)) return Buffer.concat(raw).toString("utf8");
-  return Buffer.from(raw as ArrayBuffer).toString("utf8");
 }
 
 type GithubRelaySubscriptionTarget = {

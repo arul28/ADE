@@ -16161,15 +16161,13 @@ function buildLinearPlan(args: string[]): CliPlan {
       ? null
       : asString(readValue(args, ["--from", "--source", "--source-issue"])) ?? sessionLinearIssueId();
     if (sourceIssueId) input.sourceIssueId = sourceIssueId;
-    const relationFlag = readFlag(args, ["--blocks"])
-      ? "blocks"
-      : readFlag(args, ["--blocked-by"])
-        ? "blocked_by"
-        : readFlag(args, ["--sub-issue", "--child"])
-          ? "sub_issue"
-          : readFlag(args, ["--duplicate"])
-            ? "duplicate"
-            : null;
+    const relationFlags: Array<[string[], string]> = [
+      [["--blocks"], "blocks"],
+      [["--blocked-by"], "blocked_by"],
+      [["--sub-issue", "--child"], "sub_issue"],
+      [["--duplicate"], "duplicate"],
+    ];
+    const relationFlag = relationFlags.find(([flags]) => readFlag(args, flags))?.[1];
     if (relationFlag) input.relation = relationFlag;
     const teamKey = asString(readValue(args, ["--team", "--team-key"]))
       ?? (sourceIssueId?.match(/^([A-Za-z0-9]+)-\d+$/)?.[1]?.toUpperCase() ?? null);
@@ -16210,7 +16208,7 @@ function buildLinearPlan(args: string[]): CliPlan {
     const projectId = requireValue(asString(readValue(args, ["--project", "--project-id"]) ?? firstPositional(args)), "--project <project id>");
     const body = requireValue(asString(readValue(args, ["--body", "-m", "--message"])), "--body");
     const healthRaw = (asString(readValue(args, ["--health"])) ?? "").toLowerCase().replace(/[^a-z]/g, "");
-    const health = healthRaw === "ontrack" ? "onTrack" : healthRaw === "atrisk" ? "atRisk" : healthRaw === "offtrack" ? "offTrack" : null;
+    const health = ({ ontrack: "onTrack", atrisk: "atRisk", offtrack: "offTrack" } as Record<string, string>)[healthRaw] ?? null;
     return {
       kind: "execute",
       label: "linear project-update",

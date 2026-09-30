@@ -1148,6 +1148,13 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
     );
+    const readSyncDeviceId = (): string | null => {
+      try {
+        return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+      } catch {
+        return null;
+      }
+    };
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
@@ -1855,13 +1862,7 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
-      getDeviceId: () => {
-        try {
-          return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-        } catch {
-          return null;
-        }
-      },
+      getDeviceId: readSyncDeviceId,
     });
     linearCredentialServiceForAccount = headlessLinearServices.linearCredentialService;
     teardown.push(() => headlessLinearServices.dispose());
@@ -2242,7 +2243,8 @@ export async function createAdeRuntime(args: {
     });
     teardown.push(() => automationIngressService?.dispose());
     const headlessLinearAccessToken = createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService);
-    linearAgentRuntime = automationService && agentChatService
+    const agentChat = agentChatService;
+    linearAgentRuntime = automationService && agentChat
       ? createLinearAgentRuntime({
         db,
         logger,
@@ -2250,18 +2252,13 @@ export async function createAdeRuntime(args: {
         getLinearAccessToken: headlessLinearAccessToken,
         getAccountAccessToken,
         getAccountId: () => accountAuthService.getStatus().userId ?? null,
-        getMachineId: () => {
-          try {
-            return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-          } catch {
-            return null;
-          }
-        },
+        getMachineId: readSyncDeviceId,
+        projectId,
         chat: {
-          sendMessage: (args) => agentChatService!.sendMessage(args, { routeActiveToSteer: true }),
-          interrupt: (args) => agentChatService!.interrupt(args),
-          respondToInput: (args) => agentChatService!.respondToInput(args),
-          getAvailableModels: (args) => agentChatService!.getAvailableModels(args as Parameters<NonNullable<typeof agentChatService>["getAvailableModels"]>[0]),
+          sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
+          interrupt: (args) => agentChat.interrupt(args),
+          respondToInput: (args) => agentChat.respondToInput(args),
+          getAvailableModels: (args) => agentChat.getAvailableModels(args),
         },
         laneService,
         fetchIssue: (issueId) => headlessLinearServices.linearClient.fetchIssueById(issueId),
@@ -2289,6 +2286,7 @@ export async function createAdeRuntime(args: {
       logger,
       kv: db,
       listLaneProof: (laneId) => computerUseArtifactBrokerService.listArtifacts({ owner: { kind: "lane", id: laneId } }),
+      resolveFilePath: (artifact) => computerUseArtifactBrokerService.resolveArtifactFilePath(artifact),
       uploadAttachment: (args) => headlessLinearServices.linearClient.uploadAttachment(args),
       createComment: (issueId, body) => headlessLinearServices.linearClient.createComment(issueId, body),
     });
@@ -2301,9 +2299,13 @@ export async function createAdeRuntime(args: {
       linearOAuthService.setAgentTokenHandler(async (token) => {
         await agentRelay.install(token);
       });
-      // Joining the member map is automatic for anyone connected to Linear:
-      // it is what routes their own delegations to their own machines.
-      void agentRelay.registerMember().catch(() => {});
+      // Joining the member map is what routes a person's own delegations to
+      // their own machines. Only a personal OAuth sign-in joins on its own (an
+      // API key may be shared), and it never takes over a mapping that routes
+      // to another ADE account; Settings asks before it does that.
+      if (headlessLinearServices.linearCredentialService.getStatus().authMode === "oauth") {
+        void agentRelay.registerMember().catch(() => {});
+      }
     }
     const linearIngressService = automationService
       ? createLinearIngressService({
@@ -2321,7 +2323,7 @@ export async function createAdeRuntime(args: {
         // Linear-linked lanes stay in step with Linear even with no rules.
         wantsLinearEvents: () => {
           try {
-            return Boolean(db.get<{ one: number }>("select 1 as one from lane_linear_issues where project_id = ? limit 1", [projectId]));
+            return laneService.hasLinearLinkedLanes();
           } catch {
             return false;
           }
@@ -2644,13 +2646,7 @@ export async function createAdeRuntime(args: {
         },
         getAccountMachineIdentity: () => {
           const { machineKey } = cloudRelayStore.getMachineIdentity();
-          let deviceId: string | null = null;
-          try {
-            deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-          } catch {
-            deviceId = null;
-          }
-          return { machineKey, deviceId };
+          return { machineKey, deviceId: readSyncDeviceId() };
         },
         activityRosterProvider: syncRuntimeOptions?.activityRosterProvider,
       };

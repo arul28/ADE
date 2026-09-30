@@ -12547,6 +12547,8 @@ const adeBridge = {
         { arg: args.issueId },
         () => ipcRenderer.invoke(IPC.ctoGetLinearIssue, args),
       ),
+    cancelLinearIssue: async (issueId: string): Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }> =>
+      callProjectRuntimeActionOr("linear_issue_tracker", "cancelIssue", { argsList: [issueId] }, linearAgentUnavailable),
     updateLinearIssue: async (
       args: CtoUpdateLinearIssueArgs,
     ): Promise<NormalizedLinearIssue | null> => {
@@ -12581,8 +12583,8 @@ const adeBridge = {
       callProjectRuntimeActionOr("linear_agent", "startInstall", {}, linearAgentUnavailable),
     getLinearAgentInstallSession: async (sessionId: string): Promise<LinearAgentInstallSession> =>
       callProjectRuntimeActionOr("linear_agent", "getInstallSession", { args: { sessionId } }, linearAgentUnavailable),
-    registerLinearAgentMember: async (): Promise<LinearAgentOverview> =>
-      callProjectRuntimeActionOr("linear_agent", "registerMember", {}, linearAgentUnavailable),
+    registerLinearAgentMember: async (args?: { replace?: boolean }): Promise<LinearAgentOverview> =>
+      callProjectRuntimeActionOr("linear_agent", "registerMember", { args: { replace: args?.replace === true } }, linearAgentUnavailable),
     unregisterLinearAgentMember: async (): Promise<LinearAgentOverview> =>
       callProjectRuntimeActionOr("linear_agent", "unregisterMember", {}, linearAgentUnavailable),
     updateLinearAgentSettings: async (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }): Promise<LinearAgentOverview> =>

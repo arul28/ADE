@@ -7,6 +7,7 @@ import type {
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import { toLaneLinearIssue } from "../lanes/linearIssueDisplay";
+import { linearPriorityLabel } from "../../../shared/laneLinearIssue";
 
 /** A row in the browser: a fresh Linear read, or a lane's stored copy (featured issue). */
 export type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
@@ -22,14 +23,6 @@ export const PRIORITY_CHOICES: ReadonlyArray<{ value: number; label: string }> =
   { value: 3, label: "Medium" },
   { value: 4, label: "Low" },
 ];
-
-const PRIORITY_LABELS: Record<number, NormalizedLinearIssue["priorityLabel"]> = {
-  0: "none",
-  1: "urgent",
-  2: "high",
-  3: "normal",
-  4: "low",
-};
 
 export function isNormalizedIssue(issue: BrowserIssue): issue is NormalizedLinearIssue {
   return "raw" in issue;
@@ -115,7 +108,7 @@ export function applyIssueEdit<T extends BrowserIssue>(
     };
   }
   if (typeof edit.priority === "number") {
-    next = { ...next, priority: edit.priority, priorityLabel: PRIORITY_LABELS[edit.priority] ?? "none" };
+    next = { ...next, priority: edit.priority, priorityLabel: linearPriorityLabel(edit.priority) };
   }
   const added = edit.addedLabelIds ?? [];
   const removed = new Set(edit.removedLabelIds ?? []);

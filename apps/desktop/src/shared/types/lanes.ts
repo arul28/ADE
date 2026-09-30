@@ -163,6 +163,21 @@ export type LaneLinearIssue = {
   } | null;
 };
 
+/** A change made in Linear, applied to every lane copy of the issue. */
+export type LinearIssueSnapshotPatch = {
+  id: string;
+  title?: string | null;
+  stateId?: string | null;
+  stateName?: string | null;
+  stateType?: string | null;
+  assigneeId?: string | null;
+  assigneeName?: string | null;
+  priority?: number | null;
+  priorityLabel?: LaneLinearIssue["priorityLabel"] | null;
+  updatedAt?: string | null;
+  actorName?: string | null;
+};
+
 export type LaneLinearIssueLinkRole = "primary" | "worked" | "referenced" | "inferred";
 
 export type LaneLinearIssueLinkSource =

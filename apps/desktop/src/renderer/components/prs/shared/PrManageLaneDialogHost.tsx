@@ -48,7 +48,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     fn: () => Promise<void>,
     status: string,
     kind: "delete" | "archive",
-  ) => {
+  ): Promise<boolean> => {
     setLaneActionBusy(true);
     setLaneActionKind(kind);
     setLaneActionStatus(status);
@@ -59,8 +59,10 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       if (runtimePin) requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
       else await refreshLanes({ includeStatus: false });
       onOpenChange(false);
+      return true;
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLaneActionBusy(false);
       setLaneActionStatus(null);
@@ -69,8 +71,8 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   }, [onOpenChange, refreshLanes, runtimePin]);
 
   const handleArchive = useCallback(async () => {
-    if (!lane || lane.laneType === "primary") return;
-    await runLaneAction(async () => {
+    if (!lane || lane.laneType === "primary") return false;
+    return await runLaneAction(async () => {
       await window.ade.lanes.archive({ laneId: lane.id }, ...onPin);
     }, "Archiving lane…", "archive");
   }, [lane, onPin, runLaneAction]);
@@ -109,7 +111,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       laneActionStatus={laneActionStatus}
       laneActionError={laneActionError}
       laneActionKind={laneActionKind}
-      onArchive={() => { void handleArchive(); }}
+      onArchive={handleArchive}
       onDelete={() => { void handleDelete(); }}
       onAppearanceChanged={refreshOwnerLanes}
       onStackReorganized={() => {
