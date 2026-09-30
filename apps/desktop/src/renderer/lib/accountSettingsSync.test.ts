@@ -289,6 +289,48 @@ describe("accountSettingsSync (renderer)", () => {
     stop();
   });
 
+  it("A1c: does not report a write confirmed after the account changed", async () => {
+    // The acknowledgement belongs to the account the request was sent as. If
+    // someone signs in as another account while it is in flight, that "ok" says
+    // nothing about the account signed in now — so it must not be handed back
+    // as a confirmation a caller can act on, and the value stays queued under
+    // the account it was written for.
+    const { store } = createStore({ theme: "dark" });
+    const storage = createStorage();
+    // Held as a list because a `let` the callback writes is narrowed to `null`
+    // by the time the test calls it (control-flow analysis cannot see the
+    // callback run). The LAST entry is this test's `flushKey` write: the
+    // hydrator's own seeding pushes run before it and are never awaited.
+    const acknowledged: Array<(value: { ok: true; value: null }) => void> = [];
+    const api = createApi();
+    api.set.mockImplementation(async () => await new Promise((resolve) => {
+      acknowledged.push(resolve as (value: { ok: true; value: null }) => void);
+    }));
+    let userId = "user_1";
+    const sync = startAccountSettingsSync(
+      baseOptions({
+        store,
+        storage,
+        getApi: () => api,
+        isSignedIn: () => true,
+        getAccountUserId: () => userId,
+      }),
+    );
+    await settle();
+
+    const pending = sync.flushKey("theme");
+    await settle();
+    // The account switches before the write is acknowledged.
+    userId = "user_2";
+    acknowledged.at(-1)?.({ ok: true, value: null });
+
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(JSON.parse(storage.map.get("ade.accountSettings.dirty.v1") ?? "[]"))
+      .toContain("user_1\u0000theme");
+    sync();
+  });
+
   it("A1b: flushKey pushes the current value and answers what the brain said", async () => {
     const { store } = createStore({ theme: "dark", chatFontSizePx: 14 });
     const api = createApi();

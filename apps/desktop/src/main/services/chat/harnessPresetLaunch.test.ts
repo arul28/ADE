@@ -786,6 +786,44 @@ describe("Claude subagents and built-in pins", () => {
     expect(written).toContain('default_subagent_reasoning_effort = "low"');
   });
 
+  it("writes a Codex subagent effort that names no model of its own", () => {
+    // `Same as main` plus a level is the wizard's DEFAULT state — the level
+    // control is offered whether or not a subagent model is named — so an
+    // effort-only preset is the common case, not an edge one. Each key is its
+    // own request and Codex takes them independently.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "codex",
+        model: "gpt-5.6-luna",
+        subagentEffort: "low",
+        source: { kind: "key", provider: "openai", credentialId: "cred_1", label: "Work key" },
+      }),
+      deps(),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    const written = fs.readFileSync(path.join(plan.codexConfigHome!, "config.toml"), "utf8");
+    expect(written).toContain('default_subagent_reasoning_effort = "low"');
+    expect(written).not.toContain("default_subagent_model");
+  });
+
+  it("says an OpenCode sign-in cannot take a preset's subagent settings", () => {
+    // ADE never writes OpenCode's own config home, so a native sign-in has
+    // nowhere to put a pin. The launch still runs; the reader is told which
+    // half was dropped instead of finding out from a subagent's behaviour.
+    const plan = resolveHarnessPresetPlan(
+      preset({
+        harness: "opencode",
+        model: "deepseek-v4.1-flash",
+        subagentModel: "kimi-k3",
+        source: { kind: "opencode", providerId: "opencode-go" },
+      }),
+      deps(),
+    );
+    if (plan.status !== "ready") throw new Error("expected ready");
+    expect(plan.subagent).toBeUndefined();
+    expect(plan.notes?.join(" ")).toContain("OpenCode's own config");
+  });
+
   it("writes a Grok subagent model Grok can actually spawn", () => {
     // Grok's home defines only the models ADE writes into it, so a subagent
     // model named in `[subagents.models]` but absent from the home is a type

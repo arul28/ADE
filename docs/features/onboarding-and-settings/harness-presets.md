@@ -411,8 +411,6 @@ provider token and is never written anywhere by ADE.
     catalog as an argument; fetching it is the ModelPicker's job.
   - `presetFacts.tsx`, `HarnessLogoCropper.tsx`, `useHarnessPresets.ts` — the
     row facts, the round 256x256 crop, and the store binding.
-  - `harnessTestCatalog.ts` — the one typed catalog fixture the folder's tests
-    share.
 - `apps/desktop/src/renderer/components/shared/HarnessLogo.tsx` — the one place
   a preset's mark is drawn.
 - `apps/desktop/src/renderer/components/shared/ModelPicker/HarnessPresetList.tsx`
