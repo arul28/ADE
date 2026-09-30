@@ -233,9 +233,15 @@ export function CustomProviderDialog({
             agentOverrides: {},
             agentEfforts: {},
           }),
-        // An effort the chosen subagent model does not offer is rejected at
-        // launch, exactly as the main model's is.
-        ...(prev.subagentEffort && !(model.reasoningTiers ?? []).includes(prev.subagentEffort)
+        // A subagent level belongs to the SUBAGENT's model. Clearing it against
+        // the model just picked for the main thread would drop a level that is
+        // still offered where it applies — pinning a subagent model that takes
+        // `max` and then switching the main model to one that does not used to
+        // clear it. Only an inheriting subagent (`Same as main`, or a reset
+        // because the source changed) follows the main model's tiers.
+        ...(prev.subagentEffort
+          && (sameGroup || prev.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT)
+          && !(model.reasoningTiers ?? []).includes(prev.subagentEffort)
           ? { subagentEffort: undefined }
           : {}),
       };

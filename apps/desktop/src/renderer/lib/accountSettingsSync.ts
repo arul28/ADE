@@ -563,6 +563,19 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       persistStamps();
       persistDirtyKeys();
       return Promise.resolve(pending).then((result) => {
+        // The account can change while the request is in flight, and an
+        // acknowledgement that belongs to the account it was sent as says
+        // nothing about the one signed in now. Reported as unavailable rather
+        // than as success, so the caller retries it under the new owner instead
+        // of trusting a confirmation it cannot use.
+        if (
+          identityGeneration !== generationAtQueue
+          || resolveAccountUserId() !== userIdAtQueue
+          || accountUserId !== userIdAtQueue
+        ) {
+          markDirtyKey(existingDirtyKey);
+          return unsyncedResult(false, undefined, IDENTITY_CHANGED_MESSAGE);
+        }
         if (result?.ok === true) return result;
         // Still dirty: the local value is the newest one this machine holds and
         // a later tick, sign-in or `flushKey` retries it.

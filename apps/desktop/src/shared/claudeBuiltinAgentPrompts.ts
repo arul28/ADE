@@ -211,10 +211,11 @@ export type ClaudeBuiltinAgentOverride = {
  * an undefined model, because an `agents` entry with no model still replaces
  * the built-in prompt and would fork the agent for no benefit.
  *
- * `efforts` is the parallel map of thinking levels. A level with no model of
- * its own arrives with the resolved model, so an entry is built whenever either
- * half is set — a pinned effort is as much a reason to send the entry as a
- * pinned model, since the SDK has no other way to set one.
+ * `efforts` is the parallel map of thinking levels, and it only ever ADDS a
+ * field to an entry the pin already earned: the SDK's entry needs a model, so a
+ * level whose role has none is skipped rather than sent half-formed. The caller
+ * is what makes an effort-only pin complete — it gives that role the subagent
+ * model (or the preset's own) before calling here.
  */
 export function buildClaudeBuiltinAgentOverrides(
   pins: Partial<Record<HarnessPresetAgentKey, string | null | undefined>>,

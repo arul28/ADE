@@ -85,13 +85,18 @@ export function useHarnessPresets(): HarnessPresetsApi {
       const now = new Date().toISOString();
       const candidate = normalizeHarnessPreset({ ...draft, id: mintPresetId(), createdAt: now, updatedAt: now });
       if (!candidate) return { preset: null, accountError: null };
-      setHarnessPresets((prev) => [
-        ...prev,
-        { ...candidate, name: uniqueHarnessPresetName(candidate.name, prev.map((entry) => entry.name)) },
-      ]);
-      return { preset: candidate, accountError: await confirmAccountWrite() };
+      // Named against the list as it is now, and returned under that name: the
+      // caller announces what it was handed, and a colliding name is renamed on
+      // the way in — so returning the un-renamed candidate announced a preset
+      // the list does not have.
+      const stored: HarnessPreset = {
+        ...candidate,
+        name: uniqueHarnessPresetName(candidate.name, presets.map((entry) => entry.name)),
+      };
+      setHarnessPresets((prev) => [...prev, stored]);
+      return { preset: stored, accountError: await confirmAccountWrite() };
     },
-    [confirmAccountWrite, setHarnessPresets],
+    [confirmAccountWrite, presets, setHarnessPresets],
   );
 
   const updatePreset = useCallback(
