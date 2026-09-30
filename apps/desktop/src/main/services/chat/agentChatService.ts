@@ -642,13 +642,14 @@ import {
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import { pickAlternateInstanceForLimitedChat } from "../usage/accountBalance";
+import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
+import { moveProviderThread } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatUsageLimitAlternateAccount,
 } from "../../../shared/types/chat";
-import type { UsageAccount, UsageWindow } from "../../../shared/types/usage";
+import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
   CLAUDE_RESUME_RETURN_OPTIONS,
   claudeResumeReturnChoiceFromAnswer,
@@ -9416,6 +9417,12 @@ type AgentChatAutomationService = {
 export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
 
 
+/** What chat creation and the usage-limit switch read from the usage tracker. */
+export type ChatAccountUsage = {
+  getUsageSnapshot: () => Pick<UsageSnapshot, "windows" | "accounts">;
+  resolveBalancedInstance: (provider: "claude" | "codex") => AccountBalanceResult | null;
+};
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /** Optional main-process analytics sink for successful desktop voice starts. */
@@ -9482,6 +9489,16 @@ export function createAgentChatService(args: {
     & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
+  /**
+   * Quota and smart balance for the providers that hold several logins.
+   *
+   * Required on purpose, and lazy because hosts build the usage tracker after
+   * the chat service. It used to ride on the optional CTO `getUsageService`;
+   * the brain never passed that one, so smart balance and the usage-limit
+   * account switch did nothing there and nothing said so. Return `null` only
+   * from a host that has no usage tracker at all.
+   */
+  getAccountUsage: () => ChatAccountUsage | null;
   /**
    * Domain coverage for the CTO's operator tools. Every one is optional and
    * lazily resolved: the desktop wires all of them, `ade code` and the headless
@@ -9658,6 +9675,7 @@ export function createAgentChatService(args: {
     getTestService,
     ptyService,
     getAutomationService,
+    getAccountUsage,
     getAutomationPlannerService,
     getUsageService,
     getBudgetService,
@@ -18271,6 +18289,121 @@ export function createAgentChatService(args: {
   /** Source chats whose work already moved. A second limit must not start another. */
   const usageLimitHandedOffTargets = new Map<string, string>();
   const usageLimitHandoffInFlight = new Set<string>();
+  /** Accounts each chat moved away from at a limit, so it does not move back. */
+  const usageLimitMovedFrom = new Map<string, Set<string>>();
+  /** How long a queued move waits for the limited turn's done event. */
+  const USAGE_LIMIT_MOVE_WAIT_MS = 2 * 60_000;
+  /** Chats waiting for the limited turn to end before they move accounts. */
+  const pendingUsageLimitMoves = new Map<string, AgentChatUsageLimitAlternateAccount>();
+
+  /** The provider thread id a relaunched runtime resumes, from memory or disk. */
+  const providerThreadIdForMove = (managed: ManagedChatSession): string | null => {
+    const persisted = readPersistedState(managed.session.id);
+    if (managed.session.provider === "claude") {
+      const live = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+      return live?.trim() || persisted?.sdkSessionId?.trim() || null;
+    }
+    if (managed.session.provider === "codex") {
+      return managed.session.threadId?.trim() || persisted?.threadId?.trim() || null;
+    }
+    return null;
+  };
+
+  /**
+   * Moves a limited chat to another account IN PLACE: same chat, same
+   * provider thread, next turn on the other login.
+   *
+   * The thread file is copied into the other account's config home (see
+   * `moveProviderThread`), the runtime is stopped with its resume pointer
+   * kept, and the chat's account changes. The next turn relaunches with the
+   * other account's config home and resumes the same thread id, so the model
+   * keeps the whole conversation. The first turn there has no prompt cache.
+   */
+  const moveUsageLimitChatInPlace = async (
+    managed: ManagedChatSession,
+    alternate: AgentChatUsageLimitAlternateAccount,
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const rawProvider = managed.session.provider;
+    const provider = rawProvider === "claude" ? "claude" : rawProvider === "codex" ? "codex" : null;
+    if (!provider) return { ok: false, message: `${rawProvider} chats cannot change accounts.` };
+    const threadId = providerThreadIdForMove(managed);
+    if (!threadId) return { ok: false, message: "This chat has no provider thread to move yet." };
+    const from = resolveSessionInstance(managed);
+    let to: ProviderInstance | null = null;
+    try {
+      to = getMachineProviderInstanceStore().get(alternate.instanceId);
+    } catch {
+      to = null;
+    }
+    if (!from || !to || to.provider !== provider) {
+      return { ok: false, message: `ADE could not find the ${alternate.label} account.` };
+    }
+    const moved = await moveProviderThread({
+      provider,
+      threadId,
+      fromConfigHome: from.configHome,
+      toConfigHome: to.configHome,
+    });
+    if (!moved.ok) return { ok: false, message: moved.message };
+
+    teardownRuntime(managed, "paused_run");
+    const leftAtLimit = usageLimitMovedFrom.get(managed.session.id) ?? new Set<string>();
+    leftAtLimit.add(from.id);
+    usageLimitMovedFrom.set(managed.session.id, leftAtLimit);
+    managed.session.instanceId = to.id;
+    persistChatState(managed);
+    logger.info("agent_chat.usage_limit_moved_account", {
+      sessionId: managed.session.id,
+      provider,
+      fromInstanceId: from.id,
+      toInstanceId: to.id,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "rate_limit",
+      severity: "info",
+      message: `Continuing on ${alternate.label}.`,
+      detail: `The ${from.label || from.id} account hit its usage limit. ADE moved this chat to ${alternate.label} and resumes the same thread there.`,
+    });
+    await autoResume.cancelForSession(managed.session.id, "usage_limit_account_handoff");
+    setUsageLimitResume(managed, null);
+    if (provider === "claude") dismissClaudeSessionQuota(managed);
+    await sendMessage({
+      sessionId: managed.session.id,
+      text: `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
+    });
+    return { ok: true };
+  };
+
+  /**
+   * Runs a queued move once the limited turn has ended, and falls back to the
+   * new-chat handoff when the thread cannot move.
+   */
+  const runPendingUsageLimitMove = (managed: ManagedChatSession): void => {
+    const alternate = pendingUsageLimitMoves.get(managed.session.id);
+    if (!alternate) return;
+    pendingUsageLimitMoves.delete(managed.session.id);
+    const turnId = managed.usageLimitResume?.turnId ?? null;
+    const alternateAccount = { instanceId: alternate.instanceId, label: alternate.label };
+    void (async () => {
+      const moved = await moveUsageLimitChatInPlace(managed, alternate);
+      if (moved.ok) return;
+      logger.warn("agent_chat.usage_limit_move_failed", {
+        sessionId: managed.session.id,
+        instanceId: alternate.instanceId,
+        error: moved.message,
+      });
+      const handedOff = await handOffUsageLimitChat(managed, alternate);
+      if (handedOff.ok || handedOff.reason === "handoff_in_flight") return;
+      publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+    })().catch((error) => {
+      logger.warn("agent_chat.usage_limit_move_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+    });
+  };
 
   /**
    * Another signed-in account with readable room, plus whether smart balance
@@ -18289,11 +18422,12 @@ export function createAgentChatService(args: {
     try {
       const store = getMachineProviderInstanceStore();
       const settings = store.getProviderSettings(provider);
-      const usage = getUsageService?.() as {
-        getUsageSnapshot?: () => { windows?: UsageWindow[]; accounts?: UsageAccount[] };
-      } | null | undefined;
-      const snapshot = usage?.getUsageSnapshot?.();
-      if (!snapshot) return null;
+      const usage = getAccountUsage();
+      if (!usage) {
+        logger.error("agent_chat.account_usage_unavailable", { sessionId: managed.session.id, provider });
+        return null;
+      }
+      const snapshot = usage.getUsageSnapshot();
       const windowsByAccountId = new Map<string, UsageWindow[]>();
       for (const window of snapshot.windows ?? []) {
         if (window.provider !== provider || !window.accountId) continue;
@@ -18301,11 +18435,14 @@ export function createAgentChatService(args: {
         existing.push(window);
         windowsByAccountId.set(window.accountId, existing);
       }
+      // An account this chat already left at a limit is still limited, even
+      // when a lagging snapshot shows room. Moving back would bounce the chat.
+      const leftAtLimit = usageLimitMovedFrom.get(managed.session.id);
       const pick = pickAlternateInstanceForLimitedChat({
         provider,
         currentInstanceId: managed.session.instanceId?.trim()
           || defaultProviderInstanceId(provider),
-        instances: store.list(provider),
+        instances: store.list(provider).filter((instance) => !leftAtLimit?.has(instance.id)),
         accounts: (snapshot.accounts ?? []).filter((account) => account.provider === provider),
         windowsByAccountId,
         nowMs: Date.now(),
@@ -18494,16 +18631,16 @@ export function createAgentChatService(args: {
     // choice the user just made about this thread.
     if (options?.allowAccountHandoff !== false && alternate?.autoContinue) {
       if (usageLimitHandoffInFlight.has(managed.session.id)) return;
-      void handOffUsageLimitChat(managed, alternate).then((result) => {
-        if (result.ok || result.reason === "handoff_in_flight") return;
-        publishUsageLimitResumeArm(managed, turnId, alternateAccount);
-      }).catch((error) => {
-        logger.warn("agent_chat.usage_limit_handoff_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        publishUsageLimitResumeArm(managed, turnId, alternateAccount);
-      });
+      // The limit arrives inside the turn. The move waits for that turn to end,
+      // so the runtime it stops is not still writing the thread.
+      pendingUsageLimitMoves.set(managed.session.id, alternateAccount!);
+      if (managed.session.status !== "active") {
+        runPendingUsageLimitMove(managed);
+      } else {
+        // A turn that dies without a done event must not strand the chat.
+        const fallback = setTimeout(() => runPendingUsageLimitMove(managed), USAGE_LIMIT_MOVE_WAIT_MS);
+        fallback.unref?.();
+      }
       return;
     }
     publishUsageLimitResumeArm(managed, turnId, alternateAccount);
@@ -18952,6 +19089,10 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "done" }>,
   ): void => {
+    if (pendingUsageLimitMoves.has(managed.session.id)) {
+      // After the done event commits: the move stops this runtime.
+      queueMicrotask(() => runPendingUsageLimitMove(managed));
+    }
     try {
       recordTurnUsage(managed, event);
     } catch (error) {
@@ -39830,13 +39971,15 @@ export function createAgentChatService(args: {
       return existing.session;
     }
 
-    const usageService = getUsageService?.() as {
-      resolveBalancedInstance?: (provider: "claude" | "codex") => { instanceId: string; reason: string } | null;
-    } | null | undefined;
-    const balancedInstance = !requestedInstanceId?.trim()
-      && (effectiveProvider === "claude" || effectiveProvider === "codex")
-      ? usageService?.resolveBalancedInstance?.(effectiveProvider as "claude" | "codex")
-      : null;
+    let balancedInstance: AccountBalanceResult | null = null;
+    if (!requestedInstanceId?.trim() && (effectiveProvider === "claude" || effectiveProvider === "codex")) {
+      const accountUsage = getAccountUsage();
+      if (accountUsage) {
+        balancedInstance = accountUsage.resolveBalancedInstance(effectiveProvider === "claude" ? "claude" : "codex");
+      } else {
+        logger.error("chat.account_balance_unavailable", { provider: effectiveProvider });
+      }
+    }
     if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
     const selectedInstanceId = balancedInstance?.instanceId ?? requestedInstanceId?.trim();
 

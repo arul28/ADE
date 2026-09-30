@@ -4159,6 +4159,7 @@ app.whenReady().then(async () => {
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
+      getAccountUsage: () => usageTrackingService,
       // The CTO's domain coverage. All lazy — several of these are created
       // later in this same bootstrap, and the CTO's tool map is only built when
       // a CTO session actually runs.

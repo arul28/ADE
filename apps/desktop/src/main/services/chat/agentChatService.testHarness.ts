@@ -1823,6 +1823,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
   const service = createAgentChatService({
+    getAccountUsage: () => null,
     projectRoot: tmpRoot,
     transcriptsDir,
     laneService,

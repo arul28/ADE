@@ -1898,6 +1898,9 @@ export async function createAdeRuntime(args: {
     });
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+    // Built after the chat service; smart balance and the usage-limit account
+    // switch read it through this late binding.
+    let usageTrackingServiceRef: ReturnType<typeof attachSharedUsageTrackingScope> | null = null;
     // Machine-level, like the quota poller: every project scope in this brain
     // writes one ledger under `<adeHome>/usage/`.
     const turnUsageLedger = getSharedTurnUsageLedger(resolveMachineAdeLayout().adeDir, logger);
@@ -1971,6 +1974,8 @@ export async function createAdeRuntime(args: {
         ptyService,
         getAutomationService: () => automationServiceRef,
         getGitService: () => gitService,
+        getAccountUsage: () => usageTrackingServiceRef,
+        getUsageService: () => usageTrackingServiceRef,
         conflictService,
         computerUseArtifactBrokerService,
         // One line of system prompt and the per-turn time-lapse clip, both
@@ -2780,6 +2785,7 @@ export async function createAdeRuntime(args: {
         },
       },
     );
+    usageTrackingServiceRef = usageTrackingService;
     // Detaches this project. The shared poller keeps running for the scopes
     // that are still open and shuts down only with the last one.
     teardown.push(() => usageTrackingService.dispose());

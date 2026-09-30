@@ -138,6 +138,7 @@ function startHost(sessionRows: Map<string, any>): Harness {
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
   const service = createAgentChatService({
+    getAccountUsage: () => null,
     projectRoot: tmpRoot,
     transcriptsDir,
     laneService: createMockLaneService(),

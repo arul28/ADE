@@ -231,7 +231,19 @@ export function UsageAccountRow({
         </span>
         {/* The pace line, back outside the details panel where it was legible
             without hovering anything. */}
-        {pace ? <PacePill pace={pace} /> : null}
+        {account?.login === "signed_out" ? (
+          // The bars below are the last reading before the login broke. They
+          // still reset on time, but this login cannot use them.
+          <span
+            className={cn(
+              USAGE_TEXT.micro,
+              "shrink-0 rounded border border-amber-300/45 bg-amber-400/10 px-1.5 py-[1px] font-medium text-amber-200",
+            )}
+            title="The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading."
+          >
+            Signed out
+          </span>
+        ) : pace ? <PacePill pace={pace} /> : null}
         {hasCredit ? (
           <button
             type="button"

@@ -63,6 +63,7 @@ import type {
   AppResourceUsageSnapshot,
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
+import { AccountBalanceIndicator } from "./AccountBalanceIndicator";
 import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
@@ -2694,6 +2695,7 @@ export function TopBar({
           settings sidebar. */}
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
         {!webMode ? <AutoUpdateControl /> : null}
+        {!webMode ? <AccountBalanceIndicator /> : null}
         <ResourcePressureIndicator usage={resourceUsage} />
         <StoragePressureIndicator enabled={workspaceProjectOpen} />
 

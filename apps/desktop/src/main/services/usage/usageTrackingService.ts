@@ -36,6 +36,8 @@ import type {
   UsageProviderStatus,
   UsageProviderStatusMap,
   UsageAccount,
+  UsageAccountLogin,
+  AccountBalanceIssue,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
@@ -71,21 +73,20 @@ import {
 } from "../shared/providerConfigHomes";
 import {
   PROVIDER_INSTANCE_ENV_KEY,
+  PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isBaseProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { pickInstanceForNewChat } from "./accountBalance";
+import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
-  cacheClaudeCredentials,
   invalidateCachedClaudeCredentials,
   isClaudeTokenExpiredOrExpiring,
   isCodexTokenStale,
-  readClaudeCredentialsWithRefresh,
+  readClaudeLogin,
   readCodexCredentials,
-  refreshClaudeCredentials,
 } from "../ai/providerCredentialSources";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -829,6 +830,27 @@ function accountRateLimitNextAttemptAtMs(accountId: string, nowMs: number = Date
 /** Drops the per-account cooldowns so a test starts from a clean cadence. */
 function resetAccountRateLimitsForTest(): void {
   accountRateLimits.clear();
+  accountLogins.clear();
+}
+
+/**
+ * The last login state each account's poll saw, by usage account id.
+ *
+ * Smart balance reads this through `UsageAccount.login`: an account whose
+ * login is gone keeps its old windows on screen until they reset, and those
+ * windows must not make it look like the account with the most room.
+ */
+const accountLogins = new Map<string, UsageAccountLogin>();
+
+function noteAccountLogin(accountId: string, login: UsageAccountLogin): void {
+  accountLogins.set(accountId, login);
+}
+
+function attachAccountLogins(accounts: UsageAccount[]): void {
+  for (const account of accounts) {
+    const login = accountLogins.get(account.id);
+    if (login) account.login = login;
+  }
 }
 
 /**
@@ -1109,11 +1131,13 @@ async function pollClaudeInstance(
   // A successful read is cached per account, and later polls reuse the cache.
   const allowInteractiveSources = context.reason === "user";
   const configHome = scopedConfigHome("claude", instance);
-  const creds = await measureUsagePhase(
+  const accountId = usageAccountId({ provider: "claude", instanceId: instance.id });
+  const allowKeychain = claudePollAllowsKeychain(context.reason, configHome);
+  const login = await measureUsagePhase(
     logger,
     { provider: "claude", phase: "credentials", reason: context.reason },
-    () => readClaudeCredentialsWithRefresh(logger, {
-      allowKeychain: claudePollAllowsKeychain(context.reason, configHome),
+    () => readClaudeLogin({
+      allowKeychain,
       // A scoped background poll may open the Keychain once, then has to
       // honor the miss cache. Treating allowKeychain as "user initiated"
       // made every automatic poll of a missing login run `security` again.
@@ -1121,7 +1145,30 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
-  if (!creds) {
+  // On macOS the login lives in the Keychain. A read that skipped it saw only
+  // the credentials file, so its miss says nothing about the account.
+  if (allowKeychain || process.platform !== "darwin" || login.state === "ok") {
+    noteAccountLogin(accountId, login.state);
+  }
+  if (login.state === "expired") {
+    // The CLI refreshes and saves its own token. A user poll may run it;
+    // a background poll waits for the next chat on this account to do it.
+    if (allowInteractiveSources && login.hasRefreshToken) {
+      return await measureUsagePhase(
+        logger,
+        { provider: "claude", phase: "cli_fallback", reason: context.reason },
+        () => pollClaudeViaCli(logger, configHome),
+      );
+    }
+    if (!instance.isDefault) return null;
+    return {
+      disposition: "preserve_previous",
+      windows: [],
+      errors: [],
+      source: "oauth",
+    };
+  }
+  if (login.state === "signed_out") {
     // A secondary account with no credentials file is simply unsigned-in.
     // Spawning the Claude CLI for it holds a pty until the sign-in timeout.
     if (allowInteractiveSources && instance.isDefault) {
@@ -1139,6 +1186,7 @@ async function pollClaudeInstance(
       source: "oauth",
     };
   }
+  const creds = login.credentials;
 
   try {
     const result = await measureUsagePhase(
@@ -1151,31 +1199,12 @@ async function pollClaudeInstance(
     );
 
     if (!result.ok) {
-      if (result.status === 401 && creds.refreshToken) {
-        logger.info("usage.token_refresh.401_retry");
+      if (result.status === 401) {
+        // The token was rejected before its expiry. ADE does not spend the
+        // refresh token (see `readClaudeLogin`); the CLI fallback below, or the
+        // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
-        const refreshed = await measureUsagePhase(
-          logger,
-          { provider: "claude", phase: "token_refresh", reason: context.reason },
-          () => refreshClaudeCredentials(creds.refreshToken!),
-        );
-        if (refreshed) {
-          cacheClaudeCredentials(refreshed, configHome);
-          const retry = await measureUsagePhase(
-            logger,
-            { provider: "claude", phase: "oauth_http_retry", reason: context.reason },
-            () => fetchJsonWithRetry(CLAUDE_USAGE_URL, {
-              Authorization: `Bearer ${refreshed.accessToken}`,
-              "anthropic-beta": "oauth-2025-04-20",
-            }),
-          );
-          if (retry.ok) {
-            const parsed = parseClaudeWindows(retry.data as ClaudeUsageResponse);
-            if (parsed.windows.length > 0) {
-              return { windows: parsed.windows, source: "oauth", extraUsage: parsed.extraUsage, errors: [] };
-            }
-          }
-        }
+        noteAccountLogin(accountId, "expired");
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -1938,8 +1967,7 @@ async function probeClaudeResetCredits(args: {
 }
 
 /**
- * The cached (and possibly refreshed) access token for one Claude account, or
- * null. `allowKeychain` is false so the reset path never opens the macOS
+ * The cached access token for one Claude account, or null when it expired. `allowKeychain` is false so the reset path never opens the macOS
  * Keychain; the quota poll that runs earlier in the same pass has usually
  * already warmed this cache.
  */
@@ -1947,11 +1975,11 @@ async function readClaudeCredentialAccessToken(
   logger: Logger,
   configHome: string | undefined,
 ): Promise<string | null> {
-  const creds = await readClaudeCredentialsWithRefresh(logger, {
+  const login = await readClaudeLogin({
     allowKeychain: false,
     ...(configHome ? { configHome } : {}),
   });
-  return creds?.accessToken ?? null;
+  return login.state === "ok" ? login.credentials.accessToken : null;
 }
 
 /** Spends in flight, keyed by config home — one per account at a time. */
@@ -4446,8 +4474,58 @@ export function createUsageTrackingService({
    * a fresher snapshot without emitting it gave one window a value no other
    * window could ever receive, which is exactly how two windows drifted.
    */
+  /**
+   * The last new-chat balance decision that could not balance, per provider.
+   * Cleared by the next decision that picks an account on the numbers.
+   */
+  const balancePickIssues = new Map<ProviderInstanceProvider, AccountBalanceIssue>();
+
+  function providerTitle(provider: ProviderInstanceProvider): string {
+    return provider === "claude" ? "Claude" : "Codex";
+  }
+
+  /**
+   * What stops smart balance right now, for every provider that has it on.
+   * Recomputed on each publish from the accounts in the snapshot, so a
+   * signed-out login shows while it lasts and goes away with the next poll
+   * after the user signs in again.
+   */
+  function computeBalanceIssues(snapshot: UsageSnapshot): AccountBalanceIssue[] {
+    const issues: AccountBalanceIssue[] = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
+        const signedIn = providerInstanceStore.list(provider).filter((instance) => instance.signedIn);
+        if (signedIn.length < 2) continue;
+        const signedOut = signedIn.filter((instance) => snapshot.accounts?.some((account) => (
+          account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
+        )));
+        if (signedOut.length > 0) {
+          const names = signedOut.map((instance) => instance.account?.email || instance.label || instance.id);
+          issues.push({
+            provider,
+            kind: "signed_out",
+            title: signedOut.length === 1
+              ? `${providerTitle(provider)} account signed out`
+              : `${signedOut.length} ${providerTitle(provider)} accounts signed out`,
+            detail: `Smart balance skips ${names.join(", ")} because the saved login no longer works. Sign in to it again in Settings > Provider accounts.`,
+            instanceIds: signedOut.map((instance) => instance.id),
+            at: snapshot.lastPolledAt,
+          });
+        }
+        const pickIssue = balancePickIssues.get(provider);
+        if (pickIssue) issues.push(pickIssue);
+      } catch (error) {
+        logger.warn("usage.account_balance_issue_scan_failed", { provider, error: getErrorMessage(error) });
+      }
+    }
+    return issues;
+  }
+
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
-    const published = stampRevision(snapshot);
+    const { balanceIssues: _previousIssues, ...rest } = snapshot;
+    const balanceIssues = computeBalanceIssues(rest);
+    const published = stampRevision(balanceIssues.length > 0 ? { ...rest, balanceIssues } : rest);
     lastSnapshot = published;
     emitUpdate(published);
     autoStartScheduler.onSnapshot(published);
@@ -4983,6 +5061,7 @@ export function createUsageTrackingService({
         // After attribution, so a legacy window with no accountId counts as the
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);
+        attachAccountLogins(accounts);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -5398,7 +5477,25 @@ export function createUsageTrackingService({
     return buildLocalRollup(Date.now());
   }
 
-  function resolveBalancedInstance(provider: ProviderInstanceProvider) {
+  function setBalancePickIssue(provider: ProviderInstanceProvider, issue: AccountBalanceIssue | null): void {
+    const previous = balancePickIssues.get(provider);
+    if (!issue && !previous) return;
+    if (issue && previous?.kind === issue.kind) return;
+    if (issue) balancePickIssues.set(provider, issue);
+    else balancePickIssues.delete(provider);
+    publishSnapshot(lastSnapshot);
+  }
+
+  /**
+   * The account a new chat should use when smart balance is on, or `null` when
+   * balance is off or the machine has one signed-in account.
+   *
+   * A result the picker could not base on quota is still returned, with
+   * `skip` set, and it is shown in the top bar through `balanceIssues`. A
+   * silent fallback to the default account is how smart balance stayed off
+   * for weeks without anyone seeing it.
+   */
+  function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
       const settings = providerInstanceStore.getProviderSettings(provider);
       if (!settings.smartBalance) return null;
@@ -5411,15 +5508,37 @@ export function createUsageTrackingService({
         accountWindows.push(window);
         windowsByAccountId.set(window.accountId, accountWindows);
       }
-      return pickInstanceForNewChat({
+      const result = pickInstanceForNewChat({
         provider,
         instances,
         accounts: lastSnapshot.accounts ?? [],
         windowsByAccountId,
         nowMs: Date.now(),
       });
+      if (result.skip === "no_usage_data") {
+        logger.warn("usage.account_balance_skipped", { provider, ...result });
+        setBalancePickIssue(provider, {
+          provider,
+          kind: "no_usage_data",
+          title: `${providerTitle(provider)} balance has no usage data`,
+          detail: `The last new ${providerTitle(provider)} chat stayed on the default account because ADE has no quota readings for your accounts. Open the Usage panel and refresh it.`,
+          at: nowIso(),
+        });
+      } else {
+        if (result.skip) logger.info("usage.account_balance_skipped", { provider, ...result });
+        setBalancePickIssue(provider, null);
+      }
+      return result;
     } catch (error) {
-      logger.warn("usage.account_balance_resolve_failed", { error: getErrorMessage(error), provider });
+      const message = getErrorMessage(error);
+      logger.error("usage.account_balance_resolve_failed", { error: message, provider });
+      setBalancePickIssue(provider, {
+        provider,
+        kind: "error",
+        title: `${providerTitle(provider)} balance failed`,
+        detail: `Smart balance could not choose an account for the last new chat: ${message}`,
+        at: nowIso(),
+      });
       return null;
     }
   }
@@ -5620,7 +5739,6 @@ export const _testing = {
   isCodexTokenStale,
   isTokenExpiredOrExpiring: isClaudeTokenExpiredOrExpiring,
   isClaudeTokenExpiredOrExpiring,
-  refreshClaudeCredentials,
   parseClaudeWindows,
   parseClaudeCliUsage,
   parseCodexRateLimitSnapshot,

@@ -3,21 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import type { Logger } from "../logging/logger";
 import { isRecord, safeJsonParse } from "../shared/utils";
 import { killWindowsProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
 
-const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token";
-const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000;
 const CODEX_TOKEN_REFRESH_DAYS = 8;
 const CLAUDE_CREDENTIAL_MISS_TTL_MS = 60_000;
-// A refresh token the endpoint rejected (4xx) is rotated or revoked; retrying
-// it on every poll cycle looks like an OAuth storm to Anthropic and gets the
-// whole client rate-limited. Remember the rejected token and stop asking.
-const CLAUDE_REFRESH_REJECTED_TTL_MS = 24 * 60 * 60_000;
-const CLAUDE_REFRESH_TRANSIENT_TTL_MS = 10 * 60_000;
 
 export type LocalAuthSource =
   | "macos-keychain"
@@ -266,99 +258,6 @@ export function isClaudeTokenExpiredOrExpiring(creds: ClaudeLocalAuthCredentials
   return Date.now() + TOKEN_REFRESH_BUFFER_MS >= creds.expiresAt;
 }
 
-type ClaudeTokenRefreshResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-};
-
-/**
- * Refresh tokens the endpoint already rejected, and when to stop refusing.
- *
- * Keyed by the token itself rather than held in one slot: a machine with
- * several Claude accounts refreshes several distinct tokens, and a single slot
- * meant account B's failure erased the memory of account A's — which reopens
- * the per-poll refresh storm this map exists to prevent.
- */
-const failedClaudeRefreshes = new Map<string, number>();
-const MAX_TRACKED_CLAUDE_REFRESH_FAILURES = 32;
-
-function noteClaudeRefreshFailure(refreshToken: string, ttlMs: number): void {
-  const now = Date.now();
-  for (const [token, untilMs] of failedClaudeRefreshes) {
-    if (untilMs <= now) failedClaudeRefreshes.delete(token);
-  }
-  failedClaudeRefreshes.set(refreshToken, now + ttlMs);
-  while (failedClaudeRefreshes.size > MAX_TRACKED_CLAUDE_REFRESH_FAILURES) {
-    const oldest = failedClaudeRefreshes.keys().next();
-    if (oldest.done) break;
-    failedClaudeRefreshes.delete(oldest.value);
-  }
-}
-
-function isClaudeRefreshBlocked(refreshToken: string): boolean {
-  const untilMs = failedClaudeRefreshes.get(refreshToken);
-  if (untilMs == null) return false;
-  if (Date.now() < untilMs) return true;
-  failedClaudeRefreshes.delete(refreshToken);
-  return false;
-}
-
-export async function refreshClaudeCredentials(refreshToken: string): Promise<ClaudeLocalAuthCredentials | null> {
-  if (isClaudeRefreshBlocked(refreshToken)) return null;
-
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    client_id: CLAUDE_OAUTH_CLIENT_ID,
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const response = await fetch(CLAUDE_TOKEN_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      // 5xx/429/408 are transient endpoint conditions; other 4xx mean the
-      // token itself was rejected (rotated or revoked) and will never work.
-      const transient = response.status >= 500 || response.status === 429 || response.status === 408;
-      noteClaudeRefreshFailure(
-        refreshToken,
-        transient ? CLAUDE_REFRESH_TRANSIENT_TTL_MS : CLAUDE_REFRESH_REJECTED_TTL_MS,
-      );
-      return null;
-    }
-
-    const payload = (await response.json()) as ClaudeTokenRefreshResponse;
-    if (!payload.access_token) {
-      noteClaudeRefreshFailure(refreshToken, CLAUDE_REFRESH_REJECTED_TTL_MS);
-      return null;
-    }
-
-    const expiresAt =
-      payload.expires_in != null
-        ? Date.now() + payload.expires_in * 1000
-        : undefined;
-
-    failedClaudeRefreshes.delete(refreshToken);
-    return {
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token ?? refreshToken,
-      expiresAt,
-      source: "claude-credentials-file",
-    };
-  } catch {
-    noteClaudeRefreshFailure(refreshToken, CLAUDE_REFRESH_TRANSIENT_TTL_MS);
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * Cached credentials PER ACCOUNT config home.
  *
@@ -382,17 +281,13 @@ function claudeCacheEntry(key: string): ClaudeCredentialCacheEntry {
   return created;
 }
 
-/** Clears every account's cache and the whole refresh-refusal memory. */
+/** Clears every account's cache. */
 export function clearClaudeCredentialCache(): void {
   claudeCredentialCache.clear();
-  failedClaudeRefreshes.clear();
 }
 
 /**
  * Drop only the cached access token so the next read re-reads sources.
- * Keeps the refresh-token refusal memory intact — a 401 on the usage API
- * must not reopen per-poll refresh attempts for a token the token endpoint
- * already rejected.
  *
  * Scoped to one account when `configHome` is given; the default account
  * otherwise, which is what every pre-instance caller means.
@@ -408,54 +303,54 @@ export function cacheClaudeCredentials(
   claudeCredentialCache.set(claudeCacheKey(configHome), { credentials, missUntilMs: 0 });
 }
 
-export async function readClaudeCredentialsWithRefresh(
-  logger: Logger,
+/**
+ * What one Claude account's stored login can do right now.
+ *
+ * - `ok`: a live access token, returned in `credentials`.
+ * - `expired`: the access token expired. The login is still there, and the
+ *   Claude CLI refreshes it the next time it runs on this account.
+ * - `signed_out`: no login, or a login the CLI already cleared.
+ */
+export type ClaudeLoginRead =
+  | { state: "ok"; credentials: ClaudeLocalAuthCredentials }
+  | { state: "expired"; hasRefreshToken: boolean }
+  | { state: "signed_out" };
+
+/**
+ * Reads one Claude account's login without changing it.
+ *
+ * ADE never refreshes a Claude token itself. Anthropic rotates the refresh
+ * token on every refresh, and the CLI keeps the only saved copy. A refresh
+ * here used to spend that copy and keep the new one in memory, so the CLI's
+ * next refresh failed and the CLI cleared the login. An idle second account
+ * lost its sign-in that way. An expired token is now a state to report: the
+ * CLI refreshes it when a chat next runs on the account.
+ */
+export async function readClaudeLogin(
   options: ClaudeCredentialReadOptions = {},
-): Promise<ClaudeLocalAuthCredentials | null> {
+): Promise<ClaudeLoginRead> {
   const cacheKey = claudeCacheKey(options.configHome);
   const cached = claudeCredentialCache.get(cacheKey);
   if (cached?.credentials && !isClaudeTokenExpiredOrExpiring(cached.credentials)) {
-    return cached.credentials;
+    return { state: "ok", credentials: cached.credentials };
   }
 
   const skipMissCache = options.skipMissCache ?? (options.allowKeychain !== false);
-  if (!skipMissCache && (cached?.missUntilMs ?? 0) > Date.now()) return null;
+  if (!skipMissCache && (cached?.missUntilMs ?? 0) > Date.now()) return { state: "signed_out" };
 
   const creds = await readClaudeCredentials(options);
   if (!creds) {
     claudeCacheEntry(cacheKey).missUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
-    return null;
+    return { state: "signed_out" };
   }
   claudeCacheEntry(cacheKey).missUntilMs = 0;
 
   if (!isClaudeTokenExpiredOrExpiring(creds)) {
     cacheClaudeCredentials(creds, options.configHome);
-    return creds;
+    return { state: "ok", credentials: creds };
   }
-
-  if (creds.refreshToken && !isClaudeRefreshBlocked(creds.refreshToken)) {
-    logger.info("usage.token_refresh.attempting", { expiresAt: creds.expiresAt });
-    const refreshed = await refreshClaudeCredentials(creds.refreshToken);
-    if (refreshed) {
-      logger.info("usage.token_refresh.success", {
-        expiresIn: refreshed.expiresAt ? Math.round((refreshed.expiresAt - Date.now()) / 1000) : "unknown",
-      });
-      cacheClaudeCredentials(refreshed, options.configHome);
-      return refreshed;
-    }
-    logger.warn("usage.token_refresh.failed", {
-      message: "refresh endpoint returned no token",
-    });
-  }
-
-  // The token is expired and could not be refreshed. Returning it anyway
-  // guarantees a 401 (and another doomed refresh attempt) on every poll —
-  // enough of those and Anthropic rate-limits the whole client. Report
-  // "no usable credentials" instead so callers surface a reconnect state.
-  const entry = claudeCacheEntry(cacheKey);
-  entry.credentials = null;
-  entry.missUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
-  return null;
+  claudeCacheEntry(cacheKey).credentials = null;
+  return { state: "expired", hasRefreshToken: Boolean(creds.refreshToken) };
 }
 
 /**

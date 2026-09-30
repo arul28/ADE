@@ -186,6 +186,7 @@ function createHarness(messages: Array<Record<string, unknown>>) {
   fs.mkdirSync(transcriptsDir, { recursive: true });
 
   const service = createAgentChatService({
+    getAccountUsage: () => null,
     projectRoot: tempRoot,
     transcriptsDir,
     laneService: laneService as any,
