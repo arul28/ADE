@@ -73,6 +73,7 @@ function createHeadlessAccountVaultBridge(
           value: null,
           updatedAt: item.updatedAt,
           refreshOwner: item.refreshOwner,
+          ...(item.deleted === true ? { deleted: true } : {}),
         })),
       };
     },

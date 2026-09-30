@@ -63,6 +63,7 @@ function toItem(value: unknown): AccountVaultItem | null {
     value: hasValue ? itemValue : null,
     updatedAt,
     ...(refreshOwner !== undefined ? { refreshOwner } : {}),
+    ...(value.deleted === true ? { deleted: true } : {}),
   };
 }
 

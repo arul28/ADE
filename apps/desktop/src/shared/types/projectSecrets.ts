@@ -42,7 +42,15 @@ export type ProjectSecretGetArgs = {
  * and collapsing them told a signed-out user their secrets were up to date.
  */
 export type ProjectSecretPullResult =
-  | { state: "pulled"; added: number; updated: number }
+  | {
+    state: "pulled";
+    /** Names this machine did not have. */
+    added: number;
+    /** Account-scoped names whose vault copy was newer. */
+    updated: number;
+    /** Account-scoped names deleted on another machine, dropped here too. */
+    removed: number;
+  }
   | { state: "unavailable" };
 
 export type ProjectSecretDeleteArgs = {

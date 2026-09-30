@@ -39,6 +39,8 @@ type CachedSetting = {
   updatedAt: string;
   changedAt: string | null;
   writerDeviceId: string | null;
+  /** True on a tombstone: this key was deleted on some machine. */
+  deleted?: boolean;
 };
 
 type PendingWrite = {
@@ -70,7 +72,14 @@ function decodeCachedSetting(value: unknown): CachedSetting | null {
     ? value.writerDeviceId
     : undefined;
   if (!updatedAt || changedAt === undefined || writerDeviceId === undefined) return null;
-  return { value: value.value, updatedAt, changedAt, writerDeviceId };
+  if (value.deleted !== undefined && typeof value.deleted !== "boolean") return null;
+  return {
+    value: value.value,
+    updatedAt,
+    changedAt,
+    writerDeviceId,
+    ...(value.deleted === true ? { deleted: true } : {}),
+  };
 }
 
 function decodePendingWrite(value: unknown): PendingWrite | null {
@@ -199,6 +208,9 @@ export function createAccountSettingsStore(args: {
       updatedAt: row.updatedAt,
       changedAt: row.changedAt,
       writerDeviceId: row.writerDeviceId,
+      // A delete is a row here, not an absence. Dropping it would leave the
+      // value readable on this machine after it was deleted on another one.
+      ...(row.deleted === true ? { deleted: true } : {}),
     }),
   });
 
@@ -208,6 +220,8 @@ export function createAccountSettingsStore(args: {
       const current = cache.readCache();
       const rows: AccountSettingRecord[] = [];
       for (const [composite, setting] of Object.entries(current.rows)) {
+        // A tombstone is bookkeeping, not a setting. Callers list settings.
+        if (setting.deleted) continue;
         const split = splitCacheKey(composite);
         if (!split) continue;
         if (scope && split.scope !== scope) continue;
@@ -217,7 +231,10 @@ export function createAccountSettingsStore(args: {
     },
 
     get(scope: string, key: string): unknown {
-      return cache.readCache().rows[cacheKey(scope, key)]?.value;
+      const row = cache.readCache().rows[cacheKey(scope, key)];
+      // A key deleted on another machine reads as absent here too, which is what
+      // makes an account-scoped setting match on every machine.
+      return row?.deleted ? undefined : row?.value;
     },
 
     /**

@@ -1795,6 +1795,15 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
     if (!parsed) continue;
     const storageKey = credentialStorageKey(parsed.provider, parsed.credentialId);
 
+    if (item.deleted) {
+      // Deleted on another machine. This machine's copy has to go with it, or
+      // "account-wide" stops being true: the key would keep working here while
+      // the account says it does not exist. A machine that never had the key
+      // removes nothing.
+      removeApiCredential(parsed.provider, parsed.credentialId);
+      continue;
+    }
+
     let value = typeof item.value === "string" ? item.value.trim() : "";
     if (!value.length) {
       let fetched: Awaited<ReturnType<AccountVaultBridge["get"]>>;

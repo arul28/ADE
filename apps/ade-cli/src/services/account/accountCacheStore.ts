@@ -26,7 +26,18 @@ export type AccountCacheLogger = {
 };
 
 /** The minimum a cached row must carry for last-writer-wins to be decidable. */
-export type AccountCacheRow = { updatedAt: string };
+export type AccountCacheRow = {
+  updatedAt: string;
+  /**
+   * Present on a tombstone: a key deleted on some machine, kept here so the
+   * consumers on THIS machine can drop their own copies.
+   *
+   * The record is retained rather than dropped because it is the only evidence
+   * a delete ever happened. Without it a value deleted on one machine lived on
+   * forever on every other one, since there is nothing to pull that says so.
+   */
+  deleted?: boolean;
+};
 
 /**
  * The minimum a queued intent must carry.
@@ -469,14 +480,10 @@ export function createAccountCacheStore<
           const key = config.remoteKey(remote);
           // A key this machine has queued is not the server's to answer yet.
           if (stillPending.has(key)) continue;
-          if (remote.deleted) {
-            delete after.rows[key];
-            continue;
-          }
-          // Nor is a row older than what this machine already holds. A page
-          // fetched from a cursor taken before our own upload legitimately
-          // contains stale rows, and applying one would revert the user's edit
-          // in front of them.
+          // Nor is a row older than what this machine already holds — a
+          // tombstone included. A page fetched from a cursor taken before our
+          // own upload legitimately contains stale rows, and applying one would
+          // revert the user's edit in front of them.
           const cached = after.rows[key];
           if (cached && Date.parse(remote.updatedAt) <= Date.parse(cached.updatedAt)) continue;
           const next = config.toRow(remote, cached);

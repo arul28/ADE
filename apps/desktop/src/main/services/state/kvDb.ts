@@ -1786,16 +1786,38 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
   removeExcludedCrrMetadata(db, logger);
 
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
+  /**
+   * Turn one table into a CRR, or repair the triggers of one that already is.
+   *
+   * `crsql_as_crr` refuses a table that still carries a non-PK unique index — a
+   * table the schema retrofit could not strip, for instance. That must not abort
+   * the whole database open: this table loses replication and says so in the log,
+   * while a runtime that cannot start loses everything. A phone-critical table
+   * still throws, because a phone whose core tables silently stop replicating is
+   * worse than an open that fails loudly.
+   */
+  const convertToCrr = (tableName: string): void => {
+    try {
+      getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+    } catch (error) {
+      if (repairTargets.has(tableName)) throw error;
+      logger?.warn("db.crr_conversion_failed", {
+        tableName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   for (const tableName of listEligibleCrrTables(db)) {
     if (rawHasTable(db, `${tableName}__crsql_clock`)) {
       if (tableNeedsCrrTriggerRepair(db, tableName)) {
-        getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+        convertToCrr(tableName);
       }
       if (!repairTargets.has(tableName)) {
         continue;
       }
     } else {
-      getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+      convertToCrr(tableName);
     }
 
     if (!repairTargets.has(tableName)) {

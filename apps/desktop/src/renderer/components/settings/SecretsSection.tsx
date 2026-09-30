@@ -302,6 +302,11 @@ export function SecretsSection() {
     try {
       const result = await window.ade.projectSecrets.pullFromAccount();
       note(projectSecretPullSummary(result), result.state === "unavailable" ? "warning" : "success");
+      // A pull can replace a value this section already revealed and cached, so
+      // drop every revealed value, reveal toggle and copy confirmation with it.
+      setRevealedValues({});
+      setVisibleNames({});
+      resetCopied();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
