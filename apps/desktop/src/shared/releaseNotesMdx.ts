@@ -18,14 +18,38 @@ function plainText(value: string): string {
     .trim();
 }
 
+function isSummaryLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return false;
+  if (/^[-*]\s+/.test(trimmed)) return false;
+  return true;
+}
+
+/** Split intro copy from ## section bodies. Prefer an explicit --- rule; else first ##. */
+function splitSummaryAndSections(body: string): { summarySource: string; sectionsSource: string } {
+  const divider = body.search(/\r?\n---\r?\n/);
+  if (divider !== -1) {
+    return {
+      summarySource: body.slice(0, divider),
+      sectionsSource: body.slice(divider).replace(/^\r?\n---\r?\n/, ""),
+    };
+  }
+  const firstSection = body.search(/\r?\n##\s+/);
+  if (firstSection !== -1) {
+    return {
+      summarySource: body.slice(0, firstSection),
+      sectionsSource: body.slice(firstSection),
+    };
+  }
+  return { summarySource: body, sectionsSource: "" };
+}
+
 /** The Mintlify changelog page, reduced to the summary and section bullets. */
 export function parseReleaseNotesMdx(source: string): ReleaseNotesDocument | null {
   const withoutFrontmatter = source.replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, "").trim();
   if (!withoutFrontmatter) return null;
-  const divider = withoutFrontmatter.search(/\r?\n---\r?\n/);
-  const summarySource = divider === -1 ? withoutFrontmatter : withoutFrontmatter.slice(0, divider);
-  const sectionsSource = divider === -1 ? "" : withoutFrontmatter.slice(divider).replace(/^\r?\n---\r?\n/, "");
-  const summary = plainText(summarySource.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("#")).join(" "));
+  const { summarySource, sectionsSource } = splitSummaryAndSections(withoutFrontmatter);
+  const summary = plainText(summarySource.split(/\r?\n/).filter(isSummaryLine).join(" "));
   const sections: ReleaseNotesSection[] = [];
   let current: ReleaseNotesSection | null = null;
   for (const line of sectionsSource.split(/\r?\n/)) {

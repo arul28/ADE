@@ -39,4 +39,30 @@ describe("parseReleaseNotesMdx", () => {
   it("returns null when the page has no summary and no bullets", () => {
     expect(parseReleaseNotesMdx("---\ntitle: x\n---\n")).toBeNull();
   });
+
+  it("parses ## sections when the page omits the --- divider", () => {
+    const page = `---
+title: "v1.2.83"
+description: "Release notes for ADE v1.2.83"
+---
+
+ADE 1.2.83 ships SDK 0.5.0 with host-side fixes.
+
+## SDK 0.5
+
+- First SDK bullet.
+- Second SDK bullet.
+
+## Desktop
+
+- Desktop bullet.
+`;
+    expect(parseReleaseNotesMdx(page)).toEqual({
+      summary: "ADE 1.2.83 ships SDK 0.5.0 with host-side fixes.",
+      sections: [
+        { title: "SDK 0.5", items: ["First SDK bullet.", "Second SDK bullet."] },
+        { title: "Desktop", items: ["Desktop bullet."] },
+      ],
+    });
+  });
 });
