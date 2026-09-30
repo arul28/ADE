@@ -34,7 +34,7 @@ import {
   reasoningEffortTierLabel,
   reasoningEffortToneColor,
 } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
+import { ModelRowLogo } from "../shared/ProviderLogos";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { modelPermissionChipOptions, permissionToneTextClass } from "../../lib/modelPermissionOptions";
 import { cn } from "../ui/cn";
@@ -95,10 +95,10 @@ function logoGroup(innerHtml: string): HTMLSpanElement {
   return group;
 }
 
-/** The maker / harness / route marks for a chip, in display order. */
-export function modelChipLogos(info: ComposerModelInfo | null): { maker: string; right: string } {
-  if (!info) return { maker: "", right: "" };
-  const maker = markHtml(createElement(ModelRowLogo, {
+/** The maker mark for a chip. The harness/route marks live in the `@` menu only. */
+export function modelChipMakerMark(info: ComposerModelInfo | null): string {
+  if (!info) return "";
+  return markHtml(createElement(ModelRowLogo, {
     modelFamily: info.modelFamily,
     cliCommand: info.cliCommand,
     modelId: undefined,
@@ -106,11 +106,6 @@ export function modelChipLogos(info: ComposerModelInfo | null): { maker: string;
     openCodeProviderId: info.openCodeProviderId,
     size: 12,
   }));
-  const harness = markHtml(createElement(ProviderLogo, { family: info.provider, size: 11 }));
-  const route = info.routeKey
-    ? markHtml(createElement(ProviderLogo, { family: info.routeKey, size: 11 }))
-    : "";
-  return { maker, right: `${harness}${route}` };
 }
 
 export function modelChipOptions(segment: ModelChipSegment, info: ComposerModelInfo | null): ModelChipOption[] {
@@ -163,11 +158,11 @@ export function renderModelChip(
   chip.title = modelChipHoverTitle(mention, info);
   chip.replaceChildren();
 
-  const logos = modelChipLogos(info);
+  const makerMark = modelChipMakerMark(info);
   const name = document.createElement("span");
   name.className = NAME_CLASS;
-  if (logos.maker) {
-    name.appendChild(logoGroup(logos.maker));
+  if (makerMark) {
+    name.appendChild(logoGroup(makerMark));
   }
   const label = document.createElement("span");
   label.dataset.composerChipLabel = "true";
@@ -203,9 +198,6 @@ export function renderModelChip(
     }
     chip.appendChild(part);
   }
-
-  // Harness + route marks sit after the editable parts, outside the pill chrome.
-  if (logos.right) chip.appendChild(logoGroup(logos.right));
 }
 
 /** `DeepSeek V4.1 Flash · OpenCode · OpenCode Go · High · Bypass`. */
