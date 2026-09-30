@@ -100,7 +100,7 @@ The SDK and the runtime release on separate cadences, and a downloaded runtime c
 | 0.4.0 | `>=1.2.82 <2.0.0` |
 | 0.3.0 | `>=1.2.81 <2.0.0` |
 
-The lower bound did **not** move in 0.5.0: nothing in that release needs a new wire, so a host on runtime 1.2.82 keeps working. `@ade-dev/sdk` 0.5.0, `@ade-dev/chat-ui` 0.4.1 and runtime 1.2.83 ship together. An embedded runtime used to print four lines on every start — the role-ceiling sentence, its `brain.role_ceiling_below_cto` warning, and the two "could not bound runtime log" lines for `launchd` files it never has. All four are gone from runtime 1.2.83; an older runtime still prints them.
+The lower bound did **not** move in 0.5.0: nothing in that release needs a new wire, so a host on runtime 1.2.82 keeps working. `@ade-dev/sdk` 0.5.0, `@ade-dev/chat-ui` 0.5.0 and runtime 1.2.83 ship together. An embedded runtime used to print four lines on every start — the role-ceiling sentence, its `brain.role_ceiling_below_cto` warning, and the two "could not bound runtime log" lines for `launchd` files it never has. All four are gone from runtime 1.2.83; an older runtime still prints them.
 
 ```ts
 import { SUPPORTED_RUNTIME_RANGE } from "@ade-dev/sdk";

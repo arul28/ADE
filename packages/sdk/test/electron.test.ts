@@ -186,6 +186,33 @@ class FakeClient {
 
   models = { list: async () => [{ id: "m", displayName: "M", provider: "claude" }] };
 
+  /** Client-scope listeners, and what this fake published to them. */
+  readonly clientListeners = new Map<string, Set<(payload: any) => void>>();
+  readonly published = { threadLifecycle: [] as { key: string; change: string }[] };
+
+  /**
+   * Mirrors the real client's contract that the bridge depends on: the
+   * lifecycle event fires SYNCHRONOUSLY from inside the thread method, after
+   * the RPC resolves and before that method's promise resolves. That ordering is
+   * what makes "one callback per removal" true without a second call site.
+   */
+  on(event: string, cb: (payload: any) => void): () => void {
+    let set = this.clientListeners.get(event);
+    if (!set) {
+      set = new Set();
+      this.clientListeners.set(event, set);
+    }
+    set.add(cb);
+    return () => {
+      set.delete(cb);
+    };
+  }
+
+  private publishThreadLifecycle(key: string, change: "deleted" | "archived" | "unarchived"): void {
+    this.published.threadLifecycle.push({ key, change });
+    for (const cb of [...(this.clientListeners.get("threadLifecycle") ?? [])]) cb({ key, change });
+  }
+
   threads = {
     open: async (key: string, opts?: unknown) => {
       this.openCalls.push({ key, opts });
@@ -195,6 +222,16 @@ class FakeClient {
       const thread = new FakeThread(key);
       this.threads_.set(key, thread);
       return thread;
+    },
+    delete: async (key: string) => {
+      this.threads_.delete(key);
+      this.publishThreadLifecycle(key, "deleted");
+    },
+    archive: async (key: string) => {
+      this.publishThreadLifecycle(key, "archived");
+    },
+    unarchive: async (key: string) => {
+      this.publishThreadLifecycle(key, "unarchived");
     },
   };
 
@@ -1068,5 +1105,73 @@ describe("client swap", () => {
     // and dropped, and its refusal does not stop "a" from moving.
     expect(next.openCalls.map((call) => call.key)).toEqual(["a"]);
     expect(next.threads_.has("b")).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Host removal notifications                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe("onThreadRemoved", () => {
+  it("calls the host once per delete and archive, from the renderer or from main", async () => {
+    const removed: { key: string; kind: string }[] = [];
+    const harness = createHarness({ onThreadRemoved: (key, kind) => removed.push({ key, kind }) });
+    const window = harness.attachWindow(1);
+    const open = (key: string) => window.client.threads.open(key, { provider: "claude", model: "m" });
+
+    await open("a");
+    await open("b");
+    await flush();
+    expect(removed).toEqual([]);
+
+    // Once, not twice. The client's own `threadLifecycle` event and the
+    // `threads.delete` handler both run for this one call, and only the event
+    // may notify the host — a second call site would tell a host that keeps a
+    // count that one chat was removed twice.
+    await window.client.threads.delete("a");
+    await flush();
+    expect(removed).toEqual([{ key: "a", kind: "deleted" }]);
+
+    await window.client.threads.archive("b");
+    await flush();
+    expect(removed).toEqual([
+      { key: "a", kind: "deleted" },
+      { key: "b", kind: "archived" },
+    ]);
+
+    // An unarchive is not a removal: the thread is back, not gone.
+    await window.client.threads.unarchive("b");
+    await flush();
+    expect(removed).toHaveLength(2);
+
+    // A delete main code makes on the served client reports too, because the
+    // bridge watches the client rather than the bridge's own methods.
+    await harness.client.threads.delete("b");
+    await flush();
+    expect(removed).toHaveLength(3);
+    expect(removed[2]).toEqual({ key: "b", kind: "deleted" });
+  });
+
+  it("survives a callback that throws, and still forgets the deleted key", async () => {
+    const harness = createHarness({
+      onThreadRemoved: () => {
+        throw new Error("a bug in the host's own handler");
+      },
+    });
+    const window = harness.attachWindow(1);
+    await window.client.threads.open("a", { provider: "claude", model: "m" });
+    await flush();
+
+    // The delete the renderer asked for must still succeed: the notification is
+    // not part of the contract that caller is waiting on.
+    await expect(window.client.threads.delete("a")).resolves.toBeUndefined();
+    await flush();
+
+    // ...and its handles are gone, so the bridge no longer holds a chat that no
+    // longer exists, and it still serves the next call.
+    expect(harness.client.threads_.has("a")).toBe(false);
+    await window.client.threads.open("a", { provider: "claude", model: "m" });
+    await flush();
+    expect(harness.client.threads_.has("a")).toBe(true);
   });
 });

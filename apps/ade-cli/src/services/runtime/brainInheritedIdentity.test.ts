@@ -42,8 +42,15 @@ describe("brain startup sentences", () => {
     expect(describeDroppedCallerIdentity(["ADE_CHAT_SESSION_ID"])).toContain("ADE_CHAT_SESSION_ID");
   });
 
-  it("warns only for a ceiling that refuses cto clients", () => {
+  it("warns only for a ceiling that refuses cto clients, and never for an embedded runtime", () => {
     expect(describeBrainRoleCeiling("cto")).toBeNull();
     expect(describeBrainRoleCeiling("agent")).toContain("ade --role cto serve");
+
+    // An embedded runtime is a guest inside one host's process. It serves that
+    // host at `agent` on purpose, so the desktop, phone and web clients the
+    // sentence warns about are not there to be refused, and the command it
+    // recommends does not apply.
+    expect(describeBrainRoleCeiling("agent", { embedded: true })).toBeNull();
+    expect(describeBrainRoleCeiling("cto", { embedded: true })).toBeNull();
   });
 });
