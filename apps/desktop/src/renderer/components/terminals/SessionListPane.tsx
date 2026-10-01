@@ -100,9 +100,10 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import {
   attachedShellSectionId,
-  nestedSubagentDrawerAttention,
+  nestedDrawerStatus,
   nestedSubagentSectionId,
   workNestingDrawers,
+  type NestedDrawerStatus,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
 import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
@@ -508,6 +509,17 @@ const SHELF_TONE_RULE_CLASS: Record<GroupShelfTone, string> = {
  */
 function quietShelfOpenMarker(sectionId: string): string {
   return `shelf-open:${sectionId}`;
+}
+
+/**
+ * A chat's shell and subagent drawers default to COLLAPSED as well: a busy
+ * agent can hang a dozen App Control shells and subagents off one chat, and
+ * listing every one pushed the other chats off the screen. Same three-state
+ * shape as the quiet shelves — an explicit open writes `drawer-open:<id>`. A
+ * legacy `chat:<id>` entry from the expanded-by-default days is inert.
+ */
+function nestedDrawerOpenMarker(sectionId: string): string {
+  return `drawer-open:${sectionId}`;
 }
 
 function isQuietShelfCollapsed(collapsedSectionIds: string[], sectionId: string): boolean {
@@ -1988,6 +2000,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [handoffJobsByLaneId, lanes, missingLaneSessionGroups]);
+  const isNestedDrawerCollapsed = useCallback(
+    (sectionId: string) => !workCollapsedSectionIds.includes(nestedDrawerOpenMarker(sectionId)),
+    [workCollapsedSectionIds],
+  );
   const expandSessionWithChildren = useCallback((
     session: TerminalSessionSummary,
     drawers: WorkNestingDrawers<TerminalSessionSummary> = workNesting,
@@ -1995,14 +2011,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     const shells = drawers.shellsByParentId.get(session.id) ?? [];
     const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
     const ids = [session.id];
-    if (subagents.length > 0 && !workCollapsedSectionIds.includes(nestedSubagentSectionId(session.id))) {
+    if (subagents.length > 0 && !isNestedDrawerCollapsed(nestedSubagentSectionId(session.id))) {
       ids.push(...subagents.map((child) => child.id));
     }
-    if (shells.length > 0 && !workCollapsedSectionIds.includes(attachedShellSectionId(session.id))) {
+    if (shells.length > 0 && !isNestedDrawerCollapsed(attachedShellSectionId(session.id))) {
       ids.push(...shells.map((child) => child.id));
     }
     return ids;
-  }, [workCollapsedSectionIds, workNesting]);
+  }, [isNestedDrawerCollapsed, workNesting]);
   const collectVisibleIdsFrom = useCallback((
     sessions: TerminalSessionSummary[],
     drawers: WorkNestingDrawers<TerminalSessionSummary>,
@@ -2304,36 +2320,86 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
+  const nestedDrawerLabel = (kind: "shells" | "subagents", count: number): string =>
+    kind === "shells"
+      ? (count === 1 ? "1 shell" : `${count} shells`)
+      : (count === 1 ? "1 subagent" : `${count} subagents`);
+
+  const nestedDrawerSectionId = (parentId: string, kind: "shells" | "subagents"): string =>
+    kind === "shells" ? attachedShellSectionId(parentId) : nestedSubagentSectionId(parentId);
+
+  const nestedDrawerKindIcon = (kind: "shells" | "subagents") =>
+    kind === "shells" ? (
+      <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
+    ) : (
+      <UsersThree size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
+    );
+
+  const renderNestedDrawerStatus = (status: NestedDrawerStatus): React.ReactNode => {
+    if (status === "failed") {
+      return (
+        <span className={cn("inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.red)} title="Failed">
+          <X size={8} weight="bold" aria-hidden />
+          <span className="sr-only">Failed</span>
+        </span>
+      );
+    }
+    if (status === "needs_you") {
+      return (
+        <span className={cn("inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.amber)} title="Needs you">
+          <Circle size={7} weight="fill" aria-hidden />
+          <span className="sr-only">Needs you</span>
+        </span>
+      );
+    }
+    if (status === "running") {
+      return (
+        <span className={cn("inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.blue)} title="Running">
+          <CircleNotch size={8} weight="bold" aria-hidden />
+          <span className="sr-only">Running</span>
+        </span>
+      );
+    }
+    return null;
+  };
+
+  /**
+   * A collapsed drawer is one small mark — kind icon, count, and the one state
+   * worth seeing (`nestedDrawerStatus`) — so a chat's shells and subagents cost
+   * a sliver of a line instead of a row each. Clicking it opens the drawer.
+   */
+  const renderCollapsedDrawerMark = (
+    parentId: string,
+    kind: "shells" | "subagents",
+    children: TerminalSessionSummary[],
+  ) => {
+    const sectionId = nestedDrawerSectionId(parentId, kind);
+    const label = nestedDrawerLabel(kind, children.length);
+    return (
+      <button
+        key={`${kind}-${parentId}`}
+        type="button"
+        onClick={() => toggleWorkSectionCollapsed(nestedDrawerOpenMarker(sectionId))}
+        className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-fg/60 transition-colors hover:bg-white/[0.04] hover:text-muted-fg/85"
+        aria-expanded={false}
+        aria-label={`Show ${label}`}
+        title={`Show ${label}`}
+        data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
+      >
+        {nestedDrawerKindIcon(kind)}
+        <span>{children.length}</span>
+        {renderNestedDrawerStatus(nestedDrawerStatus(children, foreignFilingNowMs))}
+      </button>
+    );
+  };
+
   const renderNestedSection = (
     parentId: string,
     kind: "shells" | "subagents",
     children: TerminalSessionSummary[],
     cardOptions?: RenderCardOptions,
   ) => {
-    if (children.length === 0) return null;
-    const sectionId = kind === "shells"
-      ? attachedShellSectionId(parentId)
-      : nestedSubagentSectionId(parentId);
-    const collapsed = workCollapsedSectionIds.includes(sectionId);
-    const label = kind === "shells"
-      ? (children.length === 1 ? "1 shell" : `${children.length} shells`)
-      : (children.length === 1 ? "1 subagent" : `${children.length} subagents`);
-    const attention = kind === "subagents" ? nestedSubagentDrawerAttention(children, foreignFilingNowMs) : null;
-    let attentionBadge: React.ReactNode = null;
-    if (attention === "failed") {
-      attentionBadge = (
-        <span className={cn("ml-auto shrink-0 font-medium", SESSION_TONE_TEXT_CLASS.red)}>
-          Failed
-        </span>
-      );
-    } else if (attention === "needs_you") {
-      attentionBadge = (
-        <span className={cn("ml-auto inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.amber)}>
-          <Circle size={7} weight="fill" aria-hidden />
-          <span className="sr-only">Needs you</span>
-        </span>
-      );
-    }
+    const sectionId = nestedDrawerSectionId(parentId, kind);
     return (
       // `data-indented` for the card's bleed rule, same as a lane group body:
       // these rows hang off their own rail, so a left bleed would cross it.
@@ -2345,61 +2411,65 @@ export const SessionListPane = React.memo(function SessionListPane({
       >
         <button
           type="button"
-          onClick={() => toggleWorkSectionCollapsed(sectionId)}
+          onClick={() => toggleWorkSectionCollapsed(nestedDrawerOpenMarker(sectionId))}
           className={cn(
             "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
             QUIET_LABEL_CLASS,
           )}
-          aria-expanded={!collapsed}
+          aria-expanded
         >
-          {collapsed ? (
-            <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-          ) : (
-            <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-          )}
-          {kind === "shells" ? (
-            <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
-          ) : (
-            <UsersThree size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
-          )}
-          <span className="truncate">{label}</span>
-          {attentionBadge}
+          <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+          {nestedDrawerKindIcon(kind)}
+          <span className="truncate">{nestedDrawerLabel(kind, children.length)}</span>
         </button>
-        {!collapsed ? (
-          <div className={cn(ROW_STACK_CLASS, "mt-1")}>
-            {children.map((child) => (
-              <div key={child.id}>
-                {renderCardCore(child, {
-                  ...cardOptions,
-                  compact: true,
-                  nestedSubagent: kind === "subagents",
-                  showLaneIdentity: false,
-                  laneActions: null,
-                  machineMarker: null,
-                  laneAppleDevice: null,
-                  laneMacDesktop: false,
-                  laneAppControl: false,
-                  laneBrowserTabs: 0,
-                })}
-              </div>
-            ))}
-          </div>
-        ) : null}
+        <div className={cn(ROW_STACK_CLASS, "mt-1")}>
+          {children.map((child) => (
+            <div key={child.id}>
+              {renderCardCore(child, {
+                ...cardOptions,
+                compact: true,
+                nestedSubagent: kind === "subagents",
+                showLaneIdentity: false,
+                laneActions: null,
+                machineMarker: null,
+                laneAppleDevice: null,
+                laneMacDesktop: false,
+                laneAppControl: false,
+                laneBrowserTabs: 0,
+              })}
+            </div>
+          ))}
+        </div>
       </div>
     );
   };
 
+  /**
+   * A chat's drawers start COLLAPSED (see `nestedDrawerOpenMarker`). Collapsed
+   * drawers share one thin line of marks under the card; an opened drawer
+   * renders its rows below that line.
+   */
   const renderParentNestedDrawers = (
     parentId: string,
     shells: TerminalSessionSummary[],
     subagents: TerminalSessionSummary[],
     cardOptions?: RenderCardOptions,
-  ) => (
-    <>
-      {renderNestedSection(parentId, "subagents", subagents, cardOptions)}
-      {renderNestedSection(parentId, "shells", shells, cardOptions)}
-    </>
-  );
+  ) => {
+    const drawers = ([["subagents", subagents], ["shells", shells]] as const)
+      .filter(([, children]) => children.length > 0);
+    const collapsed = drawers.filter(([kind]) => isNestedDrawerCollapsed(nestedDrawerSectionId(parentId, kind)));
+    const open = drawers.filter(([kind]) => !isNestedDrawerCollapsed(nestedDrawerSectionId(parentId, kind)));
+    return (
+      <>
+        {collapsed.length > 0 ? (
+          <div className="ml-3 mt-0.5 flex items-center gap-1 pl-1.5" data-testid="nested-drawer-marks">
+            {collapsed.map(([kind, children]) => renderCollapsedDrawerMark(parentId, kind, [...children]))}
+          </div>
+        ) : null}
+        {open.map(([kind, children]) => renderNestedSection(parentId, kind, [...children], cardOptions))}
+      </>
+    );
+  };
 
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
     const drawers = options?.nesting ?? workNesting;

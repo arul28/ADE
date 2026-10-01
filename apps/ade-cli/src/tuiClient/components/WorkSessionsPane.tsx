@@ -8,6 +8,7 @@ import {
   type WorkListLayout,
 } from "../workListLayout";
 import type {
+  WorkListDrawerRow,
   WorkListModel,
   WorkListLaneHeaderRow,
   WorkListSessionRow,
@@ -145,6 +146,17 @@ export function WorkSessionsPaneComponent({
               );
             case "new-chat":
               return null;
+            case "drawer":
+              return (
+                <DrawerRow
+                  key={row.key}
+                  row={row}
+                  width={inner}
+                  selected={selected}
+                  hovered={hovered}
+                  marginTop={marginTop}
+                />
+              );
             case "shelf":
               return (
                 <ShelfRow
@@ -380,6 +392,46 @@ function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
  * The collapsed quiet tail. Snoozed and settled rows share one shelf pattern —
  * both are "true, but not actionable", and the desktop files them the same way.
  */
+const DRAWER_STATUS: Record<NonNullable<WorkListDrawerRow["status"]>, { word: string; tone: "red" | "amber" | "blue" }> = {
+  failed: { word: "failed", tone: "red" },
+  needs_you: { word: "needs you", tone: "amber" },
+  running: { word: "running", tone: "blue" },
+};
+
+/** A chat's folded subagents: `▸ 3 subagents · needs you`, indented under it. */
+function DrawerRow({
+  row,
+  width,
+  selected,
+  hovered,
+  marginTop,
+}: {
+  row: WorkListDrawerRow;
+  width: number;
+  selected: boolean;
+  hovered: boolean;
+  marginTop: number;
+}) {
+  const highlighted = selected || hovered;
+  const gutter = rowGutter(highlighted);
+  const status = row.status ? DRAWER_STATUS[row.status] : null;
+  const label = `  ${row.expanded ? "▾" : "▸"} ${row.count} ${row.count === 1 ? "subagent" : "subagents"}`;
+  const statusText = status ? ` · ${status.word}` : "";
+  const room = Math.max(6, width - GUTTER_CELLS);
+  return (
+    <Box marginTop={marginTop} width={width}>
+      <Text wrap="truncate-end">
+        <Text color={highlighted ? theme.color.violet : theme.color.t4} dimColor={!highlighted}>
+          {`${gutter}${truncateDisplayEnd(label, room)}`}
+        </Text>
+        {status && terminalDisplayWidth(label + statusText) <= room ? (
+          <Text color={theme.sessionToneColor(status.tone)}>{statusText}</Text>
+        ) : null}
+      </Text>
+    </Box>
+  );
+}
+
 function ShelfRow({
   row,
   width,

@@ -568,6 +568,12 @@ export type PtyCreateArgs = {
   allowExternalCwd?: boolean;
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
+  /**
+   * `"agent"` when an agent started this shell for its chat (App Control). Such
+   * a shell is archived once it is dead and nobody typed into it; see
+   * `agentShellCleanup`. Omitted means the user started it.
+   */
+  launchedBy?: "agent" | "user";
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
@@ -725,6 +731,8 @@ export type ChatTerminalListArgs = {
   chatSessionId?: string | null;
   laneId?: string | null;
   limit?: number | null;
+  /** Archived shells are left out unless this is true. Read one by id any time. */
+  includeArchived?: boolean | null;
 };
 
 export type ChatTerminalReadArgs = {

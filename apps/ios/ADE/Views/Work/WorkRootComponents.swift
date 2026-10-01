@@ -1114,29 +1114,29 @@ struct WorkSessionListRow: View {
   }
 }
 
+/// An OPEN nested drawer: caret header + rows. Drawers default collapsed
+/// (`workIsNestedDrawerCollapsed`); a collapsed one renders as a
+/// `WorkNestedDrawerMarks` mark instead. Tapping the header collapses it.
 struct WorkNestedSessionSection<Content: View>: View {
   let group: WorkSessionChildGroup
-  let collapsed: Bool
-  let onToggle: () -> Void
+  let onCollapse: () -> Void
   let content: () -> Content
 
   init(
     group: WorkSessionChildGroup,
-    collapsed: Bool,
-    onToggle: @escaping () -> Void,
+    onCollapse: @escaping () -> Void,
     @ViewBuilder content: @escaping () -> Content
   ) {
     self.group = group
-    self.collapsed = collapsed
-    self.onToggle = onToggle
+    self.onCollapse = onCollapse
     self.content = content
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Button(action: onToggle) {
+      Button(action: onCollapse) {
         HStack(spacing: 5) {
-          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+          Image(systemName: "chevron.down")
             .font(.system(size: 8, weight: .bold))
             .foregroundStyle(ADEColor.textMuted)
             .frame(width: 9, alignment: .center)
@@ -1149,17 +1149,6 @@ struct WorkNestedSessionSection<Content: View>: View {
             .textCase(.uppercase)
             .tracking(0.4)
           Spacer(minLength: 0)
-          if group.attention == .failed {
-            Text("Failed")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.danger)
-              .accessibilityHidden(true)
-          } else if group.attention == .needsYou {
-            Circle()
-              .fill(ADEColor.warning)
-              .frame(width: 6, height: 6)
-              .accessibilityHidden(true)
-          }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -1167,14 +1156,12 @@ struct WorkNestedSessionSection<Content: View>: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(drawerAccessibilityLabel)
-      .accessibilityHint(collapsed ? "Expands nested sessions" : "Collapses nested sessions")
-      .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+      .accessibilityLabel(group.label)
+      .accessibilityHint("Collapses nested sessions")
+      .accessibilityValue("Expanded")
 
-      if !collapsed {
-        VStack(spacing: 3) {
-          content()
-        }
+      VStack(spacing: 3) {
+        content()
       }
     }
     .padding(.leading, 14)
@@ -1185,15 +1172,70 @@ struct WorkNestedSessionSection<Content: View>: View {
         .padding(.leading, 3)
     }
   }
+}
 
-  /// Desktop's drawer button speaks the count plus Failed / Needs you
-  /// (`aria-expanded` + visible Failed / sr-only Needs you). The custom
-  /// label used to replace those children, so VoiceOver lost the shout.
-  private var drawerAccessibilityLabel: String {
+/// A parent's COLLAPSED drawers, as one thin line of marks under the card:
+/// kind icon, count, and the one state worth seeing (`workNestedDrawerStatus`).
+/// Tapping a mark opens that drawer. Mirrors desktop `renderCollapsedDrawerMark`.
+struct WorkNestedDrawerMarks: View {
+  let groups: [WorkSessionChildGroup]
+  let onOpen: (WorkSessionChildGroup) -> Void
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(groups) { group in
+        Button {
+          onOpen(group)
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: group.systemImage)
+              .font(.system(size: 9, weight: .medium))
+            Text("\(group.children.count)")
+              .font(.caption2.monospacedDigit())
+            statusGlyph(group.attention)
+          }
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 6)
+          .frame(minHeight: 32)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel(group))
+        .accessibilityHint("Expands nested sessions")
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.leading, 8)
+  }
+
+  @ViewBuilder
+  private func statusGlyph(_ status: WorkNestedDrawerAttention) -> some View {
+    switch status {
+    case .failed:
+      Image(systemName: "xmark")
+        .font(.system(size: 8, weight: .bold))
+        .foregroundStyle(ADEColor.danger)
+    case .needsYou:
+      Circle()
+        .fill(ADEColor.warning)
+        .frame(width: 6, height: 6)
+    case .running:
+      Image(systemName: "circle.dashed")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(ADEColor.info)
+    case .none:
+      EmptyView()
+    }
+  }
+
+  /// "Show N shells", plus the status word VoiceOver would otherwise lose.
+  private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
+    let base = "Show \(group.label)"
     switch group.attention {
-    case .failed: return "\(group.label), Failed"
-    case .needsYou: return "\(group.label), Needs you"
-    case .none: return group.label
+    case .failed: return "\(base), Failed"
+    case .needsYou: return "\(base), Needs you"
+    case .running: return "\(base), Running"
+    case .none: return base
     }
   }
 }

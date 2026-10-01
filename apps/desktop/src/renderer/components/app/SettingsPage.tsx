@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
+  Archive,
   ArrowLeft,
   Bell,
   Brain,
@@ -42,6 +43,7 @@ import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
+import { ArchiveSection } from "../settings/ArchiveSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import {
@@ -101,6 +103,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   notifications: Bell,
   secrets: Key,
   storage: HardDrives,
+  archive: Archive,
   stats: ChartLineUp,
 };
 
@@ -116,6 +119,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "lanes-git",
   "integrations",
   "storage",
+  "archive",
 ]);
 
 /** Tabs whose sections `TabContent` flows into the two-column layout. */
@@ -387,6 +391,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       span: "full",
     },
   ],
+  // Archived lanes and sessions belong to one machine's checkout, so the page
+  // reads and acts through that machine's pin.
+  archive: [{ entryIds: ["archive.items"], render: () => <ArchiveSection />, machine: "routed" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 

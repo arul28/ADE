@@ -2083,6 +2083,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     }
     const terminalSessionId = previousSession?.terminalSessionId ?? null;
     if (terminalSessionId && args.ptyService) {
+      args.ptyService.retireAgentShell({ sessionId: terminalSessionId, reason: "stop" });
       try {
         args.ptyService.signalTerminal({ terminalId: terminalSessionId, signal: stopArgs.force ? "SIGKILL" : "SIGINT" });
         if (!stopArgs.force) {
@@ -2171,6 +2172,10 @@ export function createAppControlLaneController(context: AppControlLaneController
     if (!args.ptyService) {
       throw new Error("App Control terminal launch requires the ADE terminal service.");
     }
+    // The shell of the app being replaced is pure noise once the new one runs.
+    if (activeSession?.terminalSessionId) {
+      args.ptyService.retireAgentShell({ sessionId: activeSession.terminalSessionId, reason: "relaunch" });
+    }
     if (activeSession) await stop({ force: true });
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
@@ -2245,6 +2250,7 @@ export function createAppControlLaneController(context: AppControlLaneController
           : {}),
         env,
         chatSessionId: launchArgs.chatSessionId ?? null,
+        launchedBy: "agent",
       });
       const updated = updateSession({
         pid: terminal.pid ?? null,

@@ -554,6 +554,9 @@ export type FormatterId =
   | "harness-env"
   | "harness-routes"
   | "harness-test"
+  | "archive-list"
+  | "archive-summary"
+  | "archive-action"
   | "storage-snapshot"
   | "storage-compress"
   | "storage-maintenance"
@@ -1025,6 +1028,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
+    $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | rename | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
@@ -1826,6 +1830,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   terminal the app is viewing.
 
     $ ade terminal list --chat-session <owner-session-id> --text  List running and ended terminals for a session
+    $ ade terminal list --include-archived --text   Also list archived shells (hidden by default)
     $ ade terminal active --chat-session <owner-session-id> --text Show the active terminal
     $ ade terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
     $ ade terminal read --terminal <session-id> --text Read terminal scrollback
@@ -1899,11 +1904,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   stay on the separate --personal surface. Reads are bounded by message and
   character limits; use --page and --cursor to walk older content.
 
-    $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --lane <lane> --text            List chat sessions (archived chats hidden)
+    $ ade chat list --include-archived --text       Also list archived chats ('ade archive list' for all archived items)
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
-    $ ade chat list --include-automation --no-archived --text
+    $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
     $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
@@ -2921,6 +2927,28 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
   reads a local registry snapshot instead of the account directory.
+`,
+  archive: `${ADE_BANNER}
+  Archived lanes, chats, and shells
+
+  Archiving hides an item; it is never deleted on its own. Archived chats and
+  shells are left out of 'ade chat list', 'ade terminal list', and search unless
+  you pass --include-archived. Read one by id with 'ade chat get' / 'ade terminal
+  read' any time. Refs are <kind>:<id>, where kind is lane, chat, or shell.
+
+    $ ade archive list --text                       Everything archived, newest first
+    $ ade archive list --kind chat --older-than 14 --text
+                                                    Archived chats from 14+ days ago
+    $ ade archive summary --text                    Counts per kind and what is 14+ days old
+    $ ade archive summary --older-than 30 --text    Same, with a 30-day cutoff
+    $ ade archive restore chat:<id> lane:<id>       Unarchive items
+    $ ade archive delete shell:<id> --confirm       Permanently delete archived items
+    $ ade archive delete lane:<id> --confirm --force
+                                                    Also delete a lane worktree with uncommitted changes
+
+  A lane delete removes the lane and its worktree and keeps its git branch.
+  Delete refuses anything that is not archived. Each item reports done or failed
+  on its own; the command exits non-zero when any item failed.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -8138,6 +8166,7 @@ function buildTerminalPlan(args: string[]): CliPlan {
             chatSessionId: chatSessionId(),
             laneId: readValue(args, ["--lane", "--lane-id"]),
             limit: readIntOption(args, ["--limit"], undefined),
+            ...(readFlag(args, ["--archived", "--include-archived"]) ? { includeArchived: true } : {}),
           }),
         ),
       ],
@@ -8776,10 +8805,13 @@ function buildChatPlan(args: string[]): CliPlan {
       );
     }
     const laneId = readLaneId(args);
+    // Archived chats are hidden unless asked for: agents read this list, and
+    // an archived chat is one the user put away. `ade chat get <id>` still
+    // reads one by id. (The service's own default stays "include" for the
+    // desktop UI, so the CLI always says which it wants.)
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
-      ...(includeArchived ? { includeArchived: true } : {}),
-      ...(excludeArchived ? { includeArchived: false } : {}),
+      includeArchived,
       ...(readFlag(args, ["--automation", "--include-automation"])
         ? { includeAutomation: true }
         : {}),
@@ -8805,7 +8837,7 @@ function buildChatPlan(args: string[]): CliPlan {
             "cli",
             "chat",
             "listCliChildSessions",
-            laneId ? { laneId } : {},
+            { ...(laneId ? { laneId } : {}), ...(includeArchived ? { includeArchived: true } : {}) },
           ),
           optional: true,
         },
@@ -15021,6 +15053,107 @@ function buildUsagePlan(args: string[]): CliPlan {
   };
 }
 
+const ARCHIVE_CLI_KINDS = ["lane", "chat", "shell"] as const;
+type ArchiveCliKind = (typeof ARCHIVE_CLI_KINDS)[number];
+
+function parseArchiveCliKind(value: string, label: string): ArchiveCliKind {
+  const normalized = value.trim().toLowerCase().replace(/s$/, "");
+  const kind = normalized === "terminal" ? "shell" : normalized;
+  if ((ARCHIVE_CLI_KINDS as readonly string[]).includes(kind)) return kind as ArchiveCliKind;
+  throw new CliUsageError(`${label}: kind must be lane, chat, or shell (got '${value}').`);
+}
+
+function readArchiveOlderThanDays(args: string[]): number | undefined {
+  const days = readNumberOption(args, ["--older-than", "--older-than-days", "--days"]);
+  if (days != null && days < 0) throw new CliUsageError("--older-than must be zero or more days.");
+  return days;
+}
+
+function readArchiveRefs(args: string[], label: string): JsonObject[] {
+  const refs: JsonObject[] = [];
+  for (let token = firstPositional(args); token != null; token = firstPositional(args)) {
+    const separator = token.indexOf(":");
+    if (separator <= 0 || separator === token.length - 1) {
+      throw new CliUsageError(`${label}: '${token}' is not <kind>:<id> (kind is lane, chat, or shell).`);
+    }
+    refs.push({
+      kind: parseArchiveCliKind(token.slice(0, separator), label),
+      id: token.slice(separator + 1).trim(),
+    });
+  }
+  if (refs.length === 0) throw new CliUsageError(`${label} needs at least one <kind>:<id>.`);
+  return refs;
+}
+
+function archiveActionExitCode(result: unknown): number {
+  return isRecord(result) && Array.isArray(result.failed) && result.failed.length === 0 ? 0 : 1;
+}
+
+function buildArchivePlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.archive ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls") {
+    const kinds = [
+      ...readRepeatedValues(args, ["--kind", "--type"]).flatMap((value) => value.split(",")),
+    ]
+      .filter((value) => value.trim().length > 0)
+      .map((value) => parseArchiveCliKind(value, "archive list"));
+    const olderThanDays = readArchiveOlderThanDays(args);
+    return {
+      kind: "execute",
+      label: "archive list",
+      formatter: "archive-list",
+      steps: [
+        actionStep("result", "archive", "list", {
+          ...(kinds.length ? { kinds } : {}),
+          ...(olderThanDays != null ? { olderThanDays } : {}),
+        }),
+      ],
+    };
+  }
+  if (sub === "summary" || sub === "status") {
+    const olderThanDays = readArchiveOlderThanDays(args);
+    return {
+      kind: "execute",
+      label: "archive summary",
+      formatter: "archive-summary",
+      steps: [actionStep("result", "archive", "summary", olderThanDays != null ? { olderThanDays } : {})],
+    };
+  }
+  if (sub === "restore" || sub === "unarchive") {
+    const items = readArchiveRefs(args, "archive restore");
+    return {
+      kind: "execute",
+      label: "archive restore",
+      formatter: "archive-action",
+      exitCodeFromResult: archiveActionExitCode,
+      minTimeoutMs: longRunningLocalRuntimeActionTimeoutMs("archive.restore") ?? undefined,
+      steps: [actionStep("result", "archive", "restore", { items })],
+    };
+  }
+  if (sub === "delete" || sub === "rm" || sub === "remove") {
+    const confirmed = readFlag(args, ["--confirm", "--yes"]);
+    const force = readFlag(args, ["--force"]);
+    const items = readArchiveRefs(args, "archive delete");
+    if (!confirmed) {
+      throw new CliUsageError(
+        "archive delete permanently deletes the items. Pass --confirm to delete them.",
+      );
+    }
+    return {
+      kind: "execute",
+      label: "archive delete",
+      formatter: "archive-action",
+      exitCodeFromResult: archiveActionExitCode,
+      minTimeoutMs: longRunningLocalRuntimeActionTimeoutMs("archive.delete") ?? undefined,
+      steps: [actionStep("result", "archive", "delete", { items, ...(force ? { force: true } : {}) })],
+    };
+  }
+  throw new CliUsageError("archive supports list, summary, restore, or delete.");
+}
+
 function buildStoragePlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.storage ?? topLevelHelpText() };
@@ -16823,6 +16956,7 @@ function buildCliPlan(
     quota: "usage",
     quotas: "usage",
     disk: "storage",
+    archived: "archive",
     skills: "skill",
     gh: "github",
     create: "new",
@@ -17188,6 +17322,8 @@ function buildCliPlan(
   if (primary === "router") return buildRouterPlan(args);
   if (primary === "storage" || primary === "disk")
     return buildStoragePlan(args);
+  if (primary === "archive" || primary === "archived")
+    return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
   if (primary === "proxy") return buildProxyPlan(args);
@@ -24827,6 +24963,49 @@ function formatBytes(bytes: unknown): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+function formatArchiveList(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const items = Array.isArray(value.items) ? value.items.filter(isRecord) : [];
+  return renderTable(
+    ["REF", "TITLE", "LANE", "ARCHIVED", "SIZE", "NOTE"],
+    items.map((item) => [
+      `${asString(item.kind) ?? "?"}:${asString(item.id) ?? "?"}`,
+      cell(item.title, 36),
+      cell(item.laneName, 20),
+      cell(item.archivedAt, 24),
+      typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "-",
+      item.kind === "lane"
+        ? `${item.worktreePresent === true ? "worktree on disk" : "no worktree"}${item.branchRef ? `, branch ${String(item.branchRef)}` : ""}`
+        : cell(item.toolType, 20),
+    ]),
+    "Nothing is archived.",
+  );
+}
+
+function formatArchiveSummary(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const byKind = isRecord(value.byKind) ? value.byKind : {};
+  const staleByKind = isRecord(value.staleByKind) ? value.staleByKind : {};
+  const perKind = (counts: Record<string, unknown>) =>
+    `${Number(counts.lane) || 0} lanes, ${Number(counts.chat) || 0} chats, ${Number(counts.shell) || 0} shells`;
+  return renderKeyValues("ADE archive", [
+    ["archived", `${Number(value.total) || 0} (${perKind(byKind)})`],
+    [`${Number(value.olderThanDays) || 0}+ days old`, `${Number(value.staleTotal) || 0} (${perKind(staleByKind)})`],
+    ["old items on disk", typeof value.staleBytes === "number" ? formatBytes(value.staleBytes) : "not measured"],
+    ["oldest", value.oldestArchivedAt ?? "-"],
+  ]);
+}
+
+function formatArchiveAction(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const done = Array.isArray(value.done) ? value.done.filter(isRecord) : [];
+  const failed = Array.isArray(value.failed) ? value.failed.filter(isRecord) : [];
+  const lines = [`${done.length} done, ${failed.length} failed`];
+  for (const item of done) lines.push(`  done    ${String(item.kind)}:${String(item.id)}`);
+  for (const item of failed) lines.push(`  failed  ${String(item.kind)}:${String(item.id)}  ${String(item.error ?? "")}`);
+  return lines.join("\n");
+}
+
 function formatStorageSnapshot(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const volume = isRecord(value.volume) ? value.volume : {};
@@ -28112,6 +28291,12 @@ function formatTextOutput(
       return formatSyncPin(value);
     case "sync-devices":
       return formatSyncDevices(value);
+    case "archive-list":
+      return formatArchiveList(value);
+    case "archive-summary":
+      return formatArchiveSummary(value);
+    case "archive-action":
+      return formatArchiveAction(value);
     case "storage-snapshot":
       return formatStorageSnapshot(value);
     case "storage-compress":

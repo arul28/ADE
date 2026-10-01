@@ -106,6 +106,16 @@ import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./lib/zoom";
+import {
+  DEFAULT_ARCHIVE_STALE_DAYS,
+  type ArchiveActionArgs,
+  type ArchiveActionResult,
+  type ArchivedItem,
+  type ArchiveListArgs,
+  type ArchiveListResult,
+  type ArchiveSummary,
+  type ArchiveSummaryArgs,
+} from "../shared/types/archive";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -214,6 +224,64 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+
+/**
+ * In-memory archive for the browser preview: a few archived lanes, chats, and
+ * shells of different ages, so Settings → Archive and the reminder banner have
+ * something to show. Restore and delete drop the item from the list.
+ */
+function createMockArchive() {
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+  let items: ArchivedItem[] = [
+    { kind: "chat", id: "mock-archived-chat-1", title: "Refactor auth middleware", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(2), sizeBytes: 412_000, toolType: "claude-chat" },
+    { kind: "shell", id: "mock-archived-shell-1", title: "npm run dev", laneId: "lane-auth", laneName: "auth-refactor", laneColor: "#38bdf8", archivedAt: daysAgo(5), sizeBytes: 38_000, toolType: "shell", parentChatId: "mock-archived-chat-1" },
+    { kind: "lane", id: "lane-old-spike", title: "old-spike", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(21), sizeBytes: 184 * 1024 ** 2, worktreePresent: true, branchRef: "ade/old-spike" },
+    { kind: "chat", id: "mock-archived-chat-2", title: "Investigate flaky test", laneId: "lane-old-spike", laneName: "old-spike", laneColor: "#f472b6", archivedAt: daysAgo(30), sizeBytes: 1_250_000, toolType: "codex-chat" },
+    { kind: "lane", id: "lane-reclaimed", title: "reclaimed-experiment", laneId: "lane-reclaimed", laneName: "reclaimed-experiment", laneColor: "#a3e635", archivedAt: daysAgo(60), sizeBytes: null, worktreePresent: false, branchRef: "ade/reclaimed-experiment" },
+  ];
+  const ageDays = (item: ArchivedItem) => (Date.now() - Date.parse(item.archivedAt)) / (24 * 60 * 60_000);
+  const remove = async (args: ArchiveActionArgs, _pin?: unknown): Promise<ArchiveActionResult> => {
+    const result: ArchiveActionResult = { done: [], failed: [] };
+    for (const ref of args?.items ?? []) {
+      const before = items.length;
+      items = items.filter((item) => !(item.kind === ref.kind && item.id === ref.id));
+      if (items.length < before) result.done.push(ref);
+      else result.failed.push({ ...ref, error: "Not archived." });
+    }
+    return result;
+  };
+  return {
+    list: async (args?: ArchiveListArgs, _pin?: unknown): Promise<ArchiveListResult> => ({
+      items: items.filter((item) =>
+        (!args?.kinds?.length || args.kinds.includes(item.kind))
+        && (!args?.olderThanDays || ageDays(item) >= args.olderThanDays)),
+    }),
+    summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
+      const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
+      const byKind = { lane: 0, chat: 0, shell: 0 };
+      const staleByKind = { lane: 0, chat: 0, shell: 0 };
+      let staleBytes: number | null = null;
+      for (const item of items) {
+        byKind[item.kind] += 1;
+        if (ageDays(item) < olderThanDays) continue;
+        staleByKind[item.kind] += 1;
+        if (item.sizeBytes != null) staleBytes = (staleBytes ?? 0) + item.sizeBytes;
+      }
+      const oldest = [...items].sort((a, b) => Date.parse(a.archivedAt) - Date.parse(b.archivedAt))[0];
+      return {
+        total: items.length,
+        byKind,
+        olderThanDays,
+        staleTotal: staleByKind.lane + staleByKind.chat + staleByKind.shell,
+        staleByKind,
+        staleBytes,
+        oldestArchivedAt: oldest?.archivedAt ?? null,
+      };
+    },
+    restore: remove,
+    delete: remove,
+  };
+}
 /* ── chatLaunch (browser preview) ─────────────────────────────────────────
    A small simulator so the Vite preview shows a new-lane launch moving:
    fetch → check out files (with %) → start agent, a few hundred ms apart. A
@@ -4520,6 +4588,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dbSizeBytes: 20 * 1024 ** 2,
       }),
     },
+    archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),
       chooseDirectory: resolvedArg(null),

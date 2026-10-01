@@ -69,6 +69,7 @@ import type {
 } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { ArchiveSummary, ArchiveSummaryArgs } from "../../../desktop/src/shared/types/archive";
 import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import {
@@ -426,6 +427,13 @@ export async function getScheduledWorkState(
   return await connection.action<AgentChatScheduledWorkState>("chat", "getScheduledWorkState", {
     sessionId,
   });
+}
+
+export async function getArchiveSummary(
+  connection: AdeCodeConnection,
+  args: ArchiveSummaryArgs = {},
+): Promise<ArchiveSummary> {
+  return await connection.action<ArchiveSummary>("archive", "summary", args);
 }
 
 export async function archiveChatSession(

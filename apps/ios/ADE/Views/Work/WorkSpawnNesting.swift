@@ -25,6 +25,19 @@ func workSessionSubagentSectionId(parentId: String) -> String {
   "chat-subagents:\(parentId)"
 }
 
+/// A chat's shell and subagent drawers default to COLLAPSED: a busy agent can
+/// hang a dozen App Control shells and subagents off one chat. Same inverted
+/// shape as the quiet shelves — an explicit open writes `drawer-open:<id>` into
+/// `collapsedSectionIds`. A legacy `chat:<id>` entry from the expanded-by-default
+/// days is inert. Mirrors desktop `nestedDrawerOpenMarker`.
+func workNestedDrawerOpenMarker(sectionId: String) -> String {
+  "drawer-open:\(sectionId)"
+}
+
+func workIsNestedDrawerCollapsed(sectionId: String, collapsedSectionIds: Set<String>) -> Bool {
+  !collapsedSectionIds.contains(workNestedDrawerOpenMarker(sectionId: sectionId))
+}
+
 func workIndexNestedSubagents(
   sessions: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
@@ -100,6 +113,52 @@ func workNestedSubagentDrawerAttention(
     }
   }
   return needsYou ? .needsYou : .none
+}
+
+/// The one state a COLLAPSED drawer shows next to its count: failed, then needs
+/// you (both via `workNestedSubagentDrawerAttention`), then running. Ended and
+/// done children add nothing. Mirrors desktop `nestedDrawerStatus`.
+func workNestedDrawerStatus(
+  _ children: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
+) -> WorkNestedDrawerAttention {
+  let attention = workNestedSubagentDrawerAttention(children, chatSummaries: chatSummaries, now: now)
+  if attention != .none { return attention }
+  for child in children {
+    switch workCanonicalSessionState(session: child, summary: chatSummaries[child.id], now: now).phase {
+    case .running, .starting: return .running
+    default: continue
+    }
+  }
+  return .none
+}
+
+/// An archived attached shell is filed under its chat like any other — so it
+/// never resurfaces as a top-level row — but it is not listed in the drawer.
+/// Dead agent shells are archived on purpose to keep the drawer quiet.
+/// Mirrors desktop `isArchivedAttachedShell`.
+func workIsArchivedAttachedShell(_ session: TerminalSessionSummary) -> Bool {
+  let archivedAt = session.archivedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return !archivedAt.isEmpty && !isWorkChatToolType(session.toolType)
+}
+
+/// Archived attached shells whose chat is visible: kept out of the drawer and
+/// out of the top level alike (desktop `excludedTopLevelIds`).
+func workHiddenArchivedAttachedShellIds(
+  sessions: [TerminalSessionSummary],
+  nestedChildToRootParentId: [String: String]
+) -> Set<String> {
+  let visibleIds = Set(sessions.map(\.id))
+  var ids: Set<String> = []
+  for session in sessions where workIsArchivedAttachedShell(session) {
+    guard let parentId = workAttachedShellNestParentId(
+      session: session,
+      nestedChildToRootParentId: nestedChildToRootParentId
+    ), parentId != session.id, visibleIds.contains(parentId) else { continue }
+    ids.insert(session.id)
+  }
+  return ids
 }
 
 private func workSpawnKind(
@@ -196,8 +255,12 @@ enum WorkNestedSessionGroupKind: Equatable {
   case subagents
 }
 
+/// Drawer status, highest first: failed > needs you > running > nothing.
+/// `workNestedSubagentDrawerAttention` yields only failed/needs-you;
+/// `workNestedDrawerStatus` adds running.
 enum WorkNestedDrawerAttention: Equatable {
   case none
+  case running
   case needsYou
   case failed
 }
@@ -230,11 +293,14 @@ struct WorkSessionChildGroup: Equatable, Identifiable {
 
 func workAttachedShellGroupsByParentId(
   sessions: [TerminalSessionSummary],
-  nestedChildToRootParentId: [String: String]
+  nestedChildToRootParentId: [String: String],
+  chatSummaries: [String: AgentChatSessionSummary],
+  now: Date
 ) -> [String: WorkSessionChildGroup] {
   let visibleIds = Set(sessions.map(\.id))
   var childrenByParentId: [String: [TerminalSessionSummary]] = [:]
   for session in sessions {
+    if workIsArchivedAttachedShell(session) { continue }
     guard let parentId = workAttachedShellNestParentId(
       session: session,
       nestedChildToRootParentId: nestedChildToRootParentId
@@ -254,7 +320,7 @@ func workAttachedShellGroupsByParentId(
         children: ordered,
         collapsedSectionId: workSessionChildSectionId(parentId: parentId),
         kind: .shells,
-        attention: .none
+        attention: workNestedDrawerStatus(ordered, chatSummaries: chatSummaries, now: now)
       )
     )
   })
@@ -274,7 +340,7 @@ func workSessionSubagentGroups(
         children: ordered,
         collapsedSectionId: workSessionSubagentSectionId(parentId: parentId),
         kind: .subagents,
-        attention: workNestedSubagentDrawerAttention(
+        attention: workNestedDrawerStatus(
           ordered,
           chatSummaries: chatSummaries,
           now: now

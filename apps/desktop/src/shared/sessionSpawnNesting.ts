@@ -49,6 +49,7 @@ export type SpawnNestingSession = Pick<
   | "usageLimitResume"
   | "chatActivityMode"
   | "nextWakeAt"
+  | "archivedAt"
 >;
 
 export type NestedSubagentDrawerAttention = "failed" | "needs_you" | null;
@@ -257,6 +258,16 @@ export function attachedShellNestParentId(
   return nestedChildToRootParentId.get(parentId) ?? parentId;
 }
 
+/**
+ * An archived attached shell is filed under its chat like any other — so it
+ * never resurfaces as a top-level card — but it is not listed in the drawer.
+ * Dead agent shells are archived on purpose (`agentShellCleanup`) to keep the
+ * drawer quiet; the shell's transcript is still there.
+ */
+function isArchivedAttachedShell(session: SpawnNestingSession): boolean {
+  return Boolean(session.archivedAt) && !isChatToolType(session.toolType);
+}
+
 export function groupAttachedShellsByParentId<T extends SpawnNestingSession>(
   sessions: readonly T[],
   nestedChildToRootParentId: ReadonlyMap<string, string>,
@@ -264,6 +275,7 @@ export function groupAttachedShellsByParentId<T extends SpawnNestingSession>(
 ): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const session of sessions) {
+    if (isArchivedAttachedShell(session)) continue;
     const parentId = attachedShellNestParentId(session, nestedChildToRootParentId);
     if (!parentId || !visibleParentIds.has(parentId)) continue;
     const list = map.get(parentId) ?? [];
@@ -295,6 +307,11 @@ export function workNestingDrawers<T extends SpawnNestingSession>(
   const excludedTopLevelIds = new Set(index.nestedChildIds);
   for (const list of shellsByParentId.values()) {
     for (const child of list) excludedTopLevelIds.add(child.id);
+  }
+  for (const session of sessions) {
+    if (!isArchivedAttachedShell(session)) continue;
+    const parentId = attachedShellNestParentId(session, index.nestedChildToRootParentId);
+    if (parentId && visibleParentIds.has(parentId)) excludedTopLevelIds.add(session.id);
   }
   return {
     subagentsByParentId: index.childrenByRootParentId,
@@ -342,4 +359,24 @@ export function nestedSubagentDrawerAttention(
     }
   }
   return needsYou ? "needs_you" : null;
+}
+
+export type NestedDrawerStatus = "failed" | "needs_you" | "running" | null;
+
+/**
+ * The one state a COLLAPSED drawer shows next to its count: failed, then needs
+ * you (both via `nestedSubagentDrawerAttention`), then running. Ended and done
+ * children add nothing — a drawer of finished work shows only its count.
+ */
+export function nestedDrawerStatus(
+  children: readonly SpawnNestingSession[],
+  nowMs: number = Date.now(),
+): NestedDrawerStatus {
+  const attention = nestedSubagentDrawerAttention(children, nowMs);
+  if (attention) return attention;
+  for (const child of children) {
+    const phase = phaseOf(child, nowMs);
+    if (phase === "running" || phase === "starting") return "running";
+  }
+  return null;
 }

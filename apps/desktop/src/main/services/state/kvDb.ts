@@ -933,6 +933,9 @@ const RETAINED_EVENT_LOG_TABLES: ReadonlyArray<readonly [table: string, column: 
  *   references. It needs a terminal-status + `finished_at` policy instead.
  */
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  // Which dead agent shells this machine may archive. It describes this
+  // machine's own launches and typing, so a peer must never receive it.
+  "agent_shell_cleanup",
   // Per-device ingress dedup log. It carries a non-PK UNIQUE index
   // (project_id, source, event_key) for dedup, which cr-sqlite forbids on CRR
   // tables ("has unique indices besides the primary key. This is not allowed
@@ -2541,6 +2544,18 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
   safeAddColumn(db, "alter table terminal_sessions add column owner_process_started_at text");
   try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
+  // Machine-local ledger of the shells an agent started under a chat, read by
+  // `agentShellCleanup` to archive them once they are dead. Local-only (see
+  // LOCAL_ONLY_CRR_EXCLUDED_TABLES): it records what this machine's processes
+  // launched and saw typed, which no other machine can know.
+  db.run(`
+    create table if not exists agent_shell_cleanup (
+      session_id text primary key,
+      launched_at text not null,
+      user_input_at text,
+      retired_reason text
+    )
+  `);
 
   // Machine-local process liveness registry. Every ADE process (desktop main,
   // TUI runtime, ade-serve daemon) writes its process incarnation here on boot

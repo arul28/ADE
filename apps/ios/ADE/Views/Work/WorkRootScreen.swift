@@ -1359,24 +1359,41 @@ struct WorkRootListScreen: View, Equatable {
     )
   }
 
-  /// Subagent drawer then shell drawer. Nested subagents sit under a parent
-  /// that already names the lane, so they drop lane identity; shells keep the
-  /// previous compact default.
+  /// A chat's drawers start COLLAPSED (`workIsNestedDrawerCollapsed`).
+  /// Collapsed drawers share one thin line of marks under the card; an opened
+  /// drawer renders its rows below that line. Subagents before shells. Nested
+  /// subagents sit under a parent that already names the lane, so they drop
+  /// lane identity; shells keep the previous compact default.
   @ViewBuilder
   private func nestedChildDrawer(
     groups: [WorkSessionChildGroup],
     railColor: Color?,
     showsDivider: Bool
   ) -> some View {
-    ForEach(groups) { group in
+    let collapsedIds = collapsedSectionIds
+    let collapsed = groups.filter {
+      workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let open = groups.filter {
+      !workIsNestedDrawerCollapsed(sectionId: $0.collapsedSectionId, collapsedSectionIds: collapsedIds)
+    }
+    let leadingInset = Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter)
+    if !collapsed.isEmpty {
+      WorkNestedDrawerMarks(groups: collapsed) { group in
+        toggleNestedDrawer(group)
+      }
+      .padding(.leading, leadingInset)
+      .padding(.bottom, 4)
+      .workRowHairline(showsDivider && open.isEmpty)
+      .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
+      .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+    }
+    ForEach(open) { group in
       WorkNestedSessionSection(
         group: group,
-        collapsed: collapsedSectionIds.contains(group.collapsedSectionId),
-        onToggle: {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            toggleCollapsed(group.collapsedSectionId)
-          }
-        }
+        onCollapse: { toggleNestedDrawer(group) }
       ) {
         ForEach(group.children) { child in
           sessionListRow(
@@ -1389,13 +1406,19 @@ struct WorkRootListScreen: View, Equatable {
           .id(child.id)
         }
       }
-      .padding(.leading, Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter))
+      .padding(.leading, leadingInset)
       .padding(.bottom, 6)
-      .workRowHairline(showsDivider && group.id == groups.last?.id)
+      .workRowHairline(showsDivider && group.id == open.last?.id)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
       .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
+    }
+  }
+
+  private func toggleNestedDrawer(_ group: WorkSessionChildGroup) {
+    withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+      toggleCollapsed(workNestedDrawerOpenMarker(sectionId: group.collapsedSectionId))
     }
   }
 

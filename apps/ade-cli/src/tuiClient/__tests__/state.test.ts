@@ -115,6 +115,7 @@ describe("ade code persisted state", () => {
       draftKindByProject: { "/repo-a": "cli", "/repo-c": "chat" },
       lastModelByProject: {},
       providerSettingsByProject: {},
+      archiveReminderNextAtByProject: {},
     });
   });
 

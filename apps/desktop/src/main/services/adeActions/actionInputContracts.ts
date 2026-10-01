@@ -384,7 +384,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     listCliChildSessions: {
       description: "List tracked CLI sessions spawned with a parent chat (`ade new chat --mode cli --parent …`), with status, exit code, lane, and parent. `chat.getTurnStatus` and `chat.readTranscript` also answer for these ids.",
-      input: "object { laneId?: string, parentSessionId?: string }",
+      input: "object { laneId?: string, parentSessionId?: string, includeArchived?: boolean }  (archived hidden by default)",
       example: "ade actions run chat.listCliChildSessions --input-json '{\"parentSessionId\":\"chat-123\"}' --json",
     },
     readTranscript: {
@@ -746,6 +746,32 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Re-parse one outside session file and return a generous transcript tail.",
       input: "object { provider, sessionId }",
       example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
+    },
+  },
+  archive: {
+    list: {
+      description:
+        "List archived lanes, chats, and shells, newest first. Archived items are hidden from every other list "
+        + "unless it is asked to include them.",
+      input: "object { kinds?: Array<\"lane\" | \"chat\" | \"shell\"> }",
+      example: "ade actions run archive.list --input-json '{\"kinds\":[\"chat\"]}' --text",
+    },
+    summary: {
+      description: "Count archived items per kind, and how many (and how many bytes) were archived at least N days ago.",
+      input: "object { olderThanDays?: number }  (default 14)",
+      example: "ade actions run archive.summary --input-json '{\"olderThanDays\":30}' --text",
+    },
+    restore: {
+      description: "Unarchive lanes, chats, or shells. Each item reports done or failed on its own.",
+      input: "object { items: Array<{ kind: \"lane\" | \"chat\" | \"shell\", id: string }> }",
+      example: "ade actions run archive.restore --input-json '{\"items\":[{\"kind\":\"chat\",\"id\":\"session-id\"}]}' --text",
+    },
+    delete: {
+      description:
+        "Permanently delete archived items. Refuses anything not archived. A lane delete removes the lane and its "
+        + "worktree but keeps its git branch; `force` also removes a worktree with uncommitted changes.",
+      input: "object { items: Array<{ kind, id }>, force?: boolean }",
+      example: "ade actions run archive.delete --input-json '{\"items\":[{\"kind\":\"shell\",\"id\":\"session-id\"}]}' --text",
     },
   },
   provider_instances: {
