@@ -512,7 +512,7 @@ describe("Cursor SDK event mapper", () => {
         message,
         turnId: "turn-1",
         errorInfo: expect.objectContaining({
-          presentation: expect.objectContaining({ title: "Couldn't start this turn", ...presentation }),
+          presentation: expect.objectContaining({ title: "This turn stopped", ...presentation }),
         }),
       }),
     ]);

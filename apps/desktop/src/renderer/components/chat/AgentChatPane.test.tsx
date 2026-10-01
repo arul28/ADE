@@ -4722,7 +4722,7 @@ describe("AgentChatPane submit recovery", () => {
     // what to do, and never titles the row "Error". The failure class still
     // has a home in the identity footer asserted above.
     expect(screen.queryByText("Error")).toBeNull();
-    expect(screen.getByText("Couldn't start this turn")).toBeTruthy();
+    expect(screen.getByText("This turn stopped")).toBeTruthy();
     expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
