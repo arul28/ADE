@@ -36,28 +36,34 @@ export function createPrChatLinkStore(args: {
 
   type EdgeRow = { pr_id: string; session_id: string };
 
+  /** Stay well under SQLite's bound-variable limit on a large project. */
+  const EDGE_ID_CHUNK_SIZE = 900;
+
   const sessionIdsForTable = (table: string, prIds: string[], failureEvent: string): Map<string, string[]> => {
     const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     const result = new Map<string, string[]>();
     if (ids.length === 0) return result;
     try {
-      const placeholders = ids.map(() => "?").join(", ");
-      const rows = db.all<EdgeRow>(
-        `
-          select pr_id, session_id
-            from ${table}
-           where project_id = ?
-             and pr_id in (${placeholders})
-           order by created_at asc, id asc
-        `,
-        [projectId, ...ids],
-      );
-      for (const row of rows) {
-        const sessionId = String(row.session_id ?? "").trim();
-        if (!sessionId) continue;
-        const current = result.get(row.pr_id) ?? [];
-        if (!current.includes(sessionId)) current.push(sessionId);
-        result.set(row.pr_id, current);
+      for (let offset = 0; offset < ids.length; offset += EDGE_ID_CHUNK_SIZE) {
+        const chunk = ids.slice(offset, offset + EDGE_ID_CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(", ");
+        const rows = db.all<EdgeRow>(
+          `
+            select pr_id, session_id
+              from ${table}
+             where project_id = ?
+               and pr_id in (${placeholders})
+             order by created_at asc, id asc
+          `,
+          [projectId, ...chunk],
+        );
+        for (const row of rows) {
+          const sessionId = String(row.session_id ?? "").trim();
+          if (!sessionId) continue;
+          const current = result.get(row.pr_id) ?? [];
+          if (!current.includes(sessionId)) current.push(sessionId);
+          result.set(row.pr_id, current);
+        }
       }
     } catch (error) {
       logger.warn(failureEvent, { error: getErrorMessage(error) });
