@@ -21672,7 +21672,7 @@ async function runServe(
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
-    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS },
+    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
@@ -22039,6 +22039,17 @@ async function runServe(
             project,
           };
         }
+        // A project that follows another machine's brain cannot be hosted
+        // here. Say so now: answering ok would let completion tear down the
+        // current host for a target that never takes over.
+        const hostBlocker = getSyncHostBlocker(scope);
+        if (hostBlocker) {
+          return {
+            ok: false,
+            message: describeSyncHostBlocker(hostBlocker),
+            project,
+          };
+        }
         // Same disk-backed count as the catalog and the open path, so the row
         // the phone sees on connect matches the one it just tapped.
         const readyProject = toMobileProjectSummary(record, {
@@ -22099,6 +22110,7 @@ async function runServe(
       }
       await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
+        requireHostRole: true,
       });
       await scopeRegistry.deactivateInactiveSyncHosts();
     },
