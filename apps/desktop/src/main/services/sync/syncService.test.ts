@@ -619,6 +619,208 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.clusterState?.brainDeviceId).toBe("stale-remote-brain");
     expect(status.pairingConnectInfo).toBeNull();
     expect(fs.existsSync(draftPath)).toBe(true);
+    // The pre-switch guard must agree: a project whose cluster record and
+    // draft both point at another machine reports the blocker without dialing.
+    expect(service.getHostBlocker()).toEqual({
+      reason: "saved_connection",
+      host: "not-local.invalid",
+      port: 8789,
+    });
+  }, 30_000);
+
+  it("hosts a project that ignores a viewer draft another project wrote", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-foreign-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-foreign-draft-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "foreign-bootstrap-token\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "not-local.invalid",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+        projectSiteId: "another-projects-site-id",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    // Precondition: the draft names a different project database than this one.
+    expect(db.sync.getSiteId()).not.toBe("another-projects-site-id");
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("brain");
+    expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+    expect(service.getHostBlocker()).toBeNull();
+    // Another project's saved connection must survive this project's startup.
+    expect(fs.existsSync(draftPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(draftPath, "utf8")).projectSiteId).toBe(
+      "another-projects-site-id",
+    );
+  }, 30_000);
+
+  it("hosts a project with no cluster record despite an untagged legacy viewer draft", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-legacy-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-legacy-draft-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "legacy-bootstrap-token\n",
+      "utf8",
+    );
+    // No projectSiteId: a draft written before the ownership tag existed.
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "not-local.invalid",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    // Precondition: this project has never joined anything.
+    expect(db.get("select * from sync_cluster_state limit 1")).toBeNull();
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("brain");
+    expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+    expect(service.getHostBlocker()).toBeNull();
+    expect(fs.existsSync(draftPath)).toBe(true);
+  }, 30_000);
+
+  it("does not delete another project's viewer draft when disconnecting", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-foreign-draft-clear-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-foreign-draft-clear-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "foreign-bootstrap-token\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "not-local.invalid",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+        projectSiteId: "another-projects-site-id",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    await service.disconnectFromBrain();
+
+    // disconnectFromBrain clears the draft file, but only for a connection this
+    // project owns. Another project's saved connection must remain on disk.
+    expect(fs.existsSync(draftPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(draftPath, "utf8")).projectSiteId).toBe(
+      "another-projects-site-id",
+    );
   }, 30_000);
 
   it("builds pairing runtime addresses with LAN-first address candidates and tailscale fallback", async () => {
