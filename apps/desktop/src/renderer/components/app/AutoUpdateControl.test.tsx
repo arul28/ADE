@@ -223,6 +223,9 @@ describe("AutoUpdateControl", () => {
         from_version: "1.2.0",
         to_version: "1.3.0",
         user_action: "accepted",
+        // No interrupted chats in this mock, so the plain confirm path accepts
+        // without offering a resume.
+        resume_chats: false,
       },
     }));
   });

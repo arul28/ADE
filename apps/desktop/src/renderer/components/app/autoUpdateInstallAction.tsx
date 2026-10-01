@@ -59,7 +59,7 @@ export async function requestDownloadedUpdateInstall(
   const message = lines.join("\n");
 
   const accepted = async (resumeChats: boolean): Promise<boolean> => {
-    captureUpdatePromptDecision(snapshot, "accepted");
+    captureUpdatePromptDecision(snapshot, "accepted", { resumeChats });
     onAccepted?.();
     try {
       return await window.ade.updateQuitAndInstall({ resumeChats });
