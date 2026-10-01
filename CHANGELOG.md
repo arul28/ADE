@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The composer model chip shows the maker's real logo, a thinking level coloured like the footer reasoning control, and each provider's own permission modes (#1400). OpenCode chips keep their reasoning tiers without opening the model picker (#1402), and a Claude chip no longer draws the harness mark twice (#1401).
 - The `@` menu groups Models, Chats, Lanes, Files, and Terminals with the best match first and an in-place "+ N more" row; the `/` menu shares the same ranking across Commands, Skills, and MCP prompts (#1400).
 - Smart balance runs in the brain, skips signed-out logins, and scores new chats by the room an account must burn before it resets; ADE no longer refreshes a Claude OAuth token itself, and a usage-limited chat moves to the other account in place (#1404).
+- A PR pill in a chat header, session card, or lane divider opens that PR in the chat's own PR tool, with a compact switcher in the PR pane; a merged PR on a lane's branch history links back to the chat that was open when it was created (#1405).
 - The efficiency report replays every chat thread, with subagent weighting (ADE-159) (#1398).
 
 ### SDK 0.5.1
