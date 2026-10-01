@@ -1285,6 +1285,7 @@ extension WorkSessionDestinationView {
       if lanePrSummary != nil { lanePrSummary = nil }
       if lanePrTag != nil { lanePrTag = nil }
       if !laneChatPrs.isEmpty { laneChatPrs = [] }
+      if !chatPrCatalog.isEmpty { chatPrCatalog = [] }
       if selectedChatPrId != nil { selectedChatPrId = nil }
       return
     }
@@ -1305,6 +1306,7 @@ extension WorkSessionDestinationView {
       lanePrSummary = nil
       lanePrTag = nil
       laneChatPrs = []
+      chatPrCatalog = []
       selectedChatPrId = nil
       return
     }
@@ -1353,6 +1355,7 @@ extension WorkSessionDestinationView {
       sessionId: sessionId
     )
     if laneChatPrs != chatPrs { laneChatPrs = chatPrs }
+    if chatPrCatalog != projectItems { chatPrCatalog = projectItems }
     // A pick that no longer exists (PR merged away, link removed) must fall
     // back to the primary rather than blanking the badge.
     if let picked = selectedChatPrId, !chatPrs.contains(where: { $0.id == picked }) {
@@ -1398,6 +1401,72 @@ extension WorkSessionDestinationView {
     prDetailsSnapshot = nil
     prDetailsError = nil
     Task { await refreshChatPrDetails(force: true) }
+  }
+
+  /// The GitHub stack offer for the PR on screen, unless the user chose
+  /// "Not now" for this session+stack.
+  var visibleChatStackOffer: WorkChatStackOffer? {
+    guard let selected = chatDisplayPr else { return nil }
+    guard let offer = workChatStackOffer(
+      selected: selected,
+      catalog: chatPrCatalog,
+      sessionId: sessionId
+    ) else { return nil }
+    if dismissedStackOfferKey == "\(sessionId):\(offer.stackNumber)" { return nil }
+    return offer
+  }
+
+  /// PRs the "Link another PR" picker may offer for this chat.
+  var chatPrLinkableCatalog: [PullRequestListItem] {
+    workChatLinkableCatalog(catalog: chatPrCatalog, linked: laneChatPrs, sessionId: sessionId)
+  }
+
+  @MainActor
+  func withChatPrLinkBusy(_ work: () async throws -> Void) async {
+    guard !chatPrLinkBusy else { return }
+    chatPrLinkBusy = true
+    defer { chatPrLinkBusy = false }
+    do {
+      try await work()
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: false, clearBeforeLoad: false)
+      await refreshChatPrDetails(force: false)
+    } catch {
+      prDetailsError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  @MainActor
+  func linkChatPr(prId: String, allowCrossLane: Bool) async {
+    await withChatPrLinkBusy {
+      try await syncService.linkPullRequestChatSession(
+        prId: prId,
+        sessionId: sessionId,
+        allowCrossLane: allowCrossLane
+      )
+    }
+  }
+
+  @MainActor
+  func unlinkCurrentChatPr() async {
+    guard let prId = chatDisplayPr?.id else { return }
+    await withChatPrLinkBusy {
+      try await syncService.unlinkPullRequestChatSession(prId: prId, sessionId: sessionId)
+      selectedChatPrId = nil
+    }
+  }
+
+  @MainActor
+  func linkChatStackOffer() async {
+    guard let offer = visibleChatStackOffer, let focus = chatDisplayPr else { return }
+    await withChatPrLinkBusy {
+      try await syncService.linkPullRequestChatStack(
+        sessionId: sessionId,
+        stackNumber: offer.stackNumber,
+        prId: focus.id,
+        siblingPrIds: offer.siblings.map(\.id)
+      )
+      dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+    }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was

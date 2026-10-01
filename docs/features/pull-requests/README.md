@@ -947,10 +947,10 @@ edge and writes a PK-only CRR tombstone in
 `pull_request_chat_session_dismissals` so the current-branch fallback cannot
 revive it. `selectPrsForChat` is edges-first: a zero-edge chat may display
 unedged current-branch PRs with no silent write, and it never shows a PR
-another chat claimed. PR cards, the desktop Work peek, and merge
-auto-settlement all use those explicit edges; rows created before this table
-existed fall back to the lane's recent eligible Work chat so old data stays
-useful. Deleting a lane or retiring a session removes its live routing edges
+another chat claimed. PR cards, the desktop Work peek, TUI `/pr`, the iOS
+peek, and merge auto-settlement all use those explicit edges; rows created
+before this table existed fall back to the lane's recent eligible Work chat so
+old data stays useful. Deleting a lane or retiring a session removes its live routing edges
 while preserving the PR row/history.
 
 The edge table is a CRR table with a primary-key-only uniqueness contract and

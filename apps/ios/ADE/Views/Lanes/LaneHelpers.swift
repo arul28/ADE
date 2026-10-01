@@ -542,6 +542,14 @@ private func lanePrChatSessionIds(_ pr: PullRequestListItem) -> [String] {
     .filter { !$0.isEmpty }
 }
 
+/// Non-empty unlink tombstones for a PR, trimmed. A dismissed chat must not
+/// revive the PR through the branch fallback.
+private func lanePrDismissedChatSessionIds(_ pr: PullRequestListItem) -> [String] {
+  (pr.dismissedChatSessionIds ?? [])
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+}
+
 /// Every PR this LANE owns, mirroring desktop `selectLanePrs`.
 ///
 /// Lane ownership is not negotiable: callers pass the project-wide list, and
@@ -599,6 +607,7 @@ func selectPrsForChat(
   let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   guard !trimmed.isEmpty else { return pullRequests }
   return pullRequests.filter { pr in
+    if lanePrDismissedChatSessionIds(pr).contains(trimmed) { return false }
     let linked = lanePrChatSessionIds(pr)
     return linked.isEmpty || linked.contains(trimmed)
   }
