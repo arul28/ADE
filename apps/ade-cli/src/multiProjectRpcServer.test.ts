@@ -3443,3 +3443,119 @@ describe("providers.status cache TTL", () => {
     });
   });
 });
+
+describe("projects.setIcon / projects.removeIcon", () => {
+  const PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+  async function makeHandler() {
+    const context = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: context.registry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+    await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.add",
+      params: { rootPath: context.projectRoot, registrationSource: "test" },
+    });
+    return { ...context, handler };
+  }
+
+  it.each([
+    {
+      name: "an unregistered project root",
+      params: { rootPath: "/definitely/not/registered", fileName: "icon.png", dataBase64: PNG_BASE64 },
+      message: "no project is registered",
+    },
+    {
+      name: "an unsupported file extension",
+      params: { fileName: "icon.gif", dataBase64: PNG_BASE64 },
+      message: "ico, jpg, png, svg, or webp",
+    },
+    {
+      name: "a MIME type that disagrees with the extension",
+      params: { fileName: "icon.png", mimeType: "image/jpeg", dataBase64: PNG_BASE64 },
+      message: "does not match",
+    },
+    {
+      name: "payload that is not base64",
+      params: { fileName: "icon.png", dataBase64: "!!!not-base64!!!" },
+      message: "not valid base64",
+    },
+    {
+      name: "a missing payload",
+      params: { fileName: "icon.png" },
+      message: "requires dataBase64",
+    },
+    {
+      name: "a missing file name",
+      params: { dataBase64: PNG_BASE64 },
+      message: "requires fileName",
+    },
+    {
+      name: "an oversized payload",
+      params: {
+        fileName: "icon.png",
+        dataBase64: "A".repeat(Math.ceil((2 * 1024 * 1024) / 3) * 4 + 8),
+      },
+      message: "2 MB or smaller",
+    },
+  ])("rejects $name", async ({ params, message }) => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await expect(
+      handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "projects.setIcon",
+        params: { rootPath: projectRoot, ...params },
+      }),
+    ).rejects.toThrow(message);
+
+    handler.dispose();
+  });
+
+  it("imports a picked icon under the project and clears it again", async () => {
+    const { projectRoot, handler } = await makeHandler();
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.setIcon",
+      params: {
+        rootPath: projectRoot,
+        // A traversal-shaped name is reduced to its last segment.
+        fileName: "..\\..\\brand.png",
+        mimeType: "image/png",
+        dataBase64: PNG_BASE64,
+      },
+    });
+
+    // The host stores the upload under the project's imported-icon folder and
+    // points the project's local config at it. (`resolveIconBeforeDeadline`
+    // returns the empty fallback when the out-of-process resolver is
+    // unavailable on the test host, so assert the durable write, not the reply.)
+    const importedDir = path.join(projectRoot, ".ade", "project-icons");
+    const importedFiles = fs.readdirSync(importedDir);
+    expect(importedFiles).toHaveLength(1);
+    expect(importedFiles[0]).toMatch(/^brand-[a-f0-9]{12}\.png$/);
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8"))
+      .toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.removeIcon",
+      params: { rootPath: projectRoot },
+    });
+    expect(fs.readFileSync(path.join(projectRoot, ".ade", "local.yaml"), "utf8")).toContain(
+      "iconPath: null",
+    );
+    expect(fs.existsSync(path.join(importedDir, importedFiles[0]!))).toBe(false);
+
+    handler.dispose();
+  });
+});

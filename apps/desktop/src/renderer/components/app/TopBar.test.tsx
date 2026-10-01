@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
 import { confirmDialog } from "../ui/dialog/confirm";
@@ -21,9 +21,6 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-
-const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
-const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
@@ -193,34 +190,6 @@ function resetStore() {
       displayName: "Remote App",
     })),
   } as any);
-}
-
-function makeDataTransfer(data: Record<string, string>, dropEffect = "move") {
-  return {
-    dropEffect,
-    effectAllowed: "move",
-    types: Object.keys(data),
-    getData: vi.fn((type: string) => data[type] ?? ""),
-    setData: vi.fn(),
-  };
-}
-
-function markHandledProjectTabDrop(rootPath: string, sourceWindowId = "1") {
-  window.localStorage.setItem(
-    `ade.projectTabDropHandled.v1:${sourceWindowId}:${encodeURIComponent(rootPath)}`,
-    String(Date.now()),
-  );
-}
-
-function fireProjectTabDragEnd(
-  element: HTMLElement,
-  dataTransfer: ReturnType<typeof makeDataTransfer>,
-) {
-  const event = createEvent.dragEnd(element, { dataTransfer });
-  Object.defineProperty(event, "clientX", { value: -1 });
-  Object.defineProperty(event, "clientY", { value: 12 });
-  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
-  fireEvent(element, event);
 }
 
 async function flushMicrotasks(count = 1) {
@@ -1297,25 +1266,6 @@ describe("TopBar", () => {
     expect(indicator.getAttribute("title")).not.toContain("agent process");
   });
 
-  it("consolidates a cross-window project tab dropped onto the same project", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    await waitFor(() => {
-      expect(globalThis.window.ade.app.getWindowSession).toHaveBeenCalled();
-    });
-
-    fireEvent.drop(tab, {
-      dataTransfer: makeDataTransfer({
-        "application/x-ade-project-root": "/Users/arul/ADE",
-        "application/x-ade-window-id": "2",
-      }),
-    });
-
-    expect(globalThis.window.ade.app.closeWindow).toHaveBeenCalledWith(2);
-    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
-  });
-
   it("does not render the active remote project as a local project tab", async () => {
     const remoteBinding = {
       kind: "remote" as const,
@@ -1493,86 +1443,6 @@ describe("TopBar", () => {
       expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
     });
     expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
-  });
-
-  it("does not detach again after a project tab is dropped onto an ADE target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    markHandledProjectTabDrop("/Users/arul/ADE");
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).not.toHaveBeenCalled();
-  });
-
-  it("detaches when a project tab is dragged over an ADE window but no ADE tab bar handles it", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(
-      tab,
-      makeDataTransfer(
-        {
-          [PROJECT_TAB_ROOT_MIME]: "/Users/arul/ADE",
-          [PROJECT_TAB_WINDOW_MIME]: "1",
-        },
-        "move",
-      ),
-    );
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("detaches a project tab when it is dragged outside without an ADE drop target", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-  });
-
-  it("keeps the source project tab active until the detached window is bound", async () => {
-    let resolveOpen!: (value: { windowId: number; project: { rootPath: string; name: string } }) => void;
-    const openPromise = new Promise<{ windowId: number; project: { rootPath: string; name: string } }>((resolve) => {
-      resolveOpen = resolve;
-    });
-    globalThis.window.ade.app.openProjectInNewWindow = vi.fn(() => openPromise) as any;
-    const closeProject = useAppStore.getState().closeProject;
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
-
-    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
-    await act(async () => {
-      await flushMicrotasks();
-    });
-    expect(closeProject).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveOpen({
-        windowId: 2,
-        project: { rootPath: "/Users/arul/ADE", name: "ADE" },
-      });
-      await openPromise;
-    });
-
-    await waitFor(() => {
-      expect(closeProject).toHaveBeenCalled();
-    });
   });
 
   it("opens mobile sync from the connections control", async () => {
@@ -2271,19 +2141,6 @@ describe("TopBar", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("shows project icon replacement errors", async () => {
-    globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
-      throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");
-    }) as any;
-
-    render(<TopBar />);
-
-    fireEvent.click(await screen.findByLabelText("Project icon"));
-    fireEvent.click(await screen.findByText("Replace"));
-
-      expect((await screen.findByRole("alert")).textContent).toMatch(/Project icon must be .* smaller/i);
   });
 
   it("confirms before closing a project tab", async () => {

@@ -3,6 +3,7 @@ import {
   activeMachineForGroup,
   groupRecentProjects,
   groupProjectTabs,
+  remoteBindingFromRecent,
   resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
 } from "./projectTabGrouping";
@@ -430,5 +431,54 @@ describe("resolveProjectTabFallback", () => {
         excludeTargetId: "studio",
       }),
     ).toBeNull();
+  });
+});
+
+describe("groupProjectTabs tab order", () => {
+  it("ranks ordered tabs first and keeps unranked tabs in their relative order", () => {
+    const groups = groupProjectTabs({
+      localTabs: [local("/Users/me/a"), local("/Users/me/b"), local("/Users/me/c")],
+      remoteTabs: [],
+      order: ["/Users/me/c", "/Users/me/a"],
+    });
+
+    expect(groups.map((group) => group.machines[0]!.bindingKey)).toEqual([
+      "/Users/me/c",
+      "/Users/me/a",
+      "/Users/me/b",
+    ]);
+  });
+});
+
+describe("remoteBindingFromRecent", () => {
+  function remoteRecent(transport?: "ssh" | "paired"): RecentProjectSummary {
+    return {
+      rootPath: "/srv/app",
+      displayName: "App",
+      lastOpenedAt: "",
+      exists: true,
+      kind: "remote",
+      remote: {
+        targetId: "t1",
+        projectId: "p1",
+        runtimeName: "Mac Studio",
+        hostname: "studio.local",
+        ...(transport ? { transport } : {}),
+      },
+    };
+  }
+
+  it("preserves the paired transport so the binding is not read as SSH", () => {
+    const paired = remoteBindingFromRecent(remoteRecent("paired"));
+
+    expect(paired?.transport).toBe("paired");
+    expect(paired?.key).toBe("remote:t1:p1");
+  });
+
+  it("omits transport for a legacy recent with none and returns null for a local one", () => {
+    const legacy = remoteBindingFromRecent(remoteRecent());
+    expect(legacy && "transport" in legacy).toBe(false);
+
+    expect(remoteBindingFromRecent(local("/Users/me/ADE"))).toBeNull();
   });
 });

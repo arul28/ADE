@@ -4,12 +4,18 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  importProjectIconBytes,
+  readProjectIconForUpload,
   removeProjectIconOverride,
   resolveProjectIcon,
   resolveProjectIconPath,
   setProjectIconOverride,
   setProjectIconOverrideFromSelection,
 } from "./projectIconResolver";
+import {
+  PROJECT_ICON_TYPE_ERROR,
+  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
+} from "../../../shared/projectIcons";
 import {
   PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES,
   resolveMobileProjectIconDataUrl,
@@ -345,5 +351,59 @@ describe("projectIconResolver", () => {
 
     expect(headlessMiss).toBeNull();
     expect(nativeHit).toBe("data:image/png;base64,native-after-headless");
+  });
+
+  it("removes a replaced imported icon but never a project-shipped one", () => {
+    const root = makeProjectRoot();
+    const first = writeFile(makeProjectRoot(), "one.png", Buffer.from("one"));
+    const second = writeFile(makeProjectRoot(), "two.png", Buffer.from("two"));
+
+    const importedFirst = setProjectIconOverrideFromSelection(root, first);
+    const firstImportPath = importedFirst.sourcePath!;
+    const importedSecond = setProjectIconOverrideFromSelection(root, second);
+    const secondImportPath = importedSecond.sourcePath!;
+
+    // Replacing the override retires the previous import and keeps the new one.
+    expect(fs.existsSync(firstImportPath)).toBe(false);
+    expect(fs.existsSync(secondImportPath)).toBe(true);
+
+    // A project-shipped icon is not ADE's to delete, on replace or on clear.
+    const shipped = writeFile(root, "assets/shipped.svg", "<svg>shipped</svg>");
+    setProjectIconOverride(root, shipped);
+    removeProjectIconOverride(root);
+
+    expect(fs.existsSync(shipped)).toBe(true);
+    expect(fs.existsSync(secondImportPath)).toBe(false);
+  });
+
+  it("imports icon bytes under a sanitized name so a traversal cannot escape", () => {
+    const root = makeProjectRoot();
+
+    const icon = importProjectIconBytes(root, "..\\..\\evil.png", PNG_DATA);
+
+    expect(icon.sourcePath).toContain(path.join(root, ".ade", "project-icons"));
+    expect(icon.sourcePath).not.toContain("..");
+  });
+
+  it("reads a picked icon for upload with its mime type and base64 bytes", async () => {
+    const root = makeProjectRoot();
+    const iconPath = writeFile(root, "brand.png", PNG_DATA);
+
+    const upload = await readProjectIconForUpload(iconPath);
+
+    expect(upload.fileName).toBe("brand.png");
+    expect(upload.mimeType).toBe("image/png");
+    expect(upload.dataBase64).toBe(PNG_DATA.toString("base64"));
+  });
+
+  it("rejects uploads that are the wrong type, empty, or over the remote cap", async () => {
+    const root = makeProjectRoot();
+    const gif = writeFile(root, "brand.gif", Buffer.from("gif"));
+    const empty = writeFile(root, "empty.png", Buffer.alloc(0));
+    const oversized = writeFile(root, "big.png", Buffer.alloc(REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES + 1));
+
+    await expect(readProjectIconForUpload(gif)).rejects.toThrow(PROJECT_ICON_TYPE_ERROR);
+    await expect(readProjectIconForUpload(empty)).rejects.toThrow("empty");
+    await expect(readProjectIconForUpload(oversized)).rejects.toThrow(/another machine/);
   });
 });

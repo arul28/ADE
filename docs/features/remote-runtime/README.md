@@ -802,7 +802,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `dataUrl`, `sourcePath`, and `mimeType` fields, under a 24-icon / 750 ms
   connect-path budget with 128 KiB per-icon and 512 KiB aggregate wire caps,
   so a connected desktop can render real project logos without letting an
-  oversized registry stall connection setup. It also serves
+  oversized registry stall connection setup. `projects.setIcon` and
+  `projects.removeIcon` let a desktop store or clear a project's icon on the
+  host: the bytes arrive base64 with an extension-derived MIME check, a 2 MB
+  cap, and a basename-only file name, the host imports them under the
+  project's `.ade/project-icons` folder, and both methods answer with the icon
+  the host now resolves. Older hosts advertise `machineProjects.setIcon:
+  false`, so the desktop asks the user to update that machine instead of
+  calling. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
