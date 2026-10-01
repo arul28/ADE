@@ -492,7 +492,7 @@ Renderer — settings:
   container. It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The tabs are General, Appearance, Chat, Notifications,
+  entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
   Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
   Archive, and Usage. Notifications and Activity are one page: the event policies, the
   notch, per-machine mute, privacy, sounds, and scheduled work all read and

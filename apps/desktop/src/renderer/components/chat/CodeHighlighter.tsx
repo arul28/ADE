@@ -2,7 +2,7 @@ import React, { Suspense, useEffect, useMemo, useState, useRef, type CSSProperti
 import { CopySimple, Checks } from "@phosphor-icons/react";
 import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { shikiThemeData, usesStockCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
+import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 
 /* ── LRU cache for highlighted HTML ── */
@@ -337,8 +337,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
     // The key covers every colour the Shiki theme is made from, so editing a
     // custom theme highlights fresh instead of reading a stale cached block.
     const data = shikiThemeData(resolvedTheme);
-    const key = [resolvedTheme.theme.id, resolvedTheme.palette.fg, resolvedTheme.palette.surfaceRecessed, ...Object.values(resolvedTheme.syntax)].join("|");
-    return { key, data: { ...data, name: `ade-theme-${key.replace(/[^a-zA-Z0-9]+/g, "-")}` } };
+    return { key: codeThemeFingerprint(resolvedTheme), data: { ...data, name: shikiThemeName(resolvedTheme) } };
   }, [resolvedTheme]);
   const trimmedCode = code.replace(/\n$/, "");
   const isDiff = language === "diff";

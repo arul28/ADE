@@ -88,7 +88,8 @@ build understands — repairing it would silently discard tokens it gained.
 `apps/desktop/src/renderer/theme/applyTheme.ts` is the only place a resolved
 theme touches the DOM. One pass per theme change: clear the properties the
 previous theme owned, write the new ones on `<html>`, set `data-theme` and
-`data-theme-id` on `<html>` and `<body>`, and set `color-scheme`. It does no
+`data-theme-id` on `<html>` and remove any stale copy from `<body>`, and set
+`color-scheme`. It does no
 layout reads, so it never forces reflow, and it is called from exactly one
 effect in `App.tsx` keyed on `themeId` + `customThemes`.
 
@@ -197,12 +198,11 @@ and should be skipped — the seam recomputes it.
 ## Per-project themes are deliberately not shipped
 
 A theme is a user preference, like the chat font size: it lives in
-`ade.userPreferences.v1` and syncs through the `account` scope, so every surface
-and every machine agree. A per-project theme would layer a second, project-scoped
-choice on top, and the seam for that already exists (`accountSettingsSync`
-supports an `account-repo` scope keyed on the project's git remote). It is not
-shipped because the product questions have more than one reasonable answer and
-the answers disagree with each other:
+`ade.userPreferences.v1` on this computer. A per-project theme would layer a
+second, project-scoped choice on top, and the seam for that already exists
+(`accountSettingsSync` supports an `account-repo` scope keyed on the project's
+git remote). It is not shipped because the product questions have more than one
+reasonable answer and the answers disagree with each other:
 
 - Does a project pin **replace** the user's theme for that project, or only
   override the accent on top of it?

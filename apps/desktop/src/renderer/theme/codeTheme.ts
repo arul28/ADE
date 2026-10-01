@@ -140,3 +140,23 @@ export function shikiThemeData(resolved: ResolvedAdeTheme): ShikiThemeData {
     tokenColors,
   };
 }
+
+/**
+ * A string that changes whenever a code surface would need repainting: the
+ * theme id plus every colour its Shiki definition is made from. The chat
+ * block cache and the Shiki theme name are keyed on it, so editing a custom
+ * theme in place highlights fresh instead of reading a stale cached block.
+ */
+export function codeThemeFingerprint(resolved: ResolvedAdeTheme): string {
+  return [
+    resolved.theme.id,
+    resolved.palette.fg,
+    resolved.palette.surfaceRecessed,
+    ...Object.values(resolved.syntax),
+  ].join("|");
+}
+
+/** A Shiki-safe theme name carrying the fingerprint, so two edits never share one. */
+export function shikiThemeName(resolved: ResolvedAdeTheme): string {
+  return `ade-theme-${codeThemeFingerprint(resolved).replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
