@@ -1,4 +1,4 @@
-import type { PrFile, PrSummary } from "./types";
+import type { PrSummary } from "./types";
 
 function linkedSessionIds(pr: PrSummary): string[] {
   return (pr.chatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
@@ -26,30 +26,6 @@ export function isGithubStackFullyLanded(prs: readonly PrSummary[]): boolean {
   return prs.every((pr) => pr.state === "merged" || Boolean(pr.mergedAt));
 }
 
-/** Parse a `#123` / `123` palette query into a PR number, or null. */
-export function parsePrNumberQuery(query: string): number | null {
-  const match = query.trim().match(/^#?(\d+)$/);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-/** Highest-churn files first, capped at `limit`, with a remainder count. */
-export function rankPrFilesByChurn<T extends Pick<PrFile, "filename" | "additions" | "deletions">>(
-  files: readonly T[],
-  limit = 3,
-): { files: T[]; remaining: number } {
-  const ranked = [...files].sort((left, right) => {
-    const byChurn = (right.additions + right.deletions) - (left.additions + left.deletions);
-    if (byChurn !== 0) return byChurn;
-    return left.filename.localeCompare(right.filename);
-  });
-  return {
-    files: ranked.slice(0, Math.max(0, limit)),
-    remaining: Math.max(0, ranked.length - Math.max(0, limit)),
-  };
-}
-
 /** True when the chat still has an open/draft linked PR other than `excludingPrId`. */
 export function sessionHasOpenLinkedPrs(
   prs: readonly PrSummary[],
@@ -62,12 +38,4 @@ export function sessionHasOpenLinkedPrs(
     if (pr.state !== "open" && pr.state !== "draft") return false;
     return linkedSessionIds(pr).includes(sessionId);
   });
-}
-
-/** True when this chat explicitly linked at least one of `prs`. */
-export function chatHasExplicitPrEdges(
-  prs: readonly PrSummary[],
-  sessionId: string,
-): boolean {
-  return prs.some((pr) => linkedSessionIds(pr).includes(sessionId));
 }
