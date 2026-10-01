@@ -85,6 +85,8 @@ export type LocalRuntimeStatus = {
      * brain from here, so recurring installs cannot keep it "starting" forever.
      */
     attemptStartedAt?: string | null;
+    /** The installer's typed failure stage, when the last install failed. */
+    failureStep?: string | null;
   };
   serviceHealth: {
     state: LocalRuntimeServiceHealthState;
@@ -93,6 +95,12 @@ export type LocalRuntimeStatus = {
     path: string | null;
     message: string | null;
     checkedAt: string | null;
+    /**
+     * macOS Background Items verdict for the launch agent, read only while it
+     * is installed but not running. `requires_approval` means "Allow in the
+     * Background" is off for ADE and launchd will never start the brain.
+     */
+    backgroundItem?: "enabled" | "requires_approval" | "not_registered" | "not_found" | "unknown" | null;
   };
 };
 

@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  RECOVERY_COPY,
   REPAIR_STEPS,
   stateForCode,
   toAdeRecoveryErrorCode,
@@ -25,9 +26,9 @@ import {
   ERROR_SECONDARY_BUTTON,
   ErrorSurfaceCard,
   TechnicalDetailsFold,
-  WhatToDo,
 } from "./errorSurfaceKit";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { ResetAdeButton } from "./ResetAdeDialog";
 
 /** Steps arrive as a finished array; reveal them one-by-one so it reads live. */
 const STEP_REVEAL_MS = 150;
@@ -36,137 +37,34 @@ const SETTLE_MS = 250;
 /** Beat the success card stays up before ADE re-attempts the project open. */
 const REOPEN_DELAY_MS = 700;
 /**
- * While the background service is still starting there is nothing for the
- * user to do, so this surface keeps re-diagnosing on its own and reopens the
- * project the moment the service answers. The diagnosis itself stops saying
- * "starting" once the brain has been quiet for too long, so this cannot spin
- * forever on a wedged brain — it degrades into the normal repair offer.
+ * How often the screen asks again while something else is doing the work —
+ * a brain that is booting, or a person flipping a switch in System Settings.
+ * The diagnosis stops saying "starting" once a brain has been quiet for too
+ * long, so this cannot spin forever on a wedged one.
  */
-const STARTING_POLL_MS = 2_000;
+const WATCH_POLL_MS = 2_000;
 
 type DiagnosisState = ProjectRecoveryDiagnosis["state"];
 
 /**
- * Everything this screen needs to know about a recovery state that the live
- * diagnosis does not carry, plus plain-language copy for when the diagnosis is
- * unavailable (no target root, or `diagnose` failed). Never surfaces codes or
- * internals.
- *
- * Keyed by state, and by state only: the codes reach it through the shared
- * `stateForCode`, so this table cannot disagree with the main process about
- * which failures ADE can repair the way a parallel code list did.
- *
- * `prerequisites` is the part the diagnosis genuinely does not carry — what the
- * person must do before pressing anything. Only states with a real prerequisite
- * get one; inventing a chore for every state would train people to skip the
- * list.
+ * States where the person, or ADE itself, is doing the work and this screen
+ * only has to watch: a booting brain, and a brain macOS will start the moment
+ * "Allow in the Background" is switched back on.
  */
-const STATE_COPY: Record<
-  DiagnosisState,
-  {
-    headline: string;
-    body: string;
-    canAutoRepair: boolean;
-    prerequisites?: readonly string[];
-  }
-> = {
-  healthy: {
-    headline: "ADE is ready to open this project",
-    body: "No repair is needed.",
-    canAutoRepair: false,
-  },
-  disk_full: {
-    headline: "Your computer is out of storage",
-    body: "ADE needs a little free space to open this project safely. Free up some space, then run the repair.",
-    canAutoRepair: true,
-    prerequisites: [
-      "Free up space on this computer — emptying the Trash is usually the quickest win.",
-      "Come back here and run the repair.",
-    ],
-  },
-  insufficient_headroom: {
-    headline: "Your computer is very low on storage",
-    body: "ADE keeps a small safety margin so your work is never lost. Free up some space, then run the repair.",
-    canAutoRepair: true,
-    prerequisites: [
-      "Free up a little space on this computer.",
-      "Come back here and run the repair.",
-    ],
-  },
-  db_repair_needed: {
-    headline: "This project's data needs a repair",
-    body: "Something interrupted ADE while it was saving. ADE can finish the job and reopen the project — your files and chats stay exactly where they are.",
-    canAutoRepair: true,
-  },
-  storage_unreadable: {
-    headline: "ADE couldn't read this project's data",
-    // No repair offer: rewriting files ADE can't read would risk the user's
-    // work, and the same failure also comes from a failing disk — so the
-    // remedy is stated as a condition, not an accusation.
-    body: "The project's files couldn't be read from this computer. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.",
-    canAutoRepair: false,
-    prerequisites: [
-      "Move the project folder out of iCloud Drive, Dropbox or OneDrive.",
-      "Then choose Try again.",
-    ],
-  },
-  brain_not_installed: {
-    headline: "ADE needs to finish setting up",
-    body: "A background component isn't ready yet. ADE can set it up and reopen the project.",
-    canAutoRepair: true,
-  },
-  brain_crash_looping: {
-    headline: "ADE's background service keeps restarting",
-    body: "ADE can reset the service and reopen the project.",
-    canAutoRepair: true,
-  },
-  socket_stale_no_owner: {
-    headline: "A previous session didn't shut down cleanly",
-    body: "ADE can clear the leftover session and reopen the project.",
-    canAutoRepair: true,
-  },
-  socket_owned_by_other: {
-    headline: "Another window is using this project",
-    body: "Close the other ADE window that has this project open, then try again.",
-    canAutoRepair: false,
-    prerequisites: [
-      "Quit the other copy of ADE that's running on this computer.",
-      "Then choose Try again.",
-    ],
-  },
-  brain_starting: {
-    headline: "ADE's background service is starting",
-    body: "This can take a minute the first time or right after an update. ADE will open the project as soon as it's ready — nothing to do.",
-    canAutoRepair: false,
-  },
-  unknown_failure: {
-    headline: "ADE couldn't open this project",
-    body: "Something stopped ADE's background service from answering. Repair restarts it and checks the project's data — your files and chats are not touched.",
-    canAutoRepair: true,
-  },
-};
+const WATCHED_STATES: ReadonlySet<DiagnosisState> = new Set(["brain_starting", "background_blocked"]);
 
-/** What pressing Repair actually does, in the order it does it. */
-const REPAIR_PROMISE: readonly string[] = [
-  "Restart ADE's background service",
-  "Check this project's data and finish anything that was interrupted",
-  "Reopen the project",
-];
+/** The last step after any fix that did not work: the way out that always works. */
+const RESET_STEP =
+  "Still stuck? Choose Reset ADE. It removes everything ADE put on this computer and sets it up fresh. Your code stays.";
 
-/** What to do when the repair itself came back empty-handed. */
-const REPAIR_FAILED_STEPS: readonly string[] = [
-  "Try the repair once more — a second pass clears most of these.",
-  "If it fails again, choose Report issue. ADE collects everything needed to look into it, with your personal details removed.",
-];
-
-const REASSURANCE = "Your files, chats and settings aren't touched by a repair.";
+/** Two failed fixes in a row: another try is unlikely to help, so Reset leads. */
+const FAILURES_BEFORE_RESET_LEADS = 2;
 
 type Phase = "diagnosing" | "idle" | "repairing" | "success" | "failure";
 
 /**
  * The "now doing" line names the next step from the shared ordered list.
- * Restarting the background service is the one that can take a while (it
- * waits for the service to answer), and it deserves to say so.
+ * Starting ADE again is the one that can take a while, and it says so.
  */
 const REPAIR_STEP_LABELS: readonly string[] = REPAIR_STEPS.map((step) =>
   step.id === "restart_service"
@@ -200,6 +98,32 @@ function StepRow({ step }: { step: RepairStepResult }) {
   );
 }
 
+/** Numbered, because these are done in order. */
+function DoTheseSteps({ title, steps }: { title: string; steps: readonly string[] }) {
+  return (
+    <div className="mt-5 text-[12.5px] leading-relaxed text-fg/65">
+      <p className="font-medium text-fg/85">{title}</p>
+      <ol className="mt-1.5 flex list-decimal flex-col gap-1 pl-5 marker:text-fg/35">
+        {steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function WatchingNote({ children }: { children: string }) {
+  return (
+    <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-border/60 bg-fg/[0.02] px-4 py-3 text-[12.5px] leading-relaxed text-fg/65">
+      <span
+        aria-hidden="true"
+        className="mt-1 h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
+      />
+      <span>{children}</span>
+    </div>
+  );
+}
+
 export function ProjectRecoveryScreen() {
   const navigate = useNavigate();
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
@@ -217,6 +141,7 @@ export function ProjectRecoveryScreen() {
   // final report replaces them; until then they are what the user watches.
   const [liveSteps, setLiveSteps] = useState<RepairStepResult[]>([]);
   const [repairError, setRepairError] = useState<string | null>(null);
+  const [failedFixes, setFailedFixes] = useState(0);
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -260,6 +185,7 @@ export function ProjectRecoveryScreen() {
           setPhase("success");
         } else {
           setRepairError(report.nextAction ?? null);
+          setFailedFixes((count) => count + 1);
           setPhase("failure");
         }
       }, SETTLE_MS);
@@ -268,51 +194,6 @@ export function ProjectRecoveryScreen() {
     const timer = window.setTimeout(() => setRevealed((n) => n + 1), STEP_REVEAL_MS);
     return () => window.clearTimeout(timer);
   }, [phase, report, revealed]);
-
-  // Nothing to repair while the service is booting: keep asking, and reopen the
-  // project ourselves as soon as it is healthy. The user should never have to
-  // click Repair (which restarts the brain) to recover from a slow start.
-  useEffect(() => {
-    if (phase !== "idle" || diagnosis?.state !== "brain_starting" || !rootPath) return;
-    if (!window.ade?.recovery?.diagnose) return;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      window.ade.recovery
-        .diagnose(rootPath)
-        .then((result) => {
-          if (cancelled) return;
-          if (result.state === "healthy") {
-            if (reopenStartedRef.current) return;
-            reopenStartedRef.current = true;
-            void switchProjectToPath(rootPath).catch(() => {
-              // The open failed for a new reason; the store has replaced the
-              // transition error and the diagnose effect below re-runs.
-              reopenStartedRef.current = false;
-            });
-            return;
-          }
-          setDiagnosis(result);
-        })
-        .catch(() => {
-          // Keep polling; a failed diagnosis is not a verdict.
-        });
-    }, STARTING_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [phase, diagnosis?.state, rootPath, switchProjectToPath]);
-
-  // Once repaired, keep the success card up for a beat, then re-attempt the open.
-  // A successful open clears the transition error and unmounts this surface.
-  useEffect(() => {
-    if (phase !== "success" || !rootPath || reopenStartedRef.current) return;
-    reopenStartedRef.current = true;
-    const timer = window.setTimeout(() => {
-      void switchProjectToPath(rootPath);
-    }, REOPEN_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [phase, rootPath, switchProjectToPath]);
 
   // Subscribe for the whole life of the surface: a repair started from this
   // window streams its steps here as each one finishes.
@@ -340,15 +221,79 @@ export function ProjectRecoveryScreen() {
     } catch (error) {
       setRepairError(error instanceof Error ? error.message : String(error));
       setReport(null);
+      setFailedFixes((count) => count + 1);
       setPhase("failure");
     }
   }, [rootPath, phase]);
+  // The watcher below runs on an interval; it reads the latest runRepair
+  // through a ref instead of restarting the interval on every phase change.
+  const runRepairRef = useRef(runRepair);
+  runRepairRef.current = runRepair;
+
+  // Nothing to fix while ADE is booting, or while macOS is waiting for "Allow
+  // in the Background": keep asking, and reopen the project ourselves as soon
+  // as it is healthy. Nobody should have to press Fix it (which restarts the
+  // brain) to get past a slow start, nor come back and press anything after
+  // flipping the switch.
+  const watchedState = diagnosis?.state && WATCHED_STATES.has(diagnosis.state) ? diagnosis.state : null;
+  useEffect(() => {
+    if (phase !== "idle" || !watchedState || !rootPath) return;
+    if (!window.ade?.recovery?.diagnose) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      window.ade.recovery
+        .diagnose(rootPath)
+        .then((result) => {
+          if (cancelled) return;
+          if (result.state === "healthy") {
+            if (reopenStartedRef.current) return;
+            reopenStartedRef.current = true;
+            void switchProjectToPath(rootPath).catch(() => {
+              // The open failed for a new reason; the store has replaced the
+              // transition error and the diagnose effect above re-runs.
+              reopenStartedRef.current = false;
+            });
+            return;
+          }
+          if (watchedState === "background_blocked" && result.state !== "background_blocked" && result.canAutoRepair) {
+            // The switch is on but launchd has not started the agent by
+            // itself: one fix installs it again, now that macOS allows it.
+            setDiagnosis(result);
+            void runRepairRef.current();
+            return;
+          }
+          setDiagnosis(result);
+        })
+        .catch(() => {
+          // Keep polling; a failed diagnosis is not a verdict.
+        });
+    }, WATCH_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [phase, watchedState, rootPath, switchProjectToPath]);
+
+  // Once repaired, keep the success card up for a beat, then re-attempt the open.
+  // A successful open clears the transition error and unmounts this surface.
+  useEffect(() => {
+    if (phase !== "success" || !rootPath || reopenStartedRef.current) return;
+    reopenStartedRef.current = true;
+    const timer = window.setTimeout(() => {
+      void switchProjectToPath(rootPath);
+    }, REOPEN_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [phase, rootPath, switchProjectToPath]);
+
+  const openBackgroundSettings = useCallback(() => {
+    void window.ade?.recovery?.openBackgroundSettings?.().catch(() => undefined);
+  }, []);
 
   const reopenProject = useCallback(() => {
     if (!rootPath) return;
-    // Plain reopen, no repair: right after "close the other copy of ADE" or a
-    // transient failure this is the whole fix, and Back alone left people
-    // re-clicking the project.
+    // Plain reopen: right after "quit the other copy of ADE" or a passing
+    // failure this is the whole fix, and Back alone left people re-clicking
+    // the project.
     reopenStartedRef.current = true;
     void switchProjectToPath(rootPath).catch(() => {
       reopenStartedRef.current = false;
@@ -357,25 +302,19 @@ export function ProjectRecoveryScreen() {
 
   // One verdict for the whole screen. With a live diagnosis it is the main
   // process's; without one it is what the main process would have said about
-  // the stored code, via the shared mapping.
+  // the stored code, via the shared mapping. The words come from the shared
+  // table either way, so the two can never disagree.
   const state: DiagnosisState = diagnosis?.state ?? stateForCode(code);
-  const stateCopy = STATE_COPY[state] ?? STATE_COPY.unknown_failure;
-  const headline = diagnosis?.headline ?? stateCopy.headline;
-  const body = diagnosis?.body ?? stateCopy.body;
+  const copy = RECOVERY_COPY[state] ?? RECOVERY_COPY.unknown_failure;
   const canAutoRepair = Boolean(
-    rootPath && (diagnosis ? diagnosis.canAutoRepair : stateCopy.canAutoRepair),
+    rootPath && (diagnosis ? diagnosis.canAutoRepair : copy.canAutoRepair),
   );
-  const starting = phase === "idle" && state === "brain_starting";
+  const idle = phase === "idle" || phase === "diagnosing";
+  const starting = idle && state === "brain_starting";
+  const backgroundBlocked = idle && state === "background_blocked";
   const isSuccess = phase === "success";
   const isFailure = phase === "failure";
-  const prerequisites = stateCopy.prerequisites ?? null;
-  /** Whether the amber Repair action is on screen at all. */
   const repairOffered = canAutoRepair && !starting;
-  /**
-   * Storage is the fix for exactly two states. Everywhere else "Review storage"
-   * is a way out rather than the way out, and dressing it like the alternative
-   * to Repair made three buttons of equal weight on every failure.
-   */
   const storageRelevant = state === "disk_full" || state === "insufficient_headroom";
 
   const technicalText = [
@@ -396,32 +335,25 @@ export function ProjectRecoveryScreen() {
   const visibleSteps = report
     ? report.steps.slice(0, phase === "repairing" ? revealed : undefined)
     : liveSteps;
-  // What the repair is doing right now: the step after the last finished one.
+  // What the fix is doing right now: the step after the last finished one.
   const activeStepLabel = phase === "repairing" && !report
     ? (liveSteps.length ? REPAIR_STEP_LABELS[liveSteps.length] ?? null : REPAIR_STEP_LABELS[0])
     : null;
 
-  const reviewStorageButton = (
-    <button
-      type="button"
-      onClick={() => {
-        // Clearing the error first exits the recovery takeover; while
-        // projectTransitionError is set, ProjectTabHost keeps rendering this
-        // screen and the route change alone would never reveal Settings.
-        clearProjectTransitionError();
-        navigate(settingsRouteFor("storage.usage"));
-      }}
-      className={storageRelevant ? ERROR_SECONDARY_BUTTON : ERROR_GHOST_BUTTON}
-    >
-      Review storage
-    </button>
-  );
+  const heroHeadline = isFailure ? "That didn't fix it" : copy.headline;
+  const heroBody = isFailure ? "ADE tried, but the problem is still there. Nothing was removed." : copy.body;
+  const resetLeads = isFailure && failedFixes >= FAILURES_BEFORE_RESET_LEADS;
+  const failureSteps = [
+    repairError ?? "Choose Try again. A second try fixes most of these.",
+    RESET_STEP,
+  ];
 
-  const heroHeadline = isFailure ? "ADE couldn't finish the repair" : headline;
-  const heroBody = isFailure
-    ? (repairError
-      ?? "The repair ran but didn't clear the problem. Nothing was removed, and you can try again.")
-    : body;
+  // Exactly one filled button: the thing to do next.
+  let primary: { label: string; onClick: () => void } | null = null;
+  if (resetLeads) primary = null;
+  else if (backgroundBlocked) primary = { label: "Open System Settings", onClick: openBackgroundSettings };
+  else if (repairOffered) primary = { label: isFailure ? "Try again" : "Fix it", onClick: () => void runRepair() };
+  else if (rootPath && !starting) primary = { label: "Try again", onClick: reopenProject };
 
   return (
     <div
@@ -449,8 +381,8 @@ export function ProjectRecoveryScreen() {
             isSuccess ? (
               <CheckCircle size={18} weight="fill" aria-hidden="true" />
             ) : starting ? (
-              // Nothing is broken while the service boots; a warning badge
-              // here is the "broken ADE" report this state exists to avoid.
+              // Nothing is broken while ADE boots; a warning badge here is the
+              // "broken ADE" report this state exists to avoid.
               <CircleNotch size={17} weight="bold" aria-hidden="true" className="animate-spin" />
             ) : (
               <WarningCircle size={18} weight="fill" aria-hidden="true" />
@@ -465,7 +397,7 @@ export function ProjectRecoveryScreen() {
           }
         >
 
-          {/* Repair progress / failure checklist */}
+          {/* Fix progress, or the checklist of a fix that did not work. */}
           {(phase === "repairing" || isFailure) && (report || phase === "repairing") ? (
             <div className="mt-5 rounded-xl border border-amber-400/12 bg-amber-400/[0.04] px-4 py-3.5">
               {phase === "repairing" ? (
@@ -476,7 +408,7 @@ export function ProjectRecoveryScreen() {
                       className="h-3 w-3 animate-spin rounded-full border border-amber-200/30 border-t-amber-300"
                     />
                   </span>
-                  {activeStepLabel ? `${activeStepLabel}…` : "Repairing…"}
+                  {activeStepLabel ? `${activeStepLabel}…` : "Fixing…"}
                 </div>
               ) : null}
               {visibleSteps.length ? (
@@ -489,73 +421,71 @@ export function ProjectRecoveryScreen() {
             </div>
           ) : null}
 
-          {/* Booting service: nothing to press, so say who is doing the work. */}
+          {/* Someone else is doing the work: say who, so nobody hunts for a button. */}
           {starting ? (
-            <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-border/60 bg-fg/[0.02] px-4 py-3 text-[12.5px] leading-relaxed text-fg/65">
-              <span
-                aria-hidden="true"
-                className="mt-1 h-3 w-3 shrink-0 animate-spin rounded-full border border-fg/20 border-t-fg/60"
-              />
-              <span>
-                Waiting for the background service… You can leave this screen — ADE keeps
-                checking and opens the project on its own.
-              </span>
-            </div>
+            <WatchingNote>Waiting for ADE… You can leave this screen. The project opens by itself.</WatchingNote>
           ) : null}
 
-          {/* What to do. One list at a time: a prerequisite the person owns, the
-              next move after a failed repair, or what Repair is about to do. */}
+          {/* What the person does, in order. One list at a time. */}
           {!isSuccess && phase !== "repairing" && !starting ? (
             isFailure ? (
-              <WhatToDo title="What to do next" steps={REPAIR_FAILED_STEPS} />
-            ) : prerequisites ? (
-              <WhatToDo title="What to do" steps={prerequisites} />
-            ) : canAutoRepair ? (
-              <WhatToDo title="What the repair does" steps={REPAIR_PROMISE} />
+              <DoTheseSteps title="What to do now" steps={failureSteps} />
+            ) : copy.steps ? (
+              <DoTheseSteps title="What to do" steps={copy.steps} />
             ) : null
           ) : null}
 
-          {!isSuccess && phase !== "repairing" && !starting && canAutoRepair ? (
-            <p className="mt-3 text-[12.5px] leading-relaxed text-fg/45">{REASSURANCE}</p>
-          ) : null}
-
-          {/* Actions. While the service is merely starting, Repair is withheld
-              (it would restart the very brain we are waiting for) but the other
-              ways out stay: a person must never be pinned on a spinner. */}
-          {phase !== "repairing" && !isSuccess ? (
+          {phase !== "repairing" && !isSuccess && (primary || resetLeads || storageRelevant || (rootPath && repairOffered)) ? (
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              {repairOffered ? (
-                <button type="button" onClick={() => void runRepair()} className={ERROR_PRIMARY_BUTTON}>
-                  {isFailure ? "Try again" : "Repair ADE"}
+              {resetLeads ? <ResetAdeButton className={ERROR_PRIMARY_BUTTON} label="Reset ADE…" /> : null}
+              {primary ? (
+                <button type="button" onClick={primary.onClick} className={ERROR_PRIMARY_BUTTON}>
+                  {primary.label}
                 </button>
               ) : null}
-              {storageRelevant ? reviewStorageButton : null}
-              {rootPath ? (
+              {resetLeads && repairOffered ? (
+                <button type="button" onClick={() => void runRepair()} className={ERROR_SECONDARY_BUTTON}>
+                  Try again
+                </button>
+              ) : null}
+              {storageRelevant ? (
                 <button
                   type="button"
-                  onClick={reopenProject}
-                  // With no Repair on screen this *is* the action to take, so
-                  // it carries the primary weight rather than leaving the row
-                  // headless — except while the service is merely starting,
-                  // where the honest answer is that there is nothing to press.
-                  className={
-                    repairOffered || starting ? ERROR_SECONDARY_BUTTON : ERROR_PRIMARY_BUTTON
-                  }
+                  onClick={() => {
+                    // Clearing the error first exits the recovery takeover;
+                    // while it is set this screen keeps rendering and the
+                    // route change alone would never reveal Settings.
+                    clearProjectTransitionError();
+                    navigate(settingsRouteFor("storage.usage"));
+                  }}
+                  className={ERROR_SECONDARY_BUTTON}
                 >
-                  {repairOffered ? "Open without repairing" : "Try again"}
+                  See what uses space
                 </button>
               ) : null}
-              {storageRelevant ? null : reviewStorageButton}
+              {rootPath && repairOffered && !starting ? (
+                <button type="button" onClick={reopenProject} className={ERROR_GHOST_BUTTON}>
+                  Open anyway
+                </button>
+              ) : null}
             </div>
+          ) : null}
+          {backgroundBlocked ? (
+            <WatchingNote>Watching for the change. ADE continues as soon as your Mac allows it.</WatchingNote>
           ) : null}
         </ErrorSurfaceCard>
 
-        {/* Meta actions live outside the card: they are about this screen, not
-            about the project. */}
+        {/* The ways out that are about ADE, not this project. */}
         {phase !== "repairing" && !isSuccess ? (
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {resetLeads ? null : (
+              <>
+                <span className="text-[12px] text-fg/45">Still stuck?</span>
+                <ResetAdeButton />
+              </>
+            )}
             <ReportIssueButton
-              variant="secondary"
+              variant="ghost"
               context={{
                 surface: "project_recovery",
                 headline: heroHeadline,
@@ -581,28 +511,21 @@ function SuccessCard({
   report: ProjectRepairReport | null;
   onOpenWork: () => void;
 }) {
-  const dbLine =
-    report?.dbHealthy === true
-      ? "Project database: healthy"
-      : report?.dbHealthy === false
-        ? "Project database: repaired"
-        : null;
   const total = report?.chatsTotal ?? null;
   const needAttention = report?.chatsNeedingAttention ?? 0;
   const resumedNormally = total != null ? Math.max(0, total - needAttention) : null;
 
   return (
     <>
-      <h1 className={ERROR_HEADLINE}>ADE repaired the project and reopened it</h1>
+      <h1 className={ERROR_HEADLINE}>Fixed. Opening the project…</h1>
       <ul className="mt-3 flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-fg/60">
-        {dbLine ? <li>{dbLine}</li> : null}
-        {resumedNormally != null ? (
-          <li>{pluralize(resumedNormally, "chat")} resumed normally</li>
+        {report?.dbHealthy === false ? <li>This project&apos;s ADE data was repaired.</li> : null}
+        {resumedNormally != null && total ? (
+          <li>{pluralize(resumedNormally, "chat")} picked up where {resumedNormally === 1 ? "it" : "they"} left off.</li>
         ) : null}
         {needAttention > 0 ? (
           <li>
-            {pluralize(needAttention, "chat")} {needAttention === 1 ? "needs" : "need"} your
-            attention —{" "}
+            {pluralize(needAttention, "chat")} {needAttention === 1 ? "needs" : "need"} a look —{" "}
             <button
               type="button"
               onClick={onOpenWork}
@@ -612,7 +535,7 @@ function SuccessCard({
             </button>
           </li>
         ) : null}
-        <li className="text-fg/45">No project files were removed.</li>
+        <li className="text-fg/45">No files were removed.</li>
       </ul>
     </>
   );

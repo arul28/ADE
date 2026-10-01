@@ -1787,16 +1787,17 @@ function withPreservedLaneStatus(
  * No code at all falls through to the brain's message as well.
  */
 const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
-  disk_full:
-    "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
-  brain_crash_looping: "ADE's background service needs a repair before this project can open.",
-  migration_incomplete: "ADE's background service needs a repair before this project can open.",
-  migration_unknown_state: "ADE's background service needs a repair before this project can open.",
-  insufficient_headroom: "ADE's background service could not open this project.",
-  db_integrity: "ADE's background service could not open this project.",
-  brain_not_installed: "ADE's background service could not open this project.",
-  socket_stale_no_owner: "ADE's background service could not open this project.",
-  socket_owned_by_other: "ADE's background service could not open this project.",
+  disk_full: "Your computer is out of space. Free up some space, then try again.",
+  insufficient_headroom: "Your computer is almost out of space. Free up a few GB, then try again.",
+  brain_crash_looping: "ADE keeps stopping. Open the project to fix it.",
+  migration_incomplete: "This project needs a quick fix before it can open.",
+  migration_unknown_state: "This project needs a quick fix before it can open.",
+  db_integrity: "This project needs a quick fix before it can open.",
+  brain_not_installed: "ADE isn't fully set up. Open the project to fix it.",
+  background_item_blocked: "Your Mac is blocking ADE from running in the background.",
+  brain_not_running: "ADE didn't start. Open the project to fix it.",
+  socket_stale_no_owner: "ADE didn't close properly last time. Open the project to fix it.",
+  socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
 };
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";

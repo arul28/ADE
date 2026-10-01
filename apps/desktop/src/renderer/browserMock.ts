@@ -30,6 +30,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import {
+  browserMockRecoveryScenario,
+  createBrowserMockRecoveryBridges,
+  showBrowserMockRecoveryScreen,
+} from "./browserMockRecovery";
 import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
 import type {
   AppControlEventPayload,
@@ -8033,6 +8038,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
+    // Recovery screen + hard reset scenarios (`?adeRecovery=<state>`).
+    ...createBrowserMockRecoveryBridges(),
   };
   void attachBrowserRuntimeBridge();
+  if (browserMockRecoveryScenario()) {
+    // After the mock project has opened; that open clears transition errors.
+    window.setTimeout(() => {
+      void import("./state/appStore").then(({ useAppStore }) => {
+        showBrowserMockRecoveryScreen(
+          (error) => useAppStore.setState({ projectTransitionError: error }),
+          MOCK_PROJECT.rootPath,
+        );
+      });
+    }, 2_500);
+  }
 } // window

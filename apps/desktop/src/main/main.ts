@@ -288,6 +288,7 @@ import {
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
@@ -1575,6 +1576,31 @@ app.whenReady().then(async () => {
       .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
+  // First launch after a hard reset: say what it saved and what it could not
+  // remove. A clean reset with nothing rescued needs no dialog; the fresh
+  // first-run screens say enough.
+  const resetReceipt = takeMachineResetReceipt(machineAdeLayout.adeDir);
+  if (resetReceipt) {
+    logMachineEvent(resetReceipt.ok ? "info" : "warn", "desktop.machine_reset_receipt", {
+      ok: resetReceipt.ok,
+      removed: resetReceipt.removed.length,
+      rescued: resetReceipt.rescued.length,
+      failed: resetReceipt.failed.length,
+    });
+    if (resetReceipt.rescued.length || resetReceipt.failed.length) {
+      const lines = [
+        ...resetReceipt.rescued.map((lane) => lane.mode === "move"
+          ? `Lane "${lane.lane}" was moved to ${lane.location}.`
+          : `Lane "${lane.lane}" was saved on branch ${lane.branch} in ${lane.projectRoot}.`),
+        ...resetReceipt.failed.slice(0, 10).map((failure) => `Not removed: ${failure.target} (${failure.error})`),
+      ];
+      void dialog.showMessageBox({
+        type: resetReceipt.failed.length ? "warning" : "info",
+        message: resetReceipt.failed.length ? "ADE was reset, with a few problems" : "ADE was reset",
+        detail: lines.join("\n"),
+      }).catch(() => undefined);
+    }
+  }
   // One subscription proxy supervisor belongs to this ADE install, not to the
   // currently-open project. Project contexts all point at the same machine
   // state.json; keeping the lazy instance here prevents duplicate children and

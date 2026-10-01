@@ -986,6 +986,7 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   WorkToolId,
   WorkToolsLaneState,
@@ -1251,6 +1252,8 @@ declare global {
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
         repair: (projectRoot: string) => Promise<ProjectRepairReport>;
+        /** Opens System Settings at Login Items (macOS). Optional: older preloads lack it. */
+        openBackgroundSettings?: () => Promise<{ opened: boolean }>;
         /**
          * Live repair steps for the window that started the repair. Optional
          * for the same reason `diagnostics` is: an older preload does not have
@@ -1259,6 +1262,12 @@ declare global {
         onRepairStep?: (
           cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
         ) => () => void;
+      };
+      /** The hard reset. Optional: older preloads do not have it. */
+      machineReset?: {
+        plan: () => Promise<MachineResetPlan>;
+        start: (options: MachineResetOptions) => Promise<{ started: boolean; error?: string }>;
+        chooseRescueDir: () => Promise<string | null>;
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
