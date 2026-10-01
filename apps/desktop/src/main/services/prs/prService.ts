@@ -191,6 +191,13 @@ import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationV
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import {
+  buildLaneBranchHistoryIndex,
+  pickLaneBranchHistoryPr,
+  prOpenedDuringLane,
+  resolveLaneBranchHistoryOwner,
+  type LaneBranchHistoryIndex,
+} from "./laneBranchHistoryOwnership";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
   buildLinearPrTitle,
@@ -3245,13 +3252,21 @@ export function createPrService({
     headBranch: string;
     title: string;
     githubUrl: string;
+    createdAt: string | null;
+    isOpen: boolean;
   };
 
-  const autoMapCandidateFromRawPull = (rawPr: any, repo: GitHubRepoRef): AutoMapPrCandidate | null => {
-    // Guard #1: only open/draft PRs (never merged/closed).
-    if (rawPr?.merged_at) return null;
+  const autoMapCandidateFromRawPull = (
+    rawPr: any,
+    repo: GitHubRepoRef,
+    options: { includeClosed?: boolean } = {},
+  ): AutoMapPrCandidate | null => {
+    // Guard #1: only open/draft PRs (never merged/closed). The branch-history
+    // lookup opts out: it exists to recover PRs that merged before any poll
+    // saw them open.
     const state = asString(rawPr?.state).toLowerCase();
-    if (state && state !== "open") return null;
+    const isOpen = !rawPr?.merged_at && (!state || state === "open");
+    if (!isOpen && options.includeClosed !== true) return null;
 
     // Guard #2: same-repo head only (never a fork).
     if (!rawPullHasSameRepoHead(rawPr, repo)) return null;
@@ -3267,7 +3282,125 @@ export function createPrService({
       title: asString(rawPr?.title) || `PR #${prNumber}`,
       githubUrl: asString(rawPr?.html_url)
         || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+      createdAt: asString(rawPr?.created_at) || null,
+      isOpen,
     };
+  };
+
+  const loadLaneBranchHistoryIndex = (): LaneBranchHistoryIndex => {
+    try {
+      return buildLaneBranchHistoryIndex(laneService.listBranchHistory());
+    } catch (error) {
+      logger.warn("prs.lane_branch_history_read_failed", { error: getErrorMessage(error) });
+      return new Map();
+    }
+  };
+
+  /**
+   * Link a PR's row to the chats that were open in the lane when it was
+   * created. A history PR does not match the lane's recorded branch, so lane
+   * surfaces show it only through this edge. Plain shells (`shell`, `other`)
+   * are not agents, and a session that ended before the PR existed did not
+   * open it.
+   */
+  const attributeLanePrToChats = (args: { prId: string; laneId: string; createdAt: string | null }): void => {
+    const createdMs = args.createdAt ? Date.parse(args.createdAt) : Number.NaN;
+    if (!Number.isFinite(createdMs)) return;
+    // Session times are stored as `toISOString()`. GitHub's `…:11Z` sorts after
+    // `…:11.500Z` as text, so compare in the stored format.
+    const createdAt = new Date(createdMs).toISOString();
+    let sessions: Array<{ id: string }> = [];
+    try {
+      sessions = db.all<{ id: string }>(
+        `
+          select id
+            from terminal_sessions
+           where lane_id = ?
+             and tool_type is not null
+             and tool_type not in ('shell', 'other')
+             and started_at <= ?
+             and (ended_at is null or ended_at >= ?)
+           order by started_at desc
+           limit 3
+        `,
+        [args.laneId, createdAt, createdAt],
+      );
+    } catch (error) {
+      logger.warn("prs.lane_history_chat_attribution_failed", {
+        prId: args.prId,
+        laneId: args.laneId,
+        error: getErrorMessage(error),
+      });
+      return;
+    }
+    for (const session of sessions) {
+      linkPrToChatSession({ prId: args.prId, laneId: args.laneId, sessionId: session.id });
+    }
+  };
+
+  /**
+   * Link a PR whose head is a branch from a lane's branch history. Same
+   * suppression and one-PR-per-branch guards as the strict match. `linkToLane`
+   * leaves the PR body and Linear alone here, because the head is not the
+   * lane's recorded branch.
+   */
+  const autoMapPrToHistoryLane = async (
+    candidate: AutoMapPrCandidate,
+    repo: GitHubRepoRef,
+    lanes: LaneSummary[],
+    history: LaneBranchHistoryIndex,
+  ): Promise<LaneSummary | null> => {
+    if (getLiveRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
+    const lane = resolveLaneBranchHistoryOwner(candidate.headBranch, lanes, history);
+    if (!lane) return null;
+    if (!prOpenedDuringLane(candidate.createdAt, lane)) return null;
+    if (getRowForLaneBranch(lane.id, candidate.headBranch)) return null;
+    const ignored = listAutoLinkIgnores(repo);
+    if (ignored.has(autoLinkIgnoreKey({
+      owner: repo.owner,
+      repo: repo.name,
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+    }))) {
+      return null;
+    }
+
+    const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+    attributeLanePrToChats({ prId: linked.id, laneId: lane.id, createdAt: linked.createdAt || candidate.createdAt });
+
+    // A merged backfill is history being filled in, not news; only an open PR
+    // gets the Undo-able toast.
+    if (candidate.isOpen) {
+      try {
+        emitPrEvent?.({
+          type: "pr-auto-linked",
+          timestamp: nowIso(),
+          prId: linked.id,
+          laneId: lane.id,
+          laneName: lane.name,
+          prNumber: candidate.prNumber,
+          prTitle: candidate.title,
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          headBranch: candidate.headBranch,
+          githubUrl: candidate.githubUrl,
+        });
+      } catch (error) {
+        logger.warn("prs.auto_map_event_emit_failed", {
+          prNumber: candidate.prNumber,
+          laneId: lane.id,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+
+    logger.info("prs.auto_mapped_by_lane_branch_history", {
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+      headBranch: candidate.headBranch,
+      state: candidate.isOpen ? "open" : "closed",
+    });
+    return lane;
   };
 
   /**
@@ -3281,6 +3414,7 @@ export function createPrService({
     candidate: AutoMapPrCandidate,
     repo: GitHubRepoRef,
     lanes: LaneSummary[],
+    history: LaneBranchHistoryIndex | null = null,
   ): Promise<LaneSummary | null> => {
     if (!autoMapByBranchEnabled()) return null;
 
@@ -3288,11 +3422,15 @@ export function createPrService({
     if (getLiveRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
 
     // Guard #3: exactly one non-archived worktree lane whose head branch
-    // matches the PR head branch. Zero or >1 → do nothing.
+    // matches the PR head branch. >1 → do nothing. Zero → the branch may be
+    // one a lane's worktree moved to without recording it.
     const matches = lanes.filter((lane) =>
       !lane.archivedAt
       && normalizeBranchName(branchNameFromRef(lane.branchRef)) === candidate.headBranch,
     );
+    if (matches.length === 0 && history) {
+      return await autoMapPrToHistoryLane(candidate, repo, lanes, history);
+    }
     if (matches.length !== 1) return null;
     const lane = matches[0];
 
@@ -3367,11 +3505,13 @@ export function createPrService({
   ): Promise<number> => {
     if (!autoMapByBranchEnabled()) return 0;
     let mapped = 0;
+    let history: LaneBranchHistoryIndex | null = null;
     for (const rawPr of rawPulls) {
       const candidate = autoMapCandidateFromRawPull(rawPr, repo);
       if (!candidate) continue;
       try {
-        const lane = await autoMapPrToLane(candidate, repo, lanes);
+        history ??= loadLaneBranchHistoryIndex();
+        const lane = await autoMapPrToLane(candidate, repo, lanes, history);
         if (lane) mapped += 1;
       } catch (error) {
         logger.warn("prs.auto_map_by_branch_failed", {
@@ -3416,6 +3556,99 @@ export function createPrService({
         error: getErrorMessage(error),
       });
     }
+  };
+
+  // One GitHub lookup per history branch per window. A branch that has no PR
+  // yet is asked again only after HEAD moves or the window passes, so a lane
+  // full of scratch branches costs a bounded number of calls.
+  const LANE_BRANCH_HISTORY_LOOKUP_INTERVAL_MS = 10 * 60_000;
+  const LANE_BRANCH_HISTORY_MAX_LOOKUPS = 6;
+  const laneBranchHistoryLookedUpAtMs = new Map<string, number>();
+
+  /**
+   * Trigger #3 (lane branch history): the lane service saw a lane's worktree
+   * use branches it does not record — an agent cutting follow-up PR branches
+   * inside its lane. Look each one up on GitHub, merged and closed included,
+   * and link the PR to the lane. This is what recovers a PR that was opened and
+   * merged between two polls, which the open-PR snapshot never sees.
+   */
+  const autoLinkLaneBranchHistory = async (args: { laneId: string; branchRefs: string[] }): Promise<number> => {
+    if (!autoMapByBranchEnabled()) return 0;
+    const branches = [...new Set(
+      args.branchRefs.map((ref) => normalizeBranchName(branchNameFromRef(ref))).filter(Boolean),
+    )];
+    if (branches.length === 0) return 0;
+    let linked = 0;
+    try {
+      const repo = await githubService.getRepoOrThrow();
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const history = loadLaneBranchHistoryIndex();
+      let lookups = 0;
+      for (const branch of branches) {
+        if (lookups >= LANE_BRANCH_HISTORY_MAX_LOOKUPS) break;
+        const lane = resolveLaneBranchHistoryOwner(branch, lanes, history);
+        if (!lane || lane.id !== args.laneId) continue;
+        if (getRowForLaneBranch(lane.id, branch)) continue;
+        const lookupKey = laneBranchLookupKey(repo, branch);
+        if (githubReadBackoff.isBackedOff(lookupKey)) continue;
+        const nowMs = Date.now();
+        const lastLookupMs = laneBranchHistoryLookedUpAtMs.get(lookupKey) ?? 0;
+        if (nowMs - lastLookupMs < LANE_BRANCH_HISTORY_LOOKUP_INTERVAL_MS) continue;
+        laneBranchHistoryLookedUpAtMs.set(lookupKey, nowMs);
+        lookups += 1;
+
+        let rawPulls: any[];
+        try {
+          rawPulls = await fetchAllPages<any>({
+            path: `/repos/${repo.owner}/${repo.name}/pulls`,
+            query: {
+              state: "all",
+              head: `${repo.owner}:${branch}`,
+              sort: "created",
+              direction: "desc",
+            },
+            maxPages: 1,
+          });
+          githubReadBackoff.clear(lookupKey);
+        } catch (error) {
+          githubReadBackoff.record(lookupKey, error, GITHUB_SNAPSHOT_TTL_MS);
+          logger.warn("prs.lane_branch_history_lookup_failed", {
+            laneId: lane.id,
+            branch,
+            error: getErrorMessage(error),
+          });
+          continue;
+        }
+
+        const best = pickLaneBranchHistoryPr(
+          rawPulls
+            .map((rawPr) => autoMapCandidateFromRawPull(rawPr, repo, { includeClosed: true }))
+            .filter((candidate): candidate is AutoMapPrCandidate => (
+              candidate !== null
+              && candidate.headBranch === branch
+              && prOpenedDuringLane(candidate.createdAt, lane)
+            )),
+        );
+        if (!best) continue;
+        try {
+          if (await autoMapPrToHistoryLane(best, repo, lanes, history)) linked += 1;
+        } catch (error) {
+          logger.warn("prs.lane_branch_history_link_failed", {
+            laneId: lane.id,
+            branch,
+            prNumber: best.prNumber,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+    } catch (error) {
+      logger.warn("prs.lane_branch_history_failed", {
+        laneId: args.laneId,
+        error: getErrorMessage(error),
+      });
+    }
+    if (linked > 0) emitPrsUpdated();
+    return linked;
   };
 
   const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
@@ -12391,6 +12624,14 @@ export function createPrService({
      */
     async tryAutoMapLaneByBranch(laneId: string): Promise<void> {
       await tryAutoMapLaneByBranch(laneId);
+    },
+
+    /**
+     * Trigger #3: link PRs opened from branches a lane's worktree used without
+     * recording them (see `autoLinkLaneBranchHistory`). Never throws.
+     */
+    async autoLinkLaneBranchHistory(args: { laneId: string; branchRefs: string[] }): Promise<number> {
+      return await autoLinkLaneBranchHistory(args);
     },
 
     async refreshSnapshots(args: { prId?: string } = {}): Promise<{ refreshedCount: number }> {

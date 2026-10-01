@@ -93,6 +93,7 @@ import {
   laneNameAdvertisesBranch,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
+import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -3250,6 +3251,25 @@ export function createLaneService({
     invalidateLaneListCache();
   };
 
+  const branchHistory = createLaneBranchHistoryObserver<LaneRow>({
+    db,
+    projectId,
+    projectRoot,
+    defaultBaseRef,
+    logger,
+    getLaneRow,
+    hasBranchProfile: (laneId, branchRef) => Boolean(getBranchProfileRow(laneId, branchRef)),
+    recordBranchProfile: (row, visit) => {
+      upsertBranchProfileForRow(row, {
+        branchRef: visit.branchRef,
+        baseRef: row.base_ref,
+        parentLaneId: row.parent_lane_id,
+        sourceBranchRef: row.branch_ref,
+        lastCheckedOutAt: new Date(visit.lastVisitedAtMs).toISOString(),
+      });
+    },
+  });
+
   const repairPrimaryParentedRootLanes = (): void => {
     const primary = getActivePrimaryLane();
     if (!primary?.id) return;
@@ -3645,6 +3665,7 @@ export function createLaneService({
             status,
             updatedAt: new Date().toISOString(),
           });
+          if (worktreeAvailable) branchHistory.observe(row, status.headBranchRef);
         }
       } catch (err) {
         // If building the summary for a single lane fails entirely, skip it
@@ -5861,6 +5882,26 @@ export function createLaneService({
         `,
         [projectId, laneId],
       ).map(toLaneBranchProfile);
+    },
+
+    /**
+     * Every branch each active lane has used, from its branch profiles: the
+     * recorded branch plus any the worktree moved to (see
+     * `observeLaneBranchHistory`). One query for the whole project, so PR
+     * matching can ask "which lane worked on this branch" without a git call.
+     */
+    listBranchHistory(): Array<{ laneId: string; branchRef: string }> {
+      return db.all<{ lane_id: string; branch_ref: string }>(
+        `
+          select p.lane_id, p.branch_ref
+          from lane_branch_profiles p
+          join lanes l on l.id = p.lane_id and l.project_id = p.project_id
+          where p.project_id = ?
+            and l.status != 'archived'
+            and l.archived_at is null
+        `,
+        [projectId],
+      ).map((row) => ({ laneId: row.lane_id, branchRef: row.branch_ref }));
     },
 
     /**
@@ -8472,6 +8513,16 @@ export function createLaneService({
      */
     setOnWorktreeLaneCreated(hook: ((lane: LaneSummary) => void | Promise<void>) | null): void {
       onWorktreeLaneCreated = hook ?? null;
+    },
+
+    /**
+     * A lane's worktree is on, or has visited, branches other than the one the
+     * lane records — usually an agent cutting a follow-up PR branch. The PR
+     * service links the PRs opened from them. Late-bound for the same reason
+     * as `setOnWorktreeLaneCreated`.
+     */
+    setOnBranchHistoryObserved(hook: ((args: { laneId: string; branchRefs: string[] }) => void) | null): void {
+      branchHistory.setOnObserved(hook);
     },
 
     /**

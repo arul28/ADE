@@ -17,6 +17,7 @@ import { PrActionsDropdown, type PrActionsContext } from "../shared/PrActionsMen
 import { chatLabel } from "../shared/prChatActions";
 import { isTerminalPrState } from "../../../lib/prState";
 import { relativeWhen } from "../../../lib/format";
+import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../shared/PrSwitcher";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import "./PrDetailHeader.css";
 
@@ -108,6 +109,8 @@ export type PrDetailHeaderProps = {
   unmappedAffordance?: UnmappedAffordance | null;
   /** The lane's machine, shown beside the lane chip once the project spans machines. */
   laneMachineChip?: MachineChipModel | null;
+  /** Set when the pane holds more than one pull request (a chat's PRs). */
+  switcher?: PrSwitcher | null;
 };
 
 /**
@@ -138,6 +141,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   actions,
   unmappedAffordance = null,
   laneMachineChip = null,
+  switcher = null,
 }: PrDetailHeaderProps) {
   const tabs: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number; note?: React.ReactNode }> = [
     { id: "overview", label: "Overview", icon: Eye },
@@ -167,6 +171,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
   const hiddenChats = linkedChats.length - shownChats.length;
   const showOpenAsLane = !pr.laneId && unmappedAffordance?.canCreateLane && !isTerminalPrState(pr.state);
   const refreshing = Boolean(actions.refreshing);
+  const showSwitcher = Boolean(switcher && switcher.prs.length > 1);
 
   return (
     <div
@@ -188,6 +193,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
               <ArrowSquareOut size={11} />
             </button>
           </SmartTooltip>
+          {showSwitcher && switcher ? <PrSwitcherMenu switcher={switcher} /> : null}
           {author?.login ? (
             <span className="ade-pr-detail-header-author">
               <span aria-hidden style={{ color: COLORS.textDim }}>·</span>
@@ -212,6 +218,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
             <InlinePrBadge {...badge} />
           </span>
           <span style={{ flex: 1 }} />
+          {showSwitcher && switcher ? <PrSwitcherStepper switcher={switcher} /> : null}
           {showOpenAsLane ? (
             <SmartTooltip content={{ label: "Open as lane", description: "Check this pull request's branch out into a local lane so you can run and edit it here." }}>
               <button

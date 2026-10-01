@@ -8077,6 +8077,81 @@ describe("prService auto-map by branch", () => {
       expect.arrayContaining([REPO.owner, REPO.name, 777, LANE_ID, AUTO_BRANCH]),
     );
   });
+
+  // A lane's worktree can move to a follow-up branch without the lane record
+  // changing (that is what branch drift reports). A PR opened from that branch
+  // is still the lane's work, and this is the only path that recovers a PR
+  // merged between two polls — the open-PR snapshot never sees it.
+  it("links a merged PR on a lane history branch and edges the chat open at its creation", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    // terminal_sessions is the chat lookup for both the created_at attribution
+    // and the link write; keep the pull_requests store for everything else.
+    const pullRequestAll = db.all.getMockImplementation();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return [{ id: "chat-history" }];
+      return pullRequestAll?.(sql, params) ?? [];
+    });
+    const pullRequestGet = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from terminal_sessions")) return { id: params[0] };
+      return pullRequestGet?.(sql, params) ?? null;
+    });
+
+    const historyBranch = "feature/follow-up";
+    const mergedPull = makeGitHubPull({
+      number: 888,
+      node_id: "PR_merged_888",
+      html_url: "https://github.com/test-owner/test-repo/pull/888",
+      title: "Merged follow-up",
+      state: "closed",
+      merged_at: "2026-01-03T00:00:00Z",
+      created_at: "2026-01-02T00:00:00Z",
+      updated_at: "2026-01-03T00:00:00Z",
+      base: { ref: "main", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+      head: {
+        ref: historyBranch,
+        user: { login: REPO.owner },
+        repo: { owner: { login: REPO.owner }, name: REPO.name },
+      },
+    });
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        const method = args.method ?? "GET";
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [mergedPull] };
+        }
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/888`) {
+          return { data: { ...mergedPull } };
+        }
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/888/reviews`) {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API request: ${method} ${args.path}`);
+      }),
+    });
+    const laneService = makeLaneService([makeFakeLane()]);
+    laneService.listBranchHistory = vi.fn(() => [{ laneId: LANE_ID, branchRef: historyBranch }]);
+    const { service } = buildService({ db, githubService, laneService });
+    const events: any[] = [];
+    autoMapService(service).setEventEmitter((e) => events.push(e));
+
+    const linked = await (service as typeof service & {
+      autoLinkLaneBranchHistory: (args: { laneId: string; branchRefs: string[] }) => Promise<number>;
+    }).autoLinkLaneBranchHistory({ laneId: LANE_ID, branchRefs: [historyBranch] });
+
+    expect(linked).toBe(1);
+    const prInsert = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("));
+    expect(prInsert?.[1]).toEqual(expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 888]));
+    const chatEdge = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_request_chat_sessions"));
+    expect(chatEdge?.[1]?.[3]).toBe(LANE_ID);
+    expect(chatEdge?.[1]?.[4]).toBe("chat-history");
+    // A merged backfill is history being filled in, not news: no Undo toast.
+    expect(events.filter((event) => event.type === "pr-auto-linked")).toEqual([]);
+  });
 });
 
 describe("prService hot refresh", () => {

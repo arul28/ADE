@@ -463,6 +463,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePr = null,
   lanePrs = [],
   onOpenLanePrs,
+  onOpenLanePrInChat,
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
@@ -512,6 +513,12 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrs?: PrSummary[];
   /** Opens the lane-filtered PR list from a multi-PR counter. */
   onOpenLanePrs?: () => void;
+  /**
+   * Opens the lane PR in this session's PR tool. The pill and the hover card
+   * use it; only PR lists still go to the PRs tab. Absent for a row on another
+   * machine, whose PR opens there.
+   */
+  onOpenLanePrInChat?: (pr: PrSummary) => void;
   /**
    * True when this card's lane lives on another machine. The PR itself is read
    * from that machine; only its click-through has to change, because the PRs tab
@@ -1104,7 +1111,10 @@ export const SessionCard = React.memo(function SessionCard({
           ) : null}
         </span>
       ),
-      onActivate: () => openLanePr(lanePr, { foreign: lanePrForeign, navigate }),
+      onActivate: () => {
+        if (onOpenLanePrInChat) onOpenLanePrInChat(lanePr);
+        else openLanePr(lanePr, { foreign: lanePrForeign, navigate });
+      },
       activateLabel: `Open pull request #${lanePr.githubPrNumber}`,
       testId: "session-hover-pr",
     });
@@ -1322,6 +1332,7 @@ export const SessionCard = React.memo(function SessionCard({
       pr={lanePr}
       prs={lanePrList}
       onOpen={(target) => openLanePr(target, { foreign: lanePrForeign, navigate })}
+      onOpenPill={onOpenLanePrInChat}
       onOpenList={onOpenLanePrs}
     />
   ) : null;

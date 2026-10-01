@@ -107,6 +107,7 @@ import {
 } from "../../../shared/sessionSpawnNesting";
 import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
+import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1001,7 +1002,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   onShowDraftKind: (kind: WorkDraftKind) => void;
   onSelectSession: (
     id: string,
-    event: React.MouseEvent,
+    /** Absent for a programmatic select (a PR pill), which never multi-selects. */
+    event: React.MouseEvent | undefined,
     visibleSessionIds: string[],
     binding?: OpenProjectBinding | null,
   ) => void;
@@ -2176,6 +2178,21 @@ export const SessionListPane = React.memo(function SessionListPane({
     nestedSubagent?: boolean;
     nesting?: WorkNestingDrawers<TerminalSessionSummary>;
   };
+  // A PR pill on a card or a lane divider opens the PR in that session's PR
+  // tool: select the session, then hand the PR to its pane. Only PR lists go to
+  // the PRs tab.
+  const openLanePrInSession = (session: TerminalSessionSummary, pr: PrSummary) => {
+    const request = { laneId: session.laneId, sessionId: session.id, prId: pr.id };
+    if (session.id === selectedSessionId) {
+      openPrInChatToolsPane(request);
+      return;
+    }
+    onSelectSession(session.id, undefined, renderedSessionIds);
+    // The Work page opens the tool for the lane it is showing. Ask after the
+    // selection has rendered, or the old lane gets the PR tool.
+    window.requestAnimationFrame(() => openPrInChatToolsPane(request));
+  };
+
   const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
@@ -2259,6 +2276,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         lanePr={options?.lanePr}
         lanePrs={options?.lanePrs}
         onOpenLanePrs={options?.onOpenLanePrs}
+        onOpenLanePrInChat={foreignRow ? undefined : (pr) => openLanePrInSession(session, pr)}
         lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         runtimePin={foreignRow?.binding}
@@ -2982,11 +3000,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
     const lanePrs = boundMachineLanePrs(prsByLaneId, lane.id);
     const primaryPr = selectPrimaryLanePr(lane, lanePrs);
+    // The divider's pill opens in the lane's open session when there is one,
+    // else its most recent; a lane with no sessions has no pane to open in.
+    const prSession = list.find((session) => session.id === selectedSessionId) ?? list[0] ?? null;
     const prBadge = primaryPr ? (
       <LanePrBadge
         pr={primaryPr}
         prs={lanePrs}
         onOpen={(target) => openLanePr(target, { foreign: false, navigate })}
+        onOpenPill={prSession ? (target) => openLanePrInSession(prSession, target) : undefined}
         onOpenList={() => navigate(`/prs${buildPrsRouteSearch({
           activeTab: "normal",
           selectedPrId: null,

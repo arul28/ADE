@@ -101,7 +101,9 @@ describe("LaneSidebarRow", () => {
     const props = renderRow({ prs: [makePr(1301, "open"), makePr(1299, "merged"), makePr(1295, "draft")] });
     const chip = screen.getByTestId("lane-sidebar-pr-chip");
     expect(chip.textContent).toContain("#1301");
-    expect(chip.textContent).toContain("+2");
+    // Several PRs collapse to a caret plus a count for assistive tech; the
+    // numeric "+N" chip is gone.
+    expect(chip.getAttribute("aria-label")).toBe("3 pull requests");
     fireEvent.click(chip);
     expect(props.onOpenPr).toHaveBeenCalledWith(expect.objectContaining({ githubPrNumber: 1301 }));
     expect(props.onSelect).not.toHaveBeenCalled();

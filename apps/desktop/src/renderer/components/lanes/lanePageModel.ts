@@ -279,6 +279,17 @@ export function lanePrMatchesCurrentBranch(
   return !laneIsOnBaseBranch({ ...lane, branchRef: laneBranch });
 }
 
+function lanePrMatchesRecordedBranch(
+  lane: LanePrMatchLane,
+  pr: Pick<PrSummary, "laneId" | "headBranch">,
+): boolean {
+  if (pr.laneId !== lane.id) return false;
+  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
+  if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
+  return !laneIsOnBaseBranch(lane);
+}
+
 export function lanePrRole(
   lane: LanePrMatchLane,
   pr: Pick<PrSummary, "laneId" | "headBranch">,
@@ -309,7 +320,11 @@ export function selectLanePrs(
       // stays visible even once the lane moves to another branch. Historical
       // rows with no link still fall back to the branch rule and stay hidden.
       if ((pr.chatSessionIds?.filter(Boolean).length ?? 0) > 0) return true;
-      return lanePrMatchesCurrentBranch(lane, pr);
+      if (lanePrMatchesCurrentBranch(lane, pr)) return true;
+      // A drifted checkout did not move the lane: it still records its branch,
+      // so that branch's PR is still the lane's work. Without this, an agent
+      // cutting a follow-up branch hid the lane's own PR.
+      return Boolean(lane.branchDrift?.headBranchRef) && lanePrMatchesRecordedBranch(lane, pr);
     })
     .sort(comparePrTags);
 }

@@ -4,6 +4,8 @@ import { motion, useReducedMotion } from "motion/react";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { isInsideRowHoverSuppress, isPointerOnRowHoverSuppress } from "../ui/rowHoverSuppress";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The session row's DETAIL CARD.
@@ -76,7 +78,7 @@ export type SessionHoverCardRow = {
 export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: string }): {
   /** Non-null while the card should be mounted. */
   anchor: FixedAnchor | null;
-  triggerProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave">;
+  triggerProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave" | "onMouseOver">;
   cardProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave">;
   close: () => void;
 } {
@@ -135,21 +137,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
     if (activeHoverCard?.rowId === rowId) activeHoverCard = null;
   }, [clearTimers, rowId]);
 
-  const onMouseEnter = React.useCallback(
-    (event: React.MouseEvent<HTMLElement>) => {
-      if (disabled) return;
-      const element = event.currentTarget;
-      const related = event.relatedTarget;
-      const sourceRow = related instanceof Element
-        ? related.closest<HTMLElement>("[data-session-row]")
-        : null;
-      const directHandoff = Boolean(
-        activeHoverCard
-        && sourceRow
-        && sourceRow !== element
-        && activeHoverCard.trigger === sourceRow,
-      );
-
+  const scheduleOpen = React.useCallback(
+    (element: HTMLElement, directHandoff: boolean) => {
       // One hover pane at a time. A direct sibling handoff opens below without
       // delay; every other arrival dismisses stale UI and earns a fresh second.
       activeHoverCard?.dismiss();
@@ -158,6 +147,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
       const open = () => {
         setPendingOpen(false);
+        // The pointer moved onto the PR pill (or its list) while the delay ran.
+        if (isPointerOnRowHoverSuppress()) return;
         const target = resolveTriggerElement();
         if (!target) return;
         const rect = target.getBoundingClientRect();
@@ -179,10 +170,50 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
         open();
       }, SESSION_HOVER_CARD_DELAY_MS);
     },
-    [clearTimers, close, disabled, resolveTriggerElement, rowId],
+    [clearTimers, close, resolveTriggerElement, rowId],
+  );
+
+  const onMouseEnter = React.useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (disabled) return;
+      const element = event.currentTarget;
+      const related = event.relatedTarget;
+      const sourceRow = related instanceof Element
+        ? related.closest<HTMLElement>("[data-session-row]")
+        : null;
+      const directHandoff = Boolean(
+        activeHoverCard
+        && sourceRow
+        && sourceRow !== element
+        && activeHoverCard.trigger === sourceRow,
+      );
+      scheduleOpen(element, directHandoff);
+    },
+    [disabled, scheduleOpen],
+  );
+
+  // `mouseover` bubbles, so the row hears the pointer cross into and out of a
+  // nested hover control. React also routes events from that control's
+  // portalled card through here, which is why the card carries the marker too.
+  const pointerOnNestedControlRef = React.useRef(false);
+  const onMouseOver = React.useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (disabled) return;
+      const nested = isInsideRowHoverSuppress(event.target);
+      if (nested === pointerOnNestedControlRef.current) return;
+      pointerOnNestedControlRef.current = nested;
+      if (nested) {
+        close();
+        return;
+      }
+      // Back on the row itself: the card earns its delay again.
+      scheduleOpen(event.currentTarget, false);
+    },
+    [close, disabled, scheduleOpen],
   );
 
   const onMouseLeave = React.useCallback(() => {
+    pointerOnNestedControlRef.current = false;
     if (openTimerRef.current != null) {
       // Still waiting: a leave cancels outright, with no close grace.
       window.clearTimeout(openTimerRef.current);
@@ -220,7 +251,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
   return {
     anchor,
-    triggerProps: { onMouseEnter, onMouseLeave },
+    triggerProps: { onMouseEnter, onMouseLeave, onMouseOver },
     cardProps: { onMouseEnter: onCardEnter, onMouseLeave },
     close,
   };
@@ -252,7 +283,7 @@ export function SessionHoverCard({
       ref={ref}
       role="tooltip"
       data-testid="session-hover-card"
-      className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.08] px-3 py-2.5 shadow-2xl"
+      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.08] px-3 py-2.5 shadow-2xl"
       initial={false}
       animate={{
         opacity: position ? 1 : 0,
@@ -263,16 +294,13 @@ export function SessionHoverCard({
         ease: [0.22, 1, 0.36, 1],
       }}
       style={{
-        /* `position` MUST be set inline, not left to the `fixed` utility in the
-           class list above. `.ade-liquid-glass` declares `position: relative`
-           (index.css) at the same specificity as Tailwind's `.fixed`, and it
-           wins on source order — so the card silently laid out as a RELATIVE
-           box offset from its normal flow position at the end of <body>.
-           Measured in the browser: inline `top: 76px` resolved to a real
-           `rect.top` of 938 in an 862px viewport, i.e. entirely below the fold.
-           The card was mounting and painting correctly the whole time; nobody
-           could see it. Inline beats both rules and pins the intent here. */
-        position: "fixed",
+        /* `position` MUST be set inline. `.ade-liquid-glass` declares
+           `position: relative` (index.css), and a class at the same specificity
+           loses to it on source order — the card once laid out as a RELATIVE
+           box below the fold, painting correctly where nobody could see it.
+           The host is a viewport-sized fixed layer, so `absolute` here places
+           the card in viewport coordinates. */
+        position: "absolute",
         left: position?.left ?? anchor.x,
         top: position?.top ?? anchor.y,
       }}
@@ -290,7 +318,7 @@ export function SessionHoverCard({
   );
 
   return typeof document !== "undefined" && document.body
-    ? createPortal(card, document.body)
+    ? createPortal(<ViewportOverlayHost layer="tooltip">{card}</ViewportOverlayHost>, document.body)
     : card;
 }
 

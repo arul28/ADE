@@ -21,6 +21,8 @@ import { PrDetailPane } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
+import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../prs/shared/PrSwitcher";
+import { subscribeChatPrSelections, takeChatPrSelection } from "./chatPrPaneRequests";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
@@ -495,6 +497,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       pinnedChatKeyRef.current = `${laneId}:${sessionId ?? ""}`;
       pinnedPrIdRef.current = null;
     }
+    // A PR pill elsewhere (header, session card, lane divider) asked for this one.
+    const requestedPrId = takeChatPrSelection(laneId, sessionId ?? null);
+    if (requestedPrId) pinnedPrIdRef.current = requestedPrId;
     let cached: PrSummary | null = null;
     // Published together with the selected PR, and only once the request is
     // still the current one: this list is scoped to ONE lane+chat, so a read
@@ -553,6 +558,11 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, [refresh, setCurrentPr]);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
+
+  // The pane is already on screen when a PR pill asks for another PR.
+  useEffect(() => subscribeChatPrSelections((requestedLaneId) => {
+    if (requestedLaneId === laneId) void refresh();
+  }), [laneId, refresh]);
 
   // Manual title-bar ↻: force a best-effort sync of this lane's PR (heals
   // merged/closed state, or maps a merged-but-unmapped PR on the branch), then
@@ -749,33 +759,18 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   // The ↻ spins for a manual sync in flight OR a backend reconcile-on-focus.
   const syncSpinning = syncing || reconciling;
 
-  const prChips = linkedPrs.length > 1 ? (
-    <div className="mb-2 flex flex-wrap gap-1.5 px-3 pt-2">
-      {linkedPrs.map((entry) => {
-        const selected = entry.id === pr?.id;
-        return (
-          <button
-            key={entry.id}
-            type="button"
-            onClick={() => {
-              pinnedPrIdRef.current = entry.id;
-              setCurrentPr(entry);
-            }}
-            title={entry.title || `#${entry.githubPrNumber}`}
-            className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] leading-4 transition-colors ${
-              selected
-                ? "border-fg/25 bg-fg/[0.10] text-fg/90"
-                : "border-border/15 bg-transparent text-fg/55 hover:bg-fg/[0.06]"
-            }`}
-          >
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${prStateTone(entry.state).dot}`} />
-            <span className="shrink-0 font-medium">#{entry.githubPrNumber}</span>
-            <span className="truncate opacity-70">{entry.title || ""}</span>
-          </button>
-        );
-      })}
-    </div>
-  ) : null;
+  const selectLinkedPr = useCallback((prId: string) => {
+    const entry = linkedPrs.find((candidate) => candidate.id === prId);
+    if (!entry) return;
+    pinnedPrIdRef.current = entry.id;
+    setCurrentPr(entry);
+  }, [linkedPrs, setCurrentPr]);
+  const prSwitcher = useMemo<PrSwitcher | null>(
+    () => (linkedPrs.length > 1 && pr
+      ? { prs: linkedPrs, selectedId: pr.id, onSelect: selectLinkedPr }
+      : null),
+    [linkedPrs, pr, selectLinkedPr],
+  );
 
   if (variant === "tools") {
     if (loading) {
@@ -784,7 +779,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     if (pr) {
       return (
         <div className="flex h-full min-h-0 min-w-0 flex-col">
-          {prChips}
           <div className="min-h-0 min-w-0 flex-1">
             <PrsProvider active={false}>
               <PrDetailPane
@@ -796,6 +790,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
                 detailBusy={false}
                 lanes={scope.lane ? [scope.lane] : []}
                 mergeMethod="squash"
+                prSwitcher={prSwitcher}
                 onRefresh={async () => { await refresh({ live: true }); }}
                 onNavigate={(path) => navigate(path)}
               />
@@ -831,7 +826,11 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
       <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
         <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
-        <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">Pull request</span>
+        <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">
+          {prSwitcher && pr ? `#${pr.githubPrNumber}` : "Pull request"}
+        </span>
+        {prSwitcher ? <PrSwitcherMenu switcher={prSwitcher} /> : null}
+        {prSwitcher ? <PrSwitcherStepper switcher={prSwitcher} className="ml-1" /> : null}
         <button
           type="button"
           onClick={() => void handleSyncLanePr()}
@@ -857,7 +856,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
         ) : pr ? (
           <>
-            {prChips}
           <PrDetails
             pr={pr}
             checks={checks}
