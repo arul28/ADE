@@ -770,6 +770,12 @@ export type UsageAccount = {
    * Local to the polling machine, like `notice`.
    */
   login?: UsageAccountLogin;
+  /**
+   * Another local account of the same provider is signed in to this same
+   * login, so the two rows are one quota. Set on every account after the
+   * first one with that email. Local to the polling machine.
+   */
+  sameLoginAs?: { instanceId: string; label: string };
 };
 
 export type UsageAccountLogin = "ok" | "expired" | "signed_out";
@@ -786,6 +792,8 @@ export type AccountBalanceSkipReason =
  *
  * - `signed_out`: an account ADE lists as signed in has no usable login, so
  *   balance skips it. The fix is to sign that account in again.
+ * - `same_login`: two accounts are signed in to one login, so balance has one
+ *   quota where the user expects two. The fix is to sign one in elsewhere.
  * - `no_usage_data`: the last new chat found no quota readings, so it stayed
  *   on the default account.
  * - `error`: the last balance decision threw.
@@ -794,7 +802,7 @@ export type AccountBalanceSkipReason =
  */
 export type AccountBalanceIssue = {
   provider: "claude" | "codex";
-  kind: "signed_out" | "no_usage_data" | "error";
+  kind: "signed_out" | "same_login" | "no_usage_data" | "error";
   /** Short text for the pill, e.g. "Claude account 90 signed out". */
   title: string;
   /** One or two sentences for the tooltip and the log. */

@@ -9,7 +9,11 @@
  * join here means the panel renders a row for an instance the snapshot has
  * never heard of instead of dropping it.
  */
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
+import {
+  providerInstanceHasAccount,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../../../shared/types/providerInstances";
 import type { UsageAccount, UsageSnapshot } from "../../../../../shared/types";
 import { accountNoticeLine } from "../../../usage/usageLimitModel";
 
@@ -155,13 +159,22 @@ export function accountSignedOut(
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
 ): boolean {
-  if (!instance.signedIn || instance.loginBroken) return true;
+  if (!instance.signedIn) return true;
   return usageAccountFor(snapshot, provider, instance)?.login === "signed_out";
+}
+
+/** The other local account this one shares a login with, if any. */
+export function accountSameLoginAs(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+): string | null {
+  return usageAccountFor(snapshot, provider, instance)?.sameLoginAs?.label ?? null;
 }
 
 /** `email · plan`, whichever halves exist, or the not-signed-in sentence. */
 export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
-  if (!instance.signedIn && !instance.loginBroken) return "Not signed in";
+  if (!providerInstanceHasAccount(instance)) return "Not signed in";
   const parts = [instance.account?.email, signedOut ? "Signed out" : instance.account?.plan].filter(
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );

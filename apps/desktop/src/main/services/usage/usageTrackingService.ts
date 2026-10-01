@@ -76,6 +76,7 @@ import {
   PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isBaseProviderInstance,
+  providerInstanceHasAccount,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -3360,6 +3361,7 @@ async function stampProviderAccounts(
     // The provider line stays singular and describes the DEFAULT account, so it
     // is stamped once the loop below has read whichever account that is.
     let defaultIdentity = baseIdentity;
+    let registryStale = false;
     for (const instance of listInstances(key)) {
       const id = usageAccountId({ provider: key, instanceId: instance.id });
       if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
@@ -3372,6 +3374,10 @@ async function stampProviderAccounts(
         ? baseIdentity
         : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
+      if (identity.email && instance.account?.email
+        && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
+        registryStale = true;
+      }
       const known = Boolean(identity.email || identity.plan);
       const signedIn = instance.signedIn === true;
       if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
@@ -3395,9 +3401,38 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
+    markSameLoginAccounts(accounts.filter((account) => account.provider === key && account.instanceId));
+    if (registryStale) {
+      // The registry reads identities once per process. A login that changed
+      // under it (a new sign-in in the same config home) left Settings and the
+      // picker on the old email. Once it matches, this stops firing.
+      void getMachineProviderInstanceStore().refreshAccounts(key).catch(() => undefined);
+    }
     stampStatus(defaultIdentity);
   }
   return { accounts, defaultAccountIdByProvider };
+}
+
+/**
+ * Marks every account after the first that is signed in to the same email.
+ *
+ * Two config homes can hold one login: signing a second account in while the
+ * browser is still on the first account's claude.ai session does exactly that.
+ * The rows then show one quota twice, and balance would count it twice.
+ * Accounts arrive default first, so the default keeps the plain row.
+ */
+function markSameLoginAccounts(accounts: UsageAccount[]): void {
+  const firstByEmail = new Map<string, UsageAccount>();
+  for (const account of accounts) {
+    const email = account.email?.trim().toLowerCase();
+    if (!email || !account.instanceId) continue;
+    const first = firstByEmail.get(email);
+    if (!first) {
+      firstByEmail.set(email, account);
+      continue;
+    }
+    account.sameLoginAs = { instanceId: first.instanceId!, label: first.label?.trim() || first.instanceId! };
+  }
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
@@ -4505,8 +4540,7 @@ export function createUsageTrackingService({
         if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
         // Accounts the user added, signed in or with a broken login: a broken
         // one is exactly what this warning is for.
-        const known = providerInstanceStore.list(provider)
-          .filter((instance) => instance.signedIn || instance.loginBroken);
+        const known = providerInstanceStore.list(provider).filter(providerInstanceHasAccount);
         if (known.length < 2) continue;
         const signedOut = known.filter((instance) => instance.loginBroken || snapshot.accounts?.some((account) => (
           account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
@@ -4521,6 +4555,20 @@ export function createUsageTrackingService({
               : `${signedOut.length} ${providerTitle(provider)} accounts signed out`,
             detail: `Smart balance skips ${names.join(", ")} because the saved login no longer works. Sign in to it again in Settings > Provider accounts.`,
             instanceIds: signedOut.map((instance) => instance.id),
+            at: snapshot.lastPolledAt,
+          });
+        }
+        const duplicates = (snapshot.accounts ?? []).filter((account) => (
+          account.provider === provider && account.sameLoginAs
+        ));
+        if (duplicates.length > 0) {
+          const first = duplicates[0]!;
+          issues.push({
+            provider,
+            kind: "same_login",
+            title: `Two ${providerTitle(provider)} accounts share one login`,
+            detail: `${first.sameLoginAs!.label} and ${first.label || first.instanceId} are both signed in as ${first.email}, so they share one quota. Sign one of them in to a different account in Settings > Provider accounts.`,
+            instanceIds: duplicates.flatMap((account) => [account.sameLoginAs!.instanceId, account.instanceId!]),
             at: snapshot.lastPolledAt,
           });
         }

@@ -40,6 +40,7 @@ import type {
 import {
   accountAccent,
   accountIdentityLine,
+  accountSameLoginAs,
   accountSignedOut,
   accountUsageLine,
   accentTint,
@@ -182,6 +183,7 @@ function AccountRow({
   brandColor,
   usageLine,
   signedOut,
+  sameLoginAs,
   onAction,
   onSignIn,
   renaming,
@@ -195,6 +197,8 @@ function AccountRow({
   usageLine: string | null;
   /** The saved login no longer works, even when the config home names an email. */
   signedOut: boolean;
+  /** The label of another account signed in to this same login. */
+  sameLoginAs: string | null;
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   renaming: boolean;
@@ -305,6 +309,7 @@ function AccountRow({
           }}
         >
           {accountIdentityLine(instance, signedOut)}
+          {sameLoginAs ? ` · Same login as ${sameLoginAs}` : ""}
         </span>
         {!signedOut ? null : (
           <button
@@ -554,6 +559,7 @@ export function ProviderAccountsPanel({
           brandColor={brandColor}
           usageLine={usageByInstance.get(instance.id) ?? null}
           signedOut={accountSignedOut(snapshot, provider, instance)}
+          sameLoginAs={accountSameLoginAs(snapshot, provider, instance)}
           onAction={onAction}
           onSignIn={(target) => setSheet({ existing: target })}
           renaming={renamingId === instance.id}

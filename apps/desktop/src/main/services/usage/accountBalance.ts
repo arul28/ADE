@@ -166,6 +166,8 @@ export function pickInstanceForNewChat({
       signedOutInstanceIds.push(instance.id);
       continue;
     }
+    // A second account on the same login is the same quota, already scored.
+    if (account?.sameLoginAs) continue;
     const room = accountRoom(windows, nowMs);
     if (room.kind === "unknown") {
       unknownCount += 1;
@@ -233,6 +235,8 @@ export function pickAlternateInstanceForLimitedChat({
   nowMs,
 }: PickInstanceForNewChatArgs & { currentInstanceId: string }): UsageLimitAlternatePick | null {
   const blockedId = currentInstanceId.trim() || defaultInstanceId(provider, instances);
+  const blockedEmail = readingFor({ provider, accounts, windowsByAccountId }, blockedId)
+    .account?.email?.trim().toLowerCase();
   const candidates = instances.filter((instance) => (
     instance.provider === provider && instance.signedIn && instance.id !== blockedId
   ));
@@ -240,6 +244,8 @@ export function pickAlternateInstanceForLimitedChat({
   for (const instance of candidates) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
     if (account?.login === "signed_out" || !hasImmediateRoom(windows)) continue;
+    // The same login as the limited account has the same limit.
+    if (blockedEmail && account?.email?.trim().toLowerCase() === blockedEmail) continue;
     const room = accountRoom(windows, nowMs);
     // Near-full accounts still count here: any room beats a stopped chat.
     const urgency = room.kind === "room" ? room.urgency : 0;

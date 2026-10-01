@@ -65,6 +65,15 @@ export type ProviderInstance = {
   loginBroken?: boolean;
 };
 
+/**
+ * The config home names an account, whether or not its login works now.
+ * Use it where the question is "which accounts did the user add", not "which
+ * account can run a chat right now" (that one is `signedIn`).
+ */
+export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "signedIn" | "loginBroken">): boolean {
+  return instance.signedIn || instance.loginBroken === true;
+}
+
 /** Per-provider settings that are about the set of accounts, not one account. */
 export type ProviderInstanceSettings = {
   /**
