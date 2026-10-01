@@ -130,7 +130,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       if (typeof window !== "undefined") window.open(window.location.href, "_blank", "noopener,noreferrer");
       return { windowId: null, project: state.getProject() };
     },
-    async openProjectInNewWindow(rootPath: string) {
+    async openProjectInNewWindow({ rootPath }: { rootPath: string }) {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
         url.searchParams.set("projectRoot", rootPath);
@@ -144,7 +144,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
     },
     projectTabDragMove() {},
     async projectTabDragEnd() {
-      return { merged: false, targetWindowId: null };
+      return { merged: false, intoSender: false };
     },
     onAdoptProjectTab() {
       return () => {};

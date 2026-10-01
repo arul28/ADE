@@ -14,7 +14,7 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
-import { projectIconListeners } from "./ProjectIconDialog";
+import { subscribeProjectIcon } from "../../lib/projectIconCache";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { abbreviateHome } from "../../lib/pathUtils";
 import type {
@@ -102,15 +102,10 @@ function RecentProjectIcon({
   const [iconVersion, setIconVersion] = useState(0);
 
   // A new icon chosen from a project menu shows here at once.
-  useEffect(() => {
-    const listener = (changedRoot: string) => {
-      if (changedRoot === rootPath) setIconVersion((version) => version + 1);
-    };
-    projectIconListeners.add(listener);
-    return () => {
-      projectIconListeners.delete(listener);
-    };
-  }, [rootPath]);
+  useEffect(
+    () => subscribeProjectIcon(rootPath, () => setIconVersion((version) => version + 1)),
+    [rootPath],
+  );
 
   useEffect(() => {
     let cancelled = false;

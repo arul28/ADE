@@ -22,9 +22,9 @@ const TAB_GAP_PX = 4;
 
 export const PROJECT_TAB_KEY_ATTR = "data-project-tab-key";
 
-/** Screen points per CSS pixel: the page zoom, read from the window itself. */
+/** Screen points per CSS pixel: the page zoom. */
 export function cssToScreenScale(): number {
-  const scale = window.outerWidth / window.innerWidth;
+  const scale = window.ade?.zoom?.getFactor?.() ?? 1;
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
@@ -46,6 +46,34 @@ export type TearOffGrab = { x: number; y: number };
 /** A pointer position in screen coordinates (DIP), as main places windows. */
 export type ScreenPoint = { x: number; y: number };
 
+export type TearOffStart = {
+  key: string;
+  /** The pointer's offset from the top-left of the window that will follow it. */
+  grab: TearOffGrab;
+  /** The tab was the window's only tab, so the window itself follows. */
+  moveSource: boolean;
+  point: ScreenPoint;
+};
+
+/**
+ * Where a tab dropped at `clientX` lands in the strip: the index of the first
+ * tab whose midpoint is to the right of it. `excludeKey` is the tab being
+ * placed, which must not count against itself.
+ */
+export function insertIndexAtClientX(
+  strip: HTMLElement,
+  clientX: number,
+  excludeKey: string,
+): number {
+  const tabs = Array.from(strip.querySelectorAll<HTMLElement>(`[${PROJECT_TAB_KEY_ATTR}]`))
+    .filter((tab) => tab.getAttribute(PROJECT_TAB_KEY_ATTR) !== excludeKey);
+  const index = tabs.findIndex((tab) => {
+    const rect = tab.getBoundingClientRect();
+    return clientX < rect.left + rect.width / 2;
+  });
+  return index === -1 ? tabs.length : index;
+}
+
 /**
  * Chrome-style dragging for the project tab strip.
  *
@@ -64,8 +92,9 @@ export function useProjectTabDrag(args: {
   stripRef: RefObject<HTMLElement | null>;
   canTearOff: boolean;
   onReorder: (orderedKeys: string[]) => void;
-  onTearOff: (key: string, grab: TearOffGrab, moveSource: boolean, point: ScreenPoint) => void;
+  onTearOff: (tearOff: TearOffStart) => void;
   onTearOffMove: (point: ScreenPoint) => void;
+  /** `point` is null when the drag was cancelled; nothing may merge then. */
   onTearOffEnd: (point: ScreenPoint | null) => void;
 }) {
   const { stripRef } = args;
@@ -148,9 +177,11 @@ export function useProjectTabDrag(args: {
               y: session.startY * zoom,
             };
         setDrag((prev) => (prev ? { ...prev, torn: true } : prev));
-        latest.current.onTearOff(session.key, grab, moveSource, {
-          x: event.screenX,
-          y: event.screenY,
+        latest.current.onTearOff({
+          key: session.key,
+          grab,
+          moveSource,
+          point: { x: event.screenX, y: event.screenY },
         });
         return;
       }
@@ -176,6 +207,8 @@ export function useProjectTabDrag(args: {
       if (!session || event.pointerId !== session.pointerId) return;
       finish(true, { x: event.screenX, y: event.screenY });
     };
+    // A cancelled pointer, or capture lost before pointer-up, ends the drag
+    // without committing an order or a drop.
     const onCancel = (event: PointerEvent) => {
       const session = sessionRef.current;
       if (!session || event.pointerId !== session.pointerId) return;
@@ -184,10 +217,14 @@ export function useProjectTabDrag(args: {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("lostpointercapture", onCancel, true);
     return () => {
+      // Unmounting mid-drag cancels it, so main stops moving a torn window.
+      finish(false);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("lostpointercapture", onCancel, true);
     };
   }, [finish, stripRef]);
 
@@ -254,13 +291,15 @@ export function useProjectTabDrag(args: {
     [drag],
   );
 
-  /** True once, for the click that ends a drag. */
-  const consumeDragClick = useCallback(() => suppressClickRef.current, []);
+  /**
+   * True for the click that a drag's pointer-up produces. The flag clears on
+   * the next task, after that click has been dispatched.
+   */
+  const isDragClick = useCallback(() => suppressClickRef.current, []);
 
   return {
     onTabPointerDown,
     tabDragStyle,
-    consumeDragClick,
-    draggingKey: drag && !drag.torn ? drag.key : null,
+    isDragClick,
   };
 }

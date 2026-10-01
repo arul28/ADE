@@ -1,5 +1,4 @@
 import { BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -50,11 +49,9 @@ import type {
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
-import {
-  isRemoteRuntimeEventCategory,
-  PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
-  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
-} from "../../../shared/types/remoteRuntime";
+import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
+import { readProjectIconForUpload } from "../projects/projectIconResolver";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
@@ -1012,14 +1009,7 @@ export function registerRuntimeBridge({
       const options: Electron.OpenDialogOptions = {
         title: "Choose project icon",
         properties: ["openFile"],
-        filters: [
-          {
-            name: "Images",
-            extensions: Object.keys(PROJECT_ICON_MIME_TYPES_BY_EXTENSION).map(
-              (extension) => extension.slice(1),
-            ),
-          },
-        ],
+        filters: [{ name: "Images", extensions: [...PROJECT_ICON_DIALOG_EXTENSIONS] }],
       };
       const result = win
         ? await dialog.showOpenDialog(win, options)
@@ -1027,27 +1017,11 @@ export function registerRuntimeBridge({
       const selectedPath = result.canceled ? undefined : result.filePaths[0];
       if (!selectedPath) return null;
 
-      const extension = path.extname(selectedPath).toLowerCase();
-      const mimeType = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension]?.[0];
-      if (!mimeType) {
-        throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
-      }
-      const maxLabel = `${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB`;
-      const stat = await fs.stat(selectedPath);
-      if (!stat.isFile()) throw new Error("Project icon must be a file.");
-      if (stat.size > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
-        throw new Error(`Project icon must be ${maxLabel} or smaller for a project on another machine.`);
-      }
-      const data = await fs.readFile(selectedPath);
-      if (data.length === 0) throw new Error("Project icon file is empty.");
-      if (data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
-        throw new Error(`Project icon must be ${maxLabel} or smaller for a project on another machine.`);
-      }
-      return await remoteConnectionService.setProjectIcon(id, rootPath, {
-        fileName: path.basename(selectedPath),
-        mimeType,
-        dataBase64: data.toString("base64"),
-      });
+      return await remoteConnectionService.setProjectIcon(
+        id,
+        rootPath,
+        await readProjectIconForUpload(selectedPath),
+      );
     },
   );
 

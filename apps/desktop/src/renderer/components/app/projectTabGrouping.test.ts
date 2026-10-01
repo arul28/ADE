@@ -5,9 +5,8 @@ import {
   groupProjectTabs,
   resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
-  type RemoteProjectTabBinding,
 } from "./projectTabGrouping";
-import type { RecentProjectSummary } from "../../../shared/types";
+import type { RecentProjectSummary, RemoteOpenProjectBinding } from "../../../shared/types";
 
 function local(rootPath: string, gitOriginUrl?: string | null): RecentProjectSummary {
   return {
@@ -20,7 +19,7 @@ function local(rootPath: string, gitOriginUrl?: string | null): RecentProjectSum
   } as RecentProjectSummary;
 }
 
-function remote(targetId: string, projectId: string, runtimeName: string): RemoteProjectTabBinding {
+function remote(targetId: string, projectId: string, runtimeName: string): RemoteOpenProjectBinding {
   return {
     kind: "remote",
     key: `remote:${targetId}:${projectId}`,
@@ -29,7 +28,7 @@ function remote(targetId: string, projectId: string, runtimeName: string): Remot
     runtimeName,
     rootPath: `/Users/other/${projectId}`,
     displayName: projectId,
-  } as RemoteProjectTabBinding;
+  } as RemoteOpenProjectBinding;
 }
 
 function remoteRecent(
@@ -353,7 +352,7 @@ describe("resolveProjectTabFallback", () => {
 
   function groupsWith(
     knownLocal: RecentProjectSummary[],
-    knownRemote: RemoteProjectTabBinding[],
+    knownRemote: RemoteOpenProjectBinding[],
   ) {
     return groupProjectTabs({
       localTabs: [],
@@ -372,7 +371,7 @@ describe("resolveProjectTabFallback", () => {
     {
       name: "prefers the local checkout of the same repo",
       knownLocal: [localCheckout],
-      knownRemote: [] as RemoteProjectTabBinding[],
+      knownRemote: [] as RemoteOpenProjectBinding[],
       connected: [] as string[],
       expected: { kind: "local", rootPath: "/Users/me/ADE" },
     },

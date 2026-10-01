@@ -1,4 +1,4 @@
-import { Fragment, useEffect } from "react";
+import { useEffect } from "react";
 import type { Icon } from "@phosphor-icons/react";
 
 import type { OpenPathInEditorRemote } from "../../../shared/editorTargets";
@@ -9,16 +9,16 @@ import {
   MenuRowIcon,
   MenuSeparator,
   MenuSubmenu,
-} from "../ui/MenuSubmenu";
-import { OpenInSubmenu } from "../ui/OpenInSubmenu";
-import { Z_LAYERS } from "../ui/zLayers";
+} from "./MenuSubmenu";
+import { OpenInSubmenu } from "./OpenInSubmenu";
+import { Z_LAYERS } from "./zLayers";
 
 /**
- * One row of a project's right-click menu. The project tab and the start page
- * build their own lists from what each surface can do, and both render them
- * here, so the two menus share one look and one set of behaviors.
+ * One row of a right-click menu. Callers build a list of rows from what their
+ * surface can do; this primitive owns the look (the session menu's rows), the
+ * placement, the click-away layer and the stacking.
  */
-export type ProjectMenuEntry =
+export type ContextMenuEntry =
   | {
       kind: "item";
       key: string;
@@ -33,7 +33,7 @@ export type ProjectMenuEntry =
       key: string;
       label: string;
       icon: Icon;
-      entries: ProjectMenuEntry[];
+      entries: ContextMenuEntry[];
     }
   | {
       kind: "open-in";
@@ -43,11 +43,12 @@ export type ProjectMenuEntry =
     }
   | { kind: "separator"; key: string };
 
-export type ProjectContextMenuState = { x: number; y: number } | null;
+/** Where the menu opens, in client pixels; null when it is closed. */
+export type ContextMenuState = { x: number; y: number } | null;
 
 /** Drops leading, trailing and doubled separators left by hidden rows. */
-function tidyEntries(entries: ProjectMenuEntry[]): ProjectMenuEntry[] {
-  const out: ProjectMenuEntry[] = [];
+function tidyEntries(entries: ContextMenuEntry[]): ContextMenuEntry[] {
+  const out: ContextMenuEntry[] = [];
   for (const entry of entries) {
     if (entry.kind === "separator" && (out.length === 0 || out[out.length - 1]!.kind === "separator")) {
       continue;
@@ -62,7 +63,7 @@ function EntryRows({
   entries,
   onClose,
 }: {
-  entries: ProjectMenuEntry[];
+  entries: ContextMenuEntry[];
   onClose: () => void;
 }) {
   return (
@@ -112,24 +113,26 @@ function EntryRows({
                 {entry.label}
               </button>
             );
-          default:
-            return <Fragment key={(entry as { key: string }).key} />;
+          default: {
+            const unreachable: never = entry;
+            return unreachable;
+          }
         }
       })}
     </>
   );
 }
 
-export function ProjectContextMenu({
+export function ContextMenu({
   menu,
   entries,
   onClose,
   label,
 }: {
-  menu: ProjectContextMenuState;
-  entries: ProjectMenuEntry[];
+  menu: ContextMenuState;
+  entries: ContextMenuEntry[];
   onClose: () => void;
-  /** Accessible name for the menu, normally the project name. */
+  /** Accessible name for the menu. */
   label: string;
 }) {
   const { ref, position } = useClampedFixedPosition(menu);
@@ -148,7 +151,7 @@ export function ProjectContextMenu({
     <>
       <div
         className="fixed inset-0"
-        style={{ WebkitAppRegion: "no-drag", zIndex: Z_LAYERS.popover } as React.CSSProperties}
+        style={{ WebkitAppRegion: "no-drag", zIndex: Z_LAYERS.contextMenu } as React.CSSProperties}
         onClick={onClose}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -161,7 +164,7 @@ export function ProjectContextMenu({
         aria-label={label}
         className="ade-liquid-glass-menu fixed min-w-[200px] py-1"
         style={{
-          zIndex: Z_LAYERS.popover,
+          zIndex: Z_LAYERS.contextMenu,
           left: position?.left ?? menu.x,
           top: position?.top ?? menu.y,
           visibility: position ? "visible" : "hidden",

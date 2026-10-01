@@ -4417,7 +4417,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       projectTabDragStart: resolvedArg({ windowId: null }),
       projectTabDragMove: () => {},
-      projectTabDragEnd: resolvedArg({ merged: false, targetWindowId: null }),
+      projectTabDragEnd: resolvedArg({ merged: false, intoSender: false }),
       onAdoptProjectTab: () => () => {},
       closeWindow: resolvedArg({ closed: false }),
       onProjectChanged: () => () => {},

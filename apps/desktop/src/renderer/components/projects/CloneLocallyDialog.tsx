@@ -6,6 +6,8 @@ export type CloneLocallyTarget = {
   /** The machine the project runs on now. */
   machineName: string;
   gitOriginUrl: string;
+  /** The binding key of the project's tab on the other machine. */
+  remoteKey: string;
 };
 
 /**

@@ -12,6 +12,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | `showToast`, `updateToast`, `dismissToast` | `components/app/toast/toastStore.ts` (rendered as `ToastCard` in `ToastViewport`) |
 | `confirmDialog`, `promptDialog`, `Dialog`, `DialogHost` | `components/ui/dialog/` |
 | `HeaderSheet` | `components/app/HeaderSheet.tsx` |
+| `ContextMenu`, `ContextMenuEntry` (right-click menus built from a list of rows) | `components/ui/ContextMenu.tsx` |
 | `ViewportOverlayHost` | `components/ui/ViewportOverlayHost.tsx` |
 | `noticeTone`, `NoticeTone` | `components/ui/notice/noticeTones.ts` |
 | `Z_LAYERS` | `components/ui/zLayers.ts` |
@@ -155,7 +156,6 @@ Pick a named layer and never type a z-index:
 |---|---|---|
 | `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
 | `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
-| `tabMenu` | 90 | Project-tab machine menu below sheets and app popovers |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
 | `sidebar` | 100 | The app sidebar |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |

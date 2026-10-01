@@ -342,23 +342,6 @@ export type RemoteRuntimeMachineProjectCapability =
   /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
   | "setIcon";
 
-/**
- * Largest icon file a desktop may upload to a host with `projects.setIcon`.
- * The bytes travel inline in one RPC frame; the host still serves the usual
- * small thumbnail in `projects.list`.
- */
-export const REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
-
-/** Icon file types a project icon may use, keyed by lowercase extension. */
-export const PROJECT_ICON_MIME_TYPES_BY_EXTENSION: Readonly<Record<string, readonly string[]>> = {
-  ".ico": ["image/x-icon", "image/vnd.microsoft.icon"],
-  ".jpg": ["image/jpeg"],
-  ".jpeg": ["image/jpeg"],
-  ".png": ["image/png"],
-  ".svg": ["image/svg+xml"],
-  ".webp": ["image/webp"],
-};
-
 /** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
 export type RemoteRuntimeProjectIconUpload = {
   /** Picked file's name; only its extension and base name are used. */

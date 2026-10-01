@@ -245,6 +245,7 @@ import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
   OpenProjectBinding,
+  RemoteOpenProjectBinding,
   AppNavigationRequest,
   AttentionItem,
   AttentionNotchAcknowledgeRequest,
@@ -428,7 +429,6 @@ import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./deskto
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
 
-type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 
@@ -1544,6 +1544,28 @@ app.whenReady().then(async () => {
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
     saved.lastRemoteProjectBinding,
   );
+  /**
+   * A binding that came from a renderer. Main stores and persists it, so it is
+   * rebuilt field by field: a remote binding goes through the saved-binding
+   * parser with its key recomputed, and a local one needs a string root.
+   */
+  const sanitizeRendererProjectBinding = (value: unknown): OpenProjectBinding | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (record.kind === "remote") {
+      const remote = parseSavedRemoteProjectBinding(value);
+      return remote ? { ...remote, key: remoteProjectBindingKey(remote.targetId, remote.projectId) } : null;
+    }
+    const rootPath = readString(record, "rootPath")?.trim();
+    if (record.kind !== "local" || !rootPath) return null;
+    return {
+      kind: "local",
+      key: `local:${rootPath}`,
+      rootPath,
+      displayName: readString(record, "displayName") ?? path.basename(rootPath),
+    };
+  };
+
   const readLastRemoteProjectBinding = (): RemoteOpenProjectBinding | null =>
     parseSavedRemoteProjectBinding(
       readGlobalState(globalStatePath).lastRemoteProjectBinding,
@@ -8034,8 +8056,14 @@ app.whenReady().then(async () => {
     const openWindows = BrowserWindow.getAllWindows().filter(
       (win) => !win.isDestroyed(),
     );
+    const requestedRemote = args.remoteBinding
+      ? sanitizeRendererProjectBinding(args.remoteBinding)
+      : null;
+    if (args.remoteBinding && requestedRemote?.kind !== "remote") {
+      throw new Error("Invalid project binding.");
+    }
     const restoredRemoteBinding =
-      args.remoteBinding
+      (requestedRemote?.kind === "remote" ? requestedRemote : null)
       ?? (args.projectRoot || openWindows.length > 0
         ? null
         : readLastRemoteProjectBinding());
@@ -8294,6 +8322,7 @@ app.whenReady().then(async () => {
   }
 
   const projectTabDrag = createProjectTabDragService({
+    sanitizeBinding: sanitizeRendererProjectBinding,
     openWindow: ({ binding, bounds, onWindow }) =>
       binding.kind === "remote"
         ? openAdeWindow({ remoteBinding: binding, bounds, onWindow })

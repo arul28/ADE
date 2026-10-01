@@ -1,9 +1,10 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import {
-  isRemoteRuntimeEventCategory,
   PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
+  PROJECT_ICON_TYPE_ERROR,
   REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
-} from "../../desktop/src/shared/types/remoteRuntime";
+} from "../../desktop/src/shared/projectIcons";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -482,7 +483,7 @@ function readProjectIconUpload(params: Record<string, unknown>): {
   if (!allowedMimeTypes) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "Project icon must be an ico, jpg, png, svg, or webp file.",
+      PROJECT_ICON_TYPE_ERROR,
     );
   }
   const mimeType = readOptionalString(params.mimeType)?.toLowerCase();
@@ -612,6 +613,12 @@ const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
 const LIST_ICON_COUNT_BUDGET = 24;
 const LIST_ICON_BYTE_BUDGET = 512 * 1024;
 const LIST_ICON_RESOLVE_BUDGET_MS = 750;
+/**
+ * After a set or remove, one icon is resolved for one caller who is waiting
+ * on it, so a cold worker start (slow on Windows) must not turn a saved icon
+ * into an empty reply.
+ */
+const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
 
 /**
  * The one "Update & restart" run this process will do at a time.
@@ -2155,13 +2162,21 @@ export function createMultiProjectRpcRequestHandler(
       }
       // Resolve through the same worker path `projects.list` uses, so the
       // caller gets exactly the icon every other device will see.
-      return (await decorateProjectWithIcon({ rootPath: project.rootPath })).icon;
+      return await resolveIconBeforeDeadline(
+        resolveRemoteProjectIconInWorker,
+        project.rootPath,
+        ICON_WRITE_RESOLVE_BUDGET_MS,
+      );
     }
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
       removeProjectIconOverride(project.rootPath);
-      return (await decorateProjectWithIcon({ rootPath: project.rootPath })).icon;
+      return await resolveIconBeforeDeadline(
+        resolveRemoteProjectIconInWorker,
+        project.rootPath,
+        ICON_WRITE_RESOLVE_BUDGET_MS,
+      );
     }
 
     if (method === "projects.browseDirectories") {

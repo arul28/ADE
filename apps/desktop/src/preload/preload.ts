@@ -4310,10 +4310,9 @@ const adeBridge = {
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
-      rootPath: string,
-      remoteBinding?: Extract<OpenProjectBinding, { kind: "remote" }>,
+      binding: OpenProjectBinding,
     ): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
-      ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { rootPath, remoteBinding }),
+      ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { binding }),
     /** Chrome-style project tab drag: start pulls the tab into its own window. */
     projectTabDragStart: async (args: {
       binding: OpenProjectBinding;
@@ -4326,9 +4325,9 @@ const adeBridge = {
       ipcRenderer.send(IPC.appProjectTabDragMove, point);
     },
     projectTabDragEnd: async (
-      point?: { x: number; y: number },
-    ): Promise<{ merged: boolean; targetWindowId: number | null }> =>
-      ipcRenderer.invoke(IPC.appProjectTabDragEnd, { point: point ?? null }),
+      point: { x: number; y: number } | null,
+    ): Promise<{ merged: boolean; intoSender: boolean }> =>
+      ipcRenderer.invoke(IPC.appProjectTabDragEnd, { point }),
     onAdoptProjectTab: (cb: (request: ProjectTabAdoptRequest) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

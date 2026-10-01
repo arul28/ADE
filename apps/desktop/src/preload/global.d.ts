@@ -1068,10 +1068,8 @@ declare global {
           bindings: OpenProjectBinding[],
         ) => Promise<{ openProjectBindings: OpenProjectBinding[] }>;
         newWindow: () => Promise<{ windowId: number | null }>;
-        /** `remoteBinding` opens a project that runs on another machine. */
         openProjectInNewWindow: (
-          rootPath: string,
-          remoteBinding?: Extract<OpenProjectBinding, { kind: "remote" }>,
+          binding: OpenProjectBinding,
         ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
         projectTabDragStart: (args: {
           binding: OpenProjectBinding;
@@ -1081,9 +1079,13 @@ declare global {
           point: { x: number; y: number };
         }) => Promise<{ windowId: number | null }>;
         projectTabDragMove: (point: { x: number; y: number }) => void;
+        /**
+         * Ends the drag at `point`; null cancels it without a drop.
+         * `intoSender` is true when the tab was dropped back on its own window.
+         */
         projectTabDragEnd: (
-          point?: { x: number; y: number },
-        ) => Promise<{ merged: boolean; targetWindowId: number | null }>;
+          point: { x: number; y: number } | null,
+        ) => Promise<{ merged: boolean; intoSender: boolean }>;
         onAdoptProjectTab: (cb: (request: ProjectTabAdoptRequest) => void) => () => void;
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
         requestWindowClose: () => Promise<{ requested: boolean }>;

@@ -7,6 +7,7 @@ import {
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import type { ProjectTabDragService } from "../projects/projectTabDragService";
+import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -557,6 +558,7 @@ import type {
   ProjectIcon,
   ProjectInfo,
   OpenProjectBinding,
+  RemoteOpenProjectBinding,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -1820,7 +1822,7 @@ export function registerIpc({
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
   createWindow?: (args?: {
     projectRoot?: string | null;
-    remoteBinding?: OpenProjectBinding & { kind: "remote" };
+    remoteBinding?: RemoteOpenProjectBinding;
   }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   /** Chrome-style project tab drag between windows. Absent in headless hosts. */
@@ -3628,12 +3630,12 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.appOpenProjectInNewWindow,
-    async (_event, arg: { rootPath?: string; remoteBinding?: OpenProjectBinding }) => {
-      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    async (_event, arg: { binding?: OpenProjectBinding }) => {
+      const binding = arg?.binding;
+      const rootPath = typeof binding?.rootPath === "string" ? binding.rootPath.trim() : "";
       if (!rootPath) throw new Error("rootPath is required");
       if (!createWindow) return { windowId: null, project: null };
-      const remoteBinding = arg?.remoteBinding;
-      if (remoteBinding?.kind === "remote") return createWindow({ remoteBinding });
+      if (binding?.kind === "remote") return createWindow({ remoteBinding: binding });
       return createWindow({ projectRoot: rootPath });
     },
   );
@@ -3685,11 +3687,17 @@ export function registerIpc({
     if (point) projectTabDrag?.move(point);
   });
 
-  ipcMain.handle(IPC.appProjectTabDragEnd, async (_event, arg: { point?: { x?: number; y?: number } | null } = {}) =>
-    projectTabDrag
-      ? projectTabDrag.end(screenPointArg(arg?.point))
-      : { merged: false, targetWindowId: null },
-  );
+  // A null point means the renderer cancelled the drag: end it without a drop.
+  ipcMain.handle(IPC.appProjectTabDragEnd, async (event, arg: { point?: { x?: number; y?: number } | null } = {}) => {
+    if (!projectTabDrag) return { merged: false, intoSender: false };
+    const point = screenPointArg(arg?.point);
+    const result = projectTabDrag.end(point, { cancelled: point == null });
+    const senderId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    return {
+      merged: result.merged,
+      intoSender: result.merged && senderId != null && result.targetWindowId === senderId,
+    };
+  });
 
   ipcMain.handle(IPC.appCloseWindow, async (event, arg: { windowId?: number | null } = {}) => {
     const requestedWindowId = Number.isFinite(arg?.windowId)
@@ -4512,7 +4520,7 @@ export function registerIpc({
         defaultPath: validatedRoot,
         properties: ["openFile"],
         filters: [
-          { name: "Images", extensions: ["ico", "jpeg", "jpg", "png", "svg", "webp"] },
+          { name: "Images", extensions: [...PROJECT_ICON_DIALOG_EXTENSIONS] },
         ],
       };
       const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
