@@ -1078,8 +1078,9 @@ separate statement from the upsert so a plain refresh of a detached row — whos
 `lane_id` still names its dead lane — can never resurrect it.
 
 **Two row lookups, deliberately different.** `getLiveRowForRepoPr` answers "does
-a lane already own this PR?" and backs the four ownership guards (auto-map by
-branch, `discoverLanePullRequests`, create-lane-from-PR-branch, `linkToLane`), so
+a lane already own this PR?" and backs the ownership guards (auto-map by branch,
+auto-map by lane branch history, `discoverLanePullRequests`,
+create-lane-from-PR-branch, `linkToLane`), so
 a detached row can never block re-mapping. `getRowForRepoPr` answers "is there a
 row for these coordinates at all" and stays unfiltered, so `upsertRow` updates an
 existing detached row instead of inserting a duplicate primary key. `upsertRow`
@@ -1714,6 +1715,24 @@ PR state stays current through complementary layers:
    action, so it is allowed past the
    [failure ladder](#github-read-failure-ladder). Post-auth auto-heal
    fires `reconcileNow` so badges light up right after authorizing GitHub.
+
+### Lane branch history
+
+A lane's worktree can move to a follow-up branch (`git checkout -B`) without the
+lane record changing — that is what branch drift reports. `laneService` reads the
+worktree's own HEAD reflog (`lanes/laneBranchHistory.ts`: `parseReflogBranchVisits`
++ `selectLaneHistoryBranches`), keeps only real local branches first visited after
+the lane was created, and records them as branch profiles. It reports the set
+through `setOnBranchHistoryObserved`; `prService.autoLinkLaneBranchHistory` looks
+each one up on GitHub (`state:"all"`, merged and closed included, bounded to six
+lookups per report per ten minutes) and links the best PR via
+`resolveLaneBranchHistoryOwner` + `pickLaneBranchHistoryPr`
+(`prs/laneBranchHistoryOwnership.ts`). This is the only path that recovers a PR
+opened and merged between two polls. The PR row keeps the lane's recorded branch
+as its head; the chats open in the lane when the PR was created get a
+`pull_request_chat_sessions` edge, so the linked PR shows on the lane and in those
+chats. `autoMapPrToHistoryLane` applies the same suppression and one-PR-per-branch
+guards as the strict branch match.
 
 Both `reconcileOnFocus` and `syncLanePr` emit a `pr-reconcile` `PrEventPayload`
 (`state: "running" | "idle"`) around each catch-up so the renderer can drive a
