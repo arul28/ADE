@@ -1287,6 +1287,8 @@ describe("launchd service install", () => {
     ]);
   });
 
+  // DARWIN-GATE: the Background Items read reaches macOS `SMAppService` through
+  // osascript, so it can only be exercised on a Darwin host.
   it.skipIf(process.platform !== "darwin")("names macOS Background Items when launchd never starts the agent", async () => {
     // An unchanged agent that launchd loads but never starts is the shape of
     // "Allow in the Background" being off. The install must name that switch
