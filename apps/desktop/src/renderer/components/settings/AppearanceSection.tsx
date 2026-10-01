@@ -31,16 +31,16 @@ import {
   SettingsSelect,
   SettingsToggle,
 } from "./primitives";
-import { AppleDevicesSection } from "./AppleDevicesSection";
 import { ThemeGallery, ThemeStage } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
-import { ThemeImportExport } from "./ThemeImportExport";
+import { ThemeFilesHelp, ThemeImportExport } from "./ThemeImportExport";
 
 /**
  * Appearance settings.
  *
- * Theme, terminal, and Apple device rows persist in the renderer `appStore`
- * (localStorage) and sync with the signed-in account. Writes apply
+ * Everything here is per computer. Theme, interface and terminal rows persist
+ * in the renderer `appStore` (localStorage) and never leave this machine: a
+ * laptop, a desktop and a browser each keep their own look. Writes apply
  * immediately. The page is one centred column of sections, each a quiet label
  * over one panel of rows, so the whole page reads as one surface.
  */
@@ -85,6 +85,7 @@ export function AppearanceSection() {
       <div id="theme" data-settings-anchor="theme" style={{ scrollMarginTop: 16 }}>
         <SettingsSection
           title="Theme"
+          description="Colours, corners, depth and type for the whole app, and for the editor and terminal."
           actions={(
             <>
               <SettingsSectionAction
@@ -106,6 +107,7 @@ export function AppearanceSection() {
             <ThemeStage />
             <ThemeGallery />
           </div>
+          <ThemeFilesHelp />
         </SettingsSection>
       </div>
 
@@ -278,7 +280,6 @@ export function AppearanceSection() {
                 />
               </SettingsPanel>
             </SettingsSection>
-            <AppleDevicesSection />
           </>
         )}
       />

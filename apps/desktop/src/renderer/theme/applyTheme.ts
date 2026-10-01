@@ -16,10 +16,18 @@ import type { ResolvedAdeTheme } from "../../shared/theme";
 
 let appliedVarNames: string[] = [];
 
-/** Remove every variable a previous `applyAdeTheme` wrote. Idempotent. */
+const FLAIR_ATTRIBUTES = ["data-theme-backdrop", "data-theme-radius", "data-theme-shadow"] as const;
+
+function setFlairAttribute(root: HTMLElement, name: (typeof FLAIR_ATTRIBUTES)[number], value: string | undefined): void {
+  if (value) root.setAttribute(name, value);
+  else root.removeAttribute(name);
+}
+
+/** Remove every variable and flair attribute a previous `applyAdeTheme` wrote. Idempotent. */
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   for (const name of appliedVarNames) root.style.removeProperty(name);
   appliedVarNames = [];
+  for (const name of FLAIR_ATTRIBUTES) root.removeAttribute(name);
 }
 
 /**
@@ -41,6 +49,13 @@ export function applyAdeTheme(resolved: ResolvedAdeTheme, doc: Document = docume
   const { baseMode, id } = resolved.theme;
   root.setAttribute("data-theme", baseMode);
   root.setAttribute("data-theme-id", id);
+  // The stylesheet reads these to draw what custom properties alone cannot: the
+  // backdrop layer, sharp corners on surfaces that set their own radius, and a
+  // non-default depth on the main surfaces.
+  const flair = resolved.theme.flair;
+  setFlairAttribute(root, "data-theme-backdrop", flair?.backdrop === "none" ? undefined : flair?.backdrop);
+  setFlairAttribute(root, "data-theme-radius", flair?.radius === "sharp" ? "sharp" : undefined);
+  setFlairAttribute(root, "data-theme-shadow", flair?.shadow === "soft" ? undefined : flair?.shadow);
   // Native form controls, scrollbars and the caret follow this.
   root.style.colorScheme = baseMode;
   // Only `<html>` may carry the theme attributes. The stylesheet declares every

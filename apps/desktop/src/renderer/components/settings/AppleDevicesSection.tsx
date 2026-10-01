@@ -21,8 +21,9 @@ import {
  * Titled "Apple Development" because that is the tool's one name (round 3
  * §B1) — the card, the tab, the palette, the docs and the CLI all say it.
  *
- * Account-scoped, same as the rest of Appearance: they follow the signed-in
- * account rather than this machine, and the hosted web client can set them.
+ * Account-scoped: they follow the signed-in account, and the hosted web client
+ * can set them. Unlike Appearance they are not per computer, because the host
+ * reads the remote streaming cap from the account store.
  */
 export function AppleDevicesSection() {
   const appleDevice = useAppStore((s) => s.appleDevice);

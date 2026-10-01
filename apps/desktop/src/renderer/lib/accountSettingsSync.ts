@@ -47,7 +47,6 @@ import type {
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
-import type { AdeTheme } from "../../shared/theme";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -106,30 +105,19 @@ function pref<Value>(
 /**
  * Every account-scoped preference the app store persists.
  *
- * Exactly the contents of the `ade.userPreferences.v1` blob, minus
- * `userOverrodeChatFontSize` — that flag records that the user has taken the
- * chat font size off auto-sizing on THIS display, so it describes a screen
- * rather than a preference and stays machine-local. The font size itself does
- * travel.
+ * The contents of the `ade.userPreferences.v1` blob, minus what is not the
+ * account's to carry:
+ *
+ * - `userOverrodeChatFontSize` records that the user has taken the chat font
+ *   size off auto-sizing on THIS display, so it describes a screen. The font
+ *   size itself does travel.
+ * - **Appearance is per computer.** The theme and the custom theme list, the
+ *   follow-the-system flag, the interface and code faces, reduce motion and the
+ *   terminal text describe one screen. A phone, a laptop and a desktop do not
+ *   want the same theme, so none of it syncs. It lives in this machine's
+ *   localStorage and appears under Settings → This computer → Appearance.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  // The chosen theme id is the account preference; the painted base mode is
-  // NOT synced. A machine that follows the system derives `theme` from its own
-  // OS, so syncing it would let one machine's OS event overwrite another
-  // machine's manual choice. `themeId` carries the family and variant, and the
-  // flag below carries the mode policy, so `setTheme` reconstructs `theme` on
-  // the receiving machine from the two values that really are choices.
-  //
-  // A custom id whose definition has not landed yet paints as the default until
-  // its row arrives; `setTheme` keeps the id rather than resolving it.
-  pref("themeId", (state) => state.themeId, (state, value) => state.setTheme(value)),
-  // Custom themes are one account-scoped list, like harness presets: the whole
-  // list is one value under one key, so newer-wins applies to the list and two
-  // machines never interleave half of each other's themes.
-  pref("customThemes", (state) => state.customThemes, (state, value) => state.setCustomThemes(value as AdeTheme[])),
-  pref("themeFollowsSystem", (state) => state.themeFollowsSystem, (state, value) => state.setThemeFollowsSystem(value)),
-  pref("interfacePreferences", (state) => state.interfacePreferences, (state, value) => state.setInterfacePreferences(value)),
-  pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
@@ -150,6 +138,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
   pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  // Apple device options stay on the account: the host reads the remote
+  // streaming cap from the account store, so this one is not per computer.
   pref(
     "apple.realisticBody",
     (state) => state.appleDevice.realisticBody,

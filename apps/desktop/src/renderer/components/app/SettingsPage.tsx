@@ -8,6 +8,7 @@ import {
   Brain,
   ChartLineUp,
   ChatCircle,
+  DeviceMobile,
   GearSix,
   GitBranch,
   HardDrives,
@@ -19,6 +20,7 @@ import {
 } from "@phosphor-icons/react";
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "../settings/AppearanceSection";
+import { AppleDevicesSection } from "../settings/AppleDevicesSection";
 import { SettingsColumn } from "../settings/primitives";
 import { ChatSection } from "../settings/ChatSection";
 import { BudgetCapSettings } from "../settings/BudgetCapEditor";
@@ -76,6 +78,7 @@ import {
   SETTINGS_GROUPS,
   groupScopeHint,
   isMachineSettingsTab,
+  isThisComputerOnlyTab,
 } from "../settings/settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
@@ -97,6 +100,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   general: GearSix,
   appearance: Palette,
   chat: ChatCircle,
+  apple: DeviceMobile,
   agents: Brain,
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
@@ -111,6 +115,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
 const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
   "appearance",
   "chat",
+  "apple",
   "notifications",
   "stats",
   "secrets",
@@ -338,6 +343,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     },
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
+  apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
   chat: [
     {
       entryIds: "tab",
@@ -631,6 +637,11 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       : null;
 
   const [section, setSection] = useState<SettingsTabId>(resolvedTab ?? defaultTab);
+  // The machine the open page is about. A page that describes this computer's
+  // own screen (Appearance) is always This computer, whatever `?machine=` says.
+  const pageMachine: ProjectMachine | null = isThisComputerOnlyTab(section)
+    ? (machines.find((machine) => machine.machineId === THIS_MACHINE_ID) ?? selectedMachine)
+    : selectedMachine;
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -684,7 +695,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     nextParams.set("tab", next);
     // The machine travels with Machines pages only. Account and Project pages
     // have no machine, and a stale one in the URL would mislead the next link.
-    const targetMachine = isMachineSettingsTab(next) ? (machineId ?? nextParams.get("machine")) : null;
+    // Appearance describes this computer's own screen, so it never carries one.
+    const targetMachine = isMachineSettingsTab(next) && !isThisComputerOnlyTab(next)
+      ? (machineId ?? nextParams.get("machine"))
+      : null;
     if (targetMachine && targetMachine !== THIS_MACHINE_ID) nextParams.set("machine", targetMachine);
     else nextParams.delete("machine");
     navigate(
@@ -777,7 +791,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
 
   const renderTabButton = (tab: SettingsTab, machine?: ProjectMachine) => {
     const Icon = TAB_ICONS[tab.id];
-    const isActive = section === tab.id && (!machine || selectedMachine?.machineId === machine.machineId);
+    const isActive = section === tab.id && (!machine || pageMachine?.machineId === machine.machineId);
     const hoverKey = machine ? `${machine.machineId}:${tab.id}` : tab.id;
     const isHovered = hoveredId === hoverKey;
     // Tour anchors stay on This computer's copy of each page.
@@ -829,7 +843,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
 
   // The machine a Machines page is about, as the section components see it.
   const machinePageScope = useSettingsMachinePage(
-    selectedMachine && isMachineSettingsTab(section) ? selectedMachine : null,
+    pageMachine && isMachineSettingsTab(section) ? pageMachine : null,
   );
 
   const activeTab = tabs.find((tab) => tab.id === section)
@@ -853,8 +867,11 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   // one (the hosted web client, tests) the page keeps its own column.
   const renderMachineRow = (machine: ProjectMachine, machineTabs: SettingsTab[]) => {
     const onMachinePage = isMachineSettingsTab(section);
-    const selected = selectedMachine?.machineId === machine.machineId;
-    const landingTab = onMachinePage ? section : (machineTabs[0]?.id ?? DEFAULT_SETTINGS_TAB);
+    const selected = pageMachine?.machineId === machine.machineId;
+    // A row opens the page you are on when that machine has it, else its first.
+    const landingTab = onMachinePage && machineTabs.some((tab) => tab.id === section)
+      ? section
+      : (machineTabs[0]?.id ?? DEFAULT_SETTINGS_TAB);
     return (
       <SettingsMachineNavRow
         key={machine.machineId}
@@ -895,7 +912,13 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               >
                 {group.label}
               </div>
-              {machines.map((machine) => renderMachineRow(machine, groupTabs))}
+              {machines.map((machine) => renderMachineRow(
+                machine,
+                // Appearance has one page, under This computer.
+                machine.machineId === THIS_MACHINE_ID
+                  ? groupTabs
+                  : groupTabs.filter((tab) => !isThisComputerOnlyTab(tab.id)),
+              ))}
             </div>
           );
         }
