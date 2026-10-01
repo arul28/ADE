@@ -1041,8 +1041,26 @@ struct WorkProjectViewState: Codable, Equatable {
   var statusFilter: String = WorkSessionStatusFilter.all.rawValue
   var organization: String = WorkSessionOrganization.byLane.rawValue
   var collapsedSectionIds: String = ""
+  /// Machine filter ids (`workSerializeMachineFilter`). Empty means all machines.
+  var machineFilter: String = ""
 
   static let empty = WorkProjectViewState()
+}
+
+extension WorkProjectViewState {
+  /// Every key is optional so a record saved before a field existed still
+  /// loads instead of resetting the whole view state.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      searchText: try container.decodeIfPresent(String.self, forKey: .searchText) ?? "",
+      laneFilter: try container.decodeIfPresent(String.self, forKey: .laneFilter) ?? "all",
+      statusFilter: try container.decodeIfPresent(String.self, forKey: .statusFilter) ?? WorkSessionStatusFilter.all.rawValue,
+      organization: try container.decodeIfPresent(String.self, forKey: .organization) ?? WorkSessionOrganization.byLane.rawValue,
+      collapsedSectionIds: try container.decodeIfPresent(String.self, forKey: .collapsedSectionIds) ?? "",
+      machineFilter: try container.decodeIfPresent(String.self, forKey: .machineFilter) ?? ""
+    )
+  }
 }
 
 /// Returns the persisted base when a user takes control back from transient

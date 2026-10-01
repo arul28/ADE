@@ -50,6 +50,7 @@ const ctx = {
   nowMs: Date.parse("2026-07-01T01:00:00.000Z"),
   laneHasPr: (laneId: string) => laneId === "lane-with-pr",
   laneIsDirty: (laneId: string) => laneId === "lane-dirty",
+  machineId: "this-mac",
 };
 
 const filters = (patch: Partial<WorkSessionFilters>): WorkSessionFilters => ({
@@ -143,7 +144,7 @@ describe("normalizeWorkSessionFilters", () => {
       tool: ["claude", "not-a-tool"],
       hasPr: true,
       dirtyLane: "yes",
-    })).toEqual({ status: ["running"], tool: ["claude"], hasPr: true, dirtyLane: false });
+    })).toEqual({ status: ["running"], tool: ["claude"], hasPr: true, dirtyLane: false, machine: [] });
     expect(normalizeWorkSessionFilters(null)).toEqual(EMPTY_WORK_SESSION_FILTERS);
     expect(normalizeWorkSessionFilters(undefined)).toEqual(EMPTY_WORK_SESSION_FILTERS);
   });

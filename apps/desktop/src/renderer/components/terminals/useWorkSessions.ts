@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -1968,10 +1969,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // use the machine-scoped lookups instead — see `lanePrsForMachine`.
       laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
+      // This roster is the tab's own machine; other machines filter in the pane.
+      machineId: machineIdForBinding(projectBinding),
       effectiveFilingBuckets,
     };
     return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
-  }, [effectiveFilingBuckets, filtered, workSessionFilters, prsByLaneId, laneStatusById]);
+  }, [effectiveFilingBuckets, filtered, workSessionFilters, prsByLaneId, laneStatusById, projectBinding]);
 
   const {
     runningFiltered,

@@ -393,7 +393,7 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
     if status == .waiting {
       return "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
     }
-    return "Change the lane or state filters to widen the Work list."
+    return "Change the lane, status, or machine filters to widen the Work list."
   }
   switch status {
   case .archived:

@@ -174,3 +174,53 @@ func workMergeRemoteMachineRows(
   }
   return WorkRemoteMachineMerge(sessions: mergedSessions, lanes: mergedLanes, remoteChats: remoteChats)
 }
+
+// MARK: - Machine filter
+
+/// The Machine filter's id for the focused machine. Other machines use their
+/// fleet `machineKey`.
+let workPrimaryMachineFilterId = "primary"
+
+/// One choice in the Work filter panel's Machine row.
+struct WorkMachineFilterOption: Identifiable, Equatable {
+  let id: String
+  let name: String
+  let isLive: Bool
+}
+
+/// The focused machine first, then every other machine with a checkout of the
+/// focused repository: live ones before the ones that are not connected.
+func workMachineFilterOptions(
+  primaryName: String,
+  primaryIsLive: Bool,
+  remote: [WorkRemoteMachineRepo],
+  isLive: (String) -> Bool
+) -> [WorkMachineFilterOption] {
+  var seen: Set<String> = [workPrimaryMachineFilterId]
+  var others: [WorkMachineFilterOption] = []
+  for repo in remote where seen.insert(repo.machineKey).inserted {
+    others.append(WorkMachineFilterOption(id: repo.machineKey, name: repo.machineName, isLive: isLive(repo.machineKey)))
+  }
+  others.sort { lhs, rhs in
+    if lhs.isLive != rhs.isLive { return lhs.isLive }
+    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+  }
+  return [WorkMachineFilterOption(id: workPrimaryMachineFilterId, name: primaryName, isLive: primaryIsLive)] + others
+}
+
+/// The Machine filter id of the machine that owns a row in the merged list.
+/// Another machine's rows carry a namespaced lane id; every other row is the
+/// focused machine's.
+func workMachineFilterId(laneId: String) -> String {
+  workParseRemoteLaneId(laneId)?.machineKey ?? workPrimaryMachineFilterId
+}
+
+/// Newline-separated, because a fleet machine key is not guaranteed free of
+/// commas.
+func workParseMachineFilter(_ raw: String) -> Set<String> {
+  Set(raw.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+}
+
+func workSerializeMachineFilter(_ ids: Set<String>) -> String {
+  ids.sorted().joined(separator: "\n")
+}

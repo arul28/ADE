@@ -143,6 +143,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
+  let machineFilterStorage: String
   /// Everything the rebuild reads off `SyncService` that can change it: the
   /// active roster revision, launches, pending creations, GitHub PRs, lane
   /// deletions. Already narrowed and compared once by `WorkRootScreen`.
@@ -200,6 +201,9 @@ struct WorkRootSyncInputs: Equatable {
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
+  /// The Machine filter's choices: the focused machine, then the machines in
+  /// `remoteMachineRepos`. Tracked only while the list is visible.
+  var machineFilterOptions: [WorkMachineFilterOption] = []
 
   init() {}
 
@@ -248,10 +252,20 @@ struct WorkRootSyncInputs: Equatable {
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
       )
     }
+    machineFilterOptions = workMachineFilterOptions(
+      primaryName: sync.focusedMachineDisplayName,
+      primaryIsLive: isLive,
+      remote: remoteMachineRepos,
+      isLive: { fleet?.isLive($0) ?? false }
+    )
     #if DEBUG
     // The fixture has no machine to probe Cursor credentials on; show the entry
     // so the overflow menu can be screenshotted whole.
     if WorkRootPreviewFixture.active != nil { showsCursorCloud = true }
+    // Nor any other machine; add one so the filter panel's Machine row shows.
+    if WorkRootPreviewFixture.active != nil, machineFilterOptions.count == 1 {
+      machineFilterOptions.append(WorkMachineFilterOption(id: "preview-studio", name: "Mac Studio", isLive: true))
+    }
     #endif
   }
 }
@@ -394,6 +408,7 @@ struct WorkRootListScreen: View, Equatable {
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @State var collapsedSectionIdsStorage = ""
+  @State var machineFilterStorage = ""
   /// The project+host scope the five view-state properties above currently hold.
   @State private var workViewStateScopeKey: String?
   /// True while a lane deeplink is framing the view. Its filter reset is shown
@@ -433,7 +448,8 @@ struct WorkRootListScreen: View, Equatable {
       laneFilter: selectedLaneId,
       statusFilter: selectedStatusRawValue,
       organization: sessionOrganizationRaw,
-      collapsedSectionIds: collapsedSectionIdsStorage
+      collapsedSectionIds: collapsedSectionIdsStorage,
+      machineFilter: machineFilterStorage
     )
   }
 
@@ -452,6 +468,7 @@ struct WorkRootListScreen: View, Equatable {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
   }
 
   func persistWorkViewState() {
@@ -462,7 +479,8 @@ struct WorkRootListScreen: View, Equatable {
         laneFilter: selectedLaneId,
         statusFilter: selectedStatusRawValue,
         organization: sessionOrganizationRaw,
-        collapsedSectionIds: collapsedSectionIdsStorage
+        collapsedSectionIds: collapsedSectionIdsStorage,
+        machineFilter: machineFilterStorage
       ),
       scope: scope
     )
@@ -481,6 +499,7 @@ struct WorkRootListScreen: View, Equatable {
     selectedStatusRawValue = restored.statusFilter
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
+    machineFilterStorage = restored.machineFilter
     workViewStateDeeplinkActive = false
     workViewStateBeforeDeeplink = nil
   }
@@ -553,6 +572,7 @@ struct WorkRootListScreen: View, Equatable {
   var hasActiveFilters: Bool {
     selectedStatus != .all
       || selectedLaneId != "all"
+      || !machineFilterStorage.isEmpty
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
@@ -593,6 +613,16 @@ struct WorkRootListScreen: View, Equatable {
       set: {
         restoreWorkViewStateAfterDeeplink()
         searchText = $0
+      }
+    )
+  }
+
+  var machineFilterBinding: Binding<String> {
+    Binding(
+      get: { machineFilterStorage },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        machineFilterStorage = $0
       }
     )
   }
@@ -708,6 +738,7 @@ struct WorkRootListScreen: View, Equatable {
       searchOutputRevision: workSearchIsActive ? searchOutputRevision : nil,
       archivedSessionIdsStorage: archivedSessionIdsStorage,
       sessionOrganizationRaw: sessionOrganizationRaw,
+      machineFilterStorage: machineFilterStorage,
       sync: inputs,
       loadedProjectionProjectId: loadedProjectionProjectId,
       snoozeEpoch: snoozeEpoch,
@@ -789,6 +820,8 @@ struct WorkRootListScreen: View, Equatable {
               selectedStatus: selectedStatusBinding,
               organization: sessionOrganizationBinding,
               filterOpen: $filterPanelOpen,
+              machineFilter: machineFilterBinding,
+              machineOptions: inputs.machineFilterOptions,
               lanes: workOrderedLanes,
               onClear: clearWorkFilters
             )
@@ -825,12 +858,21 @@ struct WorkRootListScreen: View, Equatable {
                 isLive: inputs.isLive
               )
             ) {
-              Button("New chat") {
-                pushNewChatRoute()
+              if hasActiveFilters {
+                // The rows exist; a filter hides them. Offer the way back.
+                Button("Clear filters") {
+                  withAnimation(.snappy(duration: 0.18)) { clearWorkFilters() }
+                }
+                .buttonStyle(.glass)
+                .tint(ADEColor.accent)
+              } else {
+                Button("New chat") {
+                  pushNewChatRoute()
+                }
+                .buttonStyle(.glassProminent)
+                .tint(ADEColor.accent)
+                .disabled(!inputs.isLive)
               }
-              .buttonStyle(.glassProminent)
-              .tint(ADEColor.accent)
-              .disabled(!inputs.isLive)
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
             .listRowBackground(Color.clear)
@@ -1518,7 +1560,9 @@ struct WorkRootListScreen: View, Equatable {
   /// Lane and status filters count; search does not (it is visible in the
   /// field itself). Drives the filter chip's active state inside the field.
   var workActiveFilterCount: Int {
-    (selectedStatus != .all ? 1 : 0) + (selectedLaneId != "all" ? 1 : 0)
+    (selectedStatus != .all ? 1 : 0)
+      + (selectedLaneId != "all" ? 1 : 0)
+      + workParseMachineFilter(machineFilterStorage).count
   }
 
   var workHeaderActions: WorkRootHeaderActions {
@@ -1541,6 +1585,7 @@ struct WorkRootListScreen: View, Equatable {
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+    machineFilterStorage = ""
   }
 }
 
