@@ -104,6 +104,21 @@ export type LocalRuntimeStatus = {
   };
 };
 
+/**
+ * Whether macOS's "Allow in the Background" switch is what stops the brain.
+ * The live Background Items reading wins over the last install's failure:
+ * that failure stays recorded until the next install, and a person who has
+ * since turned the switch on must not keep reading "blocked".
+ */
+export function isBackgroundItemBlocked(
+  status: Pick<LocalRuntimeStatus, "serviceInstall" | "serviceHealth">,
+): boolean {
+  const live = status.serviceHealth.backgroundItem;
+  if (live === "requires_approval") return true;
+  if (live === "enabled") return false;
+  return status.serviceInstall.failureStep === "background_item_blocked";
+}
+
 export type AppInfo = {
   appVersion: string;
   /**

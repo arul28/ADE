@@ -165,6 +165,23 @@ export function readLaunchdBackgroundItemStatus(
   }
 }
 
+/**
+ * The desktop asks for service status every couple of seconds while the brain
+ * is down, on its main thread; an `osascript` per poll would stall the UI. The
+ * answer only changes when a person flips a switch in System Settings, so a
+ * few seconds of staleness costs nothing.
+ */
+const BACKGROUND_ITEM_CACHE_MS = 5_000;
+const backgroundItemCache = new Map<string, { status: BackgroundItemStatus; at: number }>();
+
+function cachedBackgroundItemStatus(plistPath: string): BackgroundItemStatus {
+  const cached = backgroundItemCache.get(plistPath);
+  if (cached && Date.now() - cached.at < BACKGROUND_ITEM_CACHE_MS) return cached.status;
+  const status = readLaunchdBackgroundItemStatus(plistPath);
+  backgroundItemCache.set(plistPath, { status, at: Date.now() });
+  return status;
+}
+
 export function isLaunchdPrintRunning(output: string): boolean {
   return /\bstate\s*=\s*running\b/i.test(output);
 }
@@ -692,7 +709,7 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
       message: "ADE service launchd service is running.",
     };
   }
-  const backgroundItem = readLaunchdBackgroundItemStatus(servicePath);
+  const backgroundItem = cachedBackgroundItemStatus(servicePath);
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,

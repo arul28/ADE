@@ -21,6 +21,7 @@ import {
 import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
+import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { readJsonWithRecovery } from "../state/durableFile";
 import {
   classifySqliteOpenError,
@@ -540,10 +541,7 @@ export class ProjectRecoveryService {
     } else if (socketReachable) {
       state = "socket_owned_by_other";
       code = "socket_owned_by_other";
-    } else if (
-      serviceStatus.serviceHealth.backgroundItem === "requires_approval"
-      || serviceStatus.serviceInstall.failureStep === "background_item_blocked"
-    ) {
+    } else if (isBackgroundItemBlocked(serviceStatus)) {
       // Ahead of every repairable state: macOS will not start the brain until
       // the person turns ADE back on under Login Items, and a repair that
       // reinstalls the agent only reruns the install that just failed.

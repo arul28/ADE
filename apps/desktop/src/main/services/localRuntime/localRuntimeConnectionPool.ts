@@ -33,6 +33,7 @@ import type {
   SyncPeerDeviceType,
   SyncRoleSnapshot,
 } from "../../../shared/types";
+import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   SYSTEM_PROJECT_REGISTRATION,
@@ -2569,10 +2570,10 @@ export class LocalRuntimeConnectionPool {
       let recoveryCode: AdeRecoveryErrorCode;
       if (lastFailure && recordedDbCodes.has(lastFailure.code)) {
         recoveryCode = lastFailure.code;
-      } else if (
-        this.serviceInstallStatus.failureStep === "background_item_blocked"
-        || this.serviceHealthStatus.backgroundItem === "requires_approval"
-      ) {
+      } else if (isBackgroundItemBlocked({
+        serviceInstall: this.serviceInstallStatus,
+        serviceHealth: this.serviceHealthStatus,
+      })) {
         // Ahead of "not installed": the install "failed" only because macOS
         // refused to start what it installed, and saying "not installed"
         // sends the person to a Repair that cannot change the answer.

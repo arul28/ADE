@@ -29977,11 +29977,12 @@ async function runResetCommand(
       exitCode: 0,
     };
   }
-  // A desktop handoff (`--wait-pid`) is detached and outlives the app; a run
-  // typed into an ADE terminal is not, and would be stopped with the brain.
-  if (!plan.waitPid) {
+  // A run typed into an ADE terminal would be stopped with the brain, half
+  // way. The desktop's own handoff is detached and names itself with
+  // `--wait-pid`, so that one parent, and only it, is allowed.
+  {
     const { findAdeAncestor } = await import("./services/reset/machineReset");
-    const ancestor = findAdeAncestor(deps);
+    const ancestor = findAdeAncestor(deps, { allowPid: plan.waitPid });
     if (ancestor) {
       throw new CliUsageError(
         "This terminal runs inside ADE, and the reset would stop it half-way. Run `ade reset --all` from a terminal outside ADE (for example Terminal.app), or use Settings → About → Reset ADE.",

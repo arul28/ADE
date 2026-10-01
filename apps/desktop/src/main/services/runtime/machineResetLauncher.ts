@@ -58,7 +58,7 @@ function resetLogPath(now: Date): string {
 /** The rescue folder sits inside something the reset removes. */
 function rescueDirIsRemovedByReset(rescueDir: string): boolean {
   const target = path.resolve(rescueDir);
-  if (target.split(path.sep).some((segment) => /^\.ade(-beta|-alpha)?$/.test(segment))) return true;
+  if (target.split(path.sep).some((segment) => /^\.ade(-beta|-alpha)?$/i.test(segment))) return true;
   const inside = (root: string) => {
     const relative = path.relative(path.resolve(root), target);
     return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
