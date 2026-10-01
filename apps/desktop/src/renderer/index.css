@@ -4812,6 +4812,13 @@ button, [role="button"] {
   color: color-mix(in srgb, var(--color-fg) 62%, transparent);
 }
 
+/* A markdown brief inside the user's message bubble (MarkdownBlock
+   tone="bubble"). The bubble is the accent colour, so text stays white. */
+.ade-prose-themed.ade-bubble-prose,
+.ade-prose-themed.ade-bubble-prose :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: rgba(255, 255, 255, 0.95);
+}
+
 /* The live block's viewport. Its font size and line height match the thought
    text inside it, so `1lh` is one line of that text: a one-line thought is a
    one-line block, and four lines is the cap. The top fade appears only once

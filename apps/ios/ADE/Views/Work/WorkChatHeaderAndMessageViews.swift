@@ -447,7 +447,15 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              WorkChipMessageText(text: bubbleText)
+              if workUserTextLooksLikeMarkdown(message.markdown) {
+                // A handoff brief or pasted spec: render it, don't print raw
+                // `###` and `**`. Chat lines keep their exact text.
+                WorkMarkdownRenderer(markdown: bubbleText)
+                  .environment(\.workMarkdownForeground, .white)
+                  .foregroundStyle(.white)
+              } else {
+                WorkChipMessageText(text: bubbleText)
+              }
             }
             if hasAttachments {
               WorkChatAttachmentTray(
@@ -584,8 +592,8 @@ func workChipNavigationURL(_ chip: WorkChip) -> URL? {
   switch chip.origin {
   case .link(let link):
     return URL(string: link.url)
-  case .model:
-    // A model chip is an instruction, not a place: nothing to open.
+  case .model, .permission, .skill:
+    // A model, permission or skill chip names a setting, not a place.
     return nil
   case .path:
     // Same reasoning as a terminal mention: the desktop routes a path chip to
@@ -609,6 +617,57 @@ func workChipInlineLabel(_ chip: WorkChip) -> String {
   "\(chip.glyph) \(chip.label)"
 }
 
+/// One chip as a styled, tappable run: glyph + label. A lane or chat this
+/// device knows shows its real name (not "Lane b7ffb312"), a lane takes its own
+/// colour, and a running or waiting chat carries a live dot. The desktop's dot
+/// pulses; a `Text` run cannot animate, so this one is steady.
+func workChipPill(
+  _ chip: WorkChip,
+  facts: WorkThreadEntityFacts?,
+  foreground: Color,
+  background: Color,
+  font: Font? = nil,
+  emphasized: Bool = false
+) -> AttributedString {
+  let factLabel = facts?.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let label = factLabel.isEmpty ? chip.label : factLabel
+  let laneColor = LaneColorPalette.color(forHex: facts?.colorHex)
+  let fill = laneColor.map { $0.opacity(0.2) } ?? background
+
+  var pill = AttributedString("\(chip.glyph) \(label)")
+  pill.foregroundColor = laneColor.map { workMixColors($0, Color.white, 0.38) } ?? foreground
+  pill.backgroundColor = fill
+  if let live = facts?.live {
+    var dot = AttributedString(" ●")
+    dot.foregroundColor = live == .running ? ADEColor.success : ADEColor.warning
+    dot.backgroundColor = fill
+    pill.append(dot)
+  }
+  if let font { pill.font = font }
+  if emphasized { pill.inlinePresentationIntent = .stronglyEmphasized }
+  if let url = workChipNavigationURL(chip) {
+    pill.link = url
+  }
+  return pill
+}
+
+/// Where a chip tap lands. A lane opens its section in Work; every other
+/// `ade://` target goes through the app's deep-link router; a web address goes
+/// to the system.
+@MainActor
+func workOpenChipURL(_ url: URL) -> OpenURLAction.Result {
+  guard url.scheme?.lowercased() == "ade" else { return .systemAction }
+  if url.host?.lowercased() == "lane",
+     let laneId = url.pathComponents.first(where: { $0 != "/" })?.removingPercentEncoding,
+     UUID(uuidString: laneId) != nil,
+     let syncService = SyncService.shared {
+    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
+    return .handled
+  }
+  DeepLinkRouter.shared.handle(url)
+  return .handled
+}
+
 /// Build the message body with its chips as styled, tappable runs.
 ///
 /// A partition of the original string: every character of `text` is either in a
@@ -618,6 +677,7 @@ func workChipAttributedMessage(
   _ text: String,
   chipForeground: Color,
   chipBackground: Color,
+  lookup: WorkThreadEntityLookup = .empty,
   limit: Int = WorkChipDetector.defaultLimit
 ) -> AttributedString {
   var out = AttributedString()
@@ -626,14 +686,15 @@ func workChipAttributedMessage(
     case .text(let run):
       out.append(AttributedString(run))
     case .chip(let chip):
-      var pill = AttributedString(workChipInlineLabel(chip))
-      pill.foregroundColor = chipForeground
-      pill.backgroundColor = chipBackground
-      pill.font = WorkChatTypography.body.weight(.semibold)
-      if let url = workChipNavigationURL(chip) {
-        pill.link = url
-      }
-      out.append(pill)
+      out.append(
+        workChipPill(
+          chip,
+          facts: lookup.facts(for: chip),
+          foreground: chipForeground,
+          background: chipBackground,
+          font: WorkChatTypography.chip
+        )
+      )
     }
   }
   return out
@@ -713,10 +774,32 @@ struct WorkUserBubbleOutline: Shape {
   }
 }
 
+private let workUserMarkdownHeadingLine = try! NSRegularExpression(pattern: "^#{1,6}\\s+\\S", options: [.anchorsMatchLines])
+private let workUserMarkdownFenceLine = try! NSRegularExpression(pattern: "^\\s*(```|~~~)", options: [.anchorsMatchLines])
+private let workUserMarkdownListLine = try! NSRegularExpression(
+  pattern: "^\\s*(?:[-*+]|\\d+[.)])\\s+\\S",
+  options: [.anchorsMatchLines]
+)
+
+/// True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
+/// spec), not a chat line that happens to contain an asterisk. Mirrors
+/// `userTextLooksLikeMarkdown` on the desktop.
+func workUserTextLooksLikeMarkdown(_ text: String) -> Bool {
+  let ns = text as NSString
+  guard ns.length >= 80 else { return false }
+  let full = NSRange(location: 0, length: ns.length)
+  if workUserMarkdownHeadingLine.firstMatch(in: text, range: full) != nil { return true }
+  if workUserMarkdownFenceLine.firstMatch(in: text, range: full) != nil { return true }
+  return workUserMarkdownListLine.numberOfMatches(in: text, range: full) >= 3
+}
+
 struct WorkChipMessageText: View {
   let text: String
   var foreground: Color = .white
   var chipBackground: Color = Color.white.opacity(0.22)
+  /// Lane names, colours and chat titles for the chips. Republishes only when
+  /// one of those changes.
+  @ObservedObject private var entities = WorkThreadEntityDirectory.shared
 
   /// One cheap scan before any regex runs. The overwhelming majority of
   /// messages contain no chip at all, and this view is rebuilt for every
@@ -732,14 +815,11 @@ struct WorkChipMessageText: View {
           workChipAttributedMessage(
             text,
             chipForeground: foreground,
-            chipBackground: chipBackground
+            chipBackground: chipBackground,
+            lookup: entities.lookup
           )
         )
-        .environment(\.openURL, OpenURLAction { url in
-          guard url.scheme?.lowercased() == "ade" else { return .systemAction }
-          DeepLinkRouter.shared.handle(url)
-          return .handled
-        })
+        .environment(\.openURL, OpenURLAction { url in workOpenChipURL(url) })
       } else {
         Text(text)
       }

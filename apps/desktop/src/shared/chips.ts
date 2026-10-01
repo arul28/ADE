@@ -61,6 +61,10 @@ export type ChipKind =
   | "web_page"
   /** A model with a thinking level and a permission mode (`@model:<id>?…`). */
   | "model"
+  /** A provider permission mode an agent named, e.g. `bypassPermissions`. */
+  | "permission"
+  /** A slash command or skill this chat can run, e.g. `/quality`. */
+  | "skill"
   /** An `ade://` URL this build cannot parse — a newer ADE minted it. */
   | "ade_link";
 
@@ -74,7 +78,9 @@ export type ChipSource =
   | { origin: "path"; path: string }
   | { origin: "deeplink"; url: string; target: DeeplinkTarget }
   | { origin: "url"; url: string }
-  | { origin: "model"; mention: ModelMention };
+  | { origin: "model"; mention: ModelMention }
+  | { origin: "permission"; provider: string; value: string }
+  | { origin: "skill"; name: string };
 
 export type Chip = {
   kind: ChipKind;
@@ -117,6 +123,8 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   linear_issue: "L",
   web_page: "↗",
   model: "✦",
+  permission: "⛨",
+  skill: "/",
   ade_link: "A",
 };
 
@@ -145,6 +153,8 @@ export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
   linear_issue: "N",
   web_page: ">",
   model: "M",
+  permission: "P",
+  skill: "/",
   ade_link: "A",
 };
 

@@ -374,6 +374,7 @@ import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
 import { theme } from "./theme";
+import { setTuiThreadEntityFacts } from "./threadEntityRuns";
 import { resolveTuiChatRefreshTarget } from "./project";
 import {
   RIGHT_CHAT_CLOSED_TOGGLE_ID,
@@ -3718,6 +3719,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   prByLaneIdRef.current = prByLaneId;
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
+  // The transcript draws lanes and chats an agent names by their real name and
+  // lane colour. Set during render (before ChatView renders) so the first paint
+  // after a lane list change already uses it; the setter ignores no-op updates.
+  useMemo(() => {
+    const linearTeamKeys = new Set<string>();
+    for (const lane of lanes) {
+      const key = lane.linearIssue?.identifier?.match(/^([A-Za-z][A-Za-z0-9]{0,9})-\d+$/)?.[1];
+      if (key) linearTeamKeys.add(key.toUpperCase());
+    }
+    setTuiThreadEntityFacts({
+      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name, color: theme.lane(lane) })),
+      chats: sessions.map((session) => ({ id: session.sessionId, title: session.title ?? null })),
+      linearTeamKeys: [...linearTeamKeys],
+    });
+  }, [lanes, sessions]);
   /**
    * The host's answer when a manual `/resume-now` was refused, kept per session
    * so switching chats cannot show one chat's refusal against another's limit.

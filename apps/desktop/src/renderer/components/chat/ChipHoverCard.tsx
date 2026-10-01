@@ -27,7 +27,7 @@
 //     match a DIFFERENT lane that happens to share the id — and then print its
 //     name and branch. A chat pinned to a remote machine must read that
 //     machine's lanes, sessions and PRs, which is what `useChatRuntimeScope()`
-//     plus `useLanesForPin` / `useMachineEntryForBinding` resolve. Nothing here
+//     plus `useLanesForPin` / `useSessionsForPin` resolve. Nothing here
 //     touches a global store read.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -42,7 +42,7 @@ import type {
 } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { relativeWhen } from "../../lib/format";
-import { useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { computeTooltipPosition, type TooltipPlacement } from "../ui/tooltipPosition";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
@@ -275,15 +275,15 @@ export function useChipHoverCard(chip: Chip, previewTitle: string | null): ChipH
   // door, so the scope is already the right answer here — no prop drilling and,
   // crucially, no global store read of the project tab's lanes.
   const scope = useChatRuntimeScope();
-  const machine = useMachineEntryForBinding(scope.binding);
   const scopedLanes = useLanesForPin(scope.binding);
+  const scopedSessions = useSessionsForPin(scope.binding);
   // Held in a ref, not in the effect's deps: a lane-status refresh replaces
   // these arrays constantly, and depending on them would reload an open card on
   // every tick. This is the ref form the chat-scope lint rule sanctions.
   const sourcesRef = useRef<ChipCardSources>({ lanes: EMPTY_LANES, sessions: EMPTY_SESSIONS, pin: null, rootPath: null });
   sourcesRef.current = {
     lanes: scopedLanes ?? EMPTY_LANES,
-    sessions: machine?.sessions ?? EMPTY_SESSIONS,
+    sessions: scopedSessions ?? EMPTY_SESSIONS,
     pin: scope.pin,
     rootPath: scope.rootPath,
   };

@@ -1020,6 +1020,11 @@ struct WorkRootListScreen: View, Equatable {
         guard isTabActive, requestId != nil else { return }
         Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
       }
+      // The transcript draws lane and chat chips from these lists, so a lane
+      // id an agent prints shows the lane's name, colour and live state.
+      .onChange(of: projectionDataRevision, initial: true) { _, _ in
+        WorkThreadEntityDirectory.shared.record(lanes: lanes, sessions: sessions)
+      }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
           ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)

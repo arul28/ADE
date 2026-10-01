@@ -556,6 +556,12 @@ export type ChatTranscriptRenderEnvelope = {
    */
   repeatCount?: number;
   /**
+   * Later `codex_image_view` events folded into this one by adjacency, oldest
+   * first. A run of screenshots the agent looked at reads as one strip, not one
+   * row per file. Render-side only, like `repeatCount`.
+   */
+  imageViewSiblings?: CodexImageViewRenderEvent[];
+  /**
    * Copied off the source envelope's `provenance.timestampSynthetic`. True when
    * `timestamp` is an ordering placeholder with no provider time behind it; the
    * row still sorts on it but must not show it as a clock (subagent drill-in).
@@ -592,12 +598,15 @@ export type ChatTranscriptGroupedEnvelope = {
     | TurnFoldRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */
+  imageViewSiblings?: CodexImageViewRenderEvent[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
   sceneScopeKey?: string;
 };
 
+export type CodexImageViewRenderEvent = Extract<AgentChatEvent, { type: "codex_image_view" }>;
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
 type TaskListSourceEvent = PlanTranscriptEvent | TodoUpdateTranscriptEvent;
@@ -3006,6 +3015,26 @@ export function appendCollapsedChatTranscriptEvent(
   // for background shell commands). Normalize canonical dotted events first, then
   // fold every lifecycle event into the anchor state (handled BEFORE the generic
   // passthrough so no raw subagent_* row ever reaches the activity bundler).
+  if (event.type === "codex_image_view") {
+    // An update to an image already folded into a strip: merge it in place.
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const siblings = rows[index]!.imageViewSiblings;
+      const siblingIndex = siblings?.findIndex((sibling) =>
+        sibling.itemId === event.itemId && (sibling.turnId ?? null) === (event.turnId ?? null)) ?? -1;
+      if (!siblings || siblingIndex < 0) continue;
+      const previous = siblings[siblingIndex]!;
+      const nextSiblings = [...siblings];
+      nextSiblings[siblingIndex] = {
+        ...previous,
+        ...event,
+        path: event.path ?? previous.path,
+        url: event.url ?? previous.url,
+        title: event.title ?? previous.title,
+      };
+      rows[index] = { ...rows[index]!, imageViewSiblings: nextSiblings };
+      return;
+    }
+  }
   if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
     const matchIndex = [...rows]
       .reverse()
@@ -3045,6 +3074,26 @@ export function appendCollapsedChatTranscriptEvent(
           },
         };
         return;
+      }
+    }
+    // A NEW image joins the strip of the previous image in the same turn when
+    // only folded work sits between them: tool calls, commands and narration,
+    // the rows a finished turn hides under "Worked for". An agent screenshotting
+    // a UI runs a command and says a line before every look, so strict
+    // adjacency never fired. A row the reader keeps seeing (a CI card, a
+    // question) starts a new strip.
+    if (event.type === "codex_image_view") {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const candidate = rows[index]!;
+        if (candidate.event.type === "codex_image_view") {
+          if ((candidate.event.turnId ?? null) !== (event.turnId ?? null)) break;
+          rows[index] = {
+            ...candidate,
+            imageViewSiblings: [...(candidate.imageViewSiblings ?? []), event],
+          };
+          return;
+        }
+        if (candidate.event.type !== "text" && classifyTurnFoldEvent(candidate.event) !== "history") break;
       }
     }
   }
