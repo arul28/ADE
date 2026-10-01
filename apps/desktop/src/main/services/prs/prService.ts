@@ -193,7 +193,7 @@ import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
-import { selectStackSiblings } from "../../../shared/prStackChat";
+import { selectStackSiblings } from "../../../shared/prChatScope";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";

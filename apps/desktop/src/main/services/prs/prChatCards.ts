@@ -21,7 +21,7 @@ import { latestRunsByWorkflow } from "./workflowGraph";
 import {
   isGithubStackFullyLanded,
   selectStackSiblings,
-} from "../../../shared/prStackChat";
+} from "../../../shared/prChatScope";
 
 export type PrCardChange = {
   pr: PrSummary;

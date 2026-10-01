@@ -30,7 +30,7 @@ import {
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
-import { selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { requestChatPrSelection } from "./chatPrPaneRequests";
 import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";

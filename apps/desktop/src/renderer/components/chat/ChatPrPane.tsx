@@ -29,7 +29,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, pickPrimaryPr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { prStateTone, selectPrsForChatInLane } from "../../lib/prChatScope";
+import { prStateTone, selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";

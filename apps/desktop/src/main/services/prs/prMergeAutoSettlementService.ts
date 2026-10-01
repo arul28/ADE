@@ -11,7 +11,7 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import { isChatToolType } from "../sessions/chatSessionProjection";
-import { sessionHasOpenLinkedPrs } from "../../../shared/prStackChat";
+import { sessionHasOpenLinkedPrs } from "../../../shared/prChatScope";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
