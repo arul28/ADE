@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
+import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
 
 const GAP = 8;
 const CLOSE_DELAY_MS = 140;
@@ -121,6 +122,7 @@ export function LanePrHoverCard({
     <span
       ref={triggerRef}
       className={className}
+      {...rowHoverSuppressProps}
       onClick={(event) => {
         event.stopPropagation();
       }}
@@ -161,6 +163,7 @@ export function LanePrHoverCard({
       role="dialog"
       aria-label={label}
       data-testid="lane-pr-hover-card"
+      {...rowHoverSuppressProps}
       // React portals retain their logical parent event path. Keep clicks on
       // panel chrome from selecting the enclosing lane/session row while
       // allowing candidate-row handlers to run before this bubble listener.

@@ -1869,6 +1869,11 @@ export async function createAdeRuntime(args: {
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
     prServiceRef = headlessLinearServices.prService;
+    // Follow-up PR branches an agent cuts inside its lane worktree: link their
+    // PRs to the lane (and to the chats that were open when they were made).
+    laneService.setOnBranchHistoryObserved((args) => {
+      void prServiceRef?.autoLinkLaneBranchHistory(args);
+    });
     if (macDesktopService) {
       // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
       // teardown step never has to know what host it is on.

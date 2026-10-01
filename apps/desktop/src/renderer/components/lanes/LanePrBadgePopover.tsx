@@ -1,5 +1,5 @@
 import React from "react";
-import { GitPullRequest } from "@phosphor-icons/react";
+import { CaretDown, GitPullRequest } from "@phosphor-icons/react";
 import type { PrChecksStatus, PrReviewStatus } from "../../../shared/types";
 import { COLORS, SANS_FONT, floatingPane, inlineBadge } from "./laneDesignTokens";
 import type { LaneTabPrTag } from "./lanePageModel";
@@ -89,7 +89,7 @@ export function LanePrBadgePopover({
   prs?: LaneTabPrTag[];
   /** Invoked when the badge itself is clicked (navigate to PR / open external). */
   onActivate: (event: React.SyntheticEvent, pr?: LaneTabPrTag) => void;
-  /** Invoked by the multi-PR counter to show the lane-filtered PR list. */
+  /** The hover list's last row: show the lane-filtered PR list. */
   onOpenList?: () => void;
 }) {
   const allPrs = prs?.length ? prs : legacyPr ? [legacyPr] : [];
@@ -97,7 +97,6 @@ export function LanePrBadgePopover({
   if (!primaryPr) return null;
   if (allPrs.length > 1) {
     const aggregateColor = lanePrAttentionColor(lanePrAggregateAttention(allPrs));
-    const countClass = "rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px font-mono text-[9px] font-semibold text-muted-fg/65";
     const activate = (event: React.SyntheticEvent, candidate = primaryPr) => {
       event.stopPropagation();
       onActivate(event, candidate);
@@ -142,6 +141,20 @@ export function LanePrBadgePopover({
                 </span>
               </div>
             ))}
+            {onOpenList ? (
+              <button
+                type="button"
+                className="flex w-full items-center border-t border-white/[0.06] px-3 py-2 text-left text-[10px] transition-colors hover:bg-white/[0.05]"
+                style={{ color: COLORS.textMuted }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenList();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                Show all in Pull requests
+              </button>
+            ) : null}
           </div>
         )}
       >
@@ -162,28 +175,8 @@ export function LanePrBadgePopover({
           <GitPullRequest size={10} weight="bold" />
           {formatPrBadgeLabel(primaryPr)}
           <GitHubStackBadge stack={primaryPr.stack} compact bare />
+          <CaretDown size={8} weight="bold" className="shrink-0 opacity-70" aria-hidden />
         </button>
-        {onOpenList ? (
-          <button
-            type="button"
-            className={`${countClass} transition-colors hover:border-white/[0.15] hover:text-fg/90`}
-            title={`Show all ${allPrs.length} pull requests for this lane`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenList();
-            }}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            +{allPrs.length - 1}
-          </button>
-        ) : (
-          <span
-            className={`${countClass} cursor-default`}
-            title="Hover to inspect all pull requests for this lane"
-          >
-            +{allPrs.length - 1}
-          </span>
-        )}
       </LanePrHoverCard>
     );
   }

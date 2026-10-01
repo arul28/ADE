@@ -3775,6 +3775,9 @@ app.whenReady().then(async () => {
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
     });
+    laneService.setOnBranchHistoryObserved((args) => {
+      void prService.autoLinkLaneBranchHistory(args);
+    });
 
     let prMergeAutoSettlementServiceRef: ReturnType<typeof createPrMergeAutoSettlementService> | null = null;
     const prPollingService = createPrPollingService({

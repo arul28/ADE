@@ -4,6 +4,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { isInsideRowHoverSuppress, isPointerOnRowHoverSuppress } from "../ui/rowHoverSuppress";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The session row's DETAIL CARD.
@@ -76,7 +77,7 @@ export type SessionHoverCardRow = {
 export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: string }): {
   /** Non-null while the card should be mounted. */
   anchor: FixedAnchor | null;
-  triggerProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave">;
+  triggerProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave" | "onMouseOver">;
   cardProps: Pick<React.HTMLAttributes<HTMLElement>, "onMouseEnter" | "onMouseLeave">;
   close: () => void;
 } {
@@ -135,21 +136,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
     if (activeHoverCard?.rowId === rowId) activeHoverCard = null;
   }, [clearTimers, rowId]);
 
-  const onMouseEnter = React.useCallback(
-    (event: React.MouseEvent<HTMLElement>) => {
-      if (disabled) return;
-      const element = event.currentTarget;
-      const related = event.relatedTarget;
-      const sourceRow = related instanceof Element
-        ? related.closest<HTMLElement>("[data-session-row]")
-        : null;
-      const directHandoff = Boolean(
-        activeHoverCard
-        && sourceRow
-        && sourceRow !== element
-        && activeHoverCard.trigger === sourceRow,
-      );
-
+  const scheduleOpen = React.useCallback(
+    (element: HTMLElement, directHandoff: boolean) => {
       // One hover pane at a time. A direct sibling handoff opens below without
       // delay; every other arrival dismisses stale UI and earns a fresh second.
       activeHoverCard?.dismiss();
@@ -158,6 +146,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
       const open = () => {
         setPendingOpen(false);
+        // The pointer moved onto the PR pill (or its list) while the delay ran.
+        if (isPointerOnRowHoverSuppress()) return;
         const target = resolveTriggerElement();
         if (!target) return;
         const rect = target.getBoundingClientRect();
@@ -179,10 +169,50 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
         open();
       }, SESSION_HOVER_CARD_DELAY_MS);
     },
-    [clearTimers, close, disabled, resolveTriggerElement, rowId],
+    [clearTimers, close, resolveTriggerElement, rowId],
+  );
+
+  const onMouseEnter = React.useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (disabled) return;
+      const element = event.currentTarget;
+      const related = event.relatedTarget;
+      const sourceRow = related instanceof Element
+        ? related.closest<HTMLElement>("[data-session-row]")
+        : null;
+      const directHandoff = Boolean(
+        activeHoverCard
+        && sourceRow
+        && sourceRow !== element
+        && activeHoverCard.trigger === sourceRow,
+      );
+      scheduleOpen(element, directHandoff);
+    },
+    [disabled, scheduleOpen],
+  );
+
+  // `mouseover` bubbles, so the row hears the pointer cross into and out of a
+  // nested hover control. React also routes events from that control's
+  // portalled card through here, which is why the card carries the marker too.
+  const pointerOnNestedControlRef = React.useRef(false);
+  const onMouseOver = React.useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (disabled) return;
+      const nested = isInsideRowHoverSuppress(event.target);
+      if (nested === pointerOnNestedControlRef.current) return;
+      pointerOnNestedControlRef.current = nested;
+      if (nested) {
+        close();
+        return;
+      }
+      // Back on the row itself: the card earns its delay again.
+      scheduleOpen(event.currentTarget, false);
+    },
+    [close, disabled, scheduleOpen],
   );
 
   const onMouseLeave = React.useCallback(() => {
+    pointerOnNestedControlRef.current = false;
     if (openTimerRef.current != null) {
       // Still waiting: a leave cancels outright, with no close grace.
       window.clearTimeout(openTimerRef.current);
@@ -220,7 +250,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
   return {
     anchor,
-    triggerProps: { onMouseEnter, onMouseLeave },
+    triggerProps: { onMouseEnter, onMouseLeave, onMouseOver },
     cardProps: { onMouseEnter: onCardEnter, onMouseLeave },
     close,
   };

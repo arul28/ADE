@@ -119,3 +119,76 @@ export function detectLaneBranchDrift(args: {
   if (expectedBranchRef === headBranchRef) return null;
   return { expectedBranchRef, headBranchRef };
 }
+
+/** One branch the worktree's HEAD moved onto, from its reflog. */
+export type ReflogBranchVisit = {
+  branchRef: string;
+  /** When the checkout happened, in epoch milliseconds. */
+  atMs: number;
+};
+
+const REFLOG_CHECKOUT = /^checkout: moving from (.+) to (.+)$/;
+const REFLOG_RENAME = /^Branch: renamed refs\/heads\/(.+) to refs\/heads\/(.+)$/;
+const REFLOG_SELECTOR_TIME = /^HEAD@\{(\d+)\}$/;
+
+/**
+ * Parse `git reflog show --date=unix --format=%gd%x09%gs HEAD`.
+ *
+ * A linked worktree keeps its own HEAD reflog, so this lists the branches that
+ * one lane's checkout visited — including ones it left again before any lane
+ * status refresh saw them. Names are returned verbatim: a detached checkout
+ * (`origin/main`, a SHA) is filtered later against the real local branches,
+ * not guessed at here.
+ */
+export function parseReflogBranchVisits(stdout: string): ReflogBranchVisit[] {
+  const visits: ReflogBranchVisit[] = [];
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    const tab = line.indexOf("\t");
+    if (tab <= 0) continue;
+    const timeMatch = REFLOG_SELECTOR_TIME.exec(line.slice(0, tab).trim());
+    if (!timeMatch) continue;
+    const atMs = Number(timeMatch[1]) * 1000;
+    if (!Number.isFinite(atMs)) continue;
+    const subject = line.slice(tab + 1).trim();
+    const checkout = REFLOG_CHECKOUT.exec(subject);
+    if (checkout) {
+      // Both ends were checked out here at some point; the "from" side matters
+      // when the entry that moved onto it is older than the read window.
+      visits.push({ branchRef: checkout[2]!.trim(), atMs });
+      visits.push({ branchRef: checkout[1]!.trim(), atMs });
+      continue;
+    }
+    const rename = REFLOG_RENAME.exec(subject);
+    if (rename) visits.push({ branchRef: rename[2]!.trim(), atMs });
+  }
+  return visits;
+}
+
+/**
+ * The branches a lane's worktree used, besides the one the lane records.
+ *
+ * Only real local branches count, so a detached checkout of `origin/main` or a
+ * SHA never becomes a lane branch. Visits from before the lane existed are
+ * ignored (an adopted worktree brings its whole past with it), and so are the
+ * base branches and any branch another lane records as its own.
+ */
+export function selectLaneHistoryBranches(args: {
+  visits: readonly ReflogBranchVisit[];
+  laneCreatedAtMs: number;
+  localBranches: ReadonlySet<string>;
+  excludedBranches: ReadonlySet<string>;
+}): Array<{ branchRef: string; lastVisitedAtMs: number }> {
+  const latest = new Map<string, number>();
+  for (const visit of args.visits) {
+    const branchRef = visit.branchRef;
+    if (!branchRef || !args.localBranches.has(branchRef)) continue;
+    if (args.excludedBranches.has(branchRef)) continue;
+    if (Number.isFinite(args.laneCreatedAtMs) && visit.atMs < args.laneCreatedAtMs) continue;
+    const seen = latest.get(branchRef);
+    if (seen === undefined || visit.atMs > seen) latest.set(branchRef, visit.atMs);
+  }
+  return [...latest.entries()]
+    .map(([branchRef, lastVisitedAtMs]) => ({ branchRef, lastVisitedAtMs }))
+    .sort((left, right) => right.lastVisitedAtMs - left.lastVisitedAtMs);
+}

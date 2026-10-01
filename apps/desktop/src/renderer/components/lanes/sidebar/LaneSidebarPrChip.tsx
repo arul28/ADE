@@ -1,5 +1,5 @@
 import React from "react";
-import { GitMerge, GitPullRequest } from "@phosphor-icons/react";
+import { CaretDown, GitMerge, GitPullRequest } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, floatingPane } from "../laneDesignTokens";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LanePrHoverCard } from "../LanePrHoverCard";
@@ -118,7 +118,7 @@ export const LaneSidebarPrChip = React.memo(function LaneSidebarPrChip({
       >
         <ChipIcon size={10} weight="bold" className="shrink-0" style={{ color: chipColor }} data-testid="lane-sidebar-pr-chip-glyph" />
         <span>#{primary.githubPrNumber}</span>
-        {extra > 0 ? <span className="opacity-60">+{extra}</span> : null}
+        {extra > 0 ? <CaretDown size={8} weight="bold" className="shrink-0 opacity-60" aria-hidden /> : null}
       </button>
     </LanePrHoverCard>
   );

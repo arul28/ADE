@@ -1,6 +1,6 @@
 import React from "react";
+import { CaretDown } from "@phosphor-icons/react";
 import type { PrSummary } from "../../../shared/types";
-import { cn } from "../ui/cn";
 import {
   lanePrAggregateAttention,
   lanePrAttention,
@@ -49,8 +49,8 @@ function reviewStatusLabel(status: PrSummary["reviewStatus"]): string {
 
 /**
  * Compact lane PR cluster. The one-PR branch intentionally keeps the existing
- * chip shape; the multi-PR branch adds only a counter and a hover list, so a
- * lane that has never needed history still reads exactly as before.
+ * chip shape; the multi-PR branch adds only a caret inside the same pill and a
+ * hover list, so a lane that has never needed history still reads as before.
  */
 export function LanePrBadge({
   pr,
@@ -61,7 +61,7 @@ export function LanePrBadge({
   pr: PrSummary;
   prs?: PrSummary[];
   onOpen: (pr: PrSummary) => void;
-  /** Opens the PRs tab with this lane selected. Used by the `+N` counter. */
+  /** Opens the PRs tab with this lane selected. The hover list's last row. */
   onOpenList?: () => void;
 }) {
   const allPrs = prs.length > 0 ? prs : [pr];
@@ -159,6 +159,26 @@ export function LanePrBadge({
               </span>
             );
           })}
+          {canOpenList ? (
+            <span
+              role="button"
+              tabIndex={0}
+              className="mt-0.5 flex cursor-pointer items-center rounded-md border-t border-white/[0.06] px-2 pb-1 pt-1.5 text-[10px] text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenList?.();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onOpenList?.();
+                }
+              }}
+            >
+              Show all in Pull requests
+            </span>
+          ) : null}
           </div>
         )}
       >
@@ -172,39 +192,15 @@ export function LanePrBadge({
               open(event);
             }
           }}
-          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] py-px pl-1.5 pr-1 text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
           aria-label={`${prTitle(primaryPr)}; ${allPrs.length - 1} other pull requests on this lane`}
+          aria-haspopup="dialog"
         >
           <StatusDot color={aggregateColor} title={`${aggregate} attention`} />
           <span className="tabular-nums">#{primaryPr.githubPrNumber}</span>
           <GitHubStackBadge stack={primaryPr.stack} compact bare />
           <span style={{ color: lanePrStateColor(primaryPr.state) }}>{lanePrStateLabel(primaryPr.state)}</span>
-        </span>
-        <span
-          {...(canOpenList ? { role: "button", tabIndex: 0 } : {})}
-          className={cn(
-            "inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[9px] font-semibold tabular-nums text-muted-fg/60",
-            canOpenList
-              ? "cursor-pointer transition-colors hover:border-white/[0.15] hover:text-fg/85"
-              : "cursor-default",
-          )}
-          aria-label={canOpenList ? `Open ${allPrs.length} pull requests for this lane` : `Hover to inspect ${allPrs.length} pull requests for this lane`}
-          title={canOpenList ? `Show all ${allPrs.length} pull requests for this lane` : "Hover to inspect all pull requests; PRs live on another machine"}
-          onClick={(event) => {
-            if (!onOpenList) return;
-            event.stopPropagation();
-            onOpenList();
-          }}
-          onKeyDown={(event) => {
-            if (!onOpenList) return;
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              event.stopPropagation();
-              onOpenList();
-            }
-          }}
-        >
-          +{allPrs.length - 1}
+          <CaretDown size={8} weight="bold" className="shrink-0 opacity-60" aria-hidden data-testid="lane-pr-badge-caret" />
         </span>
       </LanePrHoverCard>
     </span>

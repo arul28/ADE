@@ -23,6 +23,7 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
+import type { PrSwitcher } from "../shared/PrSwitcher";
 import {
   usePrChatHandoff,
   linkedPrChats,
@@ -394,6 +395,8 @@ type PrDetailPaneProps = {
    * GitHub-only actions (comment, labels, reviewers, review) stay available.
    */
   mergeBlockedReason?: string | null;
+  /** The chat's other pull requests; the header shows a switcher when set. */
+  prSwitcher?: PrSwitcher | null;
 };
 
 export type PrDetailRuntime = {
@@ -429,6 +432,7 @@ export function PrDetailPane({
   runtime = null,
   laneMachineChip = null,
   mergeBlockedReason = null,
+  prSwitcher = null,
 }: PrDetailPaneProps) {
   // The machine every call below targets: `[]` is the tab machine's unpinned
   // call; `[pin]` sends it to the lane's owner.
@@ -1479,6 +1483,7 @@ export function PrDetailPane({
         onCancelTitleEdit={handleCancelTitleEdit}
         onSubmitTitle={handleUpdateTitle}
         unmappedAffordance={unmappedAffordance}
+        switcher={prSwitcher}
       />
 
       {/* ===== ERROR BAR ===== */}
