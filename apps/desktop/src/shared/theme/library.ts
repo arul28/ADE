@@ -14,53 +14,17 @@
  * different button colour.
  */
 
-import type { AdeTheme, AdeThemePalette, ThemeBaseMode } from "./types";
+import { family, type AdeThemeFamily } from "./family";
+import { CLASSIC_FAMILIES } from "./libraryClassics";
+import { ORIGINAL_FAMILIES } from "./libraryOriginals";
+import type { AdeTheme, ThemeBaseMode } from "./types";
+
+export { THEME_COLLECTIONS, type AdeThemeFamily, type ThemeCollection } from "./family";
 
 export const DEFAULT_THEME_ID = "dark";
 export const FALLBACK_THEME_ID = "dark";
 
-export type AdeThemeFamily = {
-  id: string;
-  name: string;
-  dark: AdeTheme;
-  light: AdeTheme;
-};
-
-function variant(
-  familyId: string,
-  familyName: string,
-  mode: ThemeBaseMode,
-  description: string,
-  palette: AdeThemePalette,
-  id = `${familyId}-${mode}`,
-): AdeTheme {
-  return {
-    formatVersion: 1,
-    id,
-    name: `${familyName} ${mode === "dark" ? "Dark" : "Light"}`,
-    description,
-    baseMode: mode,
-    source: "builtin",
-    ...(id === mode ? {} : { basedOn: mode }),
-    palette,
-  };
-}
-
-function family(
-  id: string,
-  name: string,
-  dark: { description: string; palette: AdeThemePalette; id?: string },
-  light: { description: string; palette: AdeThemePalette; id?: string },
-): AdeThemeFamily {
-  return {
-    id,
-    name,
-    dark: variant(id, name, "dark", dark.description, dark.palette, dark.id),
-    light: variant(id, name, "light", light.description, light.palette, light.id),
-  };
-}
-
-export const ADE_THEME_FAMILIES: readonly AdeThemeFamily[] = [
+const ADE_CORE_FAMILIES: readonly AdeThemeFamily[] = [
   family(
     "ade",
     "ADE",
@@ -639,6 +603,13 @@ export const ADE_THEME_FAMILIES: readonly AdeThemeFamily[] = [
       },
     },
   ),
+];
+
+/** ADE's own families first (the default is the first), then the originals, then the classics. */
+export const ADE_THEME_FAMILIES: readonly AdeThemeFamily[] = [
+  ...ADE_CORE_FAMILIES,
+  ...ORIGINAL_FAMILIES,
+  ...CLASSIC_FAMILIES,
 ];
 
 export const ADE_BUILTIN_THEMES: readonly AdeTheme[] = ADE_THEME_FAMILIES.flatMap((entry) => [entry.dark, entry.light]);

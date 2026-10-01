@@ -4,3 +4,5 @@ export * from "./resolve";
 export * from "./validate";
 export * from "./library";
 export * from "./vscode";
+export * from "./jsonc";
+export * from "./syntax";

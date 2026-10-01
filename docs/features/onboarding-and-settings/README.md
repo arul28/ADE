@@ -492,7 +492,7 @@ Renderer — settings:
   container. It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The tabs are General, Appearance, Chat, Notifications,
+  entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
   Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
   Archive, and Usage. Notifications and Activity are one page: the event policies, the
   notch, per-machine mute, privacy, sounds, and scheduled work all read and
@@ -541,12 +541,23 @@ Renderer — settings:
   inline overrides and made every theme look like plain dark or light.
   `LEGACY_THEME_ID_ALIASES` maps a retired id (obsidian, high-contrast,
   midnight, evergreen, parchment, blush) to the variant that replaced it. The
-  account-synced `themeFollowsSystem` flag makes the painted theme follow the
+  per-computer `themeFollowsSystem` flag makes the painted theme follow the
   OS colour scheme: `effectiveThemeId` paints the chosen family's variant for
-  the current `systemColorScheme` (machine-local, never synced), and the sync
-  `theme` setter leaves the stored choice alone while the flag is on, so two
-  machines in different OS modes cannot overwrite each other.
-  `renderer/theme/applyInterface.ts` applies the account-synced
+  the current `systemColorScheme`. **Appearance is per computer**: the theme
+  id, the custom theme list, `themeFollowsSystem`, `interfacePreferences` and
+  `terminalPreferences` are not in `ACCOUNT_SYNCED_SETTINGS`, so they live in
+  this machine's localStorage and never reach the account. The families are
+  built in `family.ts` and written in three files: `library.ts` (the ADE
+  families), `libraryOriginals.ts` (themes with their own shape, type and
+  backdrop) and `libraryClassics.ts` (editor colour schemes). A theme may also
+  carry `syntax` (ten code colours, derived from its terminal palette when
+  omitted) and `flair` (corners, depth, interface face, backdrop);
+  `renderer/theme/codeTheme.ts` turns the resolved theme into a Monaco theme
+  for the file editor and a Shiki theme for chat code blocks, and
+  `applyTheme.ts` sets `data-theme-backdrop`, `data-theme-radius` and
+  `data-theme-shadow` for the rules in `index.css` that custom properties alone
+  cannot express.
+  `renderer/theme/applyInterface.ts` applies the per-computer
   `interfacePreferences` (`sansFont`, `monoFont`, `reduceMotion`) as
   `--font-sans` / `--font-mono` overrides plus `html[data-motion="reduced"]`,
   and `App` drives `MotionConfig` from the same flag so the preference reaches
@@ -827,17 +838,20 @@ Renderer — settings:
   to work; a consent switch showing "off" for something that is on is the one
   failure mode this component exists to prevent.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
-  — theme, chat appearance, and terminal text. Renders `ChatAppearancePreview`
-  and writes local user preferences through `appStore` (font size,
-  transcript density, chrome tint, shell geometry, user minimap, and the
-  default-on prompt-stash bookmark visibility; hiding the bookmark leaves
-  Cmd/Ctrl+S active). The Theme card renders the `ThemeGallery` picker
-  (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`) instead of a
-  two-swatch toggle, a `ThemeImportExport` toolbar
-  (`components/settings/ThemeImportExport.tsx`) to export the active theme or
-  import an ADE / VS Code theme file, and a `ThemeCustomizer` dialog
-  (`components/settings/ThemeCustomizer.tsx` + `themeCustomizerModel.ts`) to
-  override individual tokens and save custom themes; the theme format, engine
+  — theme, interface faces, and terminal text, all per computer. (The chat
+  appearance controls moved to `ChatSection.tsx`, which renders
+  `ChatAppearancePreview`.) The Theme card renders the `ThemeGallery` picker
+  (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`): a search field
+  over shelves of families (ADE, Originals, Editor classics, then the user's own
+  themes), with the active theme's corners, depth, type and backdrop named on
+  the stage. A `ThemeImportExport` toolbar
+  (`components/settings/ThemeImportExport.tsx`) exports the active theme or
+  imports an ADE / VS Code theme file (comments and trailing commas allowed),
+  and `ThemeFilesHelp` under the gallery says what both do and where to find
+  themes. A `ThemeCustomizer` dialog
+  (`components/settings/ThemeCustomizer.tsx` + `themeCustomizerModel.ts`)
+  overrides individual tokens, code colours and shape settings and saves custom
+  themes; the theme format, engine
   and shipped library live in `apps/desktop/src/shared/theme/` and are applied
   by `apps/desktop/src/renderer/theme/applyTheme.ts`. See
   [design/theming.md](../../design/theming.md).
@@ -1790,7 +1804,7 @@ of repeated as a badge on every row:
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Account, Appearance, Chat, Notifications, Activity, Usage |
+| **Account** | Your ADE account, everywhere | Account, Chat, Apple devices, Notifications, Activity, Usage |
 | **Project** | Your account, for this repository | Secrets |
 | **Machines** | The selected machine | General, Providers, Lanes, Integrations, Diagnostics |
 
@@ -1816,7 +1830,8 @@ The pages themselves:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppleDevicesSection.tsx` | Theme families (dark + light each), the Auto / Light / Dark mode choice, the interface and code faces, reduce motion, terminal text, and Apple Development. Everything chat-shaped moved to the Chat page. |
+| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, and terminal text. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
+| Apple devices (Account) | `AppleDevicesSection.tsx` | Simulator display, recording overlays, and the remote streaming cap. These follow the account because the host reads the cap from the account store. They sat on the Appearance page until Appearance became per computer. |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |

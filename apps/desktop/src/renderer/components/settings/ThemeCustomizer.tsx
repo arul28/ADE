@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { selectEffectiveThemeId, useAppStore } from "../../state/appStore";
 import {
+  ADE_SYNTAX_KEYS,
   DEFAULT_THEME_ID,
   allThemeOptions,
   parseColor,
@@ -8,7 +9,13 @@ import {
   resolveThemeById,
   toHex,
   uniqueThemeId,
+  type AdeFlairBackdrop,
+  type AdeFlairFont,
+  type AdeFlairRadius,
+  type AdeFlairShadow,
+  type AdeSyntaxKey,
   type AdeTheme,
+  type AdeThemeFlair,
   type AdeThemePaletteKey,
   type ThemeBaseMode,
 } from "../../../shared/theme";
@@ -76,6 +83,46 @@ const TOKEN_LABELS: Record<AdeThemePaletteKey, string> = {
   diffDel: "Diff removed",
   diffHunk: "Diff hunk",
 };
+
+const SYNTAX_LABELS: Record<AdeSyntaxKey, string> = {
+  comment: "Comments",
+  keyword: "Keywords",
+  string: "Strings",
+  number: "Numbers",
+  function: "Functions",
+  type: "Types",
+  constant: "Constants",
+  variable: "Variables",
+  property: "Properties",
+  operator: "Operators",
+};
+
+const RADIUS_OPTIONS: { value: AdeFlairRadius; label: string }[] = [
+  { value: "sharp", label: "Sharp" },
+  { value: "default", label: "Default" },
+  { value: "soft", label: "Soft" },
+  { value: "round", label: "Round" },
+];
+const SHADOW_OPTIONS: { value: AdeFlairShadow; label: string }[] = [
+  { value: "soft", label: "Soft" },
+  { value: "flat", label: "Flat" },
+  { value: "hard", label: "Hard" },
+  { value: "glow", label: "Glow" },
+];
+const FONT_OPTIONS: { value: AdeFlairFont; label: string }[] = [
+  { value: "default", label: "Default" },
+  { value: "mono", label: "Mono" },
+  { value: "serif", label: "Serif" },
+  { value: "rounded", label: "Rounded" },
+];
+const BACKDROP_OPTIONS: { value: AdeFlairBackdrop; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "grid", label: "Grid" },
+  { value: "dots", label: "Dots" },
+  { value: "scanlines", label: "Scanlines" },
+  { value: "noise", label: "Grain" },
+  { value: "aurora", label: "Aurora" },
+];
 
 /** A colour input needs `#rrggbb`; a translucent token shows its opaque form. */
 function swatchHex(value: string | undefined, fallback: string): string {
@@ -182,6 +229,22 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
 
   const resolvedDraft = useMemo(() => resolveTheme({ ...draft, name }), [draft, name]);
   const basePalette = useMemo(() => resolveTheme(baseTheme).palette, [baseTheme]);
+  const baseSyntax = useMemo(() => resolveTheme(baseTheme).syntax, [baseTheme]);
+  const flair: AdeThemeFlair = draft.flair ?? {};
+
+  const setSyntaxValue = (key: AdeSyntaxKey, value: string) => {
+    setDraft((prev) => ({ ...prev, syntax: { ...prev.syntax, [key]: value } }));
+  };
+  const resetSyntaxValue = (key: AdeSyntaxKey) => {
+    setDraft((prev) => {
+      const syntax = { ...prev.syntax };
+      delete syntax[key];
+      return { ...prev, syntax };
+    });
+  };
+  const setFlair = (patch: Partial<AdeThemeFlair>) => {
+    setDraft((prev) => ({ ...prev, flair: { ...prev.flair, ...patch } }));
+  };
 
   const setPaletteValue = (key: AdeThemePaletteKey, value: string) => {
     setDraft((prev) => ({ ...prev, palette: { ...prev.palette, [key]: value } }));
@@ -272,20 +335,51 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
               ]}
             />
           </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={groupLabelStyle}>Shape and feel</span>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8, alignItems: "center" }}>
+              <span style={rowLabelStyle}>Corners</span>
+              <SettingsSegmented<AdeFlairRadius>
+                ariaLabel="Corners"
+                value={flair.radius ?? "default"}
+                onChange={(radius) => setFlair({ radius })}
+                options={RADIUS_OPTIONS}
+              />
+              <span style={rowLabelStyle}>Depth</span>
+              <SettingsSegmented<AdeFlairShadow>
+                ariaLabel="Depth"
+                value={flair.shadow ?? "soft"}
+                onChange={(shadow) => setFlair({ shadow })}
+                options={SHADOW_OPTIONS}
+              />
+              <span style={rowLabelStyle}>Interface type</span>
+              <SettingsSegmented<AdeFlairFont>
+                ariaLabel="Interface type"
+                value={flair.sansFont ?? "default"}
+                onChange={(sansFont) => setFlair({ sansFont })}
+                options={FONT_OPTIONS}
+              />
+              <span style={rowLabelStyle}>Backdrop</span>
+              <SettingsSegmented<AdeFlairBackdrop>
+                ariaLabel="Backdrop"
+                value={flair.backdrop ?? "none"}
+                onChange={(backdrop) => setFlair({ backdrop })}
+                options={BACKDROP_OPTIONS}
+              />
+            </div>
+            {flair.shadow === "hard" ? (
+              <TokenRow
+                label="Shadow colour"
+                value={flair.shadowColor}
+                fallback={basePalette.fg}
+                onChange={(shadowColor) => setFlair({ shadowColor })}
+                onReset={() => setFlair({ shadowColor: undefined })}
+              />
+            ) : null}
+          </div>
           {TOKEN_GROUPS.map((group) => (
             <div key={group.title} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <span
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: COLORS.textDim,
-                }}
-              >
-                {group.title}
-              </span>
+              <span style={groupLabelStyle}>{group.title}</span>
               {group.keys.map((key) => (
                 <TokenRow
                   key={key}
@@ -298,6 +392,19 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
               ))}
             </div>
           ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={groupLabelStyle}>Code colours</span>
+            {ADE_SYNTAX_KEYS.map((key) => (
+              <TokenRow
+                key={key}
+                label={SYNTAX_LABELS[key]}
+                value={draft.syntax?.[key]}
+                fallback={baseSyntax[key]}
+                onChange={(next) => setSyntaxValue(key, next)}
+                onReset={() => resetSyntaxValue(key)}
+              />
+            ))}
+          </div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -319,3 +426,14 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
 }
 
 const customizerButton: React.CSSProperties = outlineButton({ height: 28, padding: "0 10px", fontSize: 12 });
+
+const groupLabelStyle: React.CSSProperties = {
+  fontFamily: SANS_FONT,
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: COLORS.textDim,
+};
+
+const rowLabelStyle: React.CSSProperties = { fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textSecondary };

@@ -3,6 +3,8 @@ import type * as Monaco from "monaco-editor";
 import { claimAppMenuCommands } from "../../../../lib/appMenuCommands";
 import { resolveLanguageId } from "../../filePresentation";
 import { adeMonacoTheme, loadMonaco } from "../monacoLoader";
+import { applyMonacoTheme } from "../../../../theme/codeTheme";
+import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
 import { takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
@@ -34,6 +36,12 @@ export function CodeViewer({
   // Latest props for use inside long-lived Monaco callbacks.
   const ctxRef = useRef({ files, workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly });
   ctxRef.current = { files, workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly };
+
+  // The editor paints with the active theme's own code colours. The stock
+  // themes keep ADE's editor colours, so `adeMonacoTheme` still names those.
+  const resolvedTheme = useActiveResolvedTheme();
+  const resolvedThemeRef = useRef(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
 
   const apiRef = useRef<EditorApi | null>(null);
   const registeredTabIdRef = useRef<string | null>(null);
@@ -79,7 +87,7 @@ export function CodeViewer({
         language: "plaintext",
         automaticLayout: true,
         readOnly,
-        theme: adeMonacoTheme(theme),
+        theme: applyMonacoTheme(monaco, resolvedThemeRef.current, adeMonacoTheme(theme)),
         fontSize: 13,
         minimap: { enabled: true },
         stickyScroll: { enabled: true },
@@ -181,8 +189,10 @@ export function CodeViewer({
     editorRef.current?.updateOptions({ readOnly });
   }, [readOnly]);
   useEffect(() => {
-    monacoRef.current?.editor.setTheme(adeMonacoTheme(theme));
-  }, [theme]);
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    monaco.editor.setTheme(applyMonacoTheme(monaco, resolvedTheme, adeMonacoTheme(theme)));
+  }, [theme, resolvedTheme]);
 
   function attachModel(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor) {
     const language = resolveLanguageId(tab.path, content.languageId);

@@ -2,6 +2,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type { FileDiff } from "../../../shared/types";
 import { MONO_FONT } from "./laneDesignTokens";
 import { cn } from "../ui/cn";
+import { applyMonacoTheme } from "../../theme/codeTheme";
+import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 
 export type MonacoDiffHandle = {
   getModifiedValue: () => string | null;
@@ -71,8 +73,11 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const editableRef = useRef(editable);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
-    const monacoTheme = theme === "light" ? "vs" : "vs-dark";
-    const monacoThemeRef = useRef(monacoTheme);
+    const stockTheme = theme === "light" ? "vs" : "vs-dark";
+    const resolvedTheme = useActiveResolvedTheme();
+    const resolvedThemeRef = useRef(resolvedTheme);
+    resolvedThemeRef.current = resolvedTheme;
+    const stockThemeRef = useRef(stockTheme);
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null,
@@ -91,8 +96,8 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     }, [editable]);
 
     useEffect(() => {
-      monacoThemeRef.current = monacoTheme;
-    }, [monacoTheme]);
+      stockThemeRef.current = stockTheme;
+    }, [stockTheme]);
 
     useEffect(() => {
       let cancelled = false;
@@ -111,7 +116,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
             fontSize: 13,
             lineHeight: 18,
             scrollBeyondLastLine: false,
-            theme: monacoThemeRef.current
+            theme: applyMonacoTheme(monaco, resolvedThemeRef.current, stockThemeRef.current)
           });
 
           diffEditorRef.current = editor;
@@ -179,7 +184,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       loadMonaco()
         .then((monaco) => {
           if (cancelled) return;
-          monaco.editor.setTheme(monacoTheme);
+          monaco.editor.setTheme(applyMonacoTheme(monaco, resolvedTheme, stockTheme));
         })
         .catch(() => {
           if (!cancelled) setFailed(true);
@@ -187,7 +192,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       return () => {
         cancelled = true;
       };
-    }, [monacoTheme]);
+    }, [stockTheme, resolvedTheme]);
 
     return (
       <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
