@@ -61,9 +61,7 @@ describe("runUpdateTransaction", () => {
     }));
 
     expect(result.ok).toBe(false);
-    expect(result.failureMessage).toBe(
-      "Updated the app, but the background service couldn't be set up — click Repair.",
-    );
+    expect(result.failureMessage).toBe(UPDATE_TRANSACTION_FAILURE_COPY.service);
     expect(statusOf(result.steps, "swap")).toBe("ok");
     expect(result.steps.find((step) => step.id === "service")).toEqual({
       id: "service",
@@ -80,9 +78,7 @@ describe("runUpdateTransaction", () => {
     }));
 
     expect(result.ok).toBe(false);
-    expect(result.failureMessage).toBe(
-      "Updated the app, but the background service didn't restart — click Repair.",
-    );
+    expect(result.failureMessage).toBe(UPDATE_TRANSACTION_FAILURE_COPY.restart);
     expect(statusOf(result.steps, "restart")).toBe("failed");
     expect(statusOf(result.steps, "health")).toBe("skipped");
   });
@@ -93,9 +89,7 @@ describe("runUpdateTransaction", () => {
     }));
 
     expect(result.ok).toBe(false);
-    expect(result.failureMessage).toBe(
-      "Updated the app, but the background service isn't answering — click Repair.",
-    );
+    expect(result.failureMessage).toBe(UPDATE_TRANSACTION_FAILURE_COPY.health);
     expect(result.steps.find((step) => step.id === "health")).toEqual({
       id: "health",
       status: "failed",

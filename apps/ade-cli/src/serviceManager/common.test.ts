@@ -1287,6 +1287,46 @@ describe("launchd service install", () => {
     ]);
   });
 
+  it.skipIf(process.platform !== "darwin")("names macOS Background Items when launchd never starts the agent", async () => {
+    // An unchanged agent that launchd loads but never starts is the shape of
+    // "Allow in the Background" being off. The install must name that switch
+    // instead of a generic replacement-pid failure.
+    const homeDir = makeTempHome("ade-launchd-blocked-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+
+    let loadSeen = false;
+    const spawnSync: ServiceManagerSpawnSync = (command, args) => {
+      if (command === "/usr/bin/osascript") return { status: 0, stdout: "2\n", stderr: "" };
+      if (command === "launchctl" && args[0] === "print") {
+        return loadSeen
+          ? { status: 1, stdout: "", stderr: "not loaded" }
+          : { status: 0, stdout: "state = waiting\n", stderr: "" };
+      }
+      if (command === "launchctl" && args[0] === "load") {
+        loadSeen = true;
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      handoverTimeoutMs: 200,
+      handoverPollMs: 10,
+      currentPid: 9999,
+      parentPid: () => null,
+      terminateDeps: { kill: vi.fn(), pidAlive: () => false },
+    });
+
+    expect(result).toMatchObject({ ok: false, failureStep: "background_item_blocked" });
+    expect(result.message).toContain("Allow in the Background");
+  });
+
   it("does not load a launch agent when another channel's brain hosts sync", async () => {
     const homeDir = makeTempHome("ade-launchd-conflict-");
     const servicePath = launchAgentPath(homeDir);

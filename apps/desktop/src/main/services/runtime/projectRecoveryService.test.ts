@@ -180,8 +180,8 @@ describe("ProjectRecoveryService.diagnose", () => {
       },
     },
     {
-      name: "brain still quiet long after its install began (not starting any more)",
-      expected: "brain_crash_looping",
+      name: "brain still quiet long after its install began (installed, not running)",
+      expected: "brain_not_running",
       canAutoRepair: true,
       overrides: {
         connectionPool: pool(status({
@@ -191,6 +191,23 @@ describe("ProjectRecoveryService.diagnose", () => {
             attemptStartedAt: new Date(NOW - 10 * 60_000).toISOString(),
           },
           serviceHealth: { state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null },
+        })),
+      },
+    },
+    {
+      name: "macOS has ADE switched off under Allow in the Background",
+      expected: "background_blocked",
+      canAutoRepair: false,
+      overrides: {
+        connectionPool: pool(status({
+          serviceInstall: {
+            state: "failed", attempted: true, path: null, message: "blocked", exitCode: null,
+            updatedAt: null, failureStep: "background_item_blocked",
+          },
+          serviceHealth: {
+            state: "installed", installed: true, running: false, path: null, message: null, checkedAt: null,
+            backgroundItem: "requires_approval",
+          },
         })),
       },
     },
@@ -476,7 +493,7 @@ describe("ProjectRecoveryService.repair", () => {
     expect(report.failureCode).toBe("migration_unknown_state");
     expect(report.steps[3]).toMatchObject({ id: "resolve_migrations", status: "failed" });
     expect(report.steps.slice(4).every((step) => step.status === "skipped")).toBe(true);
-    expect(report.nextAction).toContain("nothing has been deleted");
+    expect(report.nextAction).toContain("Nothing was deleted");
   });
 });
 
@@ -546,7 +563,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
     );
 
     expect(rejection.message).toBe(
-      "A newer ADE runtime is already running — quit and reopen ADE instead.",
+      "A newer version of ADE is already running. Quit ADE and open it again.",
     );
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });
@@ -558,6 +575,21 @@ describe("ProjectRecoveryService.restartBrain", () => {
     await expect(service.restartBrain()).rejects.toThrow(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
   });
 
+  it("tells the person to turn ADE back on in System Settings when macOS blocks it", async () => {
+    // A failed install whose step is background_item_blocked short-circuits the
+    // restart budget: waiting it out only delays the one sentence that helps.
+    const connectionPool = pool(status({
+      serviceInstall: {
+        state: "failed", attempted: true, path: null, message: "blocked", exitCode: null,
+        updatedAt: null, failureStep: "background_item_blocked",
+      },
+    }));
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).rejects.toThrow(/Allow in the Background/);
+    expect(connectionPool.callSync).not.toHaveBeenCalled();
+  });
+
   it("throws when the replacement brain never rebinds the socket", async () => {
     const connectionPool = installedPool();
     const service = createProjectRecoveryService(deps({
@@ -565,7 +597,7 @@ describe("ProjectRecoveryService.restartBrain", () => {
       waitForSocketState: vi.fn(async () => false),
     }));
 
-    await expect(service.restartBrain()).rejects.toThrow("did not come back");
+    await expect(service.restartBrain()).rejects.toThrow("didn't start again");
     expect(connectionPool.callSync).not.toHaveBeenCalled();
   });
 

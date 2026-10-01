@@ -1714,7 +1714,7 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransitionError).toEqual({
         code: "disk_full",
-        message: "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
+        message: "Your computer is out of space. Free up some space, then try again.",
         detail: "internal database detail",
         rootPath: "/tmp/project",
       });
@@ -1785,7 +1785,7 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransitionError).toEqual({
         code: "db_integrity",
-        message: "ADE's background service could not open this project.",
+        message: "This project needs a quick fix before it can open.",
         detail: "damaged index",
         rootPath: "/tmp/closing",
       });
