@@ -45,6 +45,7 @@ import {
   _testing,
 } from "./usageTrackingService";
 import type { AdeUsageRollup, UsageSnapshot } from "../../../shared/types/usage";
+import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import type { UsageLedgerScanResult } from "./usageLedgerWorkerClient";
 import { tokenPriceSource, _testing as _pricingTesting } from "./usagePricing";
@@ -2260,6 +2261,58 @@ describe("createUsageTrackingService", () => {
     expect(snapshot.lastPolledAt).toBeTruthy();
 
     service.dispose();
+  });
+
+  describe("balance issues on the published snapshot", () => {
+    const signedIn = (id: string, label: string): ProviderInstance => ({
+      id,
+      provider: "claude",
+      label,
+      configHome: `/tmp/${id}`,
+      isDefault: false,
+      createdAt: new Date(0).toISOString(),
+      signedIn: true,
+    });
+
+    const storeWith = (smartBalance: boolean) => ({
+      getProviderSettings: (provider: string) => ({
+        smartBalance: provider === "claude" ? smartBalance : false,
+        autoStartWindows: false,
+      }),
+      list: (provider?: string): ProviderInstance[] => (provider === "claude"
+        ? [signedIn("claude-work", "Work"), signedIn("claude-personal", "Personal")]
+        : []),
+    });
+
+    it("publishes a balance issue when two accounts have no readable readings", () => {
+      const service = createUsageTrackingService({
+        logger: createLogger(),
+        dependencies: { ...createFastDependencies(), providerInstanceStore: storeWith(true) },
+      });
+
+      expect(service.getUsageSnapshot().balanceIssues).toBeUndefined();
+      service.resolveBalancedInstance("claude");
+
+      expect(service.getUsageSnapshot().balanceIssues).toEqual([
+        expect.objectContaining({
+          provider: "claude",
+          kind: "no_usage_data",
+          title: expect.stringContaining("Claude"),
+        }),
+      ]);
+      service.dispose();
+    });
+
+    it("publishes no balance issue while smart balance is off", () => {
+      const service = createUsageTrackingService({
+        logger: createLogger(),
+        dependencies: { ...createFastDependencies(), providerInstanceStore: storeWith(false) },
+      });
+
+      expect(service.resolveBalancedInstance("claude")).toBeNull();
+      expect(service.getUsageSnapshot().balanceIssues).toBeUndefined();
+      service.dispose();
+    });
   });
 
   it("surfaces Codex spend control and accepts it after a cache JSON round-trip", async () => {

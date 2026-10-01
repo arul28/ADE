@@ -1172,9 +1172,10 @@ Renderer — settings:
   (`ade.usage.consumeResetCredit`). Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
-  balance selector for new Claude/Codex chats. It weights the remaining weekly
-  headroom by the window's elapsed fraction, then falls back to the default
-  account and finally to the first usable signed-in account.
+  balance selector for new Claude/Codex chats. It scores each signed-in account
+  by the burn rate it needs to use its room before the weekly reset, scales
+  that down below half a five-hour window, skips a login that is gone, and
+  reports why it skipped when no account was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
   best-effort lightweight request per enabled Claude/Codex account shortly
   after a future five-hour reset, with provider-specific model selection and

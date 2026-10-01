@@ -47,22 +47,32 @@ brain scope is running, which is also the only time that tracker polls.
 ## Smart balance and auto-start windows
 
 Smart balance applies to Claude and Codex when it is enabled for that provider.
-New chats consider only signed-in instances. Each instance is scored as
-`five-hour headroom × (1 − w) + weekly headroom × w`, where `w` increases
-linearly from `0.35` at the start of the weekly window to `0.85` at its reset.
-When the weekly duration is unknown, `w` is `0.5`. The default instance wins a
-tie, and a snapshot with no usable quota data falls back to the default without
-guessing. An explicit account selection always wins over balancing.
+New chats consider only signed-in instances, and an account whose stored login
+is gone is skipped — old windows stay on screen after a login breaks, and they
+are not room. Each account is scored by the rate it must burn to use its
+remaining room before the reset: its weekly headroom per hour until the weekly
+reset, scaled down when less than half of its five-hour window is left, so a
+nearly-spent short window cannot win on a long weekly reading. An account with
+a weekly reading and no five-hour window is idle, so it counts as full
+five-hour room. An account at or below its minimum five-hour or weekly headroom
+is out. The highest rate wins; a tie prefers the higher five-hour headroom,
+then the default. No usable readings fall back to the default, and
+`UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
+could not run. An explicit account selection always wins over balancing.
 
-A chat that is already running stays on the account it started on: the provider
-thread lives in that account's config directory and cannot be handed to another
-login. When that chat hits a usage limit and another signed-in account still
-has immediate room, smart balance starts a new chat on that account and sends
-the interrupted task there. The original chat does not also auto-resume. With
-smart balance off, the same move is only an offer on the usage-limit pill
-(Continue on that account). A chat created by that handoff does not hop
-again on its own, and a subagent never does. An account with no readable
-windows, or with a window already at 100%, is not a candidate.
+A chat that hits a usage limit with smart balance on moves to the other account
+in place: the provider thread file is copied into the other account's config
+home (`chat/providerThreadMove.ts`) and the same thread resumes there, so the
+model keeps the conversation. The chat's account changes, and the move runs
+once even when the provider reports the limit twice. An account the chat
+already left at a limit is excluded, a subagent never moves, and an account
+with no readable windows or a window already at 100% is not a candidate. If the
+thread cannot move — the chat has no provider thread yet, or the copy fails —
+ADE falls back to the usage-limit handoff: it starts a new chat on the other
+account in the same lane and sends the interrupted task there, and the original
+stops waiting to resume. With smart balance off, the same account is only an
+offer on the usage-limit pill (Continue on that account). A chat created by
+that handoff does not hop again on its own.
 
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
@@ -381,17 +391,21 @@ rollup older than the six-hour freshness horizon, with the lag stated),
 (reported nothing usable — missing from the totals, never an error that empties
 the page).
 
-## Claude credential hygiene (refresh storms)
+## Claude credential hygiene
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits
-in the macOS Keychain (the Claude CLI's default store). The default account's
-background polls must not touch the Keychain, so these rules prevent a dead
-file token from turning into an OAuth storm that gets the whole client
-rate-limited (429) by Anthropic. A scoped account (`CLAUDE_CONFIG_DIR`) often
-has no credentials file at all, so its background polls may open that
-account's namespaced Keychain item; the successful read is cached for the
-process and later polls reuse it:
+in the macOS Keychain (the Claude CLI's default store). ADE reads a login
+without ever changing it (`readClaudeLogin` returns `ok`, `expired`,
+`signed_out`, or `unreadable`). Anthropic rotates the refresh token on every
+refresh and the Claude CLI keeps the only saved copy, so ADE never spends it: a
+refresh here would leave the CLI's saved token dead and the CLI's next refresh
+would clear the login, which is how idle secondary accounts lost their
+sign-in. These rules keep a dead file token from turning into an OAuth storm
+that gets the whole client rate-limited (429) by Anthropic:
 
+- The default account's background polls must not touch the Keychain. A scoped
+  account (`CLAUDE_CONFIG_DIR`) may open that account's namespaced Keychain
+  item; the successful read is cached for the process and later polls reuse it.
 - Claude Code namespaces the Keychain item per config directory: the machine's
   default login is the bare `Claude Code-credentials`, and a
   `CLAUDE_CONFIG_DIR` login (`~/.ade/provider-homes/claude/<id>`) appends the
@@ -401,21 +415,14 @@ process and later polls reuse it:
 - Any successful Keychain read (explicit refresh, provider-status checks)
   populates the in-memory credential cache *under that account's own key*, so
   background polls reuse the live login instead of the file.
-- A refresh token the token endpoint *definitively* rejects — a non-transient
-  4xx such as `invalid_grant`, or a 200 with no `access_token` — is
-  negative-cached for 24 h and never re-tried per poll. Transient conditions
-  are cached for only 10 min so a temporary blip can't lock out an otherwise
-  valid token: 5xx, plus token-endpoint 429 (rate-limited) and 408, plus
-  network/timeout aborts. A rate-limited refresh is treated as transient, not
-  as a rejection.
-- When a token is expired and cannot be refreshed, the reader reports "no
-  usable credentials" (→ reconnect state) instead of returning the dead token,
-  which would guarantee a 401 plus another doomed refresh on every cycle.
+- An expired token is reported as `expired` rather than returned or refreshed:
+  the CLI renews it the next time a chat runs on that account, and a user
+  refresh may run the CLI fallback. A token with no refresh token at all is
+  `signed_out`, because the CLI cannot renew it either. A failed Keychain read
+  is `unreadable`, because a miss after it proves nothing about the login.
 - A 401 from the usage API drops only the cached access token
-  (`invalidateCachedClaudeCredentials`) and forces the next read to re-consult
-  its sources. It deliberately preserves the refresh-token refusal memory, so a
-  revoked-but-unexpired file token can't reopen per-poll refresh attempts
-  against a refresh token the token endpoint already rejected.
+  (`invalidateCachedClaudeCredentials`) and marks the account `expired`; the
+  next chat on the account, or an explicit refresh, lets the CLI refresh it.
 
 ## Reproducible baseline
 
