@@ -30,7 +30,8 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
   case "configuration":
     return WorkErrorPresentation(title: "Couldn't start this turn", icon: "exclamationmark.triangle.fill", tint: .warning)
   default:
-    return WorkErrorPresentation(title: "Couldn't start this turn", icon: "exclamationmark.triangle.fill", tint: .danger)
+    // Matches the desktop presenter: only a configuration failure never ran.
+    return WorkErrorPresentation(title: "This turn stopped", icon: "exclamationmark.triangle.fill", tint: .danger)
   }
 }
 

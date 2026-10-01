@@ -133,6 +133,7 @@ import {
   formatDoneTurnTokenLine,
   formatStructuredValue,
   filterVisibleTranscriptRows,
+  readToolFailureText,
   groupChatTranscriptRows,
   groupSubagentCardGrids,
   mergeAdjacentActivityBundleRows,
@@ -1980,10 +1981,13 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   const toolDisplay = describeToolIdentifier(event.tool);
   const sourceChip = toolSourceChip(event.tool);
   const navigationSuggestions = readNavigationSuggestions(event.result);
-  const resultStr = formatStructuredValue(event.result);
+  // A failed call's result is `{ error, errorType }`; lead with the sentence
+  // itself rather than its JSON wrapper.
+  const failureText = (event.status ?? "completed") === "failed" ? readToolFailureText(event.result) : null;
+  const resultStr = failureText ?? formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
-  const rawPreview = summarizeStructuredValue(event.result, 180);
+  const rawPreview = failureText ? summarizeStructuredValue(failureText, 180) : summarizeStructuredValue(event.result, 180);
   // Grep: prefix the preview with the match/file totals the service extracted.
   const preview = `${formatGrepTotalsPrefix(event.grepTotals)}${rawPreview}`;
   // Bash: a command that auto-backgrounded on timeout carries the elapsed ms;
@@ -2016,7 +2020,17 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           {toolDisplay.secondaryLabel ? (
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
-          {preview.length ? <span className="max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{preview}</span> : null}
+          {preview.length ? (
+            <span
+              className={cn(
+                "max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)]",
+                failureText ? "text-red-300/70" : "text-fg/35",
+              )}
+              title={failureText ?? undefined}
+            >
+              {preview}
+            </span>
+          ) : null}
           {timedOutLabel ? (
             <span
               className="inline-flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"

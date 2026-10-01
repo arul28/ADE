@@ -77,6 +77,8 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/shared/chatSources.ts` | The provider-neutral source model: `ChatSource`, URL normalization and dedupe, `deriveChatSources` (groups + `byTurn`), `chatHasSources`, and the bounding helpers adapters use. |
 | `apps/desktop/src/main/services/chat/claudeStructuredActivity.ts` | Normalizes Claude server-owned `web_search` / `web_fetch` and MCP content blocks into the same `web_search` and paired `tool_call` / `tool_result` events used by other providers, including deterministic turn-end closure for unfinished blocks. |
 | `apps/desktop/src/main/services/chat/openCodeStructuredActivity.ts` | Maps OpenCode image `file` parts into compact image-generation events, preserving a local saved path when the URL points at a file. |
+| `apps/desktop/src/main/services/chat/openCodeEventMapper.ts` | Pure content mapping for one OpenCode 2.0 turn: streamed text/reasoning, tool calls/results, steps, usage, compaction, and retries as ADE chat events. A `session.tool.failed` maps to a failed `tool_result` row only — never a chat-level `error`, which drew a turn-failure card over a turn the model carried on from. Turn lifecycle, steering, and permission asks live in `agentChatService`. |
+| `apps/desktop/src/main/services/chat/openCodeBackgroundShells.ts` | Per-runtime tracker for OpenCode `shell` calls with `background: true`. A tracked shell keeps the chat listening (and holding the shared server) until OpenCode reports its exit, projected as the same `background_task` row Claude's background commands use; `stopOne` kills the shell's process tree and settles only once the process is gone (a survivor stays tracked and is reported), and `reconcile` settles shells that ended while the event stream was down. `openCodeBackgroundShellStarted` / `openCodeBackgroundShellEnded` are the pure event→tracker adapters. |
 | `apps/desktop/src/main/services/opencode/**` | OpenCode 2.0 integration: server lifecycle, generated config, session create/resume, owned data home, inline/queue steering, and child-session permission routing. See [OpenCode integration](opencode-integration.md). |
 | `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Converts Codex app-server MCP elicitation JSON Schemas into pending-input questions and coerces accepted form answers back to boolean/number/array/object values. Parses Codex's MCP tool approval (`_meta.codex_approval_kind: "mcp_tool_call"`; tool name from `_meta.tool_name` or the message) so it is raised as an answerable `approval` and judged by the host permission policy. Persistent consent is gated by request metadata: an "allow for session" answer sends `_meta.persist: "session"` whenever Codex offers it, and `"always"` (which Codex writes to the user's `config.toml`) only when it is the one scope offered. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Resolves and strictly verifies the OpenAI-signed standalone Computer Use client after explicit user opt-in, then supplies the canonical `computer_use` MCP config to Work chat and tracked Codex CLI launch/resume paths. |
@@ -2136,14 +2138,14 @@ session primitives:
 
 Inactivity eviction runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A
 runtime is torn down when its session is idle, has no live pending
-input, and has exceeded its provider-specific inactivity window:
-`SESSION_INACTIVITY_TIMEOUT_MS = 5 min` for Claude/Codex/Cursor runtimes,
-`OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 s` for OpenCode runtimes
-(OpenCode holds a pooled server, so its idle window is much shorter to
-free the underlying server sooner). Teardown routes through
-`teardownRuntime(managed, "idle_ttl")`.
+input, and has exceeded the inactivity window
+(`SESSION_INACTIVITY_TIMEOUT_MS = 5 min`, the same for every provider).
+Teardown routes through `teardownRuntime(managed, "idle_ttl")`. OpenCode used
+to have a 60 s window; it released the chat's hold on the shared server while
+an OpenCode background shell was still due to wake the agent, so the wake-up
+reached nobody and the server later stopped with the shell still running.
 
-A Claude runtime whose only remaining claim is background work is exempt from
+A Claude or OpenCode runtime whose only remaining claim is background work is exempt from
 that sweep — but not forever. After `RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS`
 (= `SESSION_STALE_AFTER_MS`, 3 h) with no emitted event and no real change to
 the background-task level, the sweep reclaims it anyway: it logs
@@ -2152,7 +2154,8 @@ it overrode, and emits a `system_notice` in the chat, because this is the one
 teardown path that ends background work the session still claimed and stopped
 rows with no reason attached are worse than none. Anything bounded and
 attributable — a live turn, a queued steer, an unanswered approval — still
-exempts the runtime unconditionally, and every other provider is untouched
+exempts the runtime unconditionally. OpenCode's background claims are its
+running `background: true` shells and unsettled child sessions. Every other provider is untouched
 (Codex clears its subagents on turn end and Cursor reconciles cloud runs against
 the server, so neither can wedge this way).
 

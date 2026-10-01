@@ -1294,6 +1294,20 @@ function readToolTitle(value: unknown): string | null {
   return title.length ? title : null;
 }
 
+/**
+ * The error sentence of a failed tool result, when it carries one. A failed
+ * call's result is `{ error, errorType }` (or `{ error: { message } }`); the
+ * sentence is what a reader needs, not its JSON wrapper.
+ */
+export function readToolFailureText(result: unknown): string | null {
+  if (typeof result === "string") return result.trim() || null;
+  const record = readRecord(result);
+  const error = record?.error;
+  if (typeof error === "string") return error.trim() || null;
+  const nested = readRecord(error);
+  return typeof nested?.message === "string" ? nested.message.trim() || null : null;
+}
+
 export function formatStructuredValue(value: unknown): string {
   if (typeof value === "string") return value;
   try {

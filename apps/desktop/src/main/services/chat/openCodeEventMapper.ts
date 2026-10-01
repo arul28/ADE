@@ -64,6 +64,8 @@ export type OpenCodeTurnMapper = {
   readonly childSessionForCall: (callId: string) => string | null;
   readonly callForChildSession: (childSessionId: string) => string | null;
   readonly toolName: (callId: string) => string | null;
+  /** The input a tool call was made with, once `session.tool.called` arrived. */
+  readonly toolInput: (callId: string) => unknown;
 };
 
 function textFromContent(content: unknown): string {
@@ -242,6 +244,10 @@ export function createOpenCodeTurnMapper(args: {
         toolFinished.add(data.id);
         const tool = toolNames.get(data.id) ?? "tool";
         const message = data.error?.message ?? "Tool failed";
+        // The failed tool row is the whole report. A failed tool call does not
+        // end the turn — the model reads the error and carries on — so a
+        // chat-level `error` here drew a turn-failure card over a turn that
+        // went on to finish (and over every tool a Stop interrupted).
         return [
           {
             event: {
@@ -254,7 +260,6 @@ export function createOpenCodeTurnMapper(args: {
               status: "failed",
             },
           },
-          { event: { type: "error", message: `Tool '${tool}' failed: ${message}`, itemId: data.id, turnId } },
         ];
       }
       case "session.step.ended": {
@@ -341,6 +346,7 @@ export function createOpenCodeTurnMapper(args: {
     childSessionForCall: (callId) => childByCall.get(callId) ?? null,
     callForChildSession: (childId) => callByChild.get(childId) ?? null,
     toolName: (callId) => toolNames.get(callId) ?? null,
+    toolInput: (callId) => toolInputs.get(callId),
   };
 }
 

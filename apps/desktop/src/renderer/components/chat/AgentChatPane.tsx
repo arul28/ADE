@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -14084,7 +14085,7 @@ export function AgentChatPane({
           });
           return;
         }
-        if (provider === "claude") {
+        if (providerSupportsPerTaskStop(provider)) {
           void window.ade.agentChat.stopTask({
             sessionId: selectedSessionId,
             taskId: processId,
@@ -14095,7 +14096,7 @@ export function AgentChatPane({
         }
         setError("Per-task stop is not available for this provider.");
       } : undefined}
-      onStopSubagent={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "claude"
+      onStopSubagent={selectedSessionId && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
         ? (snapshot) => {
           const taskId = snapshot.taskId.trim();
           if (!taskId || snapshot.childSessionId) return;
@@ -16091,7 +16092,7 @@ export function AgentChatPane({
                         onStopSubagent={
                           !subagentView
                           && selectedSessionId
-                          && (selectedSession?.provider ?? sessionProvider) === "claude"
+                          && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
                             ? (taskId) => {
                                 void window.ade.agentChat.stopTask({
                                   sessionId: selectedSessionId,

@@ -310,7 +310,7 @@ export function layoutChecksGraph(
   const seenEdges = new Set<string>();
   const usableEdges = edges.filter((edge) => {
     if (!byId.has(edge.from) || !byId.has(edge.to) || edge.from === edge.to) return false;
-    const key = `${edge.from} ${edge.to}`;
+    const key = `${edge.from}\u0000${edge.to}`;
     if (seenEdges.has(key)) return false;
     seenEdges.add(key);
     return true;
