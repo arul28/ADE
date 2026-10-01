@@ -6243,3 +6243,33 @@ html[data-motion="reduced"] *::after {
   background: transparent;
   color: var(--color-muted-fg);
 }
+/* The Work import hint keeps its full label and sheds provider marks as the
+   window narrows. */
+.import-chat-pill {
+  width: max-content;
+  max-width: 100%;
+}
+
+.import-chat-pill__action {
+  flex-wrap: nowrap;
+}
+
+.import-chat-pill__label {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .import-chat-pill__provider:nth-child(n + 8) { display: none; }
+}
+
+@media (max-width: 680px) {
+  .import-chat-pill__provider:nth-child(n + 6) { display: none; }
+}
+
+@media (max-width: 520px) {
+  .import-chat-pill__provider:nth-child(n + 4) { display: none; }
+}
+
+@media (max-width: 440px) {
+  .import-chat-pill__provider { display: none; }
+}

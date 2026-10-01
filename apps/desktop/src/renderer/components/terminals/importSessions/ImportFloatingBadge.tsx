@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "@phosphor-icons/react";
+import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import { cn } from "../../ui/cn";
-import { ToolLogo } from "../ToolLogos";
+import { PiLogo } from "../../shared/ProviderLogos";
+import type { ExternalSessionProvider } from "../../../../shared/types/externalSessions";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
-import { PROVIDER_TOOL_TYPE } from "./contract";
+import droidMarkSrc from "../../../assets/provider-logos/droid-mark.svg";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -26,6 +28,23 @@ export function writeImportBadgeDismissed(projectRoot: string): void {
   } catch {
     // Machine-local only; quota or private mode just keeps the pill visible.
   }
+}
+
+function ExternalProviderMark({ provider }: { provider: ExternalSessionProvider }) {
+  const monoStyle = (color: string) => ({ color });
+  switch (provider) {
+    case "claude": return <Claude.Color size={20} />;
+    case "codex": return <Codex size={20} style={monoStyle("#A7B4FF")} />;
+    case "cursor": return <Cursor size={20} style={monoStyle("#A7B4FF")} />;
+    case "droid": return <img src={droidMarkSrc} alt="" width={20} height={20} className="brightness-0 invert" />;
+    case "opencode": return <OpenCode size={20} style={monoStyle("#F5F3FF")} />;
+    case "pi": return <PiLogo size={20} className="brightness-0 invert" />;
+    case "qwen": return <Qwen.Color size={20} />;
+    case "kimi": return <Kimi.Color size={20} />;
+    case "grok": return <Grok size={20} style={monoStyle("#F5F3FF")} />;
+    case "copilot": return <GithubCopilot size={20} style={monoStyle("#7DD3FC")} />;
+  }
+  return null;
 }
 
 export function ImportFloatingBadge({
@@ -70,7 +89,7 @@ export function ImportFloatingBadge({
         // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
         data-draft-depart="fade"
         className={cn(
-          "relative inline-flex items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
+          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",
         )}
       >
@@ -78,25 +97,20 @@ export function ImportFloatingBadge({
           type="button"
           disabled={disabled}
           onClick={open}
-          className="inline-flex items-center gap-3 disabled:cursor-not-allowed"
+          className="import-chat-pill__action inline-flex min-w-0 max-w-full items-center gap-3 disabled:cursor-not-allowed"
           aria-label="Import your chats from outside ADE"
         >
-          <span className="relative flex h-7 w-[92px] shrink-0 items-center">
-            {EXTERNAL_SESSION_PROVIDERS.map((provider, index) => (
+          <span className="import-chat-pill__providers flex h-7 shrink-0 items-center gap-1">
+            {EXTERNAL_SESSION_PROVIDERS.map((provider) => (
               <span
                 key={provider}
-                className="absolute rounded-full border border-black/40 bg-[#12101C] shadow-sm"
-                style={{
-                  left: index * 12,
-                  transform: `rotate(${index % 2 === 0 ? -8 : 7}deg)`,
-                  zIndex: EXTERNAL_SESSION_PROVIDERS.length - index,
-                }}
+                className="import-chat-pill__provider inline-flex h-6 w-6 shrink-0 items-center justify-center"
               >
-                <ToolLogo toolType={PROVIDER_TOOL_TYPE[provider]} size={22} />
+                <ExternalProviderMark provider={provider} />
               </span>
             ))}
           </span>
-          <span className="pr-5 text-left text-[12px] font-medium tracking-tight text-fg/90">
+          <span className="import-chat-pill__label shrink-0 text-left text-[12px] font-medium tracking-tight text-fg/90">
             Import your chats from outside ADE
           </span>
         </button>
@@ -104,7 +118,7 @@ export function ImportFloatingBadge({
           type="button"
           aria-label="Hide import hint"
           onClick={dismiss}
-          className="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-white/10 hover:text-fg hover:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-white/10 hover:text-fg hover:opacity-100"
         >
           <X size={11} />
         </button>
