@@ -40,8 +40,6 @@ export type UsageAccountView = {
   notice?: NonNullable<UsageAccount["notice"]>;
   /** This machine's login state for the account; local like `notice`. */
   login?: UsageAccount["login"];
-  /** Another local account is signed in to this same login. */
-  sameLoginAs?: UsageAccount["sameLoginAs"];
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
@@ -100,7 +98,6 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         ...(account.resetCredits ? { resetCredits: account.resetCredits } : {}),
         ...(account.notice ? { notice: account.notice } : {}),
         ...(account.login ? { login: account.login } : {}),
-        ...(account.sameLoginAs ? { sameLoginAs: account.sameLoginAs } : {}),
         initials: emailInitials(account.email, account.machines[0]?.label),
       });
       continue;

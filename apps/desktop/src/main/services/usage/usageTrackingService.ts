@@ -3310,10 +3310,16 @@ async function stampProviderAccounts(
   machineLabel: string,
   activeAccountIds: ReadonlySet<string>,
   listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
-): Promise<{ accounts: UsageAccount[]; defaultAccountIdByProvider: Map<UsageProvider, string> }> {
+): Promise<{
+  accounts: UsageAccount[];
+  defaultAccountIdByProvider: Map<UsageProvider, string>;
+  /** Accounts left out because an earlier one holds the same login. */
+  duplicateAccountIds: Set<string>;
+}> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
   const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
+  const duplicateAccountIds = new Set<string>();
   const defaultAccountIdByProvider = new Map<UsageProvider, string>();
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
@@ -3401,7 +3407,9 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
-    markSameLoginAccounts(accounts.filter((account) => account.provider === key && account.instanceId));
+    for (const id of sameLoginDuplicates(accounts.filter((account) => account.provider === key))) {
+      duplicateAccountIds.add(id);
+    }
     if (registryStale) {
       // The registry reads identities once per process. A login that changed
       // under it (a new sign-in in the same config home) left Settings and the
@@ -3410,29 +3418,31 @@ async function stampProviderAccounts(
     }
     stampStatus(defaultIdentity);
   }
-  return { accounts, defaultAccountIdByProvider };
+  return {
+    accounts: accounts.filter((account) => !duplicateAccountIds.has(account.id)),
+    defaultAccountIdByProvider,
+    duplicateAccountIds,
+  };
 }
 
 /**
- * Marks every account after the first that is signed in to the same email.
+ * The accounts after the first that are signed in to the same email.
  *
  * Two config homes can hold one login: signing a second account in while the
  * browser is still on the first account's claude.ai session does exactly that.
- * The rows then show one quota twice, and balance would count it twice.
- * Accounts arrive default first, so the default keeps the plain row.
+ * They are one quota, so the snapshot shows the login once and balance never
+ * counts it twice. Accounts arrive default first, so the default stays.
  */
-function markSameLoginAccounts(accounts: UsageAccount[]): void {
-  const firstByEmail = new Map<string, UsageAccount>();
+function sameLoginDuplicates(accounts: readonly UsageAccount[]): string[] {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
   for (const account of accounts) {
     const email = account.email?.trim().toLowerCase();
     if (!email || !account.instanceId) continue;
-    const first = firstByEmail.get(email);
-    if (!first) {
-      firstByEmail.set(email, account);
-      continue;
-    }
-    account.sameLoginAs = { instanceId: first.instanceId!, label: first.label?.trim() || first.instanceId! };
+    if (seen.has(email)) duplicates.push(account.id);
+    else seen.add(email);
   }
+  return duplicates;
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
@@ -4558,20 +4568,6 @@ export function createUsageTrackingService({
             at: snapshot.lastPolledAt,
           });
         }
-        const duplicates = (snapshot.accounts ?? []).filter((account) => (
-          account.provider === provider && account.sameLoginAs
-        ));
-        if (duplicates.length > 0) {
-          const first = duplicates[0]!;
-          issues.push({
-            provider,
-            kind: "same_login",
-            title: `Two ${providerTitle(provider)} accounts share one login`,
-            detail: `${first.sameLoginAs!.label} and ${first.label || first.instanceId} are both signed in as ${first.email}, so they share one quota. Sign one of them in to a different account in Settings > Provider accounts.`,
-            instanceIds: duplicates.flatMap((account) => [account.sameLoginAs!.instanceId, account.instanceId!]),
-            at: snapshot.lastPolledAt,
-          });
-        }
         const pickIssue = balancePickIssues.get(provider);
         if (pickIssue) issues.push(pickIssue);
       } catch (error) {
@@ -5111,7 +5107,7 @@ export function createUsageTrackingService({
             force: reason === "user",
           })),
         ]);
-        const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
+        const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
           readLocalMachineIdentity()?.label ?? os.hostname(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
@@ -5121,7 +5117,7 @@ export function createUsageTrackingService({
           if (window.accountId) return window;
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
-        });
+        }).filter((window) => !window.accountId || !duplicateAccountIds.has(window.accountId));
         // After attribution, so a legacy window with no accountId counts as the
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);

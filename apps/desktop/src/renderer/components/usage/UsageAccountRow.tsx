@@ -231,19 +231,18 @@ export function UsageAccountRow({
         </span>
         {/* The pace line, back outside the details panel where it was legible
             without hovering anything. */}
-        {account?.sameLoginAs ? (
-          // One login in two config homes: these bars are the other row's.
-          <AccountWarningTag
-            title={`This account is signed in to the same login as ${account.sameLoginAs.label}, so both rows show one quota. Sign one of them in to a different account in Settings.`}
-          >
-            Same login as {account.sameLoginAs.label}
-          </AccountWarningTag>
-        ) : account?.login === "signed_out" ? (
+        {account?.login === "signed_out" ? (
           // The bars below are the last reading before the login broke. They
           // still reset on time, but this login cannot use them.
-          <AccountWarningTag title="The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading.">
+          <span
+            className={cn(
+              USAGE_TEXT.micro,
+              "shrink-0 rounded border border-amber-300/45 bg-amber-400/10 px-1.5 py-[1px] font-medium text-amber-200",
+            )}
+            title="The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading."
+          >
             Signed out
-          </AccountWarningTag>
+          </span>
         ) : pace ? <PacePill pace={pace} /> : null}
         {hasCredit ? (
           <button
@@ -301,21 +300,6 @@ export function UsageAccountRow({
         </span>
       ) : null}
     </div>
-  );
-}
-
-/** An amber tag in place of the pace pill, for a row whose numbers mislead. */
-function AccountWarningTag({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <span
-      className={cn(
-        USAGE_TEXT.micro,
-        "shrink-0 rounded border border-amber-300/45 bg-amber-400/10 px-1.5 py-[1px] font-medium text-amber-200",
-      )}
-      title={title}
-    >
-      {children}
-    </span>
   );
 }
 

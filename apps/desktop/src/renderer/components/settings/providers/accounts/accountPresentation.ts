@@ -163,15 +163,6 @@ export function accountSignedOut(
   return usageAccountFor(snapshot, provider, instance)?.login === "signed_out";
 }
 
-/** The other local account this one shares a login with, if any. */
-export function accountSameLoginAs(
-  snapshot: UsageSnapshot | null,
-  provider: ProviderInstanceProvider,
-  instance: ProviderInstance,
-): string | null {
-  return usageAccountFor(snapshot, provider, instance)?.sameLoginAs?.label ?? null;
-}
-
 /** `email · plan`, whichever halves exist, or the not-signed-in sentence. */
 export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
   if (!providerInstanceHasAccount(instance)) return "Not signed in";

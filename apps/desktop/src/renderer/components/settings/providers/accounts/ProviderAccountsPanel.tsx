@@ -19,7 +19,7 @@
  * — because a switch that cannot do anything still reads as a promise.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DotsThree, Plus, Question } from "@phosphor-icons/react";
+import { CheckCircle, Circle, DotsThree, Plus, Question } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -40,7 +40,6 @@ import type {
 import {
   accountAccent,
   accountIdentityLine,
-  accountSameLoginAs,
   accountSignedOut,
   accountUsageLine,
   accentTint,
@@ -53,7 +52,7 @@ import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
 
 const SMART_BALANCE_HINT =
-  "Smart balance picks the account with the most room when a chat starts, weighting the weekly window more as the week goes on. If that chat hits a usage limit and another account still has room, ADE continues the work there in a new chat. Off: new chats use the Default account, and a limit offers that move instead of taking it.";
+  "On: new chats use all your signed-in accounts. Each chat goes to the account whose room would go unused first, and a chat that hits a usage limit continues on another account that still has room. Off: new chats use the account with the check. Click an account to use it.";
 const AUTO_START_HINT =
   "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
 
@@ -176,14 +175,15 @@ function HeaderToggle({
   );
 }
 
-type RowMenuAction = "rename" | "default" | "accent" | "remove";
+type RowMenuAction = "rename" | "accent" | "remove";
 
 function AccountRow({
   instance,
   brandColor,
   usageLine,
   signedOut,
-  sameLoginAs,
+  inUse,
+  onSelect,
   onAction,
   onSignIn,
   renaming,
@@ -197,8 +197,10 @@ function AccountRow({
   usageLine: string | null;
   /** The saved login no longer works, even when the config home names an email. */
   signedOut: boolean;
-  /** The label of another account signed in to this same login. */
-  sameLoginAs: string | null;
+  /** New chats use this account: the checked one, or every one under smart balance. */
+  inUse: boolean;
+  /** Makes this the account for new chats. Absent when it cannot be chosen. */
+  onSelect: (() => void) | null;
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
   renaming: boolean;
@@ -248,16 +250,46 @@ function AccountRow({
     <div
       role="group"
       aria-label={`${instance.label} account`}
+      data-in-use={inUse ? "true" : undefined}
+      // The whole row picks the account, except its own controls.
+      onClick={onSelect
+        ? (event) => {
+          if ((event.target as HTMLElement).closest("button, input, [role='menu']")) return;
+          onSelect();
+        }
+        : undefined}
       style={{
         display: "flex",
         flexDirection: "column",
         gap: 4,
-        padding: "8px 0",
-        borderTop: `1px solid ${COLORS.borderMuted}`,
+        padding: "8px 10px",
+        marginTop: 6,
+        borderRadius: 8,
+        border: `1px solid ${inUse ? `color-mix(in srgb, ${COLORS.success} 55%, transparent)` : COLORS.borderMuted}`,
+        background: inUse ? `color-mix(in srgb, ${COLORS.success} 9%, transparent)` : "transparent",
+        cursor: onSelect ? "pointer" : "default",
         minWidth: 0,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <button
+          type="button"
+          aria-pressed={inUse}
+          aria-label={inUse ? `New chats use ${instance.label}` : `Use ${instance.label} for new chats`}
+          disabled={!onSelect}
+          onClick={() => onSelect?.()}
+          style={{
+            display: "inline-flex",
+            padding: 0,
+            border: "none",
+            background: "transparent",
+            color: inUse ? COLORS.success : COLORS.textDim,
+            cursor: onSelect ? "pointer" : "default",
+            flexShrink: 0,
+          }}
+        >
+          {inUse ? <CheckCircle size={16} weight="fill" /> : <Circle size={16} />}
+        </button>
         <span
           aria-hidden
           style={{
@@ -309,7 +341,6 @@ function AccountRow({
           }}
         >
           {accountIdentityLine(instance, signedOut)}
-          {sameLoginAs ? ` · Same login as ${sameLoginAs}` : ""}
         </span>
         {!signedOut ? null : (
           <button
@@ -327,9 +358,6 @@ function AccountRow({
           {usageLine ?? (instance.signedIn ? "No usage yet" : "")}
         </span>
         <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          {instance.isDefault ? (
-            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>Default</span>
-          ) : null}
           <span style={{ position: "relative", display: "inline-flex" }}>
             <button
               ref={menuButtonRef}
@@ -369,7 +397,6 @@ function AccountRow({
               }}
             >
               {item("rename", "Rename")}
-              {instance.isDefault ? null : item("default", "Set as default")}
               {item("accent", "Change accent")}
               {item("remove", "Remove", true)}
             </AnchoredMenu>
@@ -452,10 +479,6 @@ export function ProviderAccountsPanel({
         setAccentingId((current) => (current === instance.id ? null : instance.id));
         return;
       }
-      if (action === "default") {
-        void run(() => api.setDefault({ id: instance.id }));
-        return;
-      }
       void confirmDialog({
         title: "Remove account",
         message: `Remove ${instance.label} from ${providerLabel}? Its sign-in stays on disk — only ADE forgets the account.`,
@@ -466,6 +489,27 @@ export function ProviderAccountsPanel({
       });
     },
     [pin, providerLabel, run],
+  );
+
+  const signedOutById = useMemo(() => {
+    const out = new Map<string, boolean>();
+    for (const instance of instances) out.set(instance.id, accountSignedOut(snapshot, provider, instance));
+    return out;
+  }, [instances, provider, snapshot]);
+
+  /**
+   * Picking an account means "use this one": it turns smart balance off when
+   * it was on, then makes the account the one new chats start on.
+   */
+  const selectAccount = useCallback(
+    async (instance: ProviderInstance) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api) return;
+      if (!settings.smartBalance && instance.isDefault) return;
+      if (settings.smartBalance) await saveSettings({ smartBalance: false });
+      if (!instance.isDefault) await run(() => api.setDefault({ id: instance.id }));
+    },
+    [pin, run, saveSettings, settings.smartBalance],
   );
 
   const onCommitRename = useCallback(
@@ -558,8 +602,9 @@ export function ProviderAccountsPanel({
           instance={instance}
           brandColor={brandColor}
           usageLine={usageByInstance.get(instance.id) ?? null}
-          signedOut={accountSignedOut(snapshot, provider, instance)}
-          sameLoginAs={accountSameLoginAs(snapshot, provider, instance)}
+          signedOut={signedOutById.get(instance.id) === true}
+          inUse={!signedOutById.get(instance.id) && (settings.smartBalance || instance.isDefault)}
+          onSelect={signedOutById.get(instance.id) ? null : () => void selectAccount(instance)}
           onAction={onAction}
           onSignIn={(target) => setSheet({ existing: target })}
           renaming={renamingId === instance.id}
