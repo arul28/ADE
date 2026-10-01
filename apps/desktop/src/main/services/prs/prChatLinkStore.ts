@@ -139,31 +139,39 @@ export function createPrChatLinkStore(args: {
   };
 
   const writeChatSessionDismissal = (prId: string, sessionId: string): void => {
-    const existing = db.get<{ id: string }>(
-      `
-        select id
-          from pull_request_chat_session_dismissals
-         where project_id = ? and pr_id = ? and session_id = ?
-         limit 1
-      `,
-      [projectId, prId, sessionId],
-    );
-    const now = nowIso();
-    if (existing) {
-      db.run(
-        "update pull_request_chat_session_dismissals set updated_at = ? where id = ? and project_id = ?",
-        [now, existing.id, projectId],
+    try {
+      const existing = db.get<{ id: string }>(
+        `
+          select id
+            from pull_request_chat_session_dismissals
+           where project_id = ? and pr_id = ? and session_id = ?
+           limit 1
+        `,
+        [projectId, prId, sessionId],
       );
-      return;
+      const now = nowIso();
+      if (existing) {
+        db.run(
+          "update pull_request_chat_session_dismissals set updated_at = ? where id = ? and project_id = ?",
+          [now, existing.id, projectId],
+        );
+        return;
+      }
+      db.run(
+        `
+          insert into pull_request_chat_session_dismissals(
+            id, project_id, pr_id, session_id, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?)
+        `,
+        [randomUUID(), projectId, prId, sessionId, now, now],
+      );
+    } catch (error) {
+      // A database that predates the tombstone table still unlinks (the PR just
+      // falls back to the branch rule); any other write failure must roll the
+      // unlink back so the tombstone and the edge stay consistent.
+      if (/no such table/i.test(String((error as Error)?.message ?? error))) return;
+      throw error;
     }
-    db.run(
-      `
-        insert into pull_request_chat_session_dismissals(
-          id, project_id, pr_id, session_id, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?)
-      `,
-      [randomUUID(), projectId, prId, sessionId, now, now],
-    );
   };
 
   const linkPrToChatSession = (linkArgs: {
@@ -270,14 +278,7 @@ export function createPrChatLinkStore(args: {
             where project_id = ? and pr_id = ? and session_id = ?`,
           [projectId, unlinkArgs.prId, sessionId],
         );
-        if (unlinkArgs.dismiss !== false) {
-          try {
-            writeChatSessionDismissal(unlinkArgs.prId, sessionId);
-          } catch {
-            // A database that predates the tombstone table still unlinks; the
-            // PR simply falls back to the branch rule on the next read.
-          }
-        }
+        if (unlinkArgs.dismiss !== false) writeChatSessionDismissal(unlinkArgs.prId, sessionId);
         db.run("commit");
       } catch (error) {
         try {

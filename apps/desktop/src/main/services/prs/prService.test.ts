@@ -4501,8 +4501,9 @@ describe("prService.linkToLane", () => {
       String(sql).includes("insert into pull_request_chat_sessions")
     );
     expect(chatLinkInsert).toBeTruthy();
-    // The EDGE carries the referencing lane…
-    expect(chatLinkInsert?.[1]?.[3]).toBe(LANE_ID);
+    // The EDGE carries the PR's own lane (GitHub stack members may be linked
+    // from a chat on another lane)…
+    expect(chatLinkInsert?.[1]?.[3]).toBe("lane-owner");
     expect(chatLinkInsert?.[1]?.[4]).toBe("chat-cross");
     // …while the row stays with the lane that opened the PR.
     expect(rows.find((row) => row.id === "pr-cross-lane")?.lane_id).toBe("lane-owner");
@@ -9307,5 +9308,33 @@ describe("prService.listSnapshots", () => {
     const [call] = snapshotCalls(db);
     expect(call.sql).not.toContain("where s.pr_id");
     expect(call.params).toEqual(["proj-1"]);
+  });
+});
+
+describe("unlinkChatSession tombstones", () => {
+  it("rolls back the edge delete when the dismissal write fails", () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return { id: "pr-1", lane_id: LANE_ID };
+      if (text.includes("from terminal_sessions")) return { id: "chat-1", lane_id: LANE_ID };
+      if (text.includes("from pull_request_chat_session_dismissals")) return null;
+      return null;
+    });
+    db.run.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("insert into pull_request_chat_session_dismissals")) {
+        throw new Error("UNIQUE constraint failed");
+      }
+    });
+    const { service, logger } = buildService({ db });
+    expect(service.unlinkChatSession({ prId: "pr-1", sessionId: "chat-1" })).toEqual({ ok: false });
+    expect(db.run).toHaveBeenCalledWith("begin immediate");
+    expect(db.run).toHaveBeenCalledWith("rollback");
+    expect(db.run).not.toHaveBeenCalledWith("commit");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "prs.chat_session_unlink_failed",
+      expect.objectContaining({ prId: "pr-1", sessionId: "chat-1" }),
+    );
   });
 });
