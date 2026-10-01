@@ -49,15 +49,18 @@ type FailedScopeBoot = {
 
 class SyncHostPhaseTimeoutError extends Error {}
 
+/** What a client is told when it asks to open a project that follows another machine. */
+export function describeSyncHostBlocker(blocker: SyncHostBlocker): string {
+  const target = blocker.host
+    ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
+    : "";
+  return `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.`;
+}
+
 /** The target project follows another machine, so this machine cannot host it. */
 export class SyncHostRoleBlockedError extends Error {
   constructor(blocker: SyncHostBlocker) {
-    const target = blocker.host
-      ? ` at ${blocker.host}${blocker.port != null ? `:${blocker.port}` : ""}`
-      : "";
-    super(
-      `This project is set to follow another ADE machine${target}, so this machine cannot open it for sync. Open it on that machine, or disconnect it from that machine on this computer.`,
-    );
+    super(describeSyncHostBlocker(blocker));
     this.name = "SyncHostRoleBlockedError";
   }
 }

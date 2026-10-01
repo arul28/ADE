@@ -1236,18 +1236,23 @@ export function createSyncService(args: SyncServiceArgs) {
    */
   const describeHostBlocker = (): SyncHostBlocker | null => {
     if (forceHostRole) return null;
+    const localDevice = deviceRegistryService.ensureLocalDevice();
+    const cluster = deviceRegistryService.getClusterState();
+    if (cluster?.brainDeviceId === localDevice.deviceId) return null;
     const savedDraft = readSavedDraft();
     if (savedDraft) {
+      // A draft aimed at this machine is a leftover the refresh reclaims once
+      // the dial fails, so it ends with this machine hosting.
+      if (isDraftTargetLocalDevice(savedDraft, localDevice)) return null;
       return {
         reason: "saved_connection",
         host: savedDraft.host,
         port: savedDraft.port,
       };
     }
-    const cluster = deviceRegistryService.getClusterState();
-    const localDeviceId = deviceRegistryService.getLocalDeviceId();
-    if (!cluster || isStaleNonLocalBrainCluster(cluster, localDeviceId)) return null;
-    if (cluster.brainDeviceId === localDeviceId) return null;
+    // No record: the refresh bootstraps this machine as the brain. A stale
+    // record naming another machine: the refresh reclaims it.
+    if (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) return null;
     const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
     return {
       reason: "cluster_record",

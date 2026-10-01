@@ -21672,7 +21672,7 @@ async function runServe(
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
-    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, SyncHostRoleBlockedError, getSyncHostBlocker },
+    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS, describeSyncHostBlocker, getSyncHostBlocker },
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
@@ -22046,7 +22046,7 @@ async function runServe(
         if (hostBlocker) {
           return {
             ok: false,
-            message: new SyncHostRoleBlockedError(hostBlocker).message,
+            message: describeSyncHostBlocker(hostBlocker),
             project,
           };
         }
