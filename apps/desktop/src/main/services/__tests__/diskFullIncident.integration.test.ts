@@ -268,6 +268,7 @@ describe("disk-full incident integration matrix", () => {
     };
     const sessionService = sessionServiceFor(row);
     const chatService = createAgentChatService({
+      getAccountUsage: () => null,
       projectRoot,
       transcriptsDir: path.join(adeDir, "transcripts"),
       laneService: { list: vi.fn(async () => []) } as any,

@@ -757,6 +757,51 @@ export type UsageAccount = {
    * never travels in a rollup.
    */
   notice?: { message: string; nextRetryAt?: string };
+  /**
+   * What this machine's stored login for the account can do, from its last poll.
+   *
+   * - `ok`: a live token.
+   * - `expired`: the token expired. The provider CLI refreshes it the next time
+   *   it runs on this account, so the account can still take a chat.
+   * - `signed_out`: no usable login. The account cannot take a chat until the
+   *   user signs in again, even when old windows still show room.
+   *
+   * Absent until a poll has read the account, and on providers with one login.
+   * Local to the polling machine, like `notice`.
+   */
+  login?: UsageAccountLogin;
+};
+
+export type UsageAccountLogin = "ok" | "expired" | "signed_out";
+
+/** Why smart balance kept a new chat on the default account. */
+export type AccountBalanceSkipReason =
+  | "one_account"
+  | "no_usage_data"
+  | "all_signed_out"
+  | "all_full";
+
+/**
+ * A reason smart balance cannot do its job, shown in the top bar.
+ *
+ * - `signed_out`: an account ADE lists as signed in has no usable login, so
+ *   balance skips it. The fix is to sign that account in again.
+ * - `no_usage_data`: the last new chat found no quota readings, so it stayed
+ *   on the default account.
+ * - `error`: the last balance decision threw.
+ *
+ * Present only while smart balance is on for the provider.
+ */
+export type AccountBalanceIssue = {
+  provider: "claude" | "codex";
+  kind: "signed_out" | "no_usage_data" | "error";
+  /** Short text for the pill, e.g. "Claude account 90 signed out". */
+  title: string;
+  /** One or two sentences for the tooltip and the log. */
+  detail: string;
+  /** The provider accounts the issue is about. */
+  instanceIds?: string[];
+  at: string;
 };
 
 /**
@@ -791,6 +836,8 @@ export type UsageSnapshot = {
   /** Per-provider freshness/health for the latest poll (drives quiet-retry UI). */
   providerStatus?: UsageProviderStatusMap;
   providerMessages?: UsageProviderMessage[];
+  /** Problems that stop smart balance from spreading chats. Omitted when there are none. */
+  balanceIssues?: AccountBalanceIssue[];
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];
