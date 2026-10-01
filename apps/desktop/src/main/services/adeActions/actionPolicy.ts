@@ -172,6 +172,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "listPromptStashes",
       "createPromptStash",
       "deletePromptStash",
+      // The desktop's post-update resume arm: machine-wide, and each row it
+      // creates spends a real turn. A session-bound agent must not drive it.
+      "armUpdateResume",
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -647,11 +650,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createScheduledWork",
     "listScheduledWork",
     "getScheduledWorkState",
-    // Update-install resume: the desktop's main process arms and cancels these
-    // over the runtime action channel before/after quitting to install.
+    // Update-install resume. The read is open; the arm is CTO-only (see
+    // ADE_ACTION_CTO_ONLY.chat) because it spends real turns on every chat the
+    // desktop names, and only the desktop's main process should do that.
     "listInterruptedChats",
     "armUpdateResume",
-    "cancelUpdateResume",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",

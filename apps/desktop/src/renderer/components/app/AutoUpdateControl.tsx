@@ -328,8 +328,8 @@ export function AutoUpdateControl() {
           <div style={{ marginBottom: installedReleaseNotes ? 12 : 0 }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
               {resumedChats.length === 1
-                ? "Resumed 1 chat"
-                : `Resumed ${resumedChats.length} chats`}
+                ? "Scheduled 1 chat to resume"
+                : `Scheduled ${resumedChats.length} chats to resume`}
             </div>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               {resumedChats.map((chat) => (

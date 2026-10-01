@@ -1,4 +1,3 @@
-import { createElement } from "react";
 import type { AutoUpdateSnapshot, UpdateInterruptedChat } from "../../../shared/types";
 import { checkboxConfirmDialog, confirmDialog } from "../ui/dialog/confirm";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
@@ -12,28 +11,22 @@ function versionLabel(version: string | null): string {
  * appear when the list spans more than one, so a single-project list stays
  * quiet.
  */
-function interruptedChatList(chats: UpdateInterruptedChat[]) {
+function InterruptedChatList({ chats }: { chats: UpdateInterruptedChat[] }) {
   const projectNames = new Set(chats.map((chat) => chat.projectName).filter(Boolean));
   const showProject = projectNames.size > 1;
-  return createElement(
-    "div",
-    { style: { marginTop: 2 } },
-    createElement(
-      "div",
-      { style: { fontWeight: 600, marginBottom: 6, color: "var(--color-fg)" } },
-      chats.length === 1 ? "1 agent is running" : `${chats.length} agents are running`,
-    ),
-    createElement(
-      "ul",
-      { style: { margin: 0, paddingLeft: 18, display: "grid", gap: 3 } },
-      chats.map((chat) =>
-        createElement(
-          "li",
-          { key: chat.sessionId, style: { overflowWrap: "anywhere" } },
-          showProject ? `${chat.title} — ${chat.projectName}` : chat.title,
-        ),
-      ),
-    ),
+  return (
+    <div style={{ marginTop: 2 }}>
+      <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--color-fg)" }}>
+        {chats.length === 1 ? "1 agent is running" : `${chats.length} agents are running`}
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 3 }}>
+        {chats.map((chat) => (
+          <li key={chat.sessionId} style={{ overflowWrap: "anywhere" }}>
+            {showProject ? `${chat.title} — ${chat.projectName}` : chat.title}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -80,9 +73,8 @@ export async function requestDownloadedUpdateInstall(
     const result = await checkboxConfirmDialog({
       title,
       message,
-      children: interruptedChatList(interruptedChats),
-      checkboxLabel: "Resume these chats when ADE is back",
-      checkboxDefaultChecked: true,
+      children: <InterruptedChatList chats={interruptedChats} />,
+      checkbox: { label: "Resume these chats when ADE is back", defaultChecked: true },
       confirmLabel: "Continue",
     });
     if (!result.confirmed) {

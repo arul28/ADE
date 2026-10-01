@@ -78,6 +78,13 @@ type AutoResumeScheduledWorkLike = {
   status?: AutoResumeScheduledWorkStatus | null;
 };
 
+/** A row still waiting to deliver: neither finished nor cancelled. */
+function isPendingScheduledWorkStatus(
+  status: AutoResumeScheduledWorkStatus | null | undefined,
+): boolean {
+  return status !== "done" && status !== "completed" && status !== "cancelled";
+}
+
 /**
  * An ADE-created auto-resume row that has not finished or been cancelled — the
  * one the main process sweeps on user activity and the one the renderer offers
@@ -86,9 +93,7 @@ type AutoResumeScheduledWorkLike = {
 export function isPendingAutoResumeScheduledWork(
   schedule: AutoResumeScheduledWorkLike | null | undefined,
 ): boolean {
-  if (!isAutoResumeScheduledWork(schedule)) return false;
-  const status = schedule?.status;
-  return status !== "done" && status !== "completed" && status !== "cancelled";
+  return isAutoResumeScheduledWork(schedule) && isPendingScheduledWorkStatus(schedule?.status);
 }
 
 /**
@@ -245,17 +250,6 @@ export const UPDATE_RESUME_PROMPT =
 
 export const UPDATE_RESUME_REASON = "Resume after ADE update";
 
-/**
- * How long after arming the resume may fire.
- *
- * The row is armed in the moment before ADE quits to install, so a fire time of
- * "now" would let the still-running brain deliver the continue prompt during the
- * quit. Pushing it a few seconds out clears the quit window; on the relaunch the
- * row is already due, and the same delay gives the fresh brain time to load its
- * sessions before the scheduler evaluates it.
- */
-export const UPDATE_RESUME_FIRE_DELAY_MS = 12_000;
-
 const UPDATE_RESUME_ID_PREFIX = "update-resume:";
 
 /**
@@ -267,16 +261,14 @@ export function updateResumeScheduleId(sessionId: string): string {
 }
 
 /**
- * Recognises an update-resume row. The tag is authoritative; the id prefix is
- * the fallback, kept in step with `isAutoResumeScheduledWork` for the same
- * reason (rows persisted before the tag existed).
+ * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
+ * is no pre-tag history to fall back on — the source was introduced with the
+ * tag — so the id prefix is not a recogniser here, only the deterministic id.
  */
 export function isUpdateResumeScheduledWork(
   schedule: { id?: string | null; source?: string | null } | null | undefined,
 ): boolean {
-  if (!schedule) return false;
-  if (schedule.source === UPDATE_RESUME_SCHEDULED_WORK_SOURCE) return true;
-  return typeof schedule.id === "string" && schedule.id.startsWith(UPDATE_RESUME_ID_PREFIX);
+  return schedule?.source === UPDATE_RESUME_SCHEDULED_WORK_SOURCE;
 }
 
 /**
@@ -284,11 +276,9 @@ export function isUpdateResumeScheduledWork(
  * host cancels the moment the user touches the chat themselves.
  */
 export function isPendingUpdateResumeScheduledWork(
-  schedule: { id?: string | null; source?: string | null; status?: string | null } | null | undefined,
+  schedule: AutoResumeScheduledWorkLike | null | undefined,
 ): boolean {
-  if (!isUpdateResumeScheduledWork(schedule)) return false;
-  const status = schedule?.status;
-  return status !== "done" && status !== "completed" && status !== "cancelled";
+  return isUpdateResumeScheduledWork(schedule) && isPendingScheduledWorkStatus(schedule?.status);
 }
 
 /**

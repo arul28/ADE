@@ -30,7 +30,7 @@ const ADE_ARMED_CHAT_SCHEDULED_WORK_SOURCES: readonly ChatScheduledWorkSource[] 
 ];
 
 /** Narrows an untrusted `source` to an ADE-owned tag, or drops it. */
-export function asAdeArmedChatScheduledWorkSource(
+function asAdeArmedChatScheduledWorkSource(
   value: unknown,
 ): ChatScheduledWorkSource | null {
   return typeof value === "string"
@@ -385,6 +385,17 @@ export function createChatScheduledWorkScheduler(
     schedule.lateFlag = late;
     await persist();
     await emitTransition(schedule, "fired");
+
+    // A cancel (a user message, a superseding schedule) can land inside those
+    // awaits. The row is the durable record of intent; once it is cancelled,
+    // delivery must not happen. Re-read it rather than trust the pre-await
+    // snapshot, and release the in-flight claim before returning so this id can
+    // arm again later.
+    const afterPersist = schedules.get(scheduleId);
+    if (!afterPersist || afterPersist.status !== "fired") {
+      inFlight.delete(scheduleId);
+      return;
+    }
 
     let complete = false;
     let retry = false;

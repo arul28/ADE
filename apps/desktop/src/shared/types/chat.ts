@@ -4598,8 +4598,6 @@ export type AgentChatCreateScheduledWorkResult = {
 export type AgentChatInterruptedChatRef = {
   sessionId: string;
   title: string;
-  /** The chat's lane, so the post-update notice can jump straight to it. */
-  laneId: string | null;
 };
 
 export type AgentChatListInterruptedChatsResult = {

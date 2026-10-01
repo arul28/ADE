@@ -241,7 +241,6 @@ export type RecentlyInstalledUpdate = {
 export type UpdateInterruptedChat = {
   sessionId: string;
   title: string;
-  laneId: string | null;
   projectName: string;
 };
 

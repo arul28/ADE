@@ -1809,15 +1809,14 @@ export function createAutoUpdateService({
       let resumedChats: UpdateInterruptedChat[] = [];
       try {
         const prepareResult = await waitForInstallStep(
-          Promise.resolve(beforeQuitAndInstall?.(resumeChats)).then((value) => {
-            if (Array.isArray(value) && value.length > 0) resumedChats = value;
-          }),
+          Promise.resolve(beforeQuitAndInstall?.(resumeChats)),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);
         }
+        resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
       } catch (error) {
         const message = formatErrorMessage(error);
         logger.warn("autoUpdate.prepare_quit_and_install_failed", {
