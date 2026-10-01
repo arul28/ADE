@@ -866,14 +866,16 @@ for each provider, mainly Claude and Codex. The wire contract is in
 - Live limits reads as headroom, not consumption, and **the account is the
   row**. Every signed-in Claude or Codex account is a row, including one that
   has not reported a window yet: that row names the account and says `No usage
-  yet` instead of omitting it. Two local logins stay two rows even when they
-  share an email, because the row is keyed by the provider account id. Each row
+  yet` instead of omitting it. **One login is one row**: two local config homes
+  that report the same account email are collapsed to the first (the default),
+  and the later account's windows are dropped with it, so one quota is never
+  counted twice. Logins on different emails stay two rows. Each row
   names itself — provider mark, provider, `email · plan` — and
   carries that account's windows side by side underneath as meters: a short
   label (`5h` / `wk` / `mo`), a bar filled to the HEADROOM with the spent
   remainder hatched, that same headroom in words ("82% left"), and the reset
   countdown. One
-  provider with two logins is two rows, both named. Hovering, focusing, or
+  provider with two logins on different emails is two rows, both named. Hovering, focusing, or
   clicking a meter on desktop — tapping a row on iOS — opens that window's
   details: plan, the machines reporting it, headroom, absolute reset time,
   pace, the model split, what the reset restores to the pool, and the link out.
@@ -911,8 +913,9 @@ for each provider, mainly Claude and Codex. The wire contract is in
   each account's own config home (default first, because its result decides the
   provider-level facts that stay singular — the status line's account email, the
   poll `source`, and the Codex spend-control / 7-day series). A machine with
-  three Claude logins therefore contributes three accounts to the snapshot, not
-  one. A machine with no registry entry falls back to the single ambient
+  three Claude logins therefore contributes as many accounts as it has
+  distinct logins — two config homes on one email are one account, and the
+  extra homes and their windows are dropped. A machine with no registry entry falls back to the single ambient
   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The
   account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
   (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so

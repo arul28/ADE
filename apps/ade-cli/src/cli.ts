@@ -27338,7 +27338,7 @@ function formatProviderAccounts(value: unknown): string {
       ["provider", instance.provider],
       ["label", instance.label],
       ["default", instance.isDefault === true ? "yes" : "no"],
-      ["signed in", instance.signedIn === true ? "yes" : "no"],
+      ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
       ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
       ["accent", instance.accentColor],
       ["config home", instance.configHome],
@@ -27404,7 +27404,7 @@ function formatProviderAccounts(value: unknown): string {
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
         ? (isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes")
-        : "no",
+        : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),
     "ADE provider accounts\n(no provider accounts found)",

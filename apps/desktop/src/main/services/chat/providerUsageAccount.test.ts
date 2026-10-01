@@ -195,6 +195,22 @@ describe("turn usage account resolvers", () => {
     expect(accounts.codex({ hasPreset: true }, "chatgpt")).not.toHaveProperty("routedAway");
   });
 
+  it("credits a turn on an account whose saved login the poller flagged broken", () => {
+    const accounts = createTurnUsageAccountResolvers<Record<string, never>>({
+      resolveInstance: (provider) => instance({ id: `${provider}-broken`, provider, signedIn: false, loginBroken: true }),
+      launchPlan: () => null,
+      sessionInstanceId: () => null,
+      openCodeLocalEndpoint: () => null,
+      env: () => ({}),
+    });
+
+    // The turn ran, so the plan paid even while the registry still says the
+    // saved login is broken; a stale flag must not push the burn onto nothing.
+    expect(accounts.claude({}, { apiKeySource: null, modelProvider: null }))
+      .toMatchObject({ kind: "subscription", email: "me@example.com" });
+    expect(accounts.codex({}, null)).toMatchObject({ kind: "subscription" });
+  });
+
   it("uses the runtime's plan only when the login record has none", () => {
     const accounts = createTurnUsageAccountResolvers<Record<string, never>>({
       resolveInstance: (provider) => instance({ id: `${provider}-default`, provider, account: { email: "me@example.com" } }),

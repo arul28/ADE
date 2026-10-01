@@ -34,6 +34,8 @@ export type HarnessAccountSource = {
   email?: string;
   plan?: string;
   signedIn: boolean;
+  /** The account is known but its saved login stopped working. */
+  loginBroken?: boolean;
   accentColor?: string;
 };
 
@@ -60,6 +62,7 @@ function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
     ...(instance.account?.email ? { email: instance.account.email } : {}),
     ...(instance.account?.plan ? { plan: instance.account.plan } : {}),
     signedIn: instance.signedIn === true,
+    ...(instance.loginBroken ? { loginBroken: true } : {}),
     ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
   };
 }

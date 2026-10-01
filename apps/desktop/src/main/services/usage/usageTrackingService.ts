@@ -76,6 +76,7 @@ import {
   PROVIDER_INSTANCE_PROVIDERS,
   defaultProviderInstanceId,
   isBaseProviderInstance,
+  providerInstanceHasAccount,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -842,8 +843,16 @@ function resetAccountRateLimitsForTest(): void {
  */
 const accountLogins = new Map<string, UsageAccountLogin>();
 
-function noteAccountLogin(accountId: string, login: UsageAccountLogin): void {
+function noteAccountLogin(accountId: string, instanceId: string, login: UsageAccountLogin): void {
   accountLogins.set(accountId, login);
+  // The registry reports `signedIn` from the email in the config home, which
+  // outlives a cleared login. Every account list (model picker, Settings, the
+  // AI status) reads the registry, so it learns the real state here.
+  try {
+    getMachineProviderInstanceStore().setLoginBroken(instanceId, login === "signed_out");
+  } catch {
+    // An unreadable registry already degrades every reader to its defaults.
+  }
 }
 
 function attachAccountLogins(accounts: UsageAccount[]): void {
@@ -1148,7 +1157,7 @@ async function pollClaudeInstance(
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
   if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
-    noteAccountLogin(accountId, login.state);
+    noteAccountLogin(accountId, instance.id, login.state);
   }
   if (login.state === "expired") {
     // The CLI refreshes and saves its own token. A user poll may run it;
@@ -1204,7 +1213,7 @@ async function pollClaudeInstance(
         // refresh token (see `readClaudeLogin`); the CLI fallback below, or the
         // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
-        noteAccountLogin(accountId, "expired");
+        noteAccountLogin(accountId, instance.id, "expired");
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -3301,10 +3310,16 @@ async function stampProviderAccounts(
   machineLabel: string,
   activeAccountIds: ReadonlySet<string>,
   listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
-): Promise<{ accounts: UsageAccount[]; defaultAccountIdByProvider: Map<UsageProvider, string> }> {
+): Promise<{
+  accounts: UsageAccount[];
+  defaultAccountIdByProvider: Map<UsageProvider, string>;
+  /** Accounts left out because an earlier one holds the same login. */
+  duplicateAccountIds: Set<string>;
+}> {
   // `resolveProviderAccounts` never rejects — it is total by construction.
   const { identities } = await resolveProviderAccounts();
   const accounts: UsageAccount[] = [];
+  const duplicateAccountIds = new Set<string>();
   const defaultAccountIdByProvider = new Map<UsageProvider, string>();
   for (const key of Object.keys(providerStatus) as UsageProvider[]) {
     const status = providerStatus[key];
@@ -3352,6 +3367,7 @@ async function stampProviderAccounts(
     // The provider line stays singular and describes the DEFAULT account, so it
     // is stamped once the loop below has read whichever account that is.
     let defaultIdentity = baseIdentity;
+    let registryStale = false;
     for (const instance of listInstances(key)) {
       const id = usageAccountId({ provider: key, instanceId: instance.id });
       if (instance.isDefault) defaultAccountIdByProvider.set(key, id);
@@ -3364,6 +3380,10 @@ async function stampProviderAccounts(
         ? baseIdentity
         : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
+      if (identity.email && instance.account?.email
+        && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
+        registryStale = true;
+      }
       const known = Boolean(identity.email || identity.plan);
       const signedIn = instance.signedIn === true;
       if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
@@ -3387,9 +3407,42 @@ async function stampProviderAccounts(
         ...(resetCredits ? { resetCredits } : {}),
       });
     }
+    for (const id of sameLoginDuplicates(accounts.filter((account) => account.provider === key))) {
+      duplicateAccountIds.add(id);
+    }
+    if (registryStale) {
+      // The registry reads identities once per process. A login that changed
+      // under it (a new sign-in in the same config home) left Settings and the
+      // picker on the old email. Once it matches, this stops firing.
+      void getMachineProviderInstanceStore().refreshAccounts(key).catch(() => undefined);
+    }
     stampStatus(defaultIdentity);
   }
-  return { accounts, defaultAccountIdByProvider };
+  return {
+    accounts: accounts.filter((account) => !duplicateAccountIds.has(account.id)),
+    defaultAccountIdByProvider,
+    duplicateAccountIds,
+  };
+}
+
+/**
+ * The accounts after the first that are signed in to the same email.
+ *
+ * Two config homes can hold one login: signing a second account in while the
+ * browser is still on the first account's claude.ai session does exactly that.
+ * They are one quota, so the snapshot shows the login once and balance never
+ * counts it twice. Accounts arrive default first, so the default stays.
+ */
+function sameLoginDuplicates(accounts: readonly UsageAccount[]): string[] {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const account of accounts) {
+    const email = account.email?.trim().toLowerCase();
+    if (!email || !account.instanceId) continue;
+    if (seen.has(email)) duplicates.push(account.id);
+    else seen.add(email);
+  }
+  return duplicates;
 }
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
@@ -4495,9 +4548,11 @@ export function createUsageTrackingService({
     for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
       try {
         if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
-        const signedIn = providerInstanceStore.list(provider).filter((instance) => instance.signedIn);
-        if (signedIn.length < 2) continue;
-        const signedOut = signedIn.filter((instance) => snapshot.accounts?.some((account) => (
+        // Accounts the user added, signed in or with a broken login: a broken
+        // one is exactly what this warning is for.
+        const known = providerInstanceStore.list(provider).filter(providerInstanceHasAccount);
+        if (known.length < 2) continue;
+        const signedOut = known.filter((instance) => instance.loginBroken || snapshot.accounts?.some((account) => (
           account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
         )));
         if (signedOut.length > 0) {
@@ -5052,7 +5107,7 @@ export function createUsageTrackingService({
             force: reason === "user",
           })),
         ]);
-        const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
+        const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
           readLocalMachineIdentity()?.label ?? os.hostname(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
@@ -5062,7 +5117,7 @@ export function createUsageTrackingService({
           if (window.accountId) return window;
           const accountId = defaultAccountIdByProvider.get(window.provider);
           return accountId ? { ...window, accountId } : window;
-        });
+        }).filter((window) => !window.accountId || !duplicateAccountIds.has(window.accountId));
         // After attribution, so a legacy window with no accountId counts as the
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);

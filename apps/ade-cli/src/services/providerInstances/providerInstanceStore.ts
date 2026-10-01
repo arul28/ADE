@@ -90,7 +90,8 @@ export type ProviderInstanceStoreChange = {
     | "setDefault"
     | "setAccent"
     | "setSettings"
-    | "refresh";
+    | "refresh"
+    | "login";
   provider?: ProviderInstanceProvider;
   instanceId?: string;
 };
@@ -301,8 +302,30 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return exists ? pointer : defaultProviderInstanceId(provider);
   }
 
+  /**
+   * Accounts whose saved login stopped working, by instance id, as the usage
+   * poller last read them. In memory only: the poller reads every account
+   * again on its next pass, so a restart re-learns it within one poll.
+   */
+  const brokenLogins = new Set<string>();
+
+  /**
+   * Records whether one account's saved login works. The config home keeps the
+   * account's email after the provider CLI clears a broken login, so the email
+   * alone said "signed in" for an account that could not run a chat.
+   */
+  function setLoginBroken(id: string, broken: boolean): void {
+    if (brokenLogins.has(id) === broken) return;
+    if (broken) brokenLogins.add(id);
+    else brokenLogins.delete(id);
+    const record = get(id);
+    if (record) emit({ reason: "login", provider: record.provider, instanceId: id });
+  }
+
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
-    const signedIn = Boolean(stored.account?.email || stored.account?.plan);
+    const known = Boolean(stored.account?.email || stored.account?.plan);
+    const loginBroken = known && brokenLogins.has(stored.id);
+    const signedIn = known && !loginBroken;
     return {
       id: stored.id,
       provider: stored.provider,
@@ -313,6 +336,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       createdAt: stored.createdAt,
       ...(stored.account ? { account: stored.account } : {}),
       signedIn,
+      ...(loginBroken ? { loginBroken: true } : {}),
     };
   }
 
@@ -529,6 +553,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
+    // An instance id is a label slug and can be reused: recreating an account
+    // with the same label mints the same id, so a stale entry here would report
+    // the fresh account as signed out until its next poll.
+    brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });
     return { removed: true, configHome: record.configHome };
   }
@@ -675,6 +703,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       return loginCommandFor(instance);
     },
     refreshAccounts,
+    setLoginBroken,
     /** Every write emits; returns the unsubscribe. */
     onChange(listener: (change: ProviderInstanceStoreChange) => void): () => void {
       listeners.add(listener);
