@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.84] - 2026-09-30
+
+### Desktop
+
+- Project right-click menus on project tabs and the start page, including Clone locally (#1403).
+- Chrome-style project tab drag: reorder, tear off into a new window, and drop onto another ADE window (#1403).
+- Host-side project icons that follow a project to every machine; an icon replaced by a new upload is deleted (#1403).
+- The post-update dialog parses changelog pages that begin at a heading instead of flattening them into one paragraph.
+- The composer model chip shows the maker's real logo, a thinking level coloured like the footer reasoning control, and each provider's own permission modes (#1400). OpenCode chips keep their reasoning tiers without opening the model picker (#1402), and a Claude chip no longer draws the harness mark twice (#1401).
+- The `@` menu groups Models, Chats, Lanes, Files, and Terminals with the best match first and an in-place "+ N more" row; the `/` menu shares the same ranking across Commands, Skills, and MCP prompts (#1400).
+- Smart balance runs in the brain, skips signed-out logins, and scores new chats by the room an account must burn before it resets; ADE no longer refreshes a Claude OAuth token itself, and a usage-limited chat moves to the other account in place (#1404).
+- The efficiency report replays every chat thread, with subagent weighting (ADE-159) (#1398).
+
+### SDK 0.5.1
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` move to 0.5.1 so `main` and npm agree. The delta is comments plus one autocomplete union member: the buffered-event category list no longer names `cto_voice`. No runtime behavior changed (#1397).
+
+### Runtime 1.2.84
+
+- The TUI uses the same `/` ranking and per-provider chip permission steps as the desktop (#1400), and the CLI resolves and serves host-side project icons (#1403).
+
 ## [1.2.83] - 2026-09-30
 
 ### SDK 0.5
@@ -2225,6 +2246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.84]: https://github.com/arul28/ADE/compare/v1.2.83...v1.2.84
 [1.2.83]: https://github.com/arul28/ADE/compare/v1.2.82...v1.2.83
 [1.2.82]: https://github.com/arul28/ADE/compare/v1.2.81...v1.2.82
 [1.2.81]: https://github.com/arul28/ADE/compare/v1.2.80...v1.2.81
