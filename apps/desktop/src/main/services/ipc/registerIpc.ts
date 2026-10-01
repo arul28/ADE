@@ -407,6 +407,12 @@ import type {
   UpdateBranchArgs,
   UpdateBranchResult,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -11999,6 +12005,48 @@ export function registerIpc({
       ctx.prPollingService.poke();
       return result;
     },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatSession,
+    async (_event, arg: LinkPrChatSessionArgs): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const result = ctx.prService.linkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsUnlinkChatSession,
+    async (_event, arg: UnlinkPrChatSessionArgs): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const result = ctx.prService.unlinkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatStack,
+    async (_event, arg: LinkPrChatStackArgs): Promise<{ ok: boolean; linked: number }> => {
+      const ctx = ensurePrMutationContext();
+      const result = ctx.prService.linkChatStack(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsListChatSessionsForPr,
+    async (_event, arg: ListPrChatSessionsArgs): Promise<PrChatSessionLink[]> =>
+      ensurePrReadContext().prService.listChatSessionsForPr(arg),
+  );
+
+  ipcMain.handle(
+    IPC.prsGetStackLinkOffer,
+    async (_event, arg: { sessionId: string; prId?: string | null }): Promise<StackLinkOffer | null> =>
+      ensurePrReadContext().prService.getStackLinkOffer(arg),
   );
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> =>

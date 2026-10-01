@@ -1837,6 +1837,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
     $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
+    $ ade prs link-chat --pr <pr> --session <id>    Link a pull request to a chat
+    $ ade prs unlink-chat --pr <pr> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -7282,6 +7284,29 @@ function buildPrPlan(args: string[]): CliPlan {
             laneId: requireValue(laneId, "laneId"),
             prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
           }),
+        ),
+      ],
+    };
+  }
+  if (sub === "link-chat" || sub === "unlink-chat") {
+    const sessionId = requireValue(readValue(args, ["--session", "--session-id", "--chat"]), "sessionId");
+    const linkedPrId = requireValue(
+      prId ?? readValue(args, ["--pr", "--pr-id"]) ?? firstPositional(args),
+      "prId",
+    );
+    const input: JsonObject = { prId: linkedPrId, sessionId };
+    if (sub === "link-chat" && readFlag(args, ["--cross-lane", "--allow-cross-lane"])) {
+      input.allowCrossLane = true;
+    }
+    return {
+      kind: "execute",
+      label: sub === "link-chat" ? "PR link chat" : "PR unlink chat",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          sub === "link-chat" ? "linkChatSession" : "unlinkChatSession",
+          collectGenericObjectArgs(args, input),
         ),
       ],
     };
