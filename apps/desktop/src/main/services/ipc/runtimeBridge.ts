@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import { BrowserWindow, dialog, ipcMain, powerMonitor, type WebContents } from "electron";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -18,6 +18,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -49,6 +50,8 @@ import type {
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
+import { readProjectIconForUpload } from "../projects/projectIconResolver";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
@@ -987,6 +990,52 @@ export function registerRuntimeBridge({
         typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) throw new Error("Remote project path is required.");
       return await remoteConnectionService.getProjectDetail(id, rootPath);
+    },
+  );
+
+  // Pick an image on THIS machine and store it as the icon of a project that
+  // lives on the remote host, so every device listing that host sees it.
+  ipcMain.handle(
+    IPC.remoteRuntimeChooseProjectIcon,
+    async (
+      event,
+      arg: { id: string; rootPath: string },
+    ): Promise<ProjectIcon | null> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Remote project path is required.");
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options: Electron.OpenDialogOptions = {
+        title: "Choose project icon",
+        properties: ["openFile"],
+        filters: [{ name: "Images", extensions: [...PROJECT_ICON_DIALOG_EXTENSIONS] }],
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      const selectedPath = result.canceled ? undefined : result.filePaths[0];
+      if (!selectedPath) return null;
+
+      return await remoteConnectionService.setProjectIcon(
+        id,
+        rootPath,
+        await readProjectIconForUpload(selectedPath),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeRemoveProjectIcon,
+    async (
+      _event,
+      arg: { id: string; rootPath: string },
+    ): Promise<ProjectIcon | null> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Remote project path is required.");
+      return await remoteConnectionService.removeProjectIcon(id, rootPath);
     },
   );
 

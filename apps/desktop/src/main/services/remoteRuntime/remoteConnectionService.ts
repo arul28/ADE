@@ -7,6 +7,8 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
+  RemoteRuntimeProjectIconUpload,
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
@@ -45,7 +47,7 @@ import {
   capRemoteRuntimeErrorDetail,
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
-import { coerceProjects } from "./remoteBootstrap";
+import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
 import {
   parseRemoteAttachmentUploadTicket,
   uploadRemoteAttachment,
@@ -923,6 +925,76 @@ export class RemoteConnectionService {
       "projects.getDetail",
       { rootPath },
     )) as ProjectDetail;
+  }
+
+  /**
+   * Store a new icon for a project on the host machine, so every device that
+   * lists the host's projects sees it. Returns the icon as the host now
+   * resolves it and patches the cached project list so renderers update.
+   */
+  async setProjectIcon(
+    targetId: string,
+    rootPath: string,
+    upload: RemoteRuntimeProjectIconUpload,
+  ): Promise<ProjectIcon | null> {
+    const value = await this.callProjectIconMethod(targetId, "projects.setIcon", {
+      rootPath,
+      fileName: upload.fileName,
+      mimeType: upload.mimeType,
+      dataBase64: upload.dataBase64,
+    });
+    const icon = coerceProjectIcon(value);
+    this.patchProjectIcon(targetId, rootPath, icon);
+    return icon;
+  }
+
+  /** Clear a host project's custom icon; returns the icon the host falls back to. */
+  async removeProjectIcon(
+    targetId: string,
+    rootPath: string,
+  ): Promise<ProjectIcon | null> {
+    const value = await this.callProjectIconMethod(targetId, "projects.removeIcon", { rootPath });
+    const icon = coerceProjectIcon(value);
+    this.patchProjectIcon(targetId, rootPath, icon);
+    return icon;
+  }
+
+  private async callProjectIconMethod(
+    targetId: string,
+    method: "projects.setIcon" | "projects.removeIcon",
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const target = this.requireTarget(targetId);
+    const unsupported = () =>
+      this.statusById.get(target.id)?.capabilities?.machineProjects?.setIcon === false;
+    const updateMessage = `Update ADE on ${target.name || target.hostname} to change its icon.`;
+    // Known-old host: say so without a round trip.
+    if (unsupported()) throw new Error(updateMessage);
+    try {
+      return await this.callMachine(target, method, params, {
+        // Writes are not idempotent from the caller's view; never replay.
+        retryOnConnectionError: false,
+      });
+    } catch (error) {
+      // The first call may be what connected us and learned the capability.
+      if (unsupported()) throw new Error(updateMessage);
+      throw error;
+    }
+  }
+
+  private patchProjectIcon(
+    targetId: string,
+    rootPath: string,
+    icon: ProjectIcon | null,
+  ): void {
+    const current = this.statusById.get(targetId);
+    const projects = current?.projects;
+    if (!projects?.some((project) => project.rootPath === rootPath)) return;
+    this.mergeStatus(targetId, {
+      projects: projects.map((project) =>
+        project.rootPath === rootPath ? { ...project, icon } : project
+      ),
+    });
   }
 
   async getProjectWorkSummary(

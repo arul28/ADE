@@ -16,8 +16,6 @@ export const Z_LAYERS = {
   chatDraftDeparture: 79,
   /** The first-message handoff animation above the departing draft chrome. */
   chatFirstMessageHandoff: 80,
-  /** Project-tab machine menu, below the header sheets and app popovers. */
-  tabMenu: 90,
   /** Anchored popovers and menus: the model picker, the reasoning-effort picker. */
   popover: 100,
   /** The app sidebar and anchored popovers share their existing content layer. */

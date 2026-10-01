@@ -614,6 +614,7 @@ import type {
   ProjectConfigValidationResult,
   ProjectInfo,
   OpenProjectBinding,
+  ProjectTabAdoptRequest,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -4309,9 +4310,32 @@ const adeBridge = {
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
-      rootPath: string,
+      binding: OpenProjectBinding,
     ): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
-      ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { rootPath }),
+      ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { binding }),
+    /** Chrome-style project tab drag: start pulls the tab into its own window. */
+    projectTabDragStart: async (args: {
+      binding: OpenProjectBinding;
+      grab: { x: number; y: number };
+      moveSource: boolean;
+      point: { x: number; y: number };
+    }): Promise<{ windowId: number | null }> =>
+      ipcRenderer.invoke(IPC.appProjectTabDragStart, args),
+    projectTabDragMove: (point: { x: number; y: number }): void => {
+      ipcRenderer.send(IPC.appProjectTabDragMove, point);
+    },
+    projectTabDragEnd: async (
+      point: { x: number; y: number } | null,
+    ): Promise<{ merged: boolean; intoSender: boolean }> =>
+      ipcRenderer.invoke(IPC.appProjectTabDragEnd, { point }),
+    onAdoptProjectTab: (cb: (request: ProjectTabAdoptRequest) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: ProjectTabAdoptRequest,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appAdoptProjectTab, listener);
+      return () => ipcRenderer.removeListener(IPC.appAdoptProjectTab, listener);
+    },
     closeWindow: async (
       windowId?: number | null,
     ): Promise<{ closed: boolean }> =>
@@ -4791,6 +4815,16 @@ const adeBridge = {
       rootPath: string,
     ): Promise<ProjectDetail> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetProjectDetail, { id, rootPath }),
+    chooseProjectIcon: async (
+      id: string,
+      rootPath: string,
+    ): Promise<ProjectIcon | null> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeChooseProjectIcon, { id, rootPath }),
+    removeProjectIcon: async (
+      id: string,
+      rootPath: string,
+    ): Promise<ProjectIcon | null> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectIcon, { id, rootPath }),
     getDefaultParentDir: async (id: string): Promise<string> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
     getHandoffStoragePreflight: async (

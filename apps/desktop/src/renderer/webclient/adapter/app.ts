@@ -130,13 +130,24 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       if (typeof window !== "undefined") window.open(window.location.href, "_blank", "noopener,noreferrer");
       return { windowId: null, project: state.getProject() };
     },
-    async openProjectInNewWindow(rootPath: string) {
+    async openProjectInNewWindow({ rootPath }: { rootPath: string }) {
       if (typeof window !== "undefined") {
         const url = new URL(window.location.href);
         url.searchParams.set("projectRoot", rootPath);
         window.open(url.toString(), "_blank", "noopener,noreferrer");
       }
       return { windowId: null };
+    },
+    // The hosted client has no OS windows, so a tab can only be reordered.
+    async projectTabDragStart() {
+      return { windowId: null };
+    },
+    projectTabDragMove() {},
+    async projectTabDragEnd() {
+      return { merged: false, intoSender: false };
+    },
+    onAdoptProjectTab() {
+      return () => {};
     },
     async closeWindow() {
       if (typeof window !== "undefined") window.close();

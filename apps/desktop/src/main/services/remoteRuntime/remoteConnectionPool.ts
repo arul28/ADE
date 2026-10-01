@@ -199,6 +199,8 @@ const MACHINE_PROJECT_METHOD_CAPABILITY = new Map<string, RemoteRuntimeMachinePr
   ["projects.create", "create"],
   ["projects.clone", "clone"],
   ["projects.listMyGitHubRepos", "listMyGitHubRepos"],
+  ["projects.setIcon", "setIcon"],
+  ["projects.removeIcon", "setIcon"],
 ]);
 
 const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapability, string> = {
@@ -210,6 +212,7 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
   create: "creating remote projects",
   clone: "cloning remote projects",
   listMyGitHubRepos: "listing GitHub repositories on the remote machine",
+  setIcon: "changing project icons",
 };
 
 function shouldRetryRemoteRuntimeAction(

@@ -395,6 +395,20 @@ export type OpenProjectBinding =
       iconDataUrl?: string | null;
     };
 
+/**
+ * Sent to a window when a project tab dragged out of another window is
+ * released over its tab strip. `screenOffsetX` is the release point measured
+ * from the target window's left edge in screen points, so the tab lands where
+ * the user dropped it.
+ */
+export type ProjectTabAdoptRequest = {
+  binding: OpenProjectBinding;
+  screenOffsetX: number;
+};
+
+/** A project binding on another machine. */
+export type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
+
 export type AppNavigationTarget =
   | {
       kind: "work" | "chat";

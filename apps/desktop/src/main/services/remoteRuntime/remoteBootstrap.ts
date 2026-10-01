@@ -118,6 +118,12 @@ const MACHINE_PROJECT_CAPABILITIES = [
   "listMyGitHubRepos",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
+// Cosmetic capabilities: normalized like the rest, but a host without them is
+// not worth a compatibility warning. The action itself names the update.
+const OPTIONAL_MACHINE_PROJECT_CAPABILITIES = [
+  "setIcon",
+] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
+
 type RemoteRuntimeInitializeInfo = {
   version: string | null;
   packageChannel: string | null;
@@ -145,7 +151,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
     ? capabilities.machineProjects
     : {};
   const normalizedMachineProjects: RemoteRuntimeCapabilities["machineProjects"] = {};
-  for (const capability of MACHINE_PROJECT_CAPABILITIES) {
+  for (const capability of [...MACHINE_PROJECT_CAPABILITIES, ...OPTIONAL_MACHINE_PROJECT_CAPABILITIES]) {
     normalizedMachineProjects[capability] = machineProjects[capability] === true;
   }
   const version = typeof runtimeInfo.version === "string" && runtimeInfo.version.trim()
@@ -1863,7 +1869,7 @@ async function cleanupStaleRemoteUploadArtifacts(
   ].join("; ")).catch(() => undefined);
 }
 
-function coerceProjectIcon(value: unknown): ProjectIcon | null {
+export function coerceProjectIcon(value: unknown): ProjectIcon | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const dataUrl = typeof record.dataUrl === "string" ? record.dataUrl : null;

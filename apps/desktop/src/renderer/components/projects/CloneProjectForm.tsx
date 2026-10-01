@@ -66,6 +66,8 @@ export type CloneProjectFormProps = {
     input?: ListMyGitHubReposInput,
   ) => Promise<ListMyGitHubReposResult>;
   allowTokenSetup?: boolean;
+  /** Fills the repository URL, e.g. when cloning a project from another machine. */
+  initialUrl?: string;
 };
 
 type Tab = "url" | "my-repos";
@@ -178,6 +180,7 @@ export function CloneProjectForm({
   cloneProject,
   listMyRepos,
   allowTokenSetup = true,
+  initialUrl,
 }: CloneProjectFormProps) {
   const [tab, setTab] = useState<Tab>("url");
   const [defaultParentDir, setDefaultParentDir] = useState<string>("");
@@ -225,6 +228,7 @@ export function CloneProjectForm({
           cloneProject={clone}
           onCancel={onCancel}
           onCloned={onCloned}
+          initialUrl={initialUrl}
         />
       ) : (
         <MyReposTab
@@ -309,7 +313,9 @@ function UrlTab({
   cloneProject,
   onCancel,
   onCloned,
+  initialUrl,
 }: {
+  initialUrl?: string;
   defaultParentDir: string;
   browseDirectories: (
     input: ProjectBrowseInput,
@@ -325,7 +331,7 @@ function UrlTab({
     projectId?: string;
   }) => void;
 }) {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(initialUrl ?? "");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [parentDir, setParentDir] = useState("");

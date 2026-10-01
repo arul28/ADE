@@ -1,5 +1,10 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
+import {
+  PROJECT_ICON_MIME_TYPES_BY_EXTENSION,
+  PROJECT_ICON_TYPE_ERROR,
+  REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES,
+} from "../../desktop/src/shared/projectIcons";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -43,7 +48,9 @@ import {
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
+  importProjectIconBytes,
   REMOTE_ICON_MAX_DATA_URL_BYTES,
+  removeProjectIconOverride,
   resolveRemoteProjectIcon,
 } from "./services/projects/projectIconResolver";
 import {
@@ -376,6 +383,8 @@ const RUNTIME_METHODS = new Set([
   "projects.setCatalogVisibility",
   "projects.remove",
   "projects.touch",
+  "projects.setIcon",
+  "projects.removeIcon",
   "projects.browseDirectories",
   "projects.getDetail",
   "projects.getWorkSummary",
@@ -432,6 +441,85 @@ function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
+}
+
+function requireRegisteredProjectForIcon(
+  projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
+  params: Record<string, unknown>,
+  method: string,
+): { rootPath: string } {
+  const rootPath = readOptionalString(params.rootPath);
+  if (!rootPath) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `${method} requires rootPath.`,
+    );
+  }
+  const project = projectRegistry.findByRootPath(rootPath);
+  if (!project) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `${method}: no project is registered at ${rootPath} on this machine.`,
+    );
+  }
+  return project;
+}
+
+function readProjectIconUpload(params: Record<string, unknown>): {
+  fileName: string;
+  data: Buffer;
+} {
+  const fileName = readOptionalString(params.fileName);
+  if (!fileName) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.setIcon requires fileName.",
+    );
+  }
+  // Only the last path segment matters; the extension picks the format.
+  const baseName = fileName.split(/[\\/]/).pop() ?? "";
+  const extension = path.extname(baseName).toLowerCase();
+  const allowedMimeTypes = PROJECT_ICON_MIME_TYPES_BY_EXTENSION[extension];
+  if (!allowedMimeTypes) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      PROJECT_ICON_TYPE_ERROR,
+    );
+  }
+  const mimeType = readOptionalString(params.mimeType)?.toLowerCase();
+  if (mimeType && !allowedMimeTypes.includes(mimeType)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `Project icon type ${mimeType} does not match a ${extension} file.`,
+    );
+  }
+  const dataBase64 = typeof params.dataBase64 === "string" ? params.dataBase64.trim() : "";
+  // Reject before decoding so an oversized upload is never materialized.
+  // base64 expands 3 bytes to 4 characters.
+  if (!dataBase64 || dataBase64.length > Math.ceil(REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / 3) * 4) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      dataBase64
+        ? `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`
+        : "projects.setIcon requires dataBase64.",
+    );
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.setIcon dataBase64 is not valid base64.",
+    );
+  }
+  const data = Buffer.from(dataBase64, "base64");
+  if (data.length === 0 || data.length > REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      data.length === 0
+        ? "Project icon file is empty."
+        : `Project icon must be ${REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller.`,
+    );
+  }
+  return { fileName: baseName, data };
 }
 
 function readProjectBrowseInput(
@@ -525,6 +613,12 @@ const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
 const LIST_ICON_COUNT_BUDGET = 24;
 const LIST_ICON_BYTE_BUDGET = 512 * 1024;
 const LIST_ICON_RESOLVE_BUDGET_MS = 750;
+/**
+ * After a set or remove, one icon is resolved for one caller who is waiting
+ * on it, so a cold worker start (slow on Windows) must not turn a saved icon
+ * into an empty reply.
+ */
+const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
 
 /**
  * The one "Update & restart" run this process will do at a time.
@@ -1520,6 +1614,7 @@ export function createMultiProjectRpcRequestHandler(
             create: true,
             clone: true,
             listMyGitHubRepos: true,
+            setIcon: true,
           },
           personalChats: personalChatScope.capabilities(),
           // An older runtime omits this key entirely, which is the SDK's cue to
@@ -2052,6 +2147,36 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return projectRegistry.touch(projectId);
+    }
+
+    if (method === "projects.setIcon") {
+      const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      const upload = readProjectIconUpload(params);
+      try {
+        importProjectIconBytes(project.rootPath, upload.fileName, upload.data);
+      } catch (error) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      // Resolve through the same worker path `projects.list` uses, so the
+      // caller gets exactly the icon every other device will see.
+      return await resolveIconBeforeDeadline(
+        resolveRemoteProjectIconInWorker,
+        project.rootPath,
+        ICON_WRITE_RESOLVE_BUDGET_MS,
+      );
+    }
+
+    if (method === "projects.removeIcon") {
+      const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      removeProjectIconOverride(project.rootPath);
+      return await resolveIconBeforeDeadline(
+        resolveRemoteProjectIconInWorker,
+        project.rootPath,
+        ICON_WRITE_RESOLVE_BUDGET_MS,
+      );
     }
 
     if (method === "projects.browseDirectories") {

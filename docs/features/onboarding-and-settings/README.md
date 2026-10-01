@@ -327,7 +327,11 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
   — projectless welcome and project-picker surface. It lists recent local and
   remote projects, opens or forgets entries, and launches project creation,
-  clone, or folder selection before a project-bound route is available.
+  clone, or folder selection before a project-bound route is available. Each
+  row carries the same right-click project menu as a project tab — change icon,
+  clone to this machine, pin or unpin, and copy path — and a project with no
+  checkout on this machine offers **Clone locally**. `projectMenuEntries.ts`
+  holds the rows both surfaces share.
 - `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
   — name plus a first-class location row (default parent, Change folder,
   editable path). Create opens Work; it does not show a success interstitial
