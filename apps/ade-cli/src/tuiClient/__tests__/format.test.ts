@@ -10,6 +10,7 @@ import {
   webSearchResultPreviewLines,
 } from "../format";
 import { formatRelativePastTime } from "../relativeTime";
+import { setTuiThreadEntityFacts } from "../threadEntityRuns";
 import { terminalReasonLabel } from "../terminalReason";
 import { spawnParentGoneNoticeMessage } from "../../../../desktop/src/shared/types/chat";
 
@@ -177,6 +178,34 @@ describe("renderChatLines", () => {
     expect(runs[0]).toMatchObject({ text: "bold ", bold: true });
     expect(runs[1]).toMatchObject({ text: "both", bold: true, italic: true });
     expect(runs[2]).toMatchObject({ text: " rest", bold: true });
+  });
+
+  it("draws the ADE entities a reply names as linked runs, once, without bleeding into prose", () => {
+    const laneId = "4c90a638-607c-45fd-80bf-11df1666b8a7";
+    setTuiThreadEntityFacts({
+      lanes: [{ id: laneId, name: "opencode-harness-audit", color: "#f472b6" }],
+      chats: [{ id: "6f595a93-991e-4b6d-bc42-40dc59425cbc", title: "Audit findings" }],
+    });
+    try {
+      const runs = parseInlineRuns(
+        `Lane \`opencode-harness-audit\` (\`${laneId}\`), chat \`6f595a93\`, model \`claude-opus-5-5\`, at \`example.com\` \`2\`, PR #1407 done.`,
+      );
+      const text = runs.map((run) => run.text).join("");
+      // The echoed id collapses into the one lane run; ids become names.
+      expect(text).toBe("Lane opencode-harness-audit, chat Audit findings, model Claude Opus 5.5, at example.com 2, PR #1407 done.");
+      const lane = runs.find((run) => run.text === "opencode-harness-audit")!;
+      expect(lane).toMatchObject({ color: "#f472b6", link: true });
+      expect(lane.href).toContain(laneId);
+      // Prose right after an unlinked entity run (the model) keeps its own style.
+      expect(runs.find((run) => run.text === "Claude Opus 5.5")?.color).toBeTruthy();
+      expect(runs.find((run) => run.text.startsWith(", at"))?.color).toBeUndefined();
+      // A domain is not a file, so the number after it is not a file link; a
+      // repo-less PR gets no link that would open nothing.
+      expect(runs.find((run) => run.text === "2")?.link).toBeFalsy();
+      expect(runs.find((run) => run.text === "#1407")?.link).toBeFalsy();
+    } finally {
+      setTuiThreadEntityFacts({ lanes: [], chats: [] });
+    }
   });
 
   it("labels an approval_request question as a question, not an approval", () => {

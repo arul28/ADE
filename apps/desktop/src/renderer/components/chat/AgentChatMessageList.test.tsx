@@ -640,12 +640,12 @@ describe("AgentChatMessageList transcript rendering", () => {
   // Proof used to be appended after every row as a permanently open thread
   // footer. With no transcript rows it is now a compact chronological capture
   // row that starts collapsed.
-  it("renders proof attached to an empty chat as a collapsed capture row", () => {
+  it("renders proof attached to an empty chat as one open capture row", () => {
     const rendered = renderMessageList([], { proofArtifacts: [transcriptProofArtifact] });
 
     expect(screen.queryByText("Proof collected in this chat")).toBeNull();
     expect(rendered.container.querySelector("[data-chat-proof-timeline]")).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("chips proof onto the turn rule of the turn that captured it", () => {
@@ -713,7 +713,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
 
     expect(screen.queryByRole("button", { name: /1 proof/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Proof added/ }).getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps idle proof before a later turn and never attributes it to that turn", () => {
@@ -1214,11 +1214,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     const view = renderMessageList(events, { showStreamingIndicator: true });
     for (const text of ["I'll pull the description.", "ADE is a workspace."]) {
       const footer = footerOf(text);
-      // In flow, not pinned over the text.
-      expect(footer.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+      // Under the prose, never pinned over the end of the text.
       expect(footer.parentElement!.className).not.toContain("pr-7");
       expect(within(footer).getByRole("button", { name: "Copy message" })).toBeTruthy();
     }
+    // The turn's latest reply keeps its strip in flow; an earlier narration
+    // line floats its strip so short progress lines are not spread apart.
+    expect(footerOf("ADE is a workspace.").className).not.toMatch(/(^|\s)absolute(\s|$)/);
+    expect(footerOf("I'll pull the description.").className).toMatch(/(^|\s)absolute(\s|$)/);
 
     // The folded turn's answer keeps the same footer, now with Copy turn.
     view.rerender(
@@ -1367,7 +1370,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/THE_END/)).toBeNull();
   });
 
-  it("keeps compact display text while exposing the full user prompt", async () => {
+  it("shows what the user typed, not the expanded prompt the provider received", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1382,10 +1385,11 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Pearl UI audit handoff")).toBeTruthy();
-      expect(screen.getByText("Full prompt")).toBeTruthy();
     });
-    fireEvent.click(screen.getByText("Full prompt"));
-    expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
+    // The expanded provider prompt (mention blocks, handoff detail) is not part
+    // of the user's bubble.
+    expect(screen.queryByText("Full handoff prompt with all implementation details.")).toBeNull();
+    expect(document.body.textContent).not.toContain("implementation details");
   });
 
   it("hides the full handoff prompt when handoff metadata marks it internal", async () => {
@@ -5666,6 +5670,19 @@ describe("turn-level file-change de-clutter", () => {
         writeEntry("entry-1", "/root/apps/desktop/src/main/services/lanes/laneService.ts", 1, 0) as never,
       ]),
     ).toBe("Editing laneService.ts");
+  });
+
+  it.each([
+    ["a running command", "running_command", [{ entryKind: "command", status: "running", command: "pnpm   test\n  --run" }], "Running pnpm test --run"],
+    ["a running shell tool", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Bash", args: { command: "git status" } }], "Running git status"],
+    ["a running read", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/src/foo.ts" } }], "Read foo.ts"],
+    ["the newest running entry", "tool_calling", [
+      { entryKind: "tool", status: "running", toolName: "Read", args: { file_path: "/repo/old.ts" } },
+      { entryKind: "command", status: "running", command: "ls" },
+    ], "Running ls"],
+    ["only finished entries", "tool_calling", [{ entryKind: "command", status: "completed", command: "ls" }], "Calling tool"],
+  ])("names the wait behind a tool or command activity: %s", (_case, activity, entries, expected) => {
+    expect(resolveWorkingIndicatorLabel(activity, [], entries as never)).toBe(expected);
   });
 
   it("labels every activity the runtimes emit", () => {
