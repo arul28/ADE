@@ -78,6 +78,13 @@ type AutoResumeScheduledWorkLike = {
   status?: AutoResumeScheduledWorkStatus | null;
 };
 
+/** A row still waiting to deliver: neither finished nor cancelled. */
+function isPendingScheduledWorkStatus(
+  status: AutoResumeScheduledWorkStatus | null | undefined,
+): boolean {
+  return status !== "done" && status !== "completed" && status !== "cancelled";
+}
+
 /**
  * An ADE-created auto-resume row that has not finished or been cancelled — the
  * one the main process sweeps on user activity and the one the renderer offers
@@ -86,9 +93,7 @@ type AutoResumeScheduledWorkLike = {
 export function isPendingAutoResumeScheduledWork(
   schedule: AutoResumeScheduledWorkLike | null | undefined,
 ): boolean {
-  if (!isAutoResumeScheduledWork(schedule)) return false;
-  const status = schedule?.status;
-  return status !== "done" && status !== "completed" && status !== "cancelled";
+  return isAutoResumeScheduledWork(schedule) && isPendingScheduledWorkStatus(schedule?.status);
 }
 
 /**
@@ -221,6 +226,60 @@ export function sessionAutoContinueAtUsageLimit(
  * later fires an unattended prompt into the chat.
  */
 export const HOST_ONLY_CHAT_METADATA_KEYS = ["scheduledWake", "usageLimitResume"] as const;
+
+/**
+ * Resume after an ADE update restart.
+ *
+ * A different trigger on the same mechanism. The user accepted an update while
+ * chats had a live turn, so ADE arms one durable row per chat that asks the
+ * agent to continue the interrupted task once the brain is back.
+ *
+ * This is a SEPARATE source tag, not `auto_resume_limit`. The usage-limit sweep
+ * also clears that chat's usage-limit resume state and posts its own notices,
+ * and an update must not touch any of that. Two tags keep the two sweeps from
+ * reaching into each other's chat state.
+ */
+export const UPDATE_RESUME_SCHEDULED_WORK_SOURCE = "update_restart";
+
+/**
+ * Fires on the restart boundary. The turn did not fail; the machine went away
+ * under it, so the agent needs the reason as much as the instruction.
+ */
+export const UPDATE_RESUME_PROMPT =
+  "ADE restarted to install an update, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
+
+export const UPDATE_RESUME_REASON = "Resume after ADE update";
+
+const UPDATE_RESUME_ID_PREFIX = "update-resume:";
+
+/**
+ * Deterministic per-chat id. A repeat arm for the same chat upserts this row
+ * instead of stacking a second resume.
+ */
+export function updateResumeScheduleId(sessionId: string): string {
+  return `${UPDATE_RESUME_ID_PREFIX}${sessionId}`;
+}
+
+/**
+ * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
+ * is no pre-tag history to fall back on — the source was introduced with the
+ * tag — so the id prefix is not a recogniser here, only the deterministic id.
+ */
+export function isUpdateResumeScheduledWork(
+  schedule: { id?: string | null; source?: string | null } | null | undefined,
+): boolean {
+  return schedule?.source === UPDATE_RESUME_SCHEDULED_WORK_SOURCE;
+}
+
+/**
+ * An update-resume row that has not finished or been cancelled — the one the
+ * host cancels the moment the user touches the chat themselves.
+ */
+export function isPendingUpdateResumeScheduledWork(
+  schedule: AutoResumeScheduledWorkLike | null | undefined,
+): boolean {
+  return isUpdateResumeScheduledWork(schedule) && isPendingScheduledWorkStatus(schedule?.status);
+}
 
 /**
  * Copies `metadata` without the host-only keys. Returns `undefined` when there

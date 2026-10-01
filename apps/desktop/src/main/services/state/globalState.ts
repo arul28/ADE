@@ -8,6 +8,7 @@ import type {
   OpenProjectBinding,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
+  UpdateInterruptedChat,
 } from "../../../shared/types";
 import type {
   BuiltInBrowserAgentAccessMode,
@@ -55,6 +56,16 @@ export type PendingInstallUpdate = {
   targetVersion: string;
   releaseNotesUrl: string | null;
   requestedAt: string;
+  /**
+   * Chats ADE armed a "continue" row for before this install, when the user
+   * asked for it. Written by the quit that installs and read by the launch that
+   * lands it, so the post-update notice can name what came back.
+   *
+   * Lives inside `pendingInstallUpdate` on purpose: an install that fails or is
+   * declined clears the whole pending record, so a resume list can never drift
+   * onto a later, unrelated update.
+   */
+  resumedChats?: UpdateInterruptedChat[];
 };
 
 // Consecutive installs of the same version that quit without landing. The

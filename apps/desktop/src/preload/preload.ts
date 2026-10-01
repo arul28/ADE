@@ -12736,8 +12736,8 @@ const adeBridge = {
     ipcRenderer.invoke(IPC.updateSetPreferences, preferences),
   updateGetInstallImpact: (): Promise<UpdateInstallImpact> =>
     ipcRenderer.invoke(IPC.updateGetInstallImpact),
-  updateQuitAndInstall: (): Promise<boolean> =>
-    ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  updateQuitAndInstall: (options?: { resumeChats?: boolean }): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.updateQuitAndInstall, options),
   updateCancelAutoApply: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.updateCancelAutoApply),
   updateDismissInstalledNotice: () =>

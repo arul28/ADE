@@ -1008,6 +1008,34 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("does not deliver a one-shot that is cancelled while it is being marked fired", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const schedulerRef: { current: ReturnType<typeof createChatScheduledWorkScheduler> | null } = { current: null };
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      onTransition: async (schedule, status) => {
+        // A user message (or a superseding schedule) can cancel the row in the
+        // window between the fired transition and dispatch.
+        if (status === "fired") await schedulerRef.current?.cancel(schedule.id);
+      },
+    });
+    schedulerRef.current = scheduler;
+    await scheduler.upsert(wakeup({ fireAt: START }));
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]?.status).toBe("cancelled");
+    scheduler.dispose();
+  });
+
   it("claims only the provider schedule named by an explicit native signal", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

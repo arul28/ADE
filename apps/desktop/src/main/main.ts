@@ -247,6 +247,7 @@ import type {
   OpenProjectBinding,
   RemoteOpenProjectBinding,
   AppNavigationRequest,
+  AgentChatInterruptedChatRef,
   AttentionItem,
   AttentionNotchAcknowledgeRequest,
   AttentionNotchSettings,
@@ -272,6 +273,7 @@ import type {
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
+  UpdateInterruptedChat,
 } from "../shared/types";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
@@ -2842,9 +2844,12 @@ app.whenReady().then(async () => {
     runtimeServiceUninstalledForUpdate = false;
     updateLogger.info("autoUpdate.runtime_service_reinstalled_after_abort", payload);
   };
-  const prepareAutoUpdateInstall = async (): Promise<void> => {
+  const prepareAutoUpdateInstall = async (
+    resumeRequested: boolean,
+  ): Promise<UpdateInterruptedChat[]> => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
+      resumeRequested,
     });
     // Windows are still open here. The quit that follows closes them, and each
     // closed handler would otherwise save an empty tab list over this snapshot.
@@ -2855,11 +2860,17 @@ app.whenReady().then(async () => {
     localRuntimePool.beginUpdateWindow("prepare_quit_and_install");
     runtimeServiceUninstalledForUpdate = false;
     autoUpdateInstallRollbackReason = null;
+    // Read the interrupted chats while the runtime is definitely reachable;
+    // the service uninstall below can take the brain down. Nothing is armed
+    // here — the list is persisted with the pending install and only becomes a
+    // resume on the launch that actually lands it. That is what makes an
+    // aborted handoff harmless: no install, no resume rows.
+    const interruptedChats = resumeRequested ? await collectInterruptedChats() : [];
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
       });
-      return;
+      return interruptedChats;
     }
     const result = await uninstallRuntimeService();
     if (!result.ok) {
@@ -2882,11 +2893,12 @@ app.whenReady().then(async () => {
     runtimeServiceUninstalledForUpdate = true;
     if (autoUpdateInstallRollbackReason) {
       await reinstallRuntimeServiceAfterUpdateAbort(autoUpdateInstallRollbackReason);
-      return;
+      return interruptedChats;
     }
     updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
       serviceManaged: true,
     });
+    return interruptedChats;
   };
   const rollbackAutoUpdateInstall = async (reason: string): Promise<void> => {
     autoUpdateInstallRollbackReason = reason;
@@ -7680,6 +7692,120 @@ app.whenReady().then(async () => {
     return Array.from(new Set(labels));
   };
 
+  /**
+   * Runs one chat action across every project runtime this machine knows
+   * about: in-process services in test, the runtime action channel in packaged
+   * builds. Best-effort — an unreachable runtime contributes nothing.
+   */
+  const forEachProjectRuntime = async (
+    run: (target: {
+      projectName: string;
+      projectRoot: string;
+      inProcessService: AppContext["agentChatService"] | null;
+    }) => Promise<void>,
+  ): Promise<void> => {
+    if (shouldUseInProcessProjectRuntime()) {
+      for (const ctx of projectContexts.values()) {
+        await run({
+          projectName: labelForProjectRoot(ctx.project?.rootPath ?? ""),
+          projectRoot: ctx.project?.rootPath ?? "",
+          inProcessService: ctx.agentChatService,
+        });
+      }
+      return;
+    }
+    const roots = new Set<string>([
+      ...rootsBoundToWindows(),
+      ...projectContexts.keys(),
+    ]);
+    await Promise.all(Array.from(roots).map(async (root) => {
+      await run({ projectName: labelForProjectRoot(root), projectRoot: root, inProcessService: null });
+    }));
+  };
+
+  /** The chat list a chat-domain action returned, or nothing. */
+  const runtimeChatRefs = (result: unknown): AgentChatInterruptedChatRef[] => {
+    const payload = result as { chats?: AgentChatInterruptedChatRef[] } | undefined;
+    return Array.isArray(payload?.chats) ? payload.chats : [];
+  };
+
+  // Chats with a live turn on this machine right now. An ADE restart stops
+  // them mid-flight, so the install dialog names them and offers to resume.
+  const collectInterruptedChats = async (): Promise<UpdateInterruptedChat[]> => {
+    const chats: UpdateInterruptedChat[] = [];
+    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
+      try {
+        const refs = inProcessService
+          ? runtimeChatRefs(await inProcessService.listInterruptedChats())
+          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+              domain: "chat",
+              action: "listInterruptedChats",
+            })).result);
+        for (const chat of refs) {
+          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+      } catch {
+        // Best-effort probe.
+      }
+    });
+    return chats;
+  };
+
+  // Arms one durable continue row per chat the update interrupted. Called on
+  // the launch that lands an install, with the ids the previous process
+  // persisted — a freshly started brain has no live turns to discover.
+  const armUpdateResumeForSessions = async (
+    sessionIds: readonly string[],
+  ): Promise<UpdateInterruptedChat[]> => {
+    if (sessionIds.length === 0) return [];
+    const armed: UpdateInterruptedChat[] = [];
+    await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
+      try {
+        const refs = inProcessService
+          ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
+          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+              domain: "chat",
+              action: "armUpdateResume",
+              args: { sessionIds },
+            })).result);
+        for (const chat of refs) {
+          armed.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+      } catch (error) {
+        localRuntimeLogger.warn("update_resume.arm_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    return armed;
+  };
+
+  /**
+   * Drops the sessions that actually armed from the persisted resume list, so
+   * the next launch does not arm them a second time. Sessions whose project was
+   * not reachable stay on the list and get another attempt on a later launch.
+   */
+  const consumeArmedResumeChats = (sessionIds: readonly string[]): void => {
+    if (sessionIds.length === 0) return;
+    const armed = new Set(sessionIds);
+    try {
+      const state = readGlobalState(globalStatePath);
+      const installed = state.recentlyInstalledUpdate;
+      const remaining = (installed?.resumedChats ?? []).filter((chat) => !armed.has(chat.sessionId));
+      if (!installed || remaining.length === (installed.resumedChats?.length ?? 0)) return;
+      const { resumedChats: _armed, ...installedWithoutResume } = installed;
+      writeGlobalState(globalStatePath, {
+        ...state,
+        recentlyInstalledUpdate: remaining.length > 0
+          ? { ...installed, resumedChats: remaining }
+          : installedWithoutResume,
+      });
+    } catch {
+      // Best-effort: a failed consume only means a later launch retries.
+    }
+  };
+
   // Live-connection probe shown before an update install or quit. Mirrors the
   // lane-delete quit probe: in-process services in dev, runtime actions against
   // the brain in packaged builds. Best-effort — an unreachable runtime simply
@@ -7724,7 +7850,13 @@ app.whenReady().then(async () => {
         deviceId,
         deviceName,
       })),
+      interruptedChats: await collectInterruptedChats(),
     };
+  };
+
+  const EMPTY_UPDATE_INSTALL_IMPACT: UpdateInstallImpact = {
+    connectedPhones: [],
+    interruptedChats: [],
   };
 
   // Quit/update dialogs are synchronous, so cap how long the impact probe can
@@ -7733,9 +7865,9 @@ app.whenReady().then(async () => {
     timeoutMs = 1_500,
   ): Promise<UpdateInstallImpact> => {
     return await Promise.race([
-      collectUpdateInstallImpact().catch((): UpdateInstallImpact => ({ connectedPhones: [] })),
+      collectUpdateInstallImpact().catch((): UpdateInstallImpact => EMPTY_UPDATE_INSTALL_IMPACT),
       new Promise<UpdateInstallImpact>((resolve) => {
-        const timer = setTimeout(() => resolve({ connectedPhones: [] }), timeoutMs);
+        const timer = setTimeout(() => resolve(EMPTY_UPDATE_INSTALL_IMPACT), timeoutMs);
         timer.unref?.();
       }),
     ]);
@@ -9165,6 +9297,18 @@ app.whenReady().then(async () => {
       }
     }
   }
+  // The launch that lands an install is the only one that arms a resume. The
+  // previous process persisted the chats it interrupted into the pending
+  // install, and reconcile has just moved them onto `recentlyInstalledUpdate`.
+  // Arming here rather than at quit is what keeps a failed install harmless:
+  // no landed install, no resumed chats, no rows.
+  const resumedAfterUpdate = savedUpdateState.recentlyInstalledUpdate?.resumedChats ?? [];
+  if (resumedAfterUpdate.length > 0) {
+    void armUpdateResumeForSessions(resumedAfterUpdate.map((chat) => chat.sessionId))
+      .then((armed) => consumeArmedResumeChats(armed.map((chat) => chat.sessionId)))
+      .catch(() => undefined);
+  }
+
   const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
   const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
     ?? restoredLocalRoots[0]

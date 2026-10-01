@@ -55,6 +55,30 @@
   border-color: color-mix(in srgb, var(--color-error) 60%, var(--color-border));
 }
 
+/* The one checkbox option a confirm dialog can carry. */
+.ade-dialog-checkbox-content {
+  margin-top: 4px;
+}
+.ade-dialog-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-fg);
+  cursor: pointer;
+  user-select: none;
+}
+.ade-dialog-checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ade-dialog-scrim[data-state="open"],
   .ade-dialog-panel[data-state="open"] {

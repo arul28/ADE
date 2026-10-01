@@ -226,6 +226,22 @@ export type RecentlyInstalledUpdate = {
   installedAt: string;
   releaseNotesUrl: string | null;
   githubReleaseUrl: string | null;
+  /**
+   * Chats ADE armed a "continue" row for before this install. Absent when the
+   * user declined the resume, when nothing was running, or on any update that
+   * predates the field.
+   */
+  resumedChats?: UpdateInterruptedChat[];
+};
+
+/**
+ * One chat an update will interrupt: it has a live turn right now, so the
+ * restart stops it mid-flight. `title` is the chat's own name.
+ */
+export type UpdateInterruptedChat = {
+  sessionId: string;
+  title: string;
+  projectName: string;
 };
 
 /**
@@ -355,6 +371,11 @@ export type UpdateInstallImpactPhone = {
  */
 export type UpdateInstallImpact = {
   connectedPhones: UpdateInstallImpactPhone[];
+  /**
+   * Chats with a live turn right now, on this machine only. A chat on another
+   * machine is not interrupted by this update, so it never appears here.
+   */
+  interruptedChats: UpdateInterruptedChat[];
 };
 
 export type ProjectInfo = {

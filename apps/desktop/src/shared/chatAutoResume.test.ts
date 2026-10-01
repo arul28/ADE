@@ -7,8 +7,12 @@ import {
   autoResumeScheduleId,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
+  isPendingUpdateResumeScheduledWork,
+  isUpdateResumeScheduledWork,
   isUsageLimitChatError,
   sessionAutoContinueAtUsageLimit,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+  updateResumeScheduleId,
 } from "./chatAutoResume";
 
 describe("isUsageLimitChatError", () => {
@@ -120,6 +124,28 @@ describe("isPendingAutoResumeScheduledWork", () => {
     expect(isPendingAutoResumeScheduledWork({ id: "wakeup:session-a", status: "scheduled" }))
       .toBe(false);
     expect(isPendingAutoResumeScheduledWork(null)).toBe(false);
+  });
+});
+
+describe("isUpdateResumeScheduledWork", () => {
+  const row = { id: updateResumeScheduleId("session-a"), source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE } as const;
+
+  it("claims only rows tagged update_restart", () => {
+    expect(isUpdateResumeScheduledWork(row)).toBe(true);
+    // The update tag has no pre-tag history to fall back on, so the
+    // deterministic id alone is not a recogniser.
+    expect(isUpdateResumeScheduledWork({ id: updateResumeScheduleId("session-a") })).toBe(false);
+    expect(isUpdateResumeScheduledWork({ source: AUTO_RESUME_SCHEDULED_WORK_SOURCE })).toBe(false);
+    expect(isUpdateResumeScheduledWork(null)).toBe(false);
+  });
+
+  it("treats live statuses as pending and terminal ones as not", () => {
+    for (const status of ["scheduled", "paused", "fired"] as const) {
+      expect(isPendingUpdateResumeScheduledWork({ ...row, status })).toBe(true);
+    }
+    for (const status of ["done", "completed", "cancelled"] as const) {
+      expect(isPendingUpdateResumeScheduledWork({ ...row, status })).toBe(false);
+    }
   });
 });
 

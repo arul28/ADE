@@ -476,6 +476,9 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
   AgentChatCancelScheduledWorkResult,
+  AgentChatArmUpdateResumeResult,
+  AgentChatInterruptedChatRef,
+  AgentChatListInterruptedChatsResult,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
   AgentChatUsageLimitResume,
@@ -813,10 +816,15 @@ import {
   AUTO_RESUME_PROMPT,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
+  isPendingUpdateResumeScheduledWork,
   isUsageLimitChatError,
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
   stripHostOnlyChatMetadata,
+  UPDATE_RESUME_PROMPT,
+  UPDATE_RESUME_REASON,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+  updateResumeScheduleId,
   usageLimitParkedUntilMirror,
 } from "../../../shared/chatAutoResume";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
@@ -890,7 +898,7 @@ import {
   resolveScheduledWorkTiming,
 } from "../../../shared/chatScheduledWork";
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
-import { createHostSleepChipTracker } from "./hostSleepChipTracker";
+import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
   readTranscriptHistoryPage,
@@ -38389,8 +38397,14 @@ export function createAgentChatService(args: {
     // point: a fired resume must not cancel itself, and Resume now already
     // awaited its own cancel (a second one moves the epoch its failure path
     // needs to undo the swap).
-    if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
-      void autoResume.cancelForSession(sessionId, "user_message");
+    if (!metadata?.scheduledWake) {
+      if (metadata?.usageLimitResume !== "manual") {
+        void autoResume.cancelForSession(sessionId, "user_message");
+      }
+      // Typing into a chat also cancels a pending update resume, even when the
+      // send is a manual usage-limit resume: the update row has no cancel epoch
+      // to protect and would otherwise add a second continuation prompt.
+      void cancelPendingUpdateResume(sessionId);
     }
     const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
     const uuid = randomUUID();
@@ -49076,8 +49090,14 @@ export function createAgentChatService(args: {
     // dispatching, which would make its own failure path (restore the streak,
     // re-arm the row, republish the state) read as "someone newer took over"
     // and leave the chat with a live limit, no state and no schedule.
-    if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
-      void autoResume.cancelForSession(sessionId, "user_message");
+    if (!metadata?.scheduledWake) {
+      if (metadata?.usageLimitResume !== "manual") {
+        void autoResume.cancelForSession(sessionId, "user_message");
+      }
+      // Typing into a chat also cancels a pending update resume, even when the
+      // send is a manual usage-limit resume: the update row has no cancel epoch
+      // to protect and would otherwise add a second continuation prompt.
+      void cancelPendingUpdateResume(sessionId);
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
@@ -53671,6 +53691,107 @@ export function createAgentChatService(args: {
       item: toScheduledWorkItem(schedule),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
+  };
+
+  /**
+   * Chats on this project runtime whose live turn an ADE restart would stop.
+   *
+   * The predicate is `hostSleepChipTracker`'s, shared so a suspend and an
+   * update cannot disagree about which chats are running. A chat that is only
+   * waiting on the user is not running, so it never appears.
+   */
+  const liveTurnChatRefs = (): AgentChatInterruptedChatRef[] => {
+    const chats: AgentChatInterruptedChatRef[] = [];
+    for (const managed of managedSessions.values()) {
+      if (!sessionTurnInFlight(managed, activeTurnIdForManaged(managed))) continue;
+      const row = sessionService.get(managed.session.id);
+      const title = String(row?.title ?? "").trim();
+      chats.push({ sessionId: managed.session.id, title: title || "Untitled chat" });
+    }
+    return chats;
+  };
+
+  const listInterruptedChats = async (): Promise<AgentChatListInterruptedChatsResult> => ({
+    chats: liveTurnChatRefs(),
+  });
+
+  /**
+   * Arms one durable "continue" row per chat.
+   *
+   * Two shapes. With no argument it arms the chats running right now (the
+   * CTO-only action's manual arm). The launch that lands an install passes the
+   * exact session ids the previous process persisted, because a freshly started
+   * brain has no live turns to discover.
+   *
+   * Only rows that actually landed `scheduled` are reported back: a chat whose
+   * scheduled work is paused, or whose session is no longer active, is not a
+   * resume anyone should be told about.
+   */
+  const armUpdateResume = async (
+    input?: { sessionIds?: readonly string[] },
+  ): Promise<AgentChatArmUpdateResumeResult> => {
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) return { chats: [] };
+    const requested = Array.isArray(input?.sessionIds)
+      ? new Set(input.sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0))
+      : null;
+    const candidates: AgentChatInterruptedChatRef[] = requested == null
+      ? liveTurnChatRefs()
+      : Array.from(requested, (sessionId) => {
+          const row = sessionService.get(sessionId);
+          const title = String(row?.title ?? "").trim();
+          return { sessionId, title: title || "Untitled chat" };
+        });
+    const createdAt = Date.now();
+    const armed: AgentChatInterruptedChatRef[] = [];
+    for (const chat of candidates) {
+      const row = sessionService.get(chat.sessionId);
+      if (!row || !isSchedulableAgentSession(row)) continue;
+      try {
+        const schedule = await scheduledWorkScheduler.upsert({
+          id: updateResumeScheduleId(chat.sessionId),
+          sessionId: chat.sessionId,
+          kind: "wakeup",
+          prompt: UPDATE_RESUME_PROMPT,
+          reason: UPDATE_RESUME_REASON,
+          fireAt: createdAt,
+          createdAt,
+          status: "scheduled",
+          lateFlag: false,
+          durable: true,
+          source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+        });
+        if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
+      } catch (error) {
+        logger.warn("agent_chat.update_resume_arm_failed", {
+          sessionId: chat.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { chats: armed };
+  };
+
+  /**
+   * Drops this chat's pending update-resume row, and nothing else.
+   *
+   * A user typing into the chat is the intervening event that makes the arm
+   * wrong: the agent is already being told what to do. Scoped to the
+   * `update_restart` tag so a usage-limit resume or a user-scheduled wakeup is
+   * never collateral.
+   */
+  const cancelPendingUpdateResume = async (sessionId: string): Promise<void> => {
+    try {
+      await scheduledWorkReady;
+      const pending = (scheduledWorkScheduler?.list(sessionId) ?? [])
+        .find(isPendingUpdateResumeScheduledWork);
+      if (pending) await scheduledWorkScheduler?.cancel(pending.id);
+    } catch (error) {
+      logger.warn("agent_chat.update_resume_cancel_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const listScheduledWork = async ({
@@ -60712,6 +60833,8 @@ export function createAgentChatService(args: {
     listMentionSuggestions,
     messageSession,
     createScheduledWork,
+    listInterruptedChats,
+    armUpdateResume,
     listScheduledWork,
     getScheduledWorkState,
     cancelScheduledWork,

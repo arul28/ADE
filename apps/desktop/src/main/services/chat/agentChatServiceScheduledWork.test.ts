@@ -234,6 +234,36 @@ describe("createAgentChatService", () => {
       })).rejects.toThrow(/not found/i);
     });
 
+    it("arms update resumes only for the sessions it is given, and never reports a paused one", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const { service } = createService({ db: scheduledWork.db });
+      const first = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+      const second = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const armed = await service.armUpdateResume({ sessionIds: [first.id] });
+      expect(armed.chats.map((chat) => chat.sessionId)).toEqual([first.id]);
+      const updateRows = (scheduledWork.readState()?.schedules ?? [])
+        .filter((row) => row.source === "update_restart");
+      expect(updateRows.map((row) => row.sessionId)).toEqual([first.id]);
+      expect(updateRows[0]?.prompt).toContain("ADE restarted");
+
+      // A chat whose scheduled work is paused still gets its row persisted, but
+      // must not be reported as resumed: it cannot fire until the user unpauses.
+      await service.setScheduledWorkPaused({ sessionId: second.id, paused: true });
+      const pausedArmed = await service.armUpdateResume({ sessionIds: [second.id] });
+      expect(pausedArmed.chats).toEqual([]);
+      expect((scheduledWork.readState()?.schedules ?? [])
+        .find((row) => row.sessionId === second.id)?.status).toBe("paused");
+    });
+
     it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);

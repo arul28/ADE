@@ -346,6 +346,29 @@ machine's identity *before* reinstalling, so the pid it may later find squatting
 is one it can name. `processes/processStartTime.ts` guards that record — a pid
 alone is not identity once the OS starts recycling them.
 
+### Resuming the chats an update interrupts
+
+Installing an update quits the app and restarts the brain, which stops every
+chat with a live turn. The install confirmation names those chats and offers one
+checkbox (default on) to resume them. When the user accepts with the box
+checked, the list is persisted with the pending install; it is not turned into
+work yet.
+
+The launch that actually lands the install is the only one that arms the resume.
+`reconcilePersistedUpdateState` moves the list onto `recentlyInstalledUpdate`,
+and main arms one durable scheduled-work row per chat under the `update_restart`
+source. A failed or declined install clears the pending record, so it can never
+leave a resume behind: nothing is armed until the new version is running. Each
+armed session is consumed from the persisted list, so a later launch does not
+arm it twice; a chat whose project was not reachable stays on the list and gets
+another attempt.
+
+Each row delivers the "ADE restarted to install an update…" continue prompt
+once. Only rows that actually landed `scheduled` (not paused) are reported in
+the post-update "Scheduled N chats to resume" notice, and typing into a chat
+cancels its pending resume. Remote-machine chats and terminals are never
+included.
+
 ### Repair is suppressed while an update is applying
 
 The connection pool repairs a machine endpoint that is missing or incompatible
