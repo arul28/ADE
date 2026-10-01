@@ -390,6 +390,22 @@ describe("providerInstanceStore", () => {
     expect(changes.filter((change) => change.reason === "login")).toHaveLength(2);
   });
 
+  it("does not carry a broken login onto an account that reuses a removed id", async () => {
+    const { store } = makeStore({ readAccount: async () => ({ email: "known@example.com" }) });
+    const first = store.create({ provider: "claude", label: "Work" });
+    store.setLoginBroken(first.instance.id, true);
+    store.remove(first.instance.id);
+
+    // Same label, same id: the fresh account must not inherit the old flag.
+    const second = store.create({ provider: "claude", label: "Work" });
+    expect(second.instance.id).toBe(first.instance.id);
+
+    await store.refreshAccounts();
+    const reused = store.get(second.instance.id);
+    expect(reused?.signedIn).toBe(true);
+    expect(reused?.loginBroken).toBeUndefined();
+  });
+
   it("keeps a listener that throws from rolling back the write", () => {
     const { store } = makeStore();
     store.onChange(() => {

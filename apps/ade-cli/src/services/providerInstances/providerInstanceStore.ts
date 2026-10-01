@@ -553,6 +553,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     }
     file.instances = file.instances.filter((entry) => entry.id !== trimmed);
     writeFile(file);
+    // An instance id is a label slug and can be reused: recreating an account
+    // with the same label mints the same id, so a stale entry here would report
+    // the fresh account as signed out until its next poll.
+    brokenLogins.delete(trimmed);
     emit({ reason: "remove", provider: record.provider, instanceId: trimmed });
     return { removed: true, configHome: record.configHome };
   }
