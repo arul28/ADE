@@ -760,6 +760,94 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(fs.existsSync(draftPath)).toBe(true);
   }, 30_000);
 
+  it("reports a blocker when a local viewer draft would not reclaim a fresh remote cluster", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-local-draft-fresh-cluster-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-local-draft-fresh-cluster-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-bootstrap-token"),
+      "local-bootstrap-token\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "127.0.0.1",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    // A freshly-seen remote brain. The local-draft reclaim only fires for an
+    // absent or stale cluster, so the refresh keeps this project a viewer and
+    // the pre-switch guard must not report it as hostable.
+    const freshAt = new Date().toISOString();
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "fresh-remote-brain",
+        "fresh-site",
+        "Remote host",
+        "macOS",
+        "desktop",
+        freshAt,
+        freshAt,
+        freshAt,
+        "not-local.invalid",
+        8789,
+        null,
+        JSON.stringify(["10.0.0.9"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "fresh-remote-brain", 41, freshAt, "fresh-remote-brain"],
+    );
+
+    expect(service.getHostBlocker()).toEqual({
+      reason: "saved_connection",
+      host: "127.0.0.1",
+      port: 8789,
+    });
+  }, 30_000);
+
   it("does not delete another project's viewer draft when disconnecting", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-foreign-draft-clear-");
     const appPairingDir = fs.mkdtempSync(

@@ -1242,8 +1242,15 @@ export function createSyncService(args: SyncServiceArgs) {
     const savedDraft = readSavedDraft();
     if (savedDraft) {
       // A draft aimed at this machine is a leftover the refresh reclaims once
-      // the dial fails, so it ends with this machine hosting.
-      if (isDraftTargetLocalDevice(savedDraft, localDevice)) return null;
+      // the dial fails, so it ends with this machine hosting. The reclaim only
+      // runs when the cluster record is absent or names a stale brain: a fresh
+      // record naming another machine wins, and the refresh leaves this
+      // project a viewer. Report the blocker there too, so a caller never tears
+      // down the current host for a target that will not take over.
+      if (
+        isDraftTargetLocalDevice(savedDraft, localDevice)
+        && (!cluster || isStaleNonLocalBrainCluster(cluster, localDevice.deviceId))
+      ) return null;
       return {
         reason: "saved_connection",
         host: savedDraft.host,
