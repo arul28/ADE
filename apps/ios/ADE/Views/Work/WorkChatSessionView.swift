@@ -2896,8 +2896,10 @@ private struct WorkChatComposerDraftInput: View {
     )
   }
 
+  /// Mirrors `providerSupportsStopModeChoice` on desktop: these runtimes honour
+  /// every stop mode, including the ones that also stop background jobs.
   private var queueAwareStop: Bool {
-    chatSummary.provider.lowercased() == "claude" && queueAwareStopAvailable
+    ["claude", "opencode"].contains(chatSummary.provider.lowercased()) && queueAwareStopAvailable
   }
 
   private var stopJobCount: Int { chatSummary.activeBackgroundTaskCount ?? 0 }

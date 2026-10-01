@@ -192,14 +192,20 @@ provider that offers a sign-in.
 - A live shell or child counts as background workload, so the idle sweep and
   the runtime budget leave the chat connected (and its hold on the shared
   server in place) until it ends. The three-hour stale-work backstop applies.
-- Stop on the job row (`agentChat.stopTask`) and the interrupt modes that stop
+- The tracker lives in `openCodeBackgroundShells.ts`, one per runtime.
+- Stop on a job row (`agentChat.stopTask`) and the interrupt modes that stop
   background work kill the shell's process tree (`killOpenCodeShellProcessTree`;
-  `taskkill /T` on Windows). OpenCode then tells the agent the command was
-  killed. Deleting the shell record instead made the agent read a stopped
-  command as one that never started.
+  `taskkill /T` on Windows) and settle the row only once the process is gone
+  (up to 3 s); a shell that survives stays visible as running and Stop reports
+  why. OpenCode then tells the agent the command was killed. Deleting the shell
+  record instead made the agent read a stopped command as one that never
+  started. `stopTask` with a running child's session id interrupts that child.
 - A teardown that stops listening (close, delete, model switch, provider
-  switch, shutdown) first stops every live shell and child, settles their rows
-  as stopped, and posts a notice, because no one would hear their wake-up.
+  switch, shutdown) cannot wait, so it settles every live shell and child as
+  stopped at once, kills in the background, and posts a notice naming the
+  cause, because no one would hear their wake-up. A kill it cannot confirm logs
+  `agent_chat.opencode_stop_shell_unconfirmed`; the shared server's own
+  shutdown then ends that process.
   `agent_chat.opencode_runtime_teardown` logs each teardown with its reason and
   counts; `opencode.server_released` pairs with `opencode.server_acquired`.
 - After a stream gap, `shell.list` settles shells that ended unseen. OpenCode

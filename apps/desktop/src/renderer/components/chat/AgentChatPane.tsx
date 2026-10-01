@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -450,11 +451,6 @@ import {
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 /** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
-/** Providers whose runtime can stop one background task (`agentChat.stopTask`). */
-function supportsPerTaskStop(provider: string | null | undefined): boolean {
-  return provider === "claude" || provider === "opencode";
-}
-
 function devinCloudErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
@@ -14089,7 +14085,7 @@ export function AgentChatPane({
           });
           return;
         }
-        if (provider === "claude") {
+        if (providerSupportsPerTaskStop(provider)) {
           void window.ade.agentChat.stopTask({
             sessionId: selectedSessionId,
             taskId: processId,
@@ -14100,7 +14096,7 @@ export function AgentChatPane({
         }
         setError("Per-task stop is not available for this provider.");
       } : undefined}
-      onStopSubagent={selectedSessionId && supportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+      onStopSubagent={selectedSessionId && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
         ? (snapshot) => {
           const taskId = snapshot.taskId.trim();
           if (!taskId || snapshot.childSessionId) return;
@@ -16096,7 +16092,7 @@ export function AgentChatPane({
                         onStopSubagent={
                           !subagentView
                           && selectedSessionId
-                          && supportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+                          && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
                             ? (taskId) => {
                                 void window.ade.agentChat.stopTask({
                                   sessionId: selectedSessionId,

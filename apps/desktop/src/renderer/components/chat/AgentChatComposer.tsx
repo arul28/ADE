@@ -36,6 +36,7 @@ import {
   AGENT_CHAT_STOP_MODES,
   chatStopModeCopy,
   parseAgentChatStopMode,
+  providerSupportsStopModeChoice,
   stopModeClearsQueue,
 } from "../../../shared/chatStopModes";
 import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
@@ -6460,7 +6461,7 @@ export function AgentChatComposer({
           <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
             <ActiveTurnStopButton
               mode={activeTurnStopMode}
-              allowQueueChoice={sessionProvider === "claude"}
+              allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
               backgroundJobCount={backgroundJobCount}
               onModeChange={updateActiveTurnStopMode}
               onStop={() => onInterrupt(activeTurnStopMode)}
@@ -6935,7 +6936,7 @@ export function AgentChatComposer({
                 ) : null}
                 <ActiveTurnStopButton
                   mode={activeTurnStopMode}
-                  allowQueueChoice={sessionProvider === "claude"}
+                  allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
                   backgroundJobCount={backgroundJobCount}
                   onModeChange={updateActiveTurnStopMode}
                   onStop={() => onInterrupt(activeTurnStopMode)}

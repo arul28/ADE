@@ -66,6 +66,19 @@ export function resolveAgentChatStopModeAlias(value: string): AgentChatStopMode 
   return AGENT_CHAT_STOP_MODE_ALIASES[key] ?? null;
 }
 
+/**
+ * Providers whose runtime honours every stop mode, so the Stop control can
+ * offer the queue and background choices. Others get the plain Stop.
+ */
+export function providerSupportsStopModeChoice(provider: string | null | undefined): boolean {
+  return provider === "claude" || provider === "opencode";
+}
+
+/** Providers whose runtime can stop one background task (`chat.stopTask`). */
+export function providerSupportsPerTaskStop(provider: string | null | undefined): boolean {
+  return provider === "claude" || provider === "opencode";
+}
+
 export function stopModeClearsQueue(mode: AgentChatStopMode): boolean {
   return mode === "stop_and_clear" || mode === "stop_and_clear_and_background";
 }

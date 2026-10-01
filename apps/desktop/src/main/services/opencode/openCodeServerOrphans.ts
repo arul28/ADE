@@ -321,6 +321,15 @@ export function killOpenCodeShellProcessTree(pid: number): boolean {
   return openCodeProcesses.killProcessTree(pid);
 }
 
+/**
+ * Whether a process still exists. The tree kill's own result cannot say: the
+ * group signal can end the root before the final per-pid signal, which then
+ * reports failure for a process that is gone.
+ */
+export function isOpenCodeProcessAlive(pid: number): boolean {
+  return openCodeProcesses.isProcessAlive(pid);
+}
+
 export function stopChildProcess(proc: ChildProcess): void {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   if (process.platform === "win32" && proc.pid && openCodeProcesses.killProcessTree(proc.pid)) {
