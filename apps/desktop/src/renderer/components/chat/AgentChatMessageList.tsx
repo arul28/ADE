@@ -725,6 +725,21 @@ export function deriveAssistantTurnCopyMap(
   return result;
 }
 
+const MARKDOWN_HEADING_LINE = /^#{1,6}\s+\S/m;
+const MARKDOWN_FENCE_LINE = /^\s*(```|~~~)/m;
+const MARKDOWN_LIST_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\S/gm;
+
+/**
+ * True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
+ * spec), not a chat line that happens to contain an asterisk. Such a message
+ * renders as formatted markdown; everything else keeps its exact text.
+ */
+export function userTextLooksLikeMarkdown(text: string): boolean {
+  if (text.length < 80) return false;
+  if (MARKDOWN_HEADING_LINE.test(text) || MARKDOWN_FENCE_LINE.test(text)) return true;
+  return (text.match(MARKDOWN_LIST_LINE)?.length ?? 0) >= 3;
+}
+
 function basenamePathLabel(value: string): string {
   const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
@@ -1213,6 +1228,8 @@ type RenderEnvelope = {
   | TaskListRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
+  /** Image views folded into this row by adjacency; see ChatTranscriptRenderEnvelope. */
+  imageViewSiblings?: Array<Extract<AgentChatEvent, { type: "codex_image_view" }>>;
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -1679,9 +1696,13 @@ function activityLabel(activity: string): string | undefined {
 export function resolveWorkingIndicatorLabel(
   activity: string | null,
   activeEntries: readonly ChatWorkLogEntry[],
+  activeToolEntries: readonly ChatWorkLogEntry[] = [],
 ): string | null {
   if (!activity) return null;
   const label = activityLabel(activity) ?? activity;
+  if (activity === "tool_calling" || activity === "running_command") {
+    return runningToolLabel(activeToolEntries) ?? label;
+  }
   if (activity !== "editing_file") return label;
 
   for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
@@ -1698,6 +1719,35 @@ export function resolveWorkingIndicatorLabel(
     if (target?.trim().length) return `${label} ${basenamePathLabel(target)}`;
   }
   return label;
+}
+
+const RUNNING_COMMAND_LABEL_MAX = 72;
+
+function oneLineCommand(command: string): string {
+  const line = command.replace(/\s+/g, " ").trim();
+  return line.length > RUNNING_COMMAND_LABEL_MAX ? `${line.slice(0, RUNNING_COMMAND_LABEL_MAX - 1)}…` : line;
+}
+
+/**
+ * Name what a "Calling tool" / "Running command" wait is actually waiting on:
+ * the newest entry still running in the turn. A bare "Calling tool · 2m 47s"
+ * says nothing; "Running pnpm test" or "Search agentChatService" does.
+ */
+function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.status !== "running") continue;
+    if (entry.entryKind === "command" && entry.command?.trim()) return `Running ${oneLineCommand(entry.command)}`;
+    if (entry.entryKind !== "tool" || !entry.toolName) continue;
+    const args = readRecord(entry.args) ?? {};
+    const meta = getToolMeta(entry.toolName);
+    const command = typeof args.command === "string" ? args.command : null;
+    if (meta.category === "exec" && command?.trim()) return `Running ${oneLineCommand(command)}`;
+    const target = meta.getTarget?.(args)?.trim();
+    if (target) return `${meta.label} ${meta.category === "read" || meta.category === "write" ? basenamePathLabel(target) : oneLineCommand(target)}`;
+    return `Calling ${meta.label}`;
+  }
+  return null;
 }
 
 function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
@@ -2409,6 +2459,12 @@ function renderEvent(
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
     assistantTurnCopy?: { text: string } | null;
+    /**
+     * A narration line that is not its turn's last reply. Its hover actions
+     * float below it instead of reserving a strip, so a run of short progress
+     * lines reads as one passage rather than three lines apart.
+     */
+    interimText?: boolean;
     /** Interrupt-receipt identities whose queued messages already ran → collapse. */
     staleInterruptReceipts?: Set<string>;
     /** True when a host is listening for `ade:chat:open-info` (see the registry). */
@@ -2557,7 +2613,9 @@ function renderEvent(
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
         >
-          <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          {/* Frosted so the actions stay legible over a long first line or a
+              brief's heading, instead of printing on top of the words. */}
+          <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
@@ -2576,7 +2634,7 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton value={event.metadata?.hideFullPrompt === true ? (event.displayText?.trim() ?? "") : event.text} />
+            <MessageCopyButton value={event.displayText?.trim() || (event.metadata?.hideFullPrompt === true ? "" : event.text)} />
           </div>
           {(() => {
             const displayText = event.displayText?.trim();
@@ -2606,24 +2664,24 @@ function renderEvent(
                 </div>
               );
             }
+            // `text` is what the provider received (mention blocks expanded);
+            // `displayText` is what the user typed. Show only what they typed.
             if (displayText && displayText !== event.text.trim()) {
-              return (
-                <div className="space-y-2 text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                  <ChipText className="whitespace-pre-wrap break-words font-medium" text={displayText} />
-                  <details className="group min-w-0">
-                    <summary className="cursor-pointer font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/70 transition-colors hover:text-white">
-                      Full prompt
-                    </summary>
-                    <ChipText className="mt-2 whitespace-pre-wrap break-words text-white/90" text={event.text} />
-                  </details>
-                </div>
+              return userTextLooksLikeMarkdown(displayText) ? (
+                <MarkdownBlock markdown={displayText} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+              ) : (
+                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={displayText} />
               );
             }
             const parsed = parseLeadingIosContextChips(event.text);
             const contextSegments = splitChatOutputContextSegments(parsed.rest);
             const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
             const body = !parsed.chips.length && !hasOutputContext ? (
-              <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
+              userTextLooksLikeMarkdown(event.text) ? (
+                <MarkdownBlock markdown={event.text} tone="bubble" onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+              ) : (
+                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={event.text} />
+              )
             ) : (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 {parsed.chips.length ? (
@@ -2649,8 +2707,8 @@ function renderEvent(
                   : parsed.rest}
               </div>
             );
-            // Prompts render in full, however long. The hidden-prompt brief and
-            // the displayText + <details> variant keep their own disclosure.
+            // Prompts render in full, however long. The hidden-prompt brief
+            // keeps its own chip.
             return body;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
@@ -2677,7 +2735,9 @@ function renderEvent(
   if (event.type === "text") {
     return (
       <motion.div
-        className="flex min-w-0 max-w-full w-full justify-start overflow-hidden"
+        // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
+        // actions float below the row, and `hidden` would clip them.
+        className="flex min-w-0 max-w-full w-full justify-start overflow-x-clip"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
@@ -2709,7 +2769,12 @@ function renderEvent(
               short line (interim narration) and the first line of a long one. */}
           <div
             data-testid="assistant-text-hover-footer"
-            className="mt-0.5 flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100"
+            className={cn(
+              "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
+              options?.interimText
+                ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
+                : "mt-0.5",
+            )}
           >
             {event.originTimestamp || envelope.timestampSynthetic !== true
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
@@ -2827,7 +2892,7 @@ function renderEvent(
   }
 
   if (event.type === "codex_image_view") {
-    return <CodexImageViewLine event={event} />;
+    return <CodexImageViewLine event={event} siblings={envelope.imageViewSiblings} />;
   }
 
   /* ── Auto Approval Review (Guardian) ── */
@@ -4607,6 +4672,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopy?: { text: string } | null;
+  interimText?: boolean;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
@@ -4680,6 +4746,7 @@ const EventRow = React.memo(function EventRow({
   anchored,
   onScrollToRowKey,
   assistantTurnCopy,
+  interimText,
   staleInterruptReceipts,
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
@@ -4787,6 +4854,7 @@ const EventRow = React.memo(function EventRow({
             mosaic,
             onScrollToRowKey,
             assistantTurnCopy,
+            interimText,
             staleInterruptReceipts,
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
@@ -4826,7 +4894,6 @@ const EventRow = React.memo(function EventRow({
         <ChatProofFilmstrip
           artifacts={inlineProof}
           title="Proof added"
-          defaultOpen={false}
           resolveThumbnailSrc={resolveProofThumbnailSrc}
           allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
           onOpenAll={onOpenProofDrawer}
@@ -5707,12 +5774,21 @@ function AgentChatMessageListMain({
     writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
   }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
-  const assistantTurnCopyByRowKey = useMemo(() => {
+  const { assistantTurnCopyByRowKey, interimTextRowKeys } = useMemo(() => {
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
-    for (const info of deriveAssistantTurnCopyMap(rows).values()) {
+    const turnCopy = deriveAssistantTurnCopyMap(rows);
+    for (const info of turnCopy.values()) {
       if (info.textEventCount >= 2) byRowKey.set(info.lastTextEventKey, info);
     }
-    return byRowKey;
+    // Every text row of a turn except its last one is interim narration.
+    const interim = new Set<string>();
+    for (const row of rows) {
+      if (row.event.type !== "text") continue;
+      const turnId = getEventTurnId(row.event);
+      const last = turnId ? turnCopy.get(turnId)?.lastTextEventKey : null;
+      if (last && last !== row.key) interim.add(row.key);
+    }
+    return { assistantTurnCopyByRowKey: byRowKey, interimTextRowKeys: interim };
   }, [rows]);
   const previousAllGroupedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
   const allGroupedRows = useMemo(
@@ -7535,6 +7611,7 @@ function AgentChatMessageListMain({
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
     const anchored = envelope.key === anchoredRowKey;
     const assistantTurnCopy = assistantTurnCopyByRowKey.get(envelope.key) ?? null;
+    const interimText = interimTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
     if (virtualized) {
@@ -7595,6 +7672,7 @@ function AgentChatMessageListMain({
           anchored={anchored}
           onScrollToRowKey={scrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
+          interimText={interimText}
           staleInterruptReceipts={staleInterruptReceipts}
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -7664,6 +7742,7 @@ function AgentChatMessageListMain({
         anchored={anchored}
         onScrollToRowKey={scrollToRowKey}
         assistantTurnCopy={assistantTurnCopy}
+        interimText={interimText}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -7676,7 +7755,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -7706,6 +7785,7 @@ function AgentChatMessageListMain({
             : resolveWorkingIndicatorLabel(
               latestActivity?.activity ?? null,
               transcriptToolActivity.activeFileEntries,
+              transcriptToolActivity.activeEntries,
             )
         }
         startedAt={activeTurnStartedAt}
@@ -7726,7 +7806,6 @@ function AgentChatMessageListMain({
       <ChatProofFilmstrip
         artifacts={unanchoredProofArtifacts}
         title="Proof added"
-        defaultOpen={false}
         resolveThumbnailSrc={resolveProofThumbnailSrc}
         allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}
         onOpenAll={onOpenProofDrawer}

@@ -24,6 +24,15 @@ import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
 import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneFrame } from "./SceneFrame";
+import { TranscriptChip } from "./ChipText";
+import { chipFromDeeplinkTarget } from "../../../shared/chips";
+import { parseDeeplink } from "../../../shared/deeplinks";
+import {
+  remarkThreadEntities,
+  ThreadEntityNode,
+  THREAD_ENTITY_TAG,
+  useThreadEntityLookup,
+} from "./threadEntities";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -36,33 +45,49 @@ export type MosaicRenderContext = {
   onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
 };
 
+// File links read as code that happens to be clickable: a quiet tint, the
+// file glyph, and an underline only on hover. A border plus an underline plus
+// a glyph on every path made a dense paragraph look like a form.
+const PATH_LINK_BASE =
+  "inline-flex max-w-full cursor-pointer items-baseline gap-1 whitespace-normal [overflow-wrap:anywhere] rounded-md align-baseline"
+  + " decoration-1 underline-offset-[3px] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-1";
+const PATH_LINK_TONE = {
+  neutral: "bg-white/[0.06] text-white/88 decoration-white/40 hover:bg-white/[0.1] hover:text-white focus-visible:ring-white/30",
+  accent: "bg-sky-400/[0.08] text-sky-200/95 decoration-sky-300/45 hover:bg-sky-400/[0.14] hover:text-sky-100 focus-visible:ring-sky-300/40",
+} as const;
+
 function WorkspacePathLink({
   children,
   code,
   neutral,
   onOpen,
+  lineRef = false,
+  title = "Open file in Files",
 }: {
   children: React.ReactNode;
   code: boolean;
   neutral: boolean;
   onOpen: () => void;
+  /** A bare `3461-3468` that refers back to the file before it: no glyph, tighter. */
+  lineRef?: boolean;
+  title?: string;
 }) {
-  const content = (
+  const content = lineRef ? (
+    <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
+  ) : (
     <>
-      <FileCode size={12} aria-hidden className="shrink-0 self-center" />
-      <span className="min-w-0 break-all">{children}</span>
+      <FileCode size={12} aria-hidden className="shrink-0 self-center opacity-75" />
+      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
     </>
   );
-  let className: string;
-  if (code) {
-    className = neutral
-      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
-      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100";
-  } else {
-    className = neutral
-      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100";
-  }
+  const className = cn(
+    PATH_LINK_BASE,
+    PATH_LINK_TONE[neutral ? "neutral" : "accent"],
+    code || lineRef
+      ? "px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*11/14)]"
+      : "px-1.5 py-px text-left font-sans text-[length:calc(var(--chat-font-size)*12/14)]",
+    lineRef && "px-1",
+  );
 
   return code ? (
     <span
@@ -76,12 +101,12 @@ function WorkspacePathLink({
           onOpen();
         }
       }}
-      title="Open file in Files"
+      title={title}
     >
       {content}
     </span>
   ) : (
-    <button type="button" className={className} onClick={onOpen} title="Open file in Files">
+    <button type="button" className={className} onClick={onOpen} title={title}>
       {content}
     </button>
   );
@@ -105,8 +130,11 @@ function paragraphHasProofCitation(node: MarkdownNode | undefined): boolean {
     && parseProofCitationUrl(typeof child.properties?.src === "string" ? child.properties.src : null) !== null);
 }
 
-/** Module-level so the plugin array never changes identity between renders. */
-const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+/** The workspace file a code span names, or null. One rule for file chips and line follow-ups. */
+function workspaceFilePathOf(code: string): string | null {
+  if (/\n/.test(code) || !looksLikeWorkspacePath(code)) return null;
+  return parseWorkspacePathLocation(code)?.path ?? null;
+}
 
 /**
  * A single markdown parse+render, memoized on `(markdown, components)`.
@@ -120,14 +148,16 @@ const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 const MarkdownBody = React.memo(function MarkdownBody({
   markdown,
   components,
+  remarkPlugins,
 }: {
   markdown: string;
   components: MarkdownComponents;
+  remarkPlugins: React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"];
 }) {
   if (markdown.length === 0) return null;
   return (
     <ReactMarkdown
-      remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+      remarkPlugins={remarkPlugins}
       urlTransform={chatMarkdownUrlTransform}
       components={components}
     >
@@ -183,10 +213,14 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    * rule: reasoning fragments are joined with `---`
    * (`mergeReasoningTextFragments`), and a full-width rule between each one
    * read as a divider instead of one continuous thought.
+   *
+   * `bubble`: a markdown brief inside the user's message bubble. Always the
+   * neutral white palette (the bubble is the accent colour), body-sized.
    */
-  tone?: "thought";
+  tone?: "thought" | "bubble";
 }) {
   const thought = tone === "thought";
+  const bubble = tone === "bubble";
   // This component knows both halves of "still arriving", so it answers the
   // question once instead of handing the frame two flags to combine. Fence
   // state is read over the WHOLE body — settled prose plus the growing tail —
@@ -197,10 +231,17 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   const sceneStreaming = Boolean(sceneLive)
     && hasOpenSceneFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown);
   const chromeTint = useChatChromeTint();
-  const neu = chromeTint === "neutral";
+  const neu = bubble || chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
+  // Lanes, chats, models and the rest that this reply names. The lookup only
+  // changes identity when an id or name changes, so settled bodies stay memoized.
+  const entityLookup = useThreadEntityLookup();
+  const remarkPlugins = useMemo(
+    () => [remarkGfm, [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
+    [entityLookup],
+  );
 
   const components: MarkdownComponents = useMemo(() => ({
     ...(thought
@@ -216,9 +257,21 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       if (artifactId) return <ProofCitationFigure artifactId={artifactId} caption={alt ?? null} />;
       return <img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} />;
     },
-    h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
-    h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
-    h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
+    // Sized from the chat font, not the root font, and spaced here rather than
+    // by `prose-headings:*`: a section heading must read as one at every chat
+    // font size, and must never sit flush against the paragraph above it.
+    h1: ({ children }) => (
+      <h1 className="mb-2.5 mt-7 font-sans text-[length:calc(var(--chat-font-size)*17/14)] font-semibold leading-snug tracking-[-0.015em] first:mt-0">{children}</h1>
+    ),
+    h2: ({ children }) => (
+      <h2 className="mb-2 mt-6 font-sans text-[length:calc(var(--chat-font-size)*15.5/14)] font-semibold leading-snug tracking-[-0.012em] first:mt-0">{children}</h2>
+    ),
+    h3: ({ children }) => (
+      <h3 className="mb-1.5 mt-5 font-sans text-[length:calc(var(--chat-font-size)*14.5/14)] font-semibold leading-snug first:mt-0">{children}</h3>
+    ),
+    h4: ({ children }) => (
+      <h4 className="mb-1.5 mt-4 font-sans text-[length:calc(var(--chat-font-size)*13.5/14)] font-semibold leading-snug first:mt-0">{children}</h4>
+    ),
     ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
     ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
     li: ({ children }) => (
@@ -306,15 +359,41 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         <code
           className={
             neu
-              ? "break-all whitespace-normal rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
-              : "break-all whitespace-normal rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+              // Wrap at the token, not inside it: `break-all` split identifiers
+              // mid-word ("technic|alDetail"). `anywhere` breaks only a token
+              // too long for a line of its own.
+              ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
+              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
           }
         >
           {children}
         </code>
       );
     },
+    [THREAD_ENTITY_TAG]: ({ node, children }: { node?: unknown; children?: React.ReactNode }) => (
+      <ThreadEntityNode
+        node={node}
+        fallback={children}
+        renderFileLine={(entity) => (
+          <WorkspacePathLink
+            code
+            lineRef
+            neutral={neu}
+            title={`Open ${entity.path.split("/").pop() ?? entity.path} at line ${entity.line}`}
+            onOpen={() => openWorkspacePath({ path: entity.path, startLine: entity.line })}
+          >
+            {entity.raw}
+          </WorkspacePathLink>
+        )}
+      />
+    ),
     a: ({ children, href }) => {
+      // An `ade://` link is a typed pointer (a lane, a PR, a chat). Draw it as
+      // the same chip the composer and the sent bubble use.
+      const deeplink = typeof href === "string" ? parseDeeplink(href) : null;
+      if (deeplink?.ok && typeof href === "string") {
+        return <TranscriptChip chip={chipFromDeeplinkTarget(href, deeplink.target)} />;
+      }
       const workspacePath = resolveWorkspacePathFromHref(href);
       if (workspacePath) {
         return (
@@ -350,7 +429,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words",
         thought
           ? "ade-thought-text text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.65]"
-          : "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
+          : bubble
+            ? "ade-bubble-prose text-[length:var(--chat-font-size)] leading-[1.7]"
+            : "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
         neu
           ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
           : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
@@ -359,8 +440,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
       )}
     >
-      <MarkdownBody markdown={markdown} components={components} />
-      {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} /> : null}
+      <MarkdownBody markdown={markdown} components={components} remarkPlugins={remarkPlugins} />
+      {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} remarkPlugins={remarkPlugins} /> : null}
     </div>
   );
 });

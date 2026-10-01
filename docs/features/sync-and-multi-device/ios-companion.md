@@ -880,6 +880,16 @@ The Work model/activity parity path is concentrated in these files:
   The Codex spending
   cap surfaces as a "Spending cap reached" note under the Codex row in
   `WorkUsageActivityCarousel`.
+- `ADE/Views/Work/WorkThreadEntityRules.swift`, `WorkMarkdownViews.swift`, and
+  `WorkChatHeaderAndMessageViews.swift` — the transcript's chip and typography
+  rendering. `WorkThreadEntityRules.swift` is the Swift port of the desktop
+  `shared/threadEntities.ts` rules and `WorkThreadEntityDirectory` holds the
+  device's lanes, chats, Linear team keys, and the chat's slash registry (see
+  [Chips on the phone](#chips-on-the-phone)). `WorkMarkdownViews.swift` sizes
+  section headings clearly above the body (semibold, with extra top spacing) and
+  caches entity-decorated inline renders by text plus lookup revision; a
+  `workMarkdownForeground` environment override lets a user bubble's markdown
+  brief paint white.
 - `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
   and `WorkSessionDestinationView+Actions.swift` — host-advertised chat action
   dispatch, including provider-neutral `chat.recoverTurn` (with the legacy
@@ -2770,17 +2780,34 @@ See [External session import](../terminals-and-sessions/external-session-import.
 ### Chips on the phone
 
 iOS re-implements the desktop chip model in Swift — it cannot import
-`apps/desktop/src/shared/chips.ts` — so mention chips, sent-message pills, and
-copy behave the same on both devices:
+`apps/desktop/src/shared/chips.ts` — so mention chips, sent-message pills,
+agent-reply entity chips, and copy behave the same on both devices:
 
 - **Composer mentions draw as pills.** `WorkComposerTypedTriggers.swift` detects
   `@` / `/` / `#` cursor-relatively and `WorkSmartLink` parses URL-shaped text,
   including `ade://` deeplinks, into the same typed labels the desktop uses
   (`ade://pr/owner/repo/1237` → `#1237`). An unrecognised `ade://` shape keeps
-  its descriptive path form rather than collapsing to a bare "ADE link".
+  its descriptive path form rather than collapsing to a bare "ADE link". The
+  `permission` and `skill` kinds mirror the desktop's two new chips.
 - **Sent messages draw their chips.** The transcript
   (`WorkChatHeaderAndMessageViews.swift`) renders the same pills the composer
   did, over the unchanged stored text.
+- **Agent replies draw entity chips.** An ADE thing an agent names — a lane, a
+  chat, a model, a permission mode, a `/skill`, a PR, a commit, a Linear issue,
+  a zoned timestamp — renders as a chip. `WorkThreadEntityRules.swift` is the
+  Swift port of `shared/threadEntities.ts`: only real things chip (unknown ids
+  stay code), inline code is the strong signal, and prose is limited to full
+  UUIDs, zoned timestamps, `PR #123`, and known Linear keys. `WorkThreadEntityDirectory`
+  is filled from `WorkRootScreen` (lanes, chats, Linear keys) and the composer's
+  slash registry, and republishes only when something a chip draws changes. A
+  lane chip takes its own name and colour, a chat chip its title and a
+  running/waiting dot, and a timestamp renders in local time with a tap to
+  reveal the raw text. The port deliberately drops the desktop's bare
+  `3461-3468` line follow-up, because iOS does not link file-path code spans.
+- **User briefs render as markdown.** A user message long enough to be a
+  markdown document (`workUserTextLooksLikeMarkdown`, the twin of the desktop
+  predicate) renders formatted in the bubble, with white text; a chat line keeps
+  its exact text.
 - **Copy still yields tokens.** Copying a message puts the canonical tokens on
   the pasteboard, not the display labels, so a chip pasted anywhere else is
   still a re-parseable pointer.

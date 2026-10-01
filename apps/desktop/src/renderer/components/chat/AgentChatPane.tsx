@@ -177,6 +177,7 @@ import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import {
@@ -4083,6 +4084,12 @@ export function AgentChatPane({
   const draftAttachmentOwnerBindingRef = useRef<OpenProjectBinding | null>(null);
   const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
+  // Names only, so the transcript's entity lookup can chip `/quality` without
+  // re-parsing every message when a description changes.
+  const threadEntitySkillNames = useMemo(
+    () => sdkSlashCommands.map((command) => command.name.replace(/^\//, "")),
+    [sdkSlashCommands],
+  );
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
   const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
@@ -16004,6 +16011,7 @@ export function AgentChatPane({
                         may render here. PersonalChatsPage provides no such context. */}
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
+                    <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
@@ -16102,6 +16110,7 @@ export function AgentChatPane({
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                       />
+                    </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}

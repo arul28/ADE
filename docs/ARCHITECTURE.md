@@ -1312,6 +1312,15 @@ travelling next to the display `label` is what lets a chip survive copy, paste
 into a *different* chat, a send, and a re-render on another device. See
 [Chips](./features/chat/composer-and-ui.md#chips).
 
+`shared/threadEntities.ts` is the newer one. It holds the pure rules that find
+the ADE things an agent names in its replies — a lane, a chat, a model, a
+permission mode, a slash command, a PR, a commit, a Linear issue, a zoned
+timestamp — and hands each surface an entity to draw (the desktop
+`remarkThreadEntities` plugin, the TUI's `threadEntityRuns.ts`, the iOS
+`WorkThreadEntityRules.swift` port). The grammar is shared; only the drawing is
+per-client, so a lane named in one client's reply resolves to the same id
+everywhere. See [Chips](./features/chat/composer-and-ui.md#entities-an-agents-reply-names).
+
 Where one surface must re-implement a shared model, the parity is a **test
 fixture**, not a promise. `shared/__fixtures__/chipCases.json` is asserted by
 `shared/chips.test.ts` and, read from disk, by the iOS suite; adding a row fails

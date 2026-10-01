@@ -12,6 +12,7 @@ import {
   type InlineRun,
   type RenderedChatLine,
 } from "../format";
+import { tuiThreadEntityFactsVersion } from "../threadEntityRuns";
 import {
   aggregateChatBlocks,
   deriveActiveProviderRetryActivityDetail,
@@ -223,6 +224,9 @@ function wrapInlineRuns(runs: InlineRun[], width: number, firstPrefix: string, r
     if (run.code) style.code = true;
     if (run.link) style.link = true;
     if (run.href) style.href = run.href;
+    // An entity run (a lane name in its lane colour) keeps its colour when wrapped.
+    if (run.color) style.color = run.color;
+    if (run.dim) style.dim = true;
     for (const part of parts) {
       if (!part) continue;
       const isSpace = /^\s+$/.test(part);
@@ -427,7 +431,7 @@ function inlineRowsFromText(
   options: { color?: string; dim?: boolean; bold?: boolean; italic?: boolean } = {},
 ): RenderedChatRow[] {
   const runs = parseInlineRuns(text);
-  const hasFormatting = runs.some((run) => run.bold || run.italic || run.code || run.link);
+  const hasFormatting = runs.some((run) => run.bold || run.italic || run.code || run.link || run.color);
   if (!hasFormatting) {
     return wrapText(text, width, firstPrefix, restPrefix).map((line) => ({
       id,
@@ -2192,13 +2196,16 @@ function ChatViewComponent({
       ? { historicalBlocks: presentedBlocks, tailBlocks: [] as AggregatedBlock[] }
       : { historicalBlocks: presentedBlocks.slice(0, idx), tailBlocks: presentedBlocks.slice(idx) };
   }, [presentedBlocks]);
+  // Entity runs (lane names for lane ids) depend on the app's lanes and chats,
+  // which `blocks` does not carry; re-wrap when that lookup changes.
+  const threadEntityVersion = tuiThreadEntityFactsVersion();
   const historicalRows = useMemo(
     // Pre-index historical rows by their final position (they always occupy
     // slots 0..H-1, before the seam spacer + live tail). sliceRows then reuses
     // these stable objects instead of cloning them every tick.
     () => rowsForBlocks(historicalBlocks, rowInnerWidth, STATIC_SPIN_FRAME, STATIC_SPIN_FRAME, expandedLineIds)
       .map((row, index) => ({ ...row, sourceRowIndex: index })),
-    [historicalBlocks, rowInnerWidth, expandedLineIds],
+    [historicalBlocks, rowInnerWidth, expandedLineIds, threadEntityVersion],
   );
   const rows = useMemo(() => {
     const tailRows = tailBlocks.length

@@ -160,7 +160,7 @@ Coverage states:
 | work.chat.open-url | Open transcript external URL | external-skip | `AgentChatMessageList.tsx` |
 | work.chat.open-pr-browser | Open PR URL in ADE browser | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.disclosure | Toggle message disclosure/details | measured | `AgentChatMessageList.tsx` |
-| work.chat.message.full-prompt | Toggle full prompt details | measured | `AgentChatMessageList.tsx` |
+| work.chat.message.markdown-brief | Render a user markdown brief formatted in the bubble | not measured | `AgentChatMessageList.tsx` |
 | work.chat.message.tool-show-all | Show all/collapse tool result items | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.minimap | Jump via chat minimap | measured | `AgentChatMessageList.tsx` |
 | work.chat.inline-question.tab | Switch inline question tabs | measured | `AgentChatMessageList.tsx` |
@@ -1500,9 +1500,9 @@ Rows promoted to `measured`:
   `builtInBrowser.navigate({ newTab: true })` received the PR URL.
 - `work.chat.message.disclosure`: the Work suggestions test opened the `Tool
   calls` disclosure before clicking the suggested Work deeplink.
-- `work.chat.message.full-prompt`: the compact-display test rendered a user
-  message with `displayText`, clicked `Full prompt`, and verified the complete
-  prompt text appeared.
+- `work.chat.message.markdown-brief`: a user message that is a markdown
+  document (`userTextLooksLikeMarkdown`) renders formatted in the bubble. The
+  bubble shows only what the user typed, never the expanded provider prompt.
 - `work.chat.message.tool-show-all`: the long grouped tool-result test rendered
   the reachable `ChatWorkLogBlock` path, opened `Tool calls`, opened the tool
   row, clicked `show all`, verified the long result tail appeared, then clicked

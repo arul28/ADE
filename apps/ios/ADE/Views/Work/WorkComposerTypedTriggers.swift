@@ -3,7 +3,7 @@ import UIKit
 
 // MARK: - Smart links
 
-private func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
+func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
   components.path.split(separator: "/").map(String.init)
 }
 
@@ -97,6 +97,10 @@ struct WorkSmartLink: Equatable {
     case webPage
     /// A model with a thinking level and a permission mode (`@model:<id>?…`).
     case model
+    /// A provider permission mode an agent named, e.g. `bypassPermissions`.
+    case permission
+    /// A slash command or skill this chat can run, e.g. `/quality`.
+    case skill
     /// An `ade://` URL this build cannot parse — a newer ADE minted it.
     case adeLink
 
@@ -118,6 +122,8 @@ struct WorkSmartLink: Equatable {
       case .artifact: return "◈"
       case .webPage: return "↗"
       case .model: return "✦"
+      case .permission: return "⛨"
+      case .skill: return "/"
       case .adeLink: return "A"
       }
     }
@@ -938,6 +944,10 @@ struct WorkChip: Equatable {
     case link(WorkSmartLink)
     case path(WorkChipPath)
     case model(WorkModelMention)
+    /// A permission mode an agent named in its reply (`bypassPermissions`).
+    case permission(provider: String, value: String)
+    /// A slash command or skill this chat can run (`/quality`).
+    case skill(name: String)
   }
 
   let kind: WorkSmartLink.Kind
@@ -978,6 +988,17 @@ struct WorkChip: Equatable {
     label = model.chipLabel(displayName: model.displayName)
     range = model.range
     origin = .model(model)
+  }
+
+  /// A chip whose kind and label were decided by the thread-entity rules
+  /// rather than read off a token's own grammar (`#123` is a PR, a lane id
+  /// shows the lane's name).
+  init(kind: WorkSmartLink.Kind, token: String, label: String, range: NSRange, origin: Origin) {
+    self.kind = kind
+    self.token = token
+    self.label = label
+    self.range = range
+    self.origin = origin
   }
 
   /// The plain text this chip serializes back to. Mention and link tokens are
@@ -1600,6 +1621,8 @@ final class WorkComposerSuggestionController: ObservableObject {
     slashFetchTask?.cancel()
     slashFetchTask = nil
     slashRegistryUnavailable = false
+    // The previous chat's commands must not chip as runnable in this one.
+    WorkThreadEntityDirectory.shared.record(skillNames: [])
   }
 
   /// Fetch `chat.getSlashCommands` once per provider/lane. A host that does not
@@ -1621,6 +1644,8 @@ final class WorkComposerSuggestionController: ObservableObject {
         guard let self, !Task.isCancelled else { return }
         guard self.laneGeneration == generation, self.provider == provider else { return }
         self.hostSlashCommands = commands
+        // The transcript chips `/name` only for commands this chat can run.
+        WorkThreadEntityDirectory.shared.record(skillNames: commands.map(\.name))
         if let match = self.activeMatch, match.kind == .slash {
           self.suggestions = WorkComposerSlashRegistry.suggestions(
             host: commands,

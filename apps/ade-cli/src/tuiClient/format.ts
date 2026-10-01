@@ -31,6 +31,15 @@ import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText
 import { formatUserMessageTranscriptBody } from "./composerDrafts";
 import { renderModelMentionChipsInText } from "./promptSmartLinks";
 import { terminalReasonLabel } from "./terminalReason";
+import { tuiRunForThreadEntity, tuiThreadEntityLookup } from "./threadEntityRuns";
+import {
+  findProseEntities,
+  matchInlineCodeEntity,
+  type ThreadEntity,
+  type ThreadEntityBlockContext,
+  type ThreadEntityLookup,
+  threadEntityKey,
+} from "../../../desktop/src/shared/threadEntities";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -255,6 +264,8 @@ export type InlineRun = {
   href?: string;
   color?: string;
   dim?: boolean;
+  /** Identity of the ADE entity this run names (`lane:<id>`), for echo collapse. */
+  entityKey?: string;
 };
 
 type InlineFlags = { bold?: boolean; italic?: boolean; code?: boolean; link?: boolean; href?: string };
@@ -262,7 +273,10 @@ type InlineFlags = { bold?: boolean; italic?: boolean; code?: boolean; link?: bo
 function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): void {
   if (!text.length) return;
   const last = runs[runs.length - 1];
+  // An entity run (coloured, linked) is one unit; prose after it never joins it.
   const sameFlags = last
+    && !last.color
+    && !last.entityKey
     && (last.bold ?? false) === (flags.bold ?? false)
     && (last.italic ?? false) === (flags.italic ?? false)
     && (last.code ?? false) === (flags.code ?? false)
@@ -281,34 +295,89 @@ function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): voi
   runs.push(run);
 }
 
-function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags): void {
+/** Entity detection for one block: the lookup plus the block's "last file". */
+type InlineEntityScope = { lookup: ThreadEntityLookup; block: ThreadEntityBlockContext };
+
+// A code span that names a workspace file, with an optional `:line[:col]`.
+// Narrow on purpose: it only feeds the "bare line range after a file" rule.
+const TUI_FILE_SPAN_RE = /^((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?::\d+(?::\d+)?)?$/;
+// A slash-less token with one of these suffixes is a domain, not a file —
+// the desktop's `looksLikeWorkspacePath` refuses the same list.
+const TUI_NON_FILE_SUFFIXES = new Set(["com", "org", "net", "io", "ai", "dev", "gov", "edu"]);
+
+/** The workspace file a code span names, or null. */
+function tuiFileSpanPath(code: string): string | null {
+  const path = TUI_FILE_SPAN_RE.exec(code.trim())?.[1];
+  if (!path || path.startsWith("../") || path === "..") return null;
+  if (!path.includes("/")) {
+    const suffix = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+    if (TUI_NON_FILE_SUFFIXES.has(suffix)) return null;
+  }
+  return path;
+}
+
+function pushEntityRun(runs: InlineRun[], entity: ThreadEntity): void {
+  const entityRun = tuiRunForThreadEntity(entity);
+  const run: InlineRun = { text: entityRun.text };
+  const key = threadEntityKey(entity);
+  if (key) run.entityKey = key;
+  if (entityRun.color) run.color = entityRun.color;
+  if (entityRun.link) run.link = true;
+  if (entityRun.href) run.href = entityRun.href;
+  if (entityRun.dim) run.dim = true;
+  runs.push(run);
+}
+
+function pushProseWithEntities(runs: InlineRun[], text: string, flags: InlineFlags, scope: InlineEntityScope | undefined): void {
+  // Never rewrite inside a link: it already goes somewhere.
+  const matches = scope && !flags.link ? findProseEntities(text, scope.lookup) : [];
+  if (!matches.length) {
+    pushInlineRun(runs, text, flags);
+    return;
+  }
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start > cursor) pushInlineRun(runs, text.slice(cursor, match.start), flags);
+    pushEntityRun(runs, match.entity);
+    cursor = match.end;
+  }
+  if (cursor < text.length) pushInlineRun(runs, text.slice(cursor), flags);
+}
+
+function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags, scope?: InlineEntityScope): void {
   for (const token of tokens) {
     switch (token.type) {
       case "text": {
         const text = token as Tokens.Text;
-        if (text.tokens && text.tokens.length) walkInlineTokens(text.tokens, runs, flags);
-        else pushInlineRun(runs, text.text, flags);
+        if (text.tokens && text.tokens.length) walkInlineTokens(text.tokens, runs, flags, scope);
+        else pushProseWithEntities(runs, text.text, flags, scope);
         break;
       }
       case "escape":
         pushInlineRun(runs, (token as Tokens.Escape).text, flags);
         break;
-      case "codespan":
-        pushInlineRun(runs, (token as Tokens.Codespan).text, { ...flags, code: true });
+      case "codespan": {
+        const code = (token as Tokens.Codespan).text;
+        const file = scope ? tuiFileSpanPath(code) : null;
+        if (scope && file) scope.block.lastFilePath = file;
+        const entity = scope && !file && !flags.link ? matchInlineCodeEntity(code, scope.lookup, scope.block) : null;
+        if (entity) pushEntityRun(runs, entity);
+        else pushInlineRun(runs, code, { ...flags, code: true });
         break;
+      }
       case "strong": {
         const strong = token as Tokens.Strong;
-        walkInlineTokens(strong.tokens, runs, { ...flags, bold: true });
+        walkInlineTokens(strong.tokens, runs, { ...flags, bold: true }, scope);
         break;
       }
       case "em": {
         const em = token as Tokens.Em;
-        walkInlineTokens(em.tokens, runs, { ...flags, italic: true });
+        walkInlineTokens(em.tokens, runs, { ...flags, italic: true }, scope);
         break;
       }
       case "del": {
         const del = token as Tokens.Del;
-        walkInlineTokens(del.tokens, runs, flags);
+        walkInlineTokens(del.tokens, runs, flags, scope);
         break;
       }
       case "link": {
@@ -332,7 +401,7 @@ function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags
       default: {
         const generic = token as Tokens.Generic;
         if (generic.tokens && generic.tokens.length) {
-          walkInlineTokens(generic.tokens, runs, flags);
+          walkInlineTokens(generic.tokens, runs, flags, scope);
         } else if (typeof generic.text === "string") {
           pushInlineRun(runs, generic.text, flags);
         } else if (typeof generic.raw === "string") {
@@ -344,12 +413,37 @@ function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags
   }
 }
 
+/**
+ * "`opencode-harness-audit` (`4c90a638-…`)" names one lane twice; once both are
+ * drawn as the lane's name the parenthesised copy is pure noise. Same rule as
+ * the desktop renderer's echo collapse.
+ */
+function collapseEntityEchoes(runs: InlineRun[]): void {
+  for (let index = 0; index + 3 < runs.length; index += 1) {
+    const key = runs[index]!.entityKey;
+    if (!key) continue;
+    const open = runs[index + 1]!;
+    const echo = runs[index + 2]!;
+    const close = runs[index + 3]!;
+    if (open.entityKey || !/\s*\($/.test(open.text) || echo.entityKey !== key || close.entityKey || !close.text.startsWith(")")) continue;
+    open.text = open.text.replace(/\s*\($/, "");
+    close.text = close.text.slice(1);
+    runs.splice(index + 2, 1);
+  }
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    if (!runs[index]!.text.length) runs.splice(index, 1);
+  }
+}
+
 export function parseInlineRuns(text: string): InlineRun[] {
   if (!text.length) return [{ text: "" }];
   try {
     const tokens = Lexer.lexInline(text);
     const runs: InlineRun[] = [];
-    walkInlineTokens(tokens, runs, {});
+    // One call is one block (a paragraph, a bullet, a heading), which is the
+    // scope a bare `3461-3468` may refer back to a file in.
+    walkInlineTokens(tokens, runs, {}, { lookup: tuiThreadEntityLookup(), block: { lastFilePath: null } });
+    collapseEntityEchoes(runs);
     if (!runs.length) return [{ text }];
     return runs;
   } catch {

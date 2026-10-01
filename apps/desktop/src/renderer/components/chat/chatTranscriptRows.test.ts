@@ -2904,6 +2904,45 @@ describe("spawn_completed notice folding", () => {
     expect(repeatCountOf(rows[0]!)).toBe(3);
   });
 
+  it("folds a turn's image views into one strip across hidden work, and breaks on a visible row", () => {
+    const view = (itemId: string, path: string, turnId = "turn-1") =>
+      ({ type: "codex_image_view", itemId, turnId, path, status: "completed" }) satisfies AgentChatEventEnvelope["event"];
+    const command = (itemId: string) =>
+      ({ type: "command", command: "ade app-control observe", cwd: "/repo", output: "", itemId, turnId: "turn-1", status: "completed", exitCode: 0 }) satisfies AgentChatEventEnvelope["event"];
+    const events = [
+      env("2026-06-01T10:00:00.000Z", view("v-1", "/shots/1.png")),
+      env("2026-06-01T10:00:01.000Z", command("c-1")),
+      env("2026-06-01T10:00:02.000Z", { type: "text", text: "Looking again.", itemId: "t-1", turnId: "turn-1" }),
+      env("2026-06-01T10:00:03.000Z", view("v-2", "/shots/2.png")),
+      // A later update to an image already in the strip changes it in place.
+      env("2026-06-01T10:00:04.000Z", view("v-2", "/shots/2b.png")),
+      // A row the reader keeps seeing ends the strip.
+      env("2026-06-01T10:00:05.000Z", { type: "ade_card", cardId: "ci-1", variant: "ci" } as unknown as AgentChatEventEnvelope["event"]),
+      env("2026-06-01T10:00:06.000Z", view("v-3", "/shots/3.png")),
+      // Another turn never joins this turn's strip.
+      env("2026-06-01T10:00:07.000Z", view("v-4", "/shots/4.png", "turn-2")),
+    ];
+    const rows = collapseChatTranscriptEvents(events);
+    const strips = rows
+      .filter((row) => row.event.type === "codex_image_view")
+      .map((row) => {
+        const head = row.event as Extract<AgentChatEventEnvelope["event"], { type: "codex_image_view" }>;
+        return [head.path, ...(row.imageViewSiblings ?? []).map((sibling) => sibling.path)];
+      });
+
+    expect(strips).toEqual([
+      ["/shots/1.png", "/shots/2b.png"],
+      ["/shots/3.png"],
+      ["/shots/4.png"],
+    ]);
+    // Appending one event at a time folds exactly as one full pass does.
+    let incremental = collapseChatTranscriptEvents(events.slice(0, 1));
+    for (let count = 2; count <= events.length; count += 1) {
+      incremental = collapseChatTranscriptEventsIncremental(events.slice(0, count), events.slice(0, count - 1), incremental);
+    }
+    expect(incremental).toEqual(rows);
+  });
+
   it("does not fold across an intervening row, and never folds a different child", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
