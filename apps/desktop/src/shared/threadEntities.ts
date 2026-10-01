@@ -49,9 +49,10 @@ export type ThreadEntityIndex = {
 export type ThreadEntityLookup = {
   laneById: Map<string, ThreadEntityLane>;
   laneByName: Map<string, ThreadEntityLane>;
-  sessionIds: Set<string>;
+  /** Lowercased chat id → the id as ADE stores it. */
+  sessionIds: Map<string, string>;
   /** All lane and session ids, for 8+ character prefix matching. */
-  idPrefixes: Array<{ id: string; kind: "lane" | "chat" }>;
+  idPrefixes: Array<{ id: string; kind: "lane" | "chat"; originalId: string }>;
   linearTeamKeys: Set<string>;
   skillNames: Set<string>;
 };
@@ -118,10 +119,12 @@ export function buildThreadEntityLookup(index: ThreadEntityIndex): ThreadEntityL
     if (AMBIGUOUS_LANE_NAMES.has(name.toLowerCase())) continue;
     laneByName.set(name, lane);
   }
-  const sessionIds = new Set(index.sessions.map((session) => session.id.toLowerCase()));
+  // Matching is case-insensitive; chips carry the id as ADE stores it, because
+  // the hover card and navigation compare ids exactly.
+  const sessionIds = new Map(index.sessions.map((session) => [session.id.toLowerCase(), session.id] as const));
   const idPrefixes: ThreadEntityLookup["idPrefixes"] = [
-    ...index.lanes.map((lane) => ({ id: lane.id.toLowerCase(), kind: "lane" as const })),
-    ...index.sessions.map((session) => ({ id: session.id.toLowerCase(), kind: "chat" as const })),
+    ...index.lanes.map((lane) => ({ id: lane.id.toLowerCase(), kind: "lane" as const, originalId: lane.id })),
+    ...index.sessions.map((session) => ({ id: session.id.toLowerCase(), kind: "chat" as const, originalId: session.id })),
   ];
   return {
     laneById,
@@ -153,12 +156,13 @@ function resolveId(raw: string, lookup: ThreadEntityLookup): Chip | null {
   if (UUID_RE.test(value)) {
     const lane = lookup.laneById.get(value);
     if (lane) return withToken(chipFromMention("lane", lane.id, lane.name), raw);
-    if (lookup.sessionIds.has(value)) return withToken(chipFromMention("chat", value), raw);
+    const sessionId = lookup.sessionIds.get(value);
+    if (sessionId) return withToken(chipFromMention("chat", sessionId), raw);
     return null;
   }
   if (!ID_PREFIX_RE.test(value)) return null;
   // A prefix names an entity only when exactly one lane or chat starts with it.
-  let found: { id: string; kind: "lane" | "chat" } | null = null;
+  let found: ThreadEntityLookup["idPrefixes"][number] | null = null;
   for (const candidate of lookup.idPrefixes) {
     if (!candidate.id.startsWith(value)) continue;
     if (found && found.id !== candidate.id) return null;
@@ -169,7 +173,7 @@ function resolveId(raw: string, lookup: ThreadEntityLookup): Chip | null {
     const lane = lookup.laneById.get(found.id);
     return lane ? withToken(chipFromMention("lane", lane.id, lane.name), raw) : null;
   }
-  return withToken(chipFromMention("chat", found.id), raw);
+  return withToken(chipFromMention("chat", found.originalId), raw);
 }
 
 /**

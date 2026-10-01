@@ -132,25 +132,32 @@ function OpenButton({ target }: { target: ImageViewTarget }) {
 function ImageViewTile({ event }: { event: ImageViewEvent }) {
   const target = imageViewTarget(event);
   const src = useImageViewSrc(target);
+  const tileClass = "relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-white/[0.07] bg-black/25";
+  const body = src ? (
+    <img src={src} alt={target.displayName} loading="lazy" draggable={false} className="h-full w-full object-cover" />
+  ) : (
+    <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-1.5 text-fg/35">
+      <ImageSquare size={16} weight="duotone" aria-hidden />
+      <span className="w-full truncate text-center text-[length:calc(var(--chat-font-size)*9.5/14)]">{target.displayName}</span>
+    </span>
+  );
+  // Only an openable image is a button; a data URI is a picture, not a dead control.
+  if (!target.canOpen) return <span className={tileClass} title={target.displayName}>{body}</span>;
   return (
     <button
       type="button"
-      onClick={target.canOpen ? target.open : undefined}
-      disabled={!target.canOpen}
+      onClick={target.open}
       title={target.localPath ?? target.url ?? target.displayName}
       aria-label={`Open ${target.displayName}`}
-      className="group/tile relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-white/[0.07] bg-black/25 transition-colors enabled:hover:border-white/[0.18]"
+      className={`${tileClass} transition-colors hover:border-white/[0.18]`}
     >
-      {src ? (
-        <img src={src} alt={target.displayName} loading="lazy" draggable={false} className="h-full w-full object-cover" />
-      ) : (
-        <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-1.5 text-fg/35">
-          <ImageSquare size={16} weight="duotone" aria-hidden />
-          <span className="w-full truncate text-center text-[length:calc(var(--chat-font-size)*9.5/14)]">{target.displayName}</span>
-        </span>
-      )}
+      {body}
     </button>
   );
+}
+
+function PreviewImage({ src, name }: { src: string; name: string }) {
+  return <img src={src} alt={name} loading="lazy" draggable={false} className="max-h-40 max-w-full rounded object-contain" />;
 }
 
 export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps) {
@@ -184,21 +191,21 @@ export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps)
         <OpenButton target={target} />
       </div>
       {previewSrc ? (
-        <button
-          type="button"
-          onClick={target.canOpen ? target.open : undefined}
-          disabled={!target.canOpen}
-          className="inline-flex w-fit max-w-full rounded-lg border border-white/[0.07] bg-black/25 p-1 transition-colors enabled:hover:border-white/[0.16]"
-          aria-label={`Open ${target.displayName}`}
-        >
-          <img
-            src={previewSrc}
-            alt={target.displayName}
-            loading="lazy"
-            draggable={false}
-            className="max-h-40 max-w-full rounded object-contain"
-          />
-        </button>
+        target.canOpen ? (
+          <button
+            type="button"
+            onClick={target.open}
+            className="inline-flex w-fit max-w-full rounded-lg border border-white/[0.07] bg-black/25 p-1 transition-colors hover:border-white/[0.16]"
+            aria-label={`Open ${target.displayName}`}
+          >
+            <PreviewImage src={previewSrc} name={target.displayName} />
+          </button>
+        ) : (
+          // Nothing to open (a data URI): a picture, not a dead button.
+          <span className="inline-flex w-fit max-w-full rounded-lg border border-white/[0.07] bg-black/25 p-1">
+            <PreviewImage src={previewSrc} name={target.displayName} />
+          </span>
+        )
       ) : null}
     </div>
   );

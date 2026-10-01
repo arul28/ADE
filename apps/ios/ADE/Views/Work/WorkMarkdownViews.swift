@@ -183,7 +183,10 @@ func workThreadEntityAttributedString(
   guard text.contains("`") || text.contains("-") || text.contains("#") || text.contains("@") else {
     return base
   }
-  let key = "\(workStableDigest(text)):\(lookupRevision):\(revealedTimes.sorted().joined(separator: "\u{1}"))" as NSString
+  // The local day is part of the key: a timestamp formatted "today" as a bare
+  // time must gain its date after midnight, not stay cached as today's.
+  let day = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+  let key = "\(workStableDigest(text)):\(lookupRevision):\(day):\(revealedTimes.sorted().joined(separator: "\u{1}"))" as NSString
   if !intermediate, let cached = workThreadEntityCache.object(forKey: key) {
     return cached.value
   }
