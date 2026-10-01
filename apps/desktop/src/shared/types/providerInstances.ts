@@ -52,8 +52,17 @@ export type ProviderInstance = {
   createdAt: string;
   /** Read out of the config home by `refreshAccounts()`; absent until then. */
   account?: { email?: string; plan?: string };
-  /** True when the config home holds a usable login (email or plan resolved). */
+  /**
+   * True when the config home names an account (email or plan resolved) and
+   * the usage poller has not found its saved login broken.
+   */
   signedIn: boolean;
+  /**
+   * The config home names an account, but its saved login no longer works
+   * (the provider CLI cleared it). `signedIn` is false; the account needs a
+   * new sign-in. Absent when the login works or was never read.
+   */
+  loginBroken?: boolean;
 };
 
 /** Per-provider settings that are about the set of accounts, not one account. */

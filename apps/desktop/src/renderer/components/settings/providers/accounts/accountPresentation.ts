@@ -155,13 +155,13 @@ export function accountSignedOut(
   provider: ProviderInstanceProvider,
   instance: ProviderInstance,
 ): boolean {
-  if (!instance.signedIn) return true;
+  if (!instance.signedIn || instance.loginBroken) return true;
   return usageAccountFor(snapshot, provider, instance)?.login === "signed_out";
 }
 
 /** `email · plan`, whichever halves exist, or the not-signed-in sentence. */
 export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
-  if (!instance.signedIn) return "Not signed in";
+  if (!instance.signedIn && !instance.loginBroken) return "Not signed in";
   const parts = [instance.account?.email, signedOut ? "Signed out" : instance.account?.plan].filter(
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );

@@ -842,8 +842,16 @@ function resetAccountRateLimitsForTest(): void {
  */
 const accountLogins = new Map<string, UsageAccountLogin>();
 
-function noteAccountLogin(accountId: string, login: UsageAccountLogin): void {
+function noteAccountLogin(accountId: string, instanceId: string, login: UsageAccountLogin): void {
   accountLogins.set(accountId, login);
+  // The registry reports `signedIn` from the email in the config home, which
+  // outlives a cleared login. Every account list (model picker, Settings, the
+  // AI status) reads the registry, so it learns the real state here.
+  try {
+    getMachineProviderInstanceStore().setLoginBroken(instanceId, login === "signed_out");
+  } catch {
+    // An unreadable registry already degrades every reader to its defaults.
+  }
 }
 
 function attachAccountLogins(accounts: UsageAccount[]): void {
@@ -1148,7 +1156,7 @@ async function pollClaudeInstance(
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
   if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
-    noteAccountLogin(accountId, login.state);
+    noteAccountLogin(accountId, instance.id, login.state);
   }
   if (login.state === "expired") {
     // The CLI refreshes and saves its own token. A user poll may run it;
@@ -1204,7 +1212,7 @@ async function pollClaudeInstance(
         // refresh token (see `readClaudeLogin`); the CLI fallback below, or the
         // next chat on this account, refreshes it.
         invalidateCachedClaudeCredentials(configHome);
-        noteAccountLogin(accountId, "expired");
+        noteAccountLogin(accountId, instance.id, "expired");
       }
 
       // A throttled or forbidden endpoint is the one status the CLI cannot fix:
@@ -4495,9 +4503,12 @@ export function createUsageTrackingService({
     for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
       try {
         if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
-        const signedIn = providerInstanceStore.list(provider).filter((instance) => instance.signedIn);
-        if (signedIn.length < 2) continue;
-        const signedOut = signedIn.filter((instance) => snapshot.accounts?.some((account) => (
+        // Accounts the user added, signed in or with a broken login: a broken
+        // one is exactly what this warning is for.
+        const known = providerInstanceStore.list(provider)
+          .filter((instance) => instance.signedIn || instance.loginBroken);
+        if (known.length < 2) continue;
+        const signedOut = known.filter((instance) => instance.loginBroken || snapshot.accounts?.some((account) => (
           account.provider === provider && account.instanceId === instance.id && account.login === "signed_out"
         )));
         if (signedOut.length > 0) {
