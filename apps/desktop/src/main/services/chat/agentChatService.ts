@@ -18293,8 +18293,19 @@ export function createAgentChatService(args: {
   const usageLimitMovedFrom = new Map<string, Set<string>>();
   /** How long a queued move waits for the limited turn's done event. */
   const USAGE_LIMIT_MOVE_WAIT_MS = 2 * 60_000;
-  /** Chats waiting for the limited turn to end before they move accounts. */
-  const pendingUsageLimitMoves = new Map<string, AgentChatUsageLimitAlternateAccount>();
+  /**
+   * Chats waiting for the limited turn to end before they move accounts.
+   * One limit can arm twice (Claude reports it as a rate-limit event and as a
+   * result error), so the queue and the in-flight set make a move run once.
+   */
+  const pendingUsageLimitMoves = new Map<string, {
+    alternate: AgentChatUsageLimitAlternateAccount;
+    turnId: string | null;
+    fallbackTimer: ReturnType<typeof setTimeout> | null;
+  }>();
+  const usageLimitMoveInFlight = new Set<string>();
+  /** Limited turns whose chat already moved; a late arm for one is not a new limit. */
+  const usageLimitMovedTurnIds = new Set<string>();
 
   /** The provider thread id a relaunched runtime resumes, from memory or disk. */
   const providerThreadIdForMove = (managed: ManagedChatSession): string | null => {
@@ -18338,6 +18349,9 @@ export function createAgentChatService(args: {
     if (!from || !to || to.provider !== provider) {
       return { ok: false, message: `ADE could not find the ${alternate.label} account.` };
     }
+    // Stop the runtime first, so nothing writes the thread while it is copied.
+    // The kept resume pointer still serves the old account if the copy fails.
+    teardownRuntime(managed, "paused_run");
     const moved = await moveProviderThread({
       provider,
       threadId,
@@ -18346,7 +18360,6 @@ export function createAgentChatService(args: {
     });
     if (!moved.ok) return { ok: false, message: moved.message };
 
-    teardownRuntime(managed, "paused_run");
     const leftAtLimit = usageLimitMovedFrom.get(managed.session.id) ?? new Set<string>();
     leftAtLimit.add(from.id);
     usageLimitMovedFrom.set(managed.session.id, leftAtLimit);
@@ -18380,28 +18393,37 @@ export function createAgentChatService(args: {
    * new-chat handoff when the thread cannot move.
    */
   const runPendingUsageLimitMove = (managed: ManagedChatSession): void => {
-    const alternate = pendingUsageLimitMoves.get(managed.session.id);
-    if (!alternate) return;
-    pendingUsageLimitMoves.delete(managed.session.id);
-    const turnId = managed.usageLimitResume?.turnId ?? null;
-    const alternateAccount = { instanceId: alternate.instanceId, label: alternate.label };
+    const sessionId = managed.session.id;
+    const pending = pendingUsageLimitMoves.get(sessionId);
+    if (!pending) return;
+    pendingUsageLimitMoves.delete(sessionId);
+    if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
+    // The fallback timer can outlive the chat.
+    if (managed.deleted || managed.closed) return;
+    const { alternate, turnId } = pending;
+    usageLimitMoveInFlight.add(sessionId);
     void (async () => {
       const moved = await moveUsageLimitChatInPlace(managed, alternate);
-      if (moved.ok) return;
+      if (moved.ok) {
+        if (turnId) rememberBoundedId(usageLimitMovedTurnIds, turnId, 256);
+        return;
+      }
       logger.warn("agent_chat.usage_limit_move_failed", {
-        sessionId: managed.session.id,
+        sessionId,
         instanceId: alternate.instanceId,
         error: moved.message,
       });
       const handedOff = await handOffUsageLimitChat(managed, alternate);
       if (handedOff.ok || handedOff.reason === "handoff_in_flight") return;
-      publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+      publishUsageLimitResumeArm(managed, turnId, alternate);
     })().catch((error) => {
       logger.warn("agent_chat.usage_limit_move_failed", {
-        sessionId: managed.session.id,
+        sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
-      publishUsageLimitResumeArm(managed, turnId, alternateAccount);
+      publishUsageLimitResumeArm(managed, turnId, alternate);
+    }).finally(() => {
+      usageLimitMoveInFlight.delete(sessionId);
     });
   };
 
@@ -18623,6 +18645,8 @@ export function createAgentChatService(args: {
     options?: { allowAccountHandoff?: boolean },
   ): void => {
     if (usageLimitHandedOffTargets.has(managed.session.id)) return;
+    if (pendingUsageLimitMoves.has(managed.session.id) || usageLimitMoveInFlight.has(managed.session.id)) return;
+    if (turnId && usageLimitMovedTurnIds.has(turnId)) return;
     const alternate = readUsageLimitAlternate(managed);
     const alternateAccount = alternate
       ? { instanceId: alternate.instanceId, label: alternate.label }
@@ -18633,14 +18657,18 @@ export function createAgentChatService(args: {
       if (usageLimitHandoffInFlight.has(managed.session.id)) return;
       // The limit arrives inside the turn. The move waits for that turn to end,
       // so the runtime it stops is not still writing the thread.
-      pendingUsageLimitMoves.set(managed.session.id, alternateAccount!);
-      if (managed.session.status !== "active") {
-        runPendingUsageLimitMove(managed);
-      } else {
-        // A turn that dies without a done event must not strand the chat.
-        const fallback = setTimeout(() => runPendingUsageLimitMove(managed), USAGE_LIMIT_MOVE_WAIT_MS);
-        fallback.unref?.();
-      }
+      const turnActive = managed.session.status === "active";
+      // A turn that dies without a done event must not strand the chat.
+      const fallbackTimer = turnActive
+        ? setTimeout(() => runPendingUsageLimitMove(managed), USAGE_LIMIT_MOVE_WAIT_MS)
+        : null;
+      fallbackTimer?.unref?.();
+      pendingUsageLimitMoves.set(managed.session.id, {
+        alternate: { instanceId: alternate.instanceId, label: alternate.label },
+        turnId: turnId ?? null,
+        fallbackTimer,
+      });
+      if (!turnActive) runPendingUsageLimitMove(managed);
       return;
     }
     publishUsageLimitResumeArm(managed, turnId, alternateAccount);

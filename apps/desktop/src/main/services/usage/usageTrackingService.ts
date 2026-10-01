@@ -1147,13 +1147,13 @@ async function pollClaudeInstance(
   );
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
-  if (allowKeychain || process.platform !== "darwin" || login.state === "ok") {
+  if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
     noteAccountLogin(accountId, login.state);
   }
   if (login.state === "expired") {
     // The CLI refreshes and saves its own token. A user poll may run it;
     // a background poll waits for the next chat on this account to do it.
-    if (allowInteractiveSources && login.hasRefreshToken) {
+    if (allowInteractiveSources) {
       return await measureUsagePhase(
         logger,
         { provider: "claude", phase: "cli_fallback", reason: context.reason },
@@ -1168,7 +1168,7 @@ async function pollClaudeInstance(
       source: "oauth",
     };
   }
-  if (login.state === "signed_out") {
+  if (login.state === "signed_out" || login.state === "unreadable") {
     // A secondary account with no credentials file is simply unsigned-in.
     // Spawning the Claude CLI for it holds a pty until the sign-in timeout.
     if (allowInteractiveSources && instance.isDefault) {
@@ -4522,10 +4522,15 @@ export function createUsageTrackingService({
     return issues;
   }
 
-  function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+  /** The snapshot with this moment's balance issues in place of any it carried. */
+  function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
     const { balanceIssues: _previousIssues, ...rest } = snapshot;
     const balanceIssues = computeBalanceIssues(rest);
-    const published = stampRevision(balanceIssues.length > 0 ? { ...rest, balanceIssues } : rest);
+    return balanceIssues.length > 0 ? { ...rest, balanceIssues } : rest;
+  }
+
+  function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
+    const published = stampRevision(withBalanceIssues(snapshot));
     lastSnapshot = published;
     emitUpdate(published);
     autoStartScheduler.onSnapshot(published);
@@ -5483,7 +5488,10 @@ export function createUsageTrackingService({
     if (issue && previous?.kind === issue.kind) return;
     if (issue) balancePickIssues.set(provider, issue);
     else balancePickIssues.delete(provider);
-    publishSnapshot(lastSnapshot);
+    // Only the issue list changed: no quota reading for the ledger or the
+    // auto-start scheduler, which `publishSnapshot` would feed again.
+    lastSnapshot = stampRevision(withBalanceIssues(lastSnapshot));
+    emitUpdate(lastSnapshot);
   }
 
   /**

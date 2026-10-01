@@ -86,12 +86,16 @@ function defaultInstanceId(provider: ProviderInstanceProvider, instances: readon
     ?? provider;
 }
 
-function accountFor(
-  provider: ProviderInstanceProvider,
-  accounts: readonly UsageAccount[],
+/** One instance's usage account (when the snapshot has it) and its windows. */
+function readingFor(
+  args: Pick<PickInstanceForNewChatArgs, "provider" | "accounts" | "windowsByAccountId">,
   instanceId: string,
-): UsageAccount | undefined {
-  return accounts.find((candidate) => candidate.provider === provider && candidate.instanceId === instanceId);
+): { account: UsageAccount | undefined; windows: readonly UsageWindow[] } {
+  const account = (args.accounts ?? []).find(
+    (candidate) => candidate.provider === args.provider && candidate.instanceId === instanceId,
+  );
+  const accountId = account?.id ?? usageAccountId({ provider: args.provider, instanceId });
+  return { account, windows: windowsForAccount(args.windowsByAccountId, accountId) };
 }
 
 type AccountRoom =
@@ -156,14 +160,13 @@ export function pickInstanceForNewChat({
   let best: { instance: ProviderInstance; urgency: number; fiveHourHeadroom: number } | null = null;
   let unknownCount = 0;
   for (const instance of signedIn) {
-    const account = accountFor(provider, accounts, instance.id);
+    const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
     // Old windows stay on screen after a login breaks. They are not room.
     if (account?.login === "signed_out") {
       signedOutInstanceIds.push(instance.id);
       continue;
     }
-    const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
-    const room = accountRoom(windowsForAccount(windowsByAccountId, accountId), nowMs);
+    const room = accountRoom(windows, nowMs);
     if (room.kind === "unknown") {
       unknownCount += 1;
       continue;
@@ -233,26 +236,16 @@ export function pickAlternateInstanceForLimitedChat({
   const candidates = instances.filter((instance) => (
     instance.provider === provider && instance.signedIn && instance.id !== blockedId
   ));
-  const withRoom = candidates.filter((instance) => {
-    const account = accountFor(provider, accounts, instance.id);
-    if (account?.login === "signed_out") return false;
-    const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
-    return hasImmediateRoom(windowsForAccount(windowsByAccountId, accountId));
-  });
-  if (withRoom.length === 0) return null;
-  let chosen = withRoom[0]!;
-  let chosenUrgency = Number.NEGATIVE_INFINITY;
-  for (const instance of withRoom) {
-    const account = accountFor(provider, accounts, instance.id);
-    const accountId = account?.id ?? usageAccountId({ provider, instanceId: instance.id });
-    const room = accountRoom(windowsForAccount(windowsByAccountId, accountId), nowMs);
+  let chosen: { instance: ProviderInstance; urgency: number } | null = null;
+  for (const instance of candidates) {
+    const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
+    if (account?.login === "signed_out" || !hasImmediateRoom(windows)) continue;
+    const room = accountRoom(windows, nowMs);
     // Near-full accounts still count here: any room beats a stopped chat.
     const urgency = room.kind === "room" ? room.urgency : 0;
-    if (urgency > chosenUrgency + SCORE_EPSILON) {
-      chosen = instance;
-      chosenUrgency = urgency;
-    }
+    if (!chosen || urgency > chosen.urgency + SCORE_EPSILON) chosen = { instance, urgency };
   }
-  const label = chosen.label.trim() || chosen.id;
-  return { instanceId: chosen.id, label, reason: "use-before-reset rate" };
+  if (!chosen) return null;
+  const label = chosen.instance.label.trim() || chosen.instance.id;
+  return { instanceId: chosen.instance.id, label, reason: "use-before-reset rate" };
 }

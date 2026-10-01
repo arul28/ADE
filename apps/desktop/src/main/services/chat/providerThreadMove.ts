@@ -32,25 +32,25 @@ export type ProviderThreadMoveResult =
   | { ok: true; targetPath: string }
   | { ok: false; reason: "same_home" | "thread_not_found" | "copy_failed"; message: string };
 
-function copyFileReplacing(sourcePath: string, targetPath: string): void {
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+async function copyFileReplacing(sourcePath: string, targetPath: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   // Copy to a sibling first, then rename: a resume that starts during the
   // copy must never read half a transcript.
   const staging = `${targetPath}.ade-move-${process.pid}-${Date.now()}`;
   try {
-    fs.copyFileSync(sourcePath, staging);
-    fs.renameSync(staging, targetPath);
+    await fs.promises.copyFile(sourcePath, staging);
+    await fs.promises.rename(staging, targetPath);
   } finally {
-    fs.rmSync(staging, { force: true });
+    await fs.promises.rm(staging, { force: true });
   }
 }
 
 /** Finds `<home>/projects/*\/<id>.jsonl`. The project folder name is the CLI's own cwd slug. */
-function findClaudeThreadFile(configHome: string, sessionId: string): string | null {
+async function findClaudeThreadFile(configHome: string, sessionId: string): Promise<string | null> {
   const projectsDir = path.join(configHome, "projects");
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+    entries = await fs.promises.readdir(projectsDir, { withFileTypes: true });
   } catch {
     return null;
   }
@@ -59,7 +59,7 @@ function findClaudeThreadFile(configHome: string, sessionId: string): string | n
     if (!entry.isDirectory()) continue;
     const candidate = path.join(projectsDir, entry.name, `${sessionId}.jsonl`);
     try {
-      const stat = fs.statSync(candidate);
+      const stat = await fs.promises.stat(candidate);
       if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { filePath: candidate, mtimeMs: stat.mtimeMs };
     } catch {
       // Not in this project folder.
@@ -69,7 +69,7 @@ function findClaudeThreadFile(configHome: string, sessionId: string): string | n
 }
 
 async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {
-  const sourcePath = findClaudeThreadFile(args.fromConfigHome, args.threadId);
+  const sourcePath = await findClaudeThreadFile(args.fromConfigHome, args.threadId);
   if (!sourcePath) {
     return {
       ok: false,
@@ -79,13 +79,16 @@ async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderT
   }
   const relative = path.relative(args.fromConfigHome, sourcePath);
   const targetPath = path.join(args.toConfigHome, relative);
-  copyFileReplacing(sourcePath, targetPath);
+  await copyFileReplacing(sourcePath, targetPath);
   const sidecarSource = path.join(path.dirname(sourcePath), args.threadId);
-  if (fs.existsSync(sidecarSource)) {
-    fs.cpSync(sidecarSource, path.join(path.dirname(targetPath), args.threadId), {
+  try {
+    await fs.promises.cp(sidecarSource, path.join(path.dirname(targetPath), args.threadId), {
       recursive: true,
       force: true,
     });
+  } catch (error) {
+    // Most threads have no sidecar folder.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   return { ok: true, targetPath };
 }
@@ -102,7 +105,7 @@ async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderTh
     };
   }
   const targetPath = path.join(args.toConfigHome, path.relative(args.fromConfigHome, sourcePath));
-  copyFileReplacing(sourcePath, targetPath);
+  await copyFileReplacing(sourcePath, targetPath);
   return { ok: true, targetPath };
 }
 

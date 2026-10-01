@@ -203,9 +203,23 @@ function claudeCacheKey(configHome?: string): string {
   return scoped ? pathKey(path.resolve(scoped)) : "";
 }
 
-export async function readClaudeCredentials(
-  options: ClaudeCredentialReadOptions = {},
-): Promise<ClaudeLocalAuthCredentials | null> {
+/** `security find-generic-password` exit code for "no such item". */
+const KEYCHAIN_ITEM_NOT_FOUND_EXIT = 44;
+
+type ClaudeCredentialSourceRead = {
+  credentials: ClaudeLocalAuthCredentials | null;
+  /**
+   * The Keychain read failed for a reason other than "no such item": the 5 s
+   * timeout, a locked Keychain, a cancelled prompt. A miss after that says
+   * nothing about the login.
+   */
+  keychainFailed: boolean;
+};
+
+async function readClaudeCredentialSource(
+  options: ClaudeCredentialReadOptions,
+): Promise<ClaudeCredentialSourceRead> {
+  let keychainFailed = false;
   // Claude Code stores OAuth credentials in the macOS Keychain, one item per
   // config directory. Reading the item named after THIS account's directory is
   // what keeps a scoped login readable (and parseable) without ever handing it
@@ -233,24 +247,36 @@ export async function readClaudeCredentials(
           if (!isClaudeTokenExpiredOrExpiring(credentials)) {
             cacheClaudeCredentials(credentials, options.configHome);
           }
-          return credentials;
+          return { credentials, keychainFailed: false };
         }
+      } else if (result.exitCode !== 0 && result.exitCode !== KEYCHAIN_ITEM_NOT_FOUND_EXIT) {
+        keychainFailed = true;
       }
     } catch {
       // Fall back to the local credentials file.
+      keychainFailed = true;
     }
   }
 
   const credentialsPath = claudeCredentialsFile(options.configHome);
   try {
     const raw = await fs.promises.readFile(credentialsPath, "utf8");
-    return parseClaudeCredentials(
-      safeJsonParse<Record<string, unknown>>(raw, {}),
-      "claude-credentials-file",
-    );
+    return {
+      credentials: parseClaudeCredentials(
+        safeJsonParse<Record<string, unknown>>(raw, {}),
+        "claude-credentials-file",
+      ),
+      keychainFailed,
+    };
   } catch {
-    return null;
+    return { credentials: null, keychainFailed };
   }
+}
+
+export async function readClaudeCredentials(
+  options: ClaudeCredentialReadOptions = {},
+): Promise<ClaudeLocalAuthCredentials | null> {
+  return (await readClaudeCredentialSource(options)).credentials;
 }
 
 export function isClaudeTokenExpiredOrExpiring(creds: ClaudeLocalAuthCredentials): boolean {
@@ -309,12 +335,15 @@ export function cacheClaudeCredentials(
  * - `ok`: a live access token, returned in `credentials`.
  * - `expired`: the access token expired. The login is still there, and the
  *   Claude CLI refreshes it the next time it runs on this account.
- * - `signed_out`: no login, or a login the CLI already cleared.
+ * - `signed_out`: no login, a login the CLI already cleared, or an expired
+ *   token with no refresh token to renew it.
+ * - `unreadable`: the Keychain read failed, so this read proves nothing.
  */
 export type ClaudeLoginRead =
   | { state: "ok"; credentials: ClaudeLocalAuthCredentials }
-  | { state: "expired"; hasRefreshToken: boolean }
-  | { state: "signed_out" };
+  | { state: "expired" }
+  | { state: "signed_out" }
+  | { state: "unreadable" };
 
 /**
  * Reads one Claude account's login without changing it.
@@ -338,8 +367,9 @@ export async function readClaudeLogin(
   const skipMissCache = options.skipMissCache ?? (options.allowKeychain !== false);
   if (!skipMissCache && (cached?.missUntilMs ?? 0) > Date.now()) return { state: "signed_out" };
 
-  const creds = await readClaudeCredentials(options);
+  const { credentials: creds, keychainFailed } = await readClaudeCredentialSource(options);
   if (!creds) {
+    if (keychainFailed) return { state: "unreadable" };
     claudeCacheEntry(cacheKey).missUntilMs = Date.now() + CLAUDE_CREDENTIAL_MISS_TTL_MS;
     return { state: "signed_out" };
   }
@@ -350,7 +380,8 @@ export async function readClaudeLogin(
     return { state: "ok", credentials: creds };
   }
   claudeCacheEntry(cacheKey).credentials = null;
-  return { state: "expired", hasRefreshToken: Boolean(creds.refreshToken) };
+  // Without a refresh token the CLI cannot renew it either.
+  return creds.refreshToken ? { state: "expired" } : { state: "signed_out" };
 }
 
 /**

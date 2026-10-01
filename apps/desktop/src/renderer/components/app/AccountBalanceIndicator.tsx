@@ -10,9 +10,8 @@ const WARNING = "#FBBF24";
 const WARNING_TEXT = "#FCD34D";
 
 /**
- * Settings entry that fixes each kind of issue. A signed-out account is fixed
- * on its provider's accounts panel; the other kinds are read on the same page,
- * next to the smart balance switch.
+ * The provider's settings page: it holds the accounts (where a signed-out one
+ * signs in again) and the smart balance switch, so every kind of issue opens it.
  */
 function settingsEntryFor(issue: AccountBalanceIssue): string {
   return issue.provider === "claude" ? "agents.provider.claude" : "agents.provider.codex";
