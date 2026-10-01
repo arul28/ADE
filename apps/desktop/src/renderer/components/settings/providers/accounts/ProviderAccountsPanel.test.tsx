@@ -184,7 +184,7 @@ describe("ProviderAccountsPanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one row per instance with its identity, usage, and default marker", async () => {
+  it("renders one row per instance with its identity, usage, and which account new chats use", async () => {
     installBridge();
     renderPanel();
 
@@ -193,12 +193,24 @@ describe("ProviderAccountsPanel", () => {
     const personal = await screen.findByRole("group", { name: "Personal account" });
     expect(within(personal).getByText("arul@gmail.com · Max")).toBeTruthy();
     expect(within(personal).getByText("5h 15% · wk 28% left")).toBeTruthy();
-    expect(within(personal).getByText("Default")).toBeTruthy();
+    // Smart balance is off, so only the default account is checked.
+    expect(within(personal).getByRole("button", { pressed: true })).toBeTruthy();
 
     const work = screen.getByRole("group", { name: "Work account" });
     expect(within(work).getByText("arul@acme.com · Team")).toBeTruthy();
     expect(within(work).getByText("5h 0% · wk 8% left")).toBeTruthy();
-    expect(within(work).queryByText("Default")).toBeNull();
+    expect(within(work).getByRole("button", { pressed: false })).toBeTruthy();
+  });
+
+  it("checks every signed-in account while smart balance is on", async () => {
+    installBridge({ smartBalance: true });
+    renderPanel();
+
+    const personal = await screen.findByRole("group", { name: "Personal account" });
+    const work = screen.getByRole("group", { name: "Work account" });
+
+    expect(within(personal).getByRole("button", { pressed: true })).toBeTruthy();
+    expect(within(work).getByRole("button", { pressed: true })).toBeTruthy();
   });
 
   it("says a signed-in account has no usage yet when it has no windows", async () => {
@@ -292,9 +304,10 @@ describe("ProviderAccountsPanel", () => {
 
     const hint = await screen.findByRole("button", { name: "About Smart balance" });
     fireEvent.mouseEnter(hint);
-    expect(screen.getByRole("tooltip").textContent).toContain(
-      "picks the account with the most room when a chat starts",
-    );
+    // The hover shows the switch's own explanation; its wording is not pinned.
+    const text = (screen.getByRole("tooltip").textContent ?? "").trim();
+    expect(text.length).toBeGreaterThan(0);
+    expect(text).not.toBe("Smart balance");
   });
 
   it("hangs a hint from the right edge when the left edge would push it off screen", async () => {
@@ -347,25 +360,42 @@ describe("ProviderAccountsPanel", () => {
     expect(tooltip.style.right).toBe("");
   });
 
-  it("promotes an account to default from its row menu", async () => {
-    const harness = installBridge();
+  it("selects an account when its row is clicked, turning smart balance off first", async () => {
+    const harness = installBridge({ smartBalance: true });
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Set as default" }));
+    const work = await screen.findByRole("group", { name: "Work account" });
+    fireEvent.click(work);
 
+    await waitFor(() => {
+      expect(harness.providerInstances.setSettings).toHaveBeenCalledWith({
+        provider: "claude",
+        settings: { smartBalance: false },
+      });
+    });
     await waitFor(() => {
       expect(harness.providerInstances.setDefault).toHaveBeenCalledWith({ id: "claude-work" });
     });
   });
 
-  it("does not offer to make the default account the default again", async () => {
-    installBridge();
+  it("cannot select an account whose saved login stopped working", async () => {
+    const broken = instance({
+      id: "claude-broken",
+      label: "Broken",
+      signedIn: false,
+      loginBroken: true,
+      account: { email: "arul@old.com" },
+    });
+    const harness = installBridge({ instances: [DEFAULT_INSTANCE, broken] });
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Personal account actions" }));
-    expect(screen.queryByRole("menuitem", { name: "Set as default" })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
+    const row = await screen.findByRole("group", { name: "Broken account" });
+    expect(within(row).getByText("arul@old.com · Signed out")).toBeTruthy();
+    expect(within(row).getByRole("button", { pressed: false }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(row);
+    expect(harness.providerInstances.setDefault).not.toHaveBeenCalled();
+    expect(harness.providerInstances.setSettings).not.toHaveBeenCalled();
   });
 
   it("dismisses a row menu on Escape and on a click elsewhere, and never stacks two", async () => {

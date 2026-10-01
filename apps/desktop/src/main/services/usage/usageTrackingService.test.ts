@@ -7486,6 +7486,52 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
+  it("shows one account for two config homes on the same live login, with only its windows", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "shared@example.com");
+    writeClaudeAccount(workHome, "shared@example.com");
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [
+            {
+              provider: "claude" as const,
+              windowType: "five_hour" as const,
+              accountId: "claude:claude",
+              percentUsed: 20,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+            {
+              provider: "claude" as const,
+              windowType: "weekly" as const,
+              accountId: "claude:work",
+              percentUsed: 60,
+              resetsAt: new Date(Date.now() + 60_000).toISOString(),
+              resetsInMs: 60_000,
+            },
+          ],
+          errors: [] as never[],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude"
+          ? [defaultInstance(), workInstance()]
+          : []),
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+    const claudeAccounts = (snapshot.accounts ?? []).filter((account) => account.provider === "claude");
+
+    // One login is one quota: the second home is dropped, default first, and
+    // its windows go with it so balance cannot count the same plan twice.
+    expect(claudeAccounts.map((account) => account.id)).toEqual(["claude:claude"]);
+    expect(snapshot.windows.map((window) => window.accountId)).toEqual(["claude:claude"]);
+
+    service.dispose();
+  });
+
   it("names the default account for a window that arrived without attribution", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "solo@example.com");
     const service = createUsageTrackingService({

@@ -362,6 +362,34 @@ describe("providerInstanceStore", () => {
     expect(store.get("claude")?.signedIn).toBe(false);
   });
 
+  it("reports a broken login as signed out, keeps its email, and emits once per flip", async () => {
+    const { store, changes } = makeStore({
+      readAccount: async () => ({ email: "known@example.com", plan: "Claude Max" }),
+    });
+    const created = store.create({ provider: "claude", label: "Work" });
+    await store.refreshAccounts();
+    expect(store.get(created.instance.id)?.signedIn).toBe(true);
+
+    store.setLoginBroken(created.instance.id, true);
+    const broken = store.get(created.instance.id);
+    expect(broken?.signedIn).toBe(false);
+    expect(broken?.loginBroken).toBe(true);
+    // The email stays: the row still names the account, it just cannot run.
+    expect(broken?.account?.email).toBe("known@example.com");
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(1);
+
+    // A repeated flag for the same account is not a change.
+    store.setLoginBroken(created.instance.id, true);
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(1);
+
+    // A working read clears it and the account is signed in again.
+    store.setLoginBroken(created.instance.id, false);
+    const cleared = store.get(created.instance.id);
+    expect(cleared?.signedIn).toBe(true);
+    expect(cleared?.loginBroken).toBeUndefined();
+    expect(changes.filter((change) => change.reason === "login")).toHaveLength(2);
+  });
+
   it("keeps a listener that throws from rolling back the write", () => {
     const { store } = makeStore();
     store.onChange(() => {

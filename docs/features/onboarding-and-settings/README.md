@@ -1997,13 +1997,23 @@ not carry the install command.
 
 - **One row per account**: an accent dot (the account's own `accentColor`, or
   the provider's brand colour from `usage/providerColors.ts`), the label, and
-  `email · plan` — or `Not signed in` with a **Sign in** button that reopens the
-  login sheet for that account. Under it, the mini usage line `5h NN% · wk NN%`,
+  `email · plan` — or `Not signed in`, or `email · Signed out` when the usage
+  poller read the saved login as broken. A row that is not signed in carries a
+  **Sign in** button that reopens the login sheet for that account; the config
+  home keeps the email after the provider CLI clears a login, so a broken one
+  still names the account. Under it, the mini usage line `5h NN% · wk NN%`,
   read from the usage snapshot by matching `UsageAccount.instanceId`, never by
   email: two logins can share an email, and a login whose email cannot be read
   still has quota. A signed-in account with no windows yet reads `No usage yet`.
-  The default account is marked `Default`. There is no cap at two accounts.
-- **The row menu (⋯)** carries Rename, Set as default, Change accent (eight
+  There is no cap at two accounts.
+- **Clicking a row picks the account for new chats.** The account new chats use
+  carries a green check and a highlighted border. With smart balance off exactly
+  one account — the default — is checked; clicking another turns smart balance
+  off when it was on and makes that account the default. With smart balance on
+  every signed-in account is checked, and a click turns the switch off and
+  selects the clicked account. A signed-out account cannot be selected: its
+  check is disabled. There is no separate "Set as default" action.
+- **The row menu (⋯)** carries Rename, Change accent (eight
   fixed swatches plus a `#rrggbb` field), and Remove. Remove asks for
   confirmation first, and when the store refuses — it will not remove the
   default account — the store's own sentence is shown rather than a guess.
@@ -2013,7 +2023,8 @@ not carry the install command.
   week goes on. A running chat stays on the account it started on. If that chat
   hits a usage limit and another account still has room, smart balance continues
   the work in a new chat on that account; with the switch off, the limit offers
-  that move instead of taking it, and new chats use the Default account. *Auto-start 5-hour windows* appears only while
+  that move instead of taking it, and new chats use the account with the check.
+  *Auto-start 5-hour windows* appears only while
   the provider reports a five-hour window, and sends one tiny request on the
   cheapest model when a window ends so the next one starts right away, each
   request logged with its cost. Both read and write `provider_instances`
