@@ -199,9 +199,6 @@ export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
 export const EARLY_CLI_AI_TITLE_DELAY_MS = 5_000;
 const MAX_STARTUP_COMMAND_DELAY_MS = 1000;
 
-/** How often ended agent shells are checked for archiving. */
-const AGENT_SHELL_SWEEP_INTERVAL_MS = 60_000;
-
 function normalizeStartupCommandDelayMs(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, Math.min(MAX_STARTUP_COMMAND_DELAY_MS, Math.floor(value)))
@@ -4561,7 +4558,7 @@ export function createPtyService({
     }
     sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
     // A shell App Control just replaced goes now, not on the next tick.
-    if (entry.agentShellCleanupCandidate) sweepAgentShells();
+    if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
     flushTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
@@ -5820,17 +5817,10 @@ export function createPtyService({
     }
   };
 
-  // Dead agent shells are archived on a clock, not only on exit: the grace
-  // period and "the chat settled" both come due while nothing else happens.
-  const sweepAgentShells = (): void => {
-    try {
-      sessionService.agentShells.sweep();
-    } catch (error) {
-      logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
-    }
-  };
-  const agentShellSweepTimer = setInterval(sweepAgentShells, AGENT_SHELL_SWEEP_INTERVAL_MS);
-  agentShellSweepTimer.unref?.();
+  // The process that owns the PTYs archives their dead agent shells.
+  sessionService.agentShells.start((error) => {
+    logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+  });
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -6257,6 +6247,15 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
+      } else if (args.launchedBy !== "agent") {
+        // Someone resumed this shell by hand: it is theirs now, so the
+        // dead-shell cleanup must not archive it later. A no-op for any shell
+        // the cleanup never tracked.
+        try {
+          sessionService.agentShells.markUserInput(sessionId);
+        } catch (error) {
+          logger.warn("pty.agent_shell_claim_failed", { sessionId, error: String(error) });
+        }
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
@@ -7580,19 +7579,13 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    /**
-     * ADE itself ended (or is about to end) an agent shell: App Control stopped
-     * or relaunched its app. A relaunch archives the old shell as soon as it is
-     * dead; a stop counts as a clean end and waits out the grace period.
-     */
+    /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */
     retireAgentShell({ sessionId, reason }: { sessionId: string; reason: AgentShellRetireReason }): void {
       try {
         sessionService.agentShells.markRetiredByAde(sessionId, reason);
       } catch (error) {
         logger.warn("pty.agent_shell_retire_failed", { sessionId, error: String(error) });
-        return;
       }
-      sweepAgentShells();
     },
 
     write({ ptyId, data }: { ptyId: string; data: string }): void {
@@ -7935,6 +7928,7 @@ export function createPtyService({
       }
       try {
         markPtyUserInput(entry, args.data);
+        if (args.fromUser === true) claimAgentShellForUser(entry, args.data);
         entry.pty.write(args.data);
         clearCommittedCliActivity(entry, args.data);
         tryCliUserTitleFromWrite(entry, args.data);
@@ -8575,7 +8569,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
-      clearInterval(agentShellSweepTimer);
+      sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {
           service.dispose({ ptyId });

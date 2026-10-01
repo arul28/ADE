@@ -465,15 +465,12 @@ works: `ade chat read <id>`, `ade chat show <id>`, `ade terminal read <id>`.
 ade archive list --text                       # everything archived, newest first
 ade archive list --kind chat --older-than 14 --text
 ade archive summary --text                    # counts per kind, what is 14+ days old
-ade archive restore chat:<id> lane:<id> --text
-ade archive delete shell:<id> --confirm --text
 ```
 
-Delete is permanent and needs `--confirm`. Delete only when the user asked for
-it. A lane delete removes the lane and its worktree but keeps its git branch; a
-lane with uncommitted changes fails unless you also pass `--force`. Delete
-refuses anything that is not archived. Each item reports done or failed, and
-the command exits 1 when any item failed.
+Restoring is for the CTO (`ade archive restore <kind>:<id>`). Deleting is the
+user's alone: agents and automations are refused. When old archived items pile
+up, tell the user and point them to Settings → Archive; do not try to delete
+them yourself.
 
 ## Fallback path
 

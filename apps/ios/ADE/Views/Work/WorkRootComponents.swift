@@ -1192,7 +1192,7 @@ struct WorkNestedDrawerMarks: View {
               .font(.system(size: 9, weight: .medium))
             Text("\(group.children.count)")
               .font(.caption2.monospacedDigit())
-            statusGlyph(group.attention)
+            statusGlyph(group.status)
           }
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 6)
@@ -1209,7 +1209,7 @@ struct WorkNestedDrawerMarks: View {
   }
 
   @ViewBuilder
-  private func statusGlyph(_ status: WorkNestedDrawerAttention) -> some View {
+  private func statusGlyph(_ status: WorkNestedDrawerStatus) -> some View {
     switch status {
     case .failed:
       Image(systemName: "xmark")
@@ -1231,7 +1231,7 @@ struct WorkNestedDrawerMarks: View {
   /// "Show N shells", plus the status word VoiceOver would otherwise lose.
   private func accessibilityLabel(_ group: WorkSessionChildGroup) -> String {
     let base = "Show \(group.label)"
-    switch group.attention {
+    switch group.status {
     case .failed: return "\(base), Failed"
     case .needsYou: return "\(base), Needs you"
     case .running: return "\(base), Running"

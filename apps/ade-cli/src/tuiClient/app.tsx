@@ -408,7 +408,7 @@ import {
   terminalDisplayWidth,
 } from "./displayWidth";
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../desktop/src/shared/types/archive";
-import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../desktop/src/shared/archiveReminder";
+import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../desktop/src/shared/archive";
 import {
   archiveReminderNextAt,
   flushAdeCodeStateWrites,
@@ -5569,6 +5569,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     })();
   }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  // Opening a nested subagent (a notification, `/resume`, the grid) opens the
+  // drawer it sits in once, so the cursor has a row to land on. Folding it
+  // again sticks until another chat becomes active.
+  const drawerRevealedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId || drawerRevealedForRef.current === activeSessionId) return;
+    const parentId = workListModel.drawerParentBySessionId.get(activeSessionId);
+    if (!parentId) return;
+    drawerRevealedForRef.current = activeSessionId;
+    setWorkExpandedDrawers((prev) => (prev.has(parentId) ? prev : new Set(prev).add(parentId)));
+  }, [activeSessionId, workListModel]);
   const toggleWorkDrawer = useCallback((parentId: string) => {
     setWorkExpandedDrawers((prev) => {
       const next = new Set(prev);

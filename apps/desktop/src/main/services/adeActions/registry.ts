@@ -3474,16 +3474,6 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 }
 
 
-function buildArchiveDomainService(runtime: AdeRuntime): OpaqueService {
-  const archive = createArchiveService(runtime);
-  return {
-    list: (args?: ArchiveListArgs) => archive.list(args ?? {}),
-    summary: (args?: ArchiveSummaryArgs) => archive.summary(args ?? {}),
-    restore: (args?: ArchiveActionArgs) => archive.restore(args ?? { items: [] }),
-    delete: (args?: ArchiveActionArgs) => archive.delete(args ?? { items: [] }),
-  };
-}
-
 
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
@@ -3527,7 +3517,7 @@ export function getAdeActionDomainServices(
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
-    archive: toService(buildArchiveDomainService(runtime)),
+    archive: toService(createArchiveService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),

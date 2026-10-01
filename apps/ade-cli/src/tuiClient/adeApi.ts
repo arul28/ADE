@@ -541,7 +541,8 @@ export async function writeTerminal(
   terminalId: string,
   data: string,
 ): Promise<void> {
-  await connection.action("terminal", "write", { terminalId, data });
+  // Only ADE Code's own keystrokes come through here, so they are the user's.
+  await connection.action("terminal", "write", { terminalId, data, fromUser: true });
 }
 
 export async function resizeTerminal(

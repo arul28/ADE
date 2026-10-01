@@ -63,6 +63,8 @@ import {
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
+import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
@@ -2949,6 +2951,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   A lane delete removes the lane and its worktree and keeps its git branch.
   Delete refuses anything that is not archived. Each item reports done or failed
   on its own; the command exits non-zero when any item failed.
+
+  Only you can delete: agents and automations are refused. Restore needs the CTO
+  role when an agent asks.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -15053,13 +15058,11 @@ function buildUsagePlan(args: string[]): CliPlan {
   };
 }
 
-const ARCHIVE_CLI_KINDS = ["lane", "chat", "shell"] as const;
-type ArchiveCliKind = (typeof ARCHIVE_CLI_KINDS)[number];
-
-function parseArchiveCliKind(value: string, label: string): ArchiveCliKind {
+function parseArchiveCliKind(value: string, label: string): ArchiveItemKind {
   const normalized = value.trim().toLowerCase().replace(/s$/, "");
   const kind = normalized === "terminal" ? "shell" : normalized;
-  if ((ARCHIVE_CLI_KINDS as readonly string[]).includes(kind)) return kind as ArchiveCliKind;
+  const match = ARCHIVE_ITEM_KINDS.find((candidate) => candidate === kind);
+  if (match) return match;
   throw new CliUsageError(`${label}: kind must be lane, chat, or shell (got '${value}').`);
 }
 
@@ -24986,8 +24989,14 @@ function formatArchiveSummary(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const byKind = isRecord(value.byKind) ? value.byKind : {};
   const staleByKind = isRecord(value.staleByKind) ? value.staleByKind : {};
-  const perKind = (counts: Record<string, unknown>) =>
-    `${Number(counts.lane) || 0} lanes, ${Number(counts.chat) || 0} chats, ${Number(counts.shell) || 0} shells`;
+  const perKind = (counts: Record<string, unknown>) => {
+    const parts = archiveKindCountParts({
+      lane: Number(counts.lane) || 0,
+      chat: Number(counts.chat) || 0,
+      shell: Number(counts.shell) || 0,
+    });
+    return parts.length > 0 ? parts.join(", ") : "none";
+  };
   return renderKeyValues("ADE archive", [
     ["archived", `${Number(value.total) || 0} (${perKind(byKind)})`],
     [`${Number(value.olderThanDays) || 0}+ days old`, `${Number(value.staleTotal) || 0} (${perKind(staleByKind)})`],

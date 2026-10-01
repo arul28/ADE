@@ -25,6 +25,7 @@ import {
   type ArchiveSummaryArgs,
   type ArchivedItem,
 } from "../../../shared/types/archive";
+import { emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 
 type LaneRuntimeDependencies = Parameters<typeof restoreUnarchivedLaneRuntime>[0];
 
@@ -54,7 +55,6 @@ type ArchivedSessionRow = {
   chatSessionId: string | null;
 };
 
-const DAY_MS = 24 * 60 * 60_000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -89,22 +89,51 @@ function pathExists(filePath: string | null | undefined): boolean {
   }
 }
 
-function emptyCounts(): Record<ArchiveItemKind, number> {
-  return { lane: 0, chat: 0, shell: 0 };
+function asRecord(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
 }
 
-function normalizeRefs(args: ArchiveActionArgs | null | undefined): ArchiveItemRef[] {
-  const items = Array.isArray(args?.items) ? args.items : [];
-  return items.map((item) => ({
-    kind: item?.kind as ArchiveItemKind,
-    id: typeof item?.id === "string" ? item.id.trim() : "",
-  }));
+function positiveDays(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : undefined;
+}
+
+/**
+ * The one parser for archive input from any transport (IPC, action domain,
+ * sync). Unknown kinds are kept, not dropped, so `restore`/`delete` report them
+ * per item instead of silently doing less than asked.
+ */
+export function parseArchiveListArgs(raw: unknown): ArchiveListArgs {
+  const record = asRecord(raw);
+  const kinds = Array.isArray(record.kinds) ? record.kinds.filter(isArchiveKind) : [];
+  const olderThanDays = positiveDays(record.olderThanDays);
+  return {
+    ...(kinds.length > 0 ? { kinds } : {}),
+    ...(olderThanDays !== undefined ? { olderThanDays } : {}),
+  };
+}
+
+export function parseArchiveSummaryArgs(raw: unknown): ArchiveSummaryArgs {
+  const olderThanDays = positiveDays(asRecord(raw).olderThanDays);
+  return olderThanDays !== undefined ? { olderThanDays } : {};
+}
+
+export function parseArchiveActionArgs(raw: unknown): ArchiveActionArgs {
+  const record = asRecord(raw);
+  const items = Array.isArray(record.items) ? record.items.map(asRecord) : [];
+  return {
+    items: items.map((item) => ({
+      // Validated per item by `requireArchived`, which names a bad kind.
+      kind: String(item.kind ?? "") as ArchiveItemKind,
+      id: typeof item.id === "string" ? item.id.trim() : "",
+    })),
+    ...(record.force === true ? { force: true } : {}),
+  };
 }
 
 export function createArchiveService(deps: ArchiveServiceDeps) {
   const listArchivedLanes = async (): Promise<ArchivedItem[]> => {
     const lanes = await deps.laneService.list({ includeArchived: true, includeStatus: false });
-    const archived = lanes.filter((lane) => Boolean(lane.archivedAt));
+    const archived = lanes.filter((lane): lane is typeof lane & { archivedAt: string } => Boolean(lane.archivedAt));
     if (archived.length === 0) return [];
     const knownBytes = new Map<string, number>();
     try {
@@ -126,7 +155,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         laneId: lane.id,
         laneName: lane.name,
         laneColor: lane.color ?? null,
-        archivedAt: lane.archivedAt as string,
+        archivedAt: lane.archivedAt,
         sizeBytes: worktreePresent ? knownBytes.get(lane.id) ?? null : null,
         worktreePresent,
         branchRef: lane.branchRef || null,
@@ -170,9 +199,9 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     };
   };
 
-  const list = async (args: ArchiveListArgs = {}): Promise<ArchiveListResult> => {
-    const requested = Array.isArray(args?.kinds) ? args.kinds.filter(isArchiveKind) : [];
-    const kinds = new Set<ArchiveItemKind>(requested.length > 0 ? requested : ARCHIVE_ITEM_KINDS);
+  const list = async (raw?: unknown): Promise<ArchiveListResult> => {
+    const args = parseArchiveListArgs(raw);
+    const kinds = new Set<ArchiveItemKind>(args.kinds ?? ARCHIVE_ITEM_KINDS);
     const items: ArchivedItem[] = [];
     if (kinds.has("lane")) items.push(...(await listArchivedLanes()));
     if (kinds.has("chat") || kinds.has("shell")) {
@@ -180,26 +209,20 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         if (kinds.has(sessionKind(row.toolType))) items.push(toSessionItem(row));
       }
     }
-    const olderThanDays = Number(args?.olderThanDays);
-    const filtered = Number.isFinite(olderThanDays) && olderThanDays > 0
-      ? items.filter((item) => {
-        const archivedMs = Date.parse(item.archivedAt);
-        return Number.isFinite(archivedMs) && archivedMs <= Date.now() - olderThanDays * DAY_MS;
-      })
+    const { olderThanDays } = args;
+    const filtered = olderThanDays !== undefined && olderThanDays > 0
+      ? items.filter((item) => isArchiveStale(item.archivedAt, olderThanDays))
       : items;
     filtered.sort((a, b) => (Date.parse(b.archivedAt) || 0) - (Date.parse(a.archivedAt) || 0));
     return { items: filtered };
   };
 
-  const summary = async (args: ArchiveSummaryArgs = {}): Promise<ArchiveSummary> => {
-    const requestedDays = Number(args?.olderThanDays);
-    const olderThanDays = Number.isFinite(requestedDays) && requestedDays >= 0
-      ? requestedDays
-      : DEFAULT_ARCHIVE_STALE_DAYS;
-    const cutoff = Date.now() - olderThanDays * DAY_MS;
+  const summary = async (raw?: unknown): Promise<ArchiveSummary> => {
+    const olderThanDays = parseArchiveSummaryArgs(raw).olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
+    const nowMs = Date.now();
     const { items } = await list();
-    const byKind = emptyCounts();
-    const staleByKind = emptyCounts();
+    const byKind = emptyArchiveCounts();
+    const staleByKind = emptyArchiveCounts();
     let staleTotal = 0;
     let staleBytes: number | null = null;
     let oldestMs = Number.POSITIVE_INFINITY;
@@ -211,7 +234,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         oldestMs = archivedMs;
         oldestArchivedAt = item.archivedAt;
       }
-      if (!Number.isFinite(archivedMs) || archivedMs > cutoff) continue;
+      if (!isArchiveStale(item.archivedAt, olderThanDays, nowMs)) continue;
       staleTotal += 1;
       staleByKind[item.kind] += 1;
       if (typeof item.sizeBytes === "number") staleBytes = (staleBytes ?? 0) + item.sizeBytes;
@@ -227,13 +250,25 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     };
   };
 
+  /** Archived-at by lane id, read once per batch rather than once per lane. */
+  type LaneArchiveIndex = () => Promise<Map<string, string | null>>;
+  const laneArchiveIndex = (): LaneArchiveIndex => {
+    let pending: Promise<Map<string, string | null>> | null = null;
+    return () => {
+      pending ??= deps.laneService
+        .list({ includeArchived: true, includeStatus: false })
+        .then((lanes) => new Map(lanes.map((lane) => [lane.id, lane.archivedAt ?? null])));
+      return pending;
+    };
+  };
+
   /** The archived item behind a ref, or an error naming why it is not one. */
-  const requireArchived = async (ref: ArchiveItemRef): Promise<void> => {
+  const requireArchived = async (ref: ArchiveItemRef, lanes: LaneArchiveIndex): Promise<void> => {
     if (!isArchiveKind(ref.kind)) throw new Error(`Unknown archive kind '${String(ref.kind)}'.`);
     if (!ref.id) throw new Error("Item id is required.");
     if (ref.kind === "lane") {
-      const lanes = await deps.laneService.list({ includeArchived: true, includeStatus: false });
-      const lane = lanes.find((entry) => entry.id === ref.id);
+      const index = await lanes();
+      const lane = index.has(ref.id) ? { archivedAt: index.get(ref.id) } : null;
       if (!lane) throw new Error(`Lane '${ref.id}' not found.`);
       if (!lane.archivedAt) throw new Error(`Lane '${ref.id}' is not archived.`);
       return;
@@ -252,8 +287,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     return deps.agentChatService;
   };
 
-  const restoreOne = async (ref: ArchiveItemRef): Promise<void> => {
-    await requireArchived(ref);
+  const restoreOne = async (ref: ArchiveItemRef, lanes: LaneArchiveIndex): Promise<void> => {
+    await requireArchived(ref, lanes);
     if (ref.kind === "lane") {
       const result = await deps.laneService.unarchive({ laneId: ref.id });
       try {
@@ -276,8 +311,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     deps.sessionService.unarchiveSession(ref.id);
   };
 
-  const deleteOne = async (ref: ArchiveItemRef, force: boolean): Promise<void> => {
-    await requireArchived(ref);
+  const deleteOne = async (ref: ArchiveItemRef, lanes: LaneArchiveIndex, force: boolean): Promise<void> => {
+    await requireArchived(ref, lanes);
     if (ref.kind === "lane") {
       const teardownEnv = await buildLaneEnvTeardown(deps, ref.id, { includeArchived: true });
       // The branch is kept: a delete from the archive removes the lane and its
@@ -303,12 +338,13 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
   const runEach = async (
     args: ArchiveActionArgs,
     action: string,
-    run: (ref: ArchiveItemRef) => Promise<void>,
+    run: (ref: ArchiveItemRef, lanes: LaneArchiveIndex) => Promise<void>,
   ): Promise<ArchiveActionResult> => {
     const result: ArchiveActionResult = { done: [], failed: [] };
-    for (const ref of normalizeRefs(args)) {
+    const lanes = laneArchiveIndex();
+    for (const ref of args.items) {
       try {
-        await run(ref);
+        await run(ref, lanes);
         result.done.push({ kind: ref.kind, id: ref.id });
       } catch (error) {
         const message = errorMessage(error);
@@ -322,8 +358,11 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
   return {
     list,
     summary,
-    restore: (args: ArchiveActionArgs) => runEach(args, "restore", restoreOne),
-    delete: (args: ArchiveActionArgs) => runEach(args, "delete", (ref) => deleteOne(ref, args?.force === true)),
+    restore: (raw?: unknown) => runEach(parseArchiveActionArgs(raw), "restore", restoreOne),
+    delete: (raw?: unknown) => {
+      const args = parseArchiveActionArgs(raw);
+      return runEach(args, "delete", (ref, lanes) => deleteOne(ref, lanes, args.force === true));
+    },
   };
 }
 

@@ -573,7 +573,7 @@ export type PtyCreateArgs = {
    * a shell is archived once it is dead and nobody typed into it; see
    * `agentShellCleanup`. Omitted means the user started it.
    */
-  launchedBy?: "agent" | "user";
+  launchedBy?: "agent";
   /** Parent chat lineage to export to a spawned agent CLI process. */
   spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
@@ -754,6 +754,11 @@ export type ChatTerminalWriteArgs = {
   ptyId?: string | null;
   chatSessionId?: string | null;
   data: string;
+  /**
+   * The person typed this (ADE Code), not an agent. Claims an agent-started
+   * shell for the user so the dead-shell cleanup leaves it alone.
+   */
+  fromUser?: boolean;
 };
 
 export type ChatTerminalResizeArgs = {

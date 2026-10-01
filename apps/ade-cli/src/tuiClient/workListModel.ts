@@ -181,6 +181,8 @@ export type WorkListGroup = {
 export type WorkListModel = {
   /** Flat, ordered, exactly what is on screen — arrow keys walk this. */
   rows: WorkListRow[];
+  /** Nested subagent id → the parent whose drawer holds it. */
+  drawerParentBySessionId: ReadonlyMap<string, string>;
   groups: WorkListGroup[];
   snoozed: WorkListSessionRow[];
   settled: WorkListSessionRow[];
@@ -752,7 +754,7 @@ export function buildWorkListModel(input: WorkListInput): WorkListModel {
     if (expanded) rows.push(...expandedContents);
   }
 
-  return { rows, groups, snoozed, settled };
+  return { rows, groups, snoozed, settled, drawerParentBySessionId: nestIndex.nestedChildToRootParentId };
 }
 
 /** Index of a row by key, or -1. */

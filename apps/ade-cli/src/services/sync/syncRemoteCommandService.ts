@@ -6394,26 +6394,11 @@ function registerArchiveRemoteCommands({ args, register }: RemoteCommandRegistra
     portAllocationService: args.portAllocationService ?? null,
     logger: args.logger,
   });
-  const actionArgs = (payload: Record<string, unknown>): ArchiveActionArgs => ({
-    items: Array.isArray(payload.items)
-      ? payload.items.filter(isRecord).map((item) => ({
-        kind: String(item.kind ?? "") as ArchiveItemKind,
-        id: typeof item.id === "string" ? item.id : "",
-      }))
-      : [],
-    ...(payload.force === true ? { force: true } : {}),
-  });
-  register("archive.list", { viewerAllowed: true }, async (payload) =>
-    archive().list({
-      ...(Array.isArray(payload.kinds) ? { kinds: payload.kinds.map(String) as ArchiveItemKind[] } : {}),
-      ...(typeof payload.olderThanDays === "number" ? { olderThanDays: payload.olderThanDays } : {}),
-    }));
-  register("archive.summary", { viewerAllowed: true }, async (payload) =>
-    archive().summary(typeof payload.olderThanDays === "number" ? { olderThanDays: payload.olderThanDays } : {}));
-  register("archive.restore", { viewerAllowed: true, queueable: true }, async (payload) =>
-    archive().restore(actionArgs(payload)));
-  register("archive.delete", { viewerAllowed: true, queueable: false }, async (payload) =>
-    archive().delete(actionArgs(payload)));
+  // The archive service parses its own input, the same for every transport.
+  register("archive.list", { viewerAllowed: true }, async (payload) => archive().list(payload));
+  register("archive.summary", { viewerAllowed: true }, async (payload) => archive().summary(payload));
+  register("archive.restore", { viewerAllowed: true, queueable: true }, async (payload) => archive().restore(payload));
+  register("archive.delete", { viewerAllowed: true, queueable: false }, async (payload) => archive().delete(payload));
 }
 
 function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {

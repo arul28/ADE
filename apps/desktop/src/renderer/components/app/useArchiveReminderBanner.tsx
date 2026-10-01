@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Archive } from "@phosphor-icons/react";
 import { useAppBanner, APP_BANNER_PRIORITY } from "../ui/notice/appBannerStore";
 import { DEFAULT_ARCHIVE_STALE_DAYS, type ArchiveSummary } from "../../../shared/types/archive";
-import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../shared/archiveReminder";
+import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../shared/archive";
 
 /**
  * The weekly "clean up your archive" reminder.
@@ -33,11 +33,11 @@ function readSnoozes(): Record<string, number> {
   }
 }
 
-export function archiveReminderSnoozedUntil(projectRoot: string): number {
+function archiveReminderSnoozedUntil(projectRoot: string): number {
   return readSnoozes()[projectRoot] ?? 0;
 }
 
-export function snoozeArchiveReminder(projectRoot: string, nowMs: number = Date.now()): void {
+function snoozeArchiveReminder(projectRoot: string, nowMs: number = Date.now()): void {
   try {
     const map = readSnoozes();
     map[projectRoot] = nowMs + ARCHIVE_REMINDER_INTERVAL_MS;
@@ -65,9 +65,7 @@ export function useArchiveReminderBanner({
     let cancelled = false;
     const check = () => {
       if (Date.now() < archiveReminderSnoozedUntil(projectRoot)) return;
-      const fn = window.ade?.archive?.summary;
-      if (!fn) return;
-      fn({ olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS })
+      window.ade.archive.summary({ olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS })
         .then((next) => {
           if (!cancelled) setSummary(next.staleTotal > 0 ? next : null);
         })

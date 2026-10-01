@@ -295,7 +295,7 @@ func buildWorkRootSessionPresentation(
       visibleParentIds: displaySessionIds
     )
     : WorkSpawnNestingIndex.empty
-  let childGroupsByParentId = workAttachedShellGroupsByParentId(
+  let shellFiling = workAttachedShellGroupsByParentId(
     sessions: displaySessions,
     nestedChildToRootParentId: spawnIndex.nestedChildToRootParentId,
     chatSummaries: chatSummaries,
@@ -308,16 +308,14 @@ func buildWorkRootSessionPresentation(
   )
   let nestedGroupsByParentId = workNestedGroupsByParentId(
     subagents: subagentGroupsByParentId,
-    shells: childGroupsByParentId
+    shells: shellFiling.groupsByParentId
   )
-  // Drawer children plus archived attached shells: those are filed under their
-  // chat but not listed, so they must not surface as top-level rows either.
+  // Drawer children plus every filed shell, archived ones included: those are
+  // filed under their chat but not listed, so they must not surface as
+  // top-level rows either.
   let childSessionIds = Set(
     nestedGroupsByParentId.values.flatMap { $0.flatMap { $0.children.map(\.id) } }
-  ).union(workHiddenArchivedAttachedShellIds(
-    sessions: displaySessions,
-    nestedChildToRootParentId: spawnIndex.nestedChildToRootParentId
-  ))
+  ).union(shellFiling.filedShellIds)
   let topLevelDisplaySessionIds = displaySessionIds.subtracting(childSessionIds)
 
   // Lane ordering and the singleton rule both read the UNFILTERED roster, so
@@ -468,7 +466,7 @@ private func workRootSessionPresentationRenderSignature(
       hasher.combine(group.parentId)
       hasher.combine(group.collapsedSectionId)
       hasher.combine(group.children.map(\.id))
-      switch group.attention {
+      switch group.status {
       case .failed: hasher.combine("failed")
       case .needsYou: hasher.combine("needs_you")
       case .running: hasher.combine("running")

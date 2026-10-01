@@ -1,5 +1,5 @@
 import React from "react";
-import { Archive, ArrowCounterClockwise, Check, Trash, X } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, Check, Trash, X } from "@phosphor-icons/react";
 import type {
   ArchiveActionResult,
   ArchiveItemKind,
@@ -7,6 +7,7 @@ import type {
   ArchivedItem,
 } from "../../../shared/types/archive";
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
+import { archiveKindCountParts, archiveKindPlural, emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import type { TerminalToolType } from "../../../shared/types/sessions";
 import { formatBytes, relativeWhen } from "../../lib/format";
 import { cn } from "../ui/cn";
@@ -15,6 +16,7 @@ import { showToast } from "../app/toast/toastStore";
 import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { SettingsManagerEmpty } from "./primitives";
 
 /**
  * Settings → Archive: every lane, chat and shell you archived, in one place.
@@ -28,15 +30,8 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export const ARCHIVE_SETTINGS_ANCHOR = "archive";
 const ARCHIVE_TOAST_ID = "settings-archive";
-const DAY_MS = 86_400_000;
 
 type KindFilter = "all" | ArchiveItemKind;
-
-const KIND_WORDS: Record<ArchiveItemKind, [string, string]> = {
-  lane: ["lane", "lanes"],
-  chat: ["chat", "chats"],
-  shell: ["shell", "shells"],
-};
 
 const FILTERS: Array<{ value: KindFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -54,11 +49,9 @@ function toRef(item: ArchivedItem): ArchiveItemRef {
 }
 
 function describeRefs(refs: ArchiveItemRef[]): string {
-  const counts = new Map<ArchiveItemKind, number>();
-  for (const ref of refs) counts.set(ref.kind, (counts.get(ref.kind) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([kind, count]) => `${count} ${KIND_WORDS[kind][count === 1 ? 0 : 1]}`)
-    .join(", ");
+  const counts = emptyArchiveCounts();
+  for (const ref of refs) counts[ref.kind] += 1;
+  return archiveKindCountParts(counts).join(", ");
 }
 
 function totalBytes(items: ArchivedItem[]): number {
@@ -263,11 +256,15 @@ export function ArchiveSection() {
   }, [pin]);
 
   React.useEffect(() => {
+    // A new machine starts empty: its list replaces the old one or the error
+    // shows, and the old machine's refs can never be sent to the new pin.
+    setItems(null);
+    setSelected(new Set());
     void load();
   }, [load]);
 
   const counts = React.useMemo(() => {
-    const byKind: Record<ArchiveItemKind, number> = { lane: 0, chat: 0, shell: 0 };
+    const byKind = emptyArchiveCounts();
     for (const item of items ?? []) byKind[item.kind] += 1;
     return byKind;
   }, [items]);
@@ -278,27 +275,31 @@ export function ArchiveSection() {
   );
 
   const { recent, older } = React.useMemo(() => {
-    const cutoff = Date.now() - DEFAULT_ARCHIVE_STALE_DAYS * DAY_MS;
+    const nowMs = Date.now();
     const groups = { recent: [] as ArchivedItem[], older: [] as ArchivedItem[] };
     for (const item of visible) {
-      const at = Date.parse(item.archivedAt);
-      (Number.isFinite(at) && at < cutoff ? groups.older : groups.recent).push(item);
+      (isArchiveStale(item.archivedAt, DEFAULT_ARCHIVE_STALE_DAYS, nowMs) ? groups.older : groups.recent).push(item);
     }
     return groups;
   }, [visible]);
 
   const report = React.useCallback((verb: "Restored" | "Deleted", result: ArchiveActionResult) => {
-    const failed = result.failed.length;
+    const [firstFailure] = result.failed;
     if (result.done.length > 0) {
       showToast({
         id: ARCHIVE_TOAST_ID,
         title: `${verb} ${describeRefs(result.done)}`,
-        message: failed > 0 ? `${failed} couldn't be ${verb.toLowerCase()} — ${result.failed[0]!.error}` : undefined,
-        tone: failed > 0 ? "warning" : "success",
-        durationMs: 4500,
+        ...(firstFailure
+          ? {
+              message: `${result.failed.length} couldn't be ${verb.toLowerCase()} — ${firstFailure.error}`,
+              tone: "warning" as const,
+              // A partial result is worth reading (docs/design/notices.md).
+              durationMs: 18_000,
+            }
+          : { tone: "success" as const }),
       });
-    } else if (failed > 0) {
-      showToast({ id: ARCHIVE_TOAST_ID, title: result.failed[0]!.error, tone: "error", durationMs: 6000 });
+    } else if (firstFailure) {
+      showToast({ id: ARCHIVE_TOAST_ID, title: firstFailure.error, tone: "error" });
     }
   }, []);
 
@@ -332,7 +333,11 @@ export function ArchiveSection() {
       let result = await window.ade.archive.delete({ items: refs }, pin);
       // A lane with uncommitted files is refused unless forced. Ask once, by
       // name, instead of silently discarding someone's unfinished work.
-      const dirtyLanes = result.failed.filter((item) => item.kind === "lane" && /uncommitted/i.test(item.error));
+      // Match the refusal itself, not "could not verify whether…", which
+      // `force` would not get past either.
+      const dirtyLanes = result.failed.filter(
+        (item) => item.kind === "lane" && /has uncommitted changes/i.test(item.error),
+      );
       if (dirtyLanes.length > 0) {
         const names = dirtyLanes
           .map((ref) => items?.find((item) => item.kind === "lane" && item.id === ref.id)?.title ?? ref.id)
@@ -451,27 +456,24 @@ export function ArchiveSection() {
       </div>
 
       {error && !items ? (
-        <div className="flex flex-col items-center gap-3 py-16 text-center">
-          <div className="text-[13px] font-medium text-fg">Couldn't open the archive</div>
-          <div className="max-w-sm text-[12px] text-muted-fg/60">{error}</div>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="h-7 rounded-md px-3 text-[12px] font-medium text-fg hover:bg-white/[0.06]"
-          >
-            Try again
-          </button>
-        </div>
+        <SettingsManagerEmpty
+          title="Couldn't open the archive"
+          description={error}
+          action={
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="h-7 rounded-md px-3 text-[12px] font-medium text-fg hover:bg-white/[0.06]"
+            >
+              Try again
+            </button>
+          }
+        />
       ) : items && visible.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 py-20 text-center">
-          <span className="mb-1 flex size-11 items-center justify-center rounded-xl bg-white/[0.04] text-muted-fg/50">
-            <Archive size={20} />
-          </span>
-          <div className="text-[13px] font-medium text-fg">
-            {filter === "all" ? "Nothing archived" : `No archived ${KIND_WORDS[filter][1]}`}
-          </div>
-          <div className="max-w-xs text-[12px] text-muted-fg/50">Archived lanes, chats, and shells show up here.</div>
-        </div>
+        <SettingsManagerEmpty
+          title={filter === "all" ? "Nothing archived" : `No archived ${archiveKindPlural(filter)}`}
+          description="Archived lanes, chats, and shells show up here."
+        />
       ) : items ? (
         <div role="table" aria-label="Archived items" className="flex flex-col">
           {recent.length > 0 ? (

@@ -23,14 +23,16 @@ import type { AdeDb } from "../state/kvDb";
  * own processes started and saw typed, which no other machine can know.
  */
 
-export const AGENT_SHELL_ARCHIVE_GRACE_MS = 10 * 60_000;
+const AGENT_SHELL_ARCHIVE_GRACE_MS = 10 * 60_000;
+/** How often ended agent shells are checked: grace periods and settles come due on their own. */
+const AGENT_SHELL_SWEEP_INTERVAL_MS = 60_000;
 
 export type AgentShellRetireReason = "relaunch" | "stop";
 
 type CandidateRow = {
   sessionId: string;
   userInputAt: string | null;
-  retiredReason: string | null;
+  retiredReason: AgentShellRetireReason | null;
   status: string;
   exitCode: number | null;
   endedAt: string | null;
@@ -48,7 +50,7 @@ export function writeCarriesTypedInput(data: string): boolean {
   return data.replace(LEGACY_MOUSE_REPORT, "").replace(ESCAPE_SEQUENCE, "").length > 0;
 }
 
-export function agentShellArchiveDue(row: CandidateRow, nowMs: number): boolean {
+function agentShellArchiveDue(row: CandidateRow, nowMs: number): boolean {
   if (row.userInputAt) return false;
   if (row.status === "running" || row.status === "detached") return false;
   if (row.retiredReason === "relaunch") return true;
@@ -67,7 +69,18 @@ export function createAgentShellCleanup({
   db: AdeDb;
   archiveSession: (sessionId: string) => boolean;
 }) {
-  return {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let reportError: (error: unknown) => void = () => {};
+
+  const sweepQuietly = (): void => {
+    try {
+      cleanup.sweep();
+    } catch (error) {
+      reportError(error);
+    }
+  };
+
+  const cleanup = {
     markAgentLaunched(sessionId: string): void {
       if (!sessionId) return;
       db.run(
@@ -85,6 +98,11 @@ export function createAgentShellCleanup({
       );
     },
 
+    /**
+     * ADE itself ended (or is about to end) the shell: App Control stopped or
+     * relaunched its app. A relaunch archives it as soon as it is dead; a stop
+     * counts as a clean end and waits out the grace period.
+     */
     markRetiredByAde(sessionId: string, reason: AgentShellRetireReason): void {
       if (!sessionId) return;
       // A relaunch outranks an earlier stop: the stop's shell is the one being replaced.
@@ -94,6 +112,26 @@ export function createAgentShellCleanup({
          where session_id = ?`,
         [reason, sessionId],
       );
+      sweepQuietly();
+    },
+
+    /** Sweep now, reporting (not throwing) a failure. For exit hooks. */
+    sweepQuietly,
+
+    /**
+     * Run the sweep on a clock. Only a process that owns PTYs starts it; a
+     * second start is a no-op.
+     */
+    start(onError: (error: unknown) => void): void {
+      reportError = onError;
+      if (timer) return;
+      timer = setInterval(sweepQuietly, AGENT_SHELL_SWEEP_INTERVAL_MS);
+      timer.unref?.();
+    },
+
+    stop(): void {
+      if (timer) clearInterval(timer);
+      timer = null;
     },
 
     /** Archives every due shell; returns the archived session ids. */
@@ -132,6 +170,7 @@ export function createAgentShellCleanup({
       return archived;
     },
   };
+  return cleanup;
 }
 
 export type AgentShellCleanup = ReturnType<typeof createAgentShellCleanup>;

@@ -15,6 +15,7 @@ import type {
   WorkListShelfRow,
 } from "../workListModel";
 import { sessionStatusShoutsLabel } from "../../../../desktop/src/shared/sessionStatusPresentation";
+import { NESTED_DRAWER_STATUS_PRESENTATION } from "../../../../desktop/src/shared/sessionSpawnNesting";
 
 /**
  * ADE Code's left pane: the desktop Work list, one session per card.
@@ -388,15 +389,6 @@ function MetaLine({ row, width }: { row: WorkListSessionRow; width: number }) {
   );
 }
 
-/**
- * The collapsed quiet tail. Snoozed and settled rows share one shelf pattern —
- * both are "true, but not actionable", and the desktop files them the same way.
- */
-const DRAWER_STATUS: Record<NonNullable<WorkListDrawerRow["status"]>, { word: string; tone: "red" | "amber" | "blue" }> = {
-  failed: { word: "failed", tone: "red" },
-  needs_you: { word: "needs you", tone: "amber" },
-  running: { word: "running", tone: "blue" },
-};
 
 /** A chat's folded subagents: `▸ 3 subagents · needs you`, indented under it. */
 function DrawerRow({
@@ -414,9 +406,9 @@ function DrawerRow({
 }) {
   const highlighted = selected || hovered;
   const gutter = rowGutter(highlighted);
-  const status = row.status ? DRAWER_STATUS[row.status] : null;
+  const status = row.status ? NESTED_DRAWER_STATUS_PRESENTATION[row.status] : null;
   const label = `  ${row.expanded ? "▾" : "▸"} ${row.count} ${row.count === 1 ? "subagent" : "subagents"}`;
-  const statusText = status ? ` · ${status.word}` : "";
+  const statusText = status ? ` · ${status.label.toLowerCase()}` : "";
   const room = Math.max(6, width - GUTTER_CELLS);
   return (
     <Box marginTop={marginTop} width={width}>
@@ -432,6 +424,10 @@ function DrawerRow({
   );
 }
 
+/**
+ * The collapsed quiet tail. Snoozed and settled rows share one shelf pattern —
+ * both are "true, but not actionable", and the desktop files them the same way.
+ */
 function ShelfRow({
   row,
   width,

@@ -767,12 +767,9 @@ import {
 } from "../lanes/laneRuntimeLifecycle";
 import { createArchiveService } from "../archive/archiveService";
 import type {
-  ArchiveActionArgs,
   ArchiveActionResult,
-  ArchiveListArgs,
   ArchiveListResult,
   ArchiveSummary,
-  ArchiveSummaryArgs,
 } from "../../../shared/types/archive";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
@@ -8741,16 +8738,16 @@ export function registerIpc({
     return createArchiveService(ctx);
   };
 
-  ipcMain.handle(IPC.archiveList, async (_event, arg: ArchiveListArgs | undefined): Promise<ArchiveListResult> =>
-    ensureArchiveService().list(arg ?? {}));
+  ipcMain.handle(IPC.archiveList, async (_event, arg: unknown): Promise<ArchiveListResult> =>
+    ensureArchiveService().list(arg));
 
-  ipcMain.handle(IPC.archiveSummary, async (_event, arg: ArchiveSummaryArgs | undefined): Promise<ArchiveSummary> =>
-    ensureArchiveService().summary(arg ?? {}));
+  ipcMain.handle(IPC.archiveSummary, async (_event, arg: unknown): Promise<ArchiveSummary> =>
+    ensureArchiveService().summary(arg));
 
-  ipcMain.handle(IPC.archiveRestore, async (_event, arg: ArchiveActionArgs): Promise<ArchiveActionResult> =>
+  ipcMain.handle(IPC.archiveRestore, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().restore(arg));
 
-  ipcMain.handle(IPC.archiveDelete, async (_event, arg: ArchiveActionArgs): Promise<ArchiveActionResult> =>
+  ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().delete(arg));
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {

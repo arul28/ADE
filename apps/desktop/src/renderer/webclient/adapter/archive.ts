@@ -7,6 +7,7 @@ import type {
   ArchiveSummaryArgs,
 } from "../../../shared/types/archive";
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
+import { emptyArchiveCounts } from "../../../shared/archive";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
@@ -20,10 +21,10 @@ export function createArchiveNamespace(infra: AdapterInfra): AdeNamespace<"archi
 
   const emptySummary = (olderThanDays?: number): ArchiveSummary => ({
     total: 0,
-    byKind: { lane: 0, chat: 0, shell: 0 },
+    byKind: emptyArchiveCounts(),
     olderThanDays: olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS,
     staleTotal: 0,
-    staleByKind: { lane: 0, chat: 0, shell: 0 },
+    staleByKind: emptyArchiveCounts(),
     staleBytes: null,
     oldestArchivedAt: null,
   });

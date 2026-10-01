@@ -116,6 +116,7 @@ import {
   type ArchiveSummary,
   type ArchiveSummaryArgs,
 } from "../shared/types/archive";
+import { emptyArchiveCounts } from "../shared/archive";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -258,8 +259,8 @@ function createMockArchive() {
     }),
     summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
       const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
-      const byKind = { lane: 0, chat: 0, shell: 0 };
-      const staleByKind = { lane: 0, chat: 0, shell: 0 };
+      const byKind = emptyArchiveCounts();
+      const staleByKind = emptyArchiveCounts();
       let staleBytes: number | null = null;
       for (const item of items) {
         byKind[item.kind] += 1;
