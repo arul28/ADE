@@ -17210,13 +17210,17 @@ function buildCliPlan(
       throw new CliUsageError("--rescue move needs --rescue-dir <path>.");
     }
     const waitPidRaw = readIntOption(args, ["--wait-pid"]);
+    if (waitPidRaw !== undefined && waitPidRaw <= 0) {
+      // Dropping it would start the reset while the app it waits for still runs.
+      throw new CliUsageError("--wait-pid needs a positive process id.");
+    }
     return {
       kind: "reset",
       dryRun: readFlag(args, ["--dry-run"]),
       yes: readFlag(args, ["--yes", "-y"]),
       rescue: rescueRaw,
       rescueDir: rescueDir ? path.resolve(rescueDir) : null,
-      waitPid: typeof waitPidRaw === "number" && waitPidRaw > 0 ? waitPidRaw : null,
+      waitPid: waitPidRaw ?? null,
       relaunch: readValue(args, ["--relaunch"])?.trim() || null,
     };
   }

@@ -4762,7 +4762,7 @@ const adeBridge = {
   },
   machineReset: {
     plan: (): Promise<MachineResetPlan> => ipcRenderer.invoke(IPC.machineResetPlan),
-    start: (options: MachineResetOptions): Promise<{ started: boolean; error?: string }> =>
+    start: (options: MachineResetOptions): Promise<{ started: boolean; cancelled?: boolean; error?: string }> =>
       ipcRenderer.invoke(IPC.machineResetStart, options),
     chooseRescueDir: (): Promise<string | null> => ipcRenderer.invoke(IPC.machineResetChooseRescueDir),
   },

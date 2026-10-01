@@ -182,6 +182,112 @@ describe("machine reset engine", () => {
     expect(fs.existsSync(path.join(rescued?.location ?? "", "wip.txt"))).toBe(true);
   });
 
+  it("rescues a detached-HEAD lane's commits instead of deleting them", async () => {
+    const { project, deps } = buildFixture();
+    // A lane mid-rebase: detached HEAD with a commit no branch or remote holds.
+    const lane = path.join(project, ".ade", "worktrees", "detached-lane");
+    git(project, ["worktree", "add", "-q", "--detach", lane, "main"]);
+    fs.writeFileSync(path.join(lane, "orphan.txt"), "orphan\n");
+    git(lane, ["add", "orphan.txt"]);
+    git(lane, ["commit", "-qm", "orphan commit"]);
+    const orphan = git(lane, ["rev-parse", "HEAD"]).stdout.trim();
+
+    const receipt = await executeMachineReset(
+      { rescue: "commit", receiptPath: path.join(deps.tmpDir, "receipt.json") },
+      deps,
+    );
+
+    const rescued = receipt.rescued.find((entry) => entry.lane === "detached-lane");
+    expect(rescued?.branch).toBe("ade-rescue/detached-lane");
+    expect(git(project, ["merge-base", "--is-ancestor", orphan, "ade-rescue/detached-lane"]).status).toBe(0);
+  });
+
+  it("treats a lane git cannot read as having work, and keeps its branch", async () => {
+    const { project, deps } = buildFixture();
+    // Git reports worktrees by real path (`/private/var/...` on macOS).
+    const cleanLane = path.join(".ade", "worktrees", "clean-lane");
+    const brokenStatus: MachineResetDeps = {
+      ...deps,
+      run: (command, args, options) => {
+        if (command === "git" && args[0] === "-C" && args[1]?.endsWith(cleanLane) && args[2] === "status") {
+          return { status: 128, stdout: "", stderr: "index.lock exists" };
+        }
+        return deps.run(command, args, options);
+      },
+    };
+
+    const receipt = await executeMachineReset(
+      { rescue: "commit", receiptPath: path.join(deps.tmpDir, "receipt.json") },
+      brokenStatus,
+    );
+
+    expect(receipt.rescued.some((entry) => entry.lane === "clean-lane")).toBe(true);
+    expect(branchNames(project)).toContain("ade/clean-lane");
+  });
+
+  it("reports a clean reset when a failed move is saved by the commit fallback", async () => {
+    const { project, deps } = buildFixture();
+    const failingMove: MachineResetDeps = {
+      ...deps,
+      run: (command, args, options) => {
+        if (command === "git" && args.includes("worktree") && args.includes("move")) {
+          return { status: 1, stdout: "", stderr: "move refused by test" };
+        }
+        return deps.run(command, args, options);
+      },
+    };
+
+    const receipt = await executeMachineReset(
+      {
+        rescue: "move",
+        rescueDir: path.join(path.dirname(deps.homeDir), "rescued"),
+        receiptPath: path.join(deps.tmpDir, "receipt.json"),
+      },
+      failingMove,
+    );
+
+    expect(receipt.rescued.find((entry) => entry.lane === "dirty-lane")?.mode).toBe("commit");
+    expect(receipt.failed).toEqual([]);
+    expect(receipt.ok).toBe(true);
+    expect(fs.existsSync(path.join(project, ".ade", "worktrees"))).toBe(false);
+  });
+
+  it("stops a desktop that does not quit, and refuses to start when it survives", async () => {
+    const desktopPid = 4242;
+    const desktop = { pid: desktopPid, ppid: 1, command: "/Applications/ADE.app/Contents/MacOS/ADE" };
+
+    const stoppable = buildFixture();
+    let alive = true;
+    const signals: string[] = [];
+    const receipt = await executeMachineReset(
+      { rescue: "none", waitPid: desktopPid, receiptPath: path.join(stoppable.deps.tmpDir, "receipt.json") },
+      {
+        ...stoppable.deps,
+        listProcesses: () => (alive ? [desktop] : []),
+        pidAlive: (pid) => pid === desktopPid && alive,
+        kill: (pid, signal) => {
+          signals.push(`${pid}:${signal}`);
+          if (pid === desktopPid && signal === "SIGKILL") alive = false;
+        },
+      },
+    );
+    expect(signals).toEqual([`${desktopPid}:SIGTERM`, `${desktopPid}:SIGKILL`]);
+    expect(receipt.notes.some((note) => note.includes("SIGKILL"))).toBe(true);
+
+    const stuck = buildFixture();
+    await expect(
+      executeMachineReset(
+        { rescue: "none", waitPid: desktopPid, receiptPath: path.join(stuck.deps.tmpDir, "receipt.json") },
+        {
+          ...stuck.deps,
+          listProcesses: () => [desktop],
+          pidAlive: (pid) => pid === desktopPid,
+        },
+      ),
+    ).rejects.toThrow(/would not quit/);
+    expect(fs.existsSync(path.join(stuck.project, ".ade", "ade.db"))).toBe(true);
+  });
+
   it("refuses a rescue folder inside a folder it removes, before changing anything", async () => {
     const { project, deps } = buildFixture();
 

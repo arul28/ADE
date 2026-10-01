@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
-import type {
-  MachineResetFailure,
-  MachineResetLane,
-  MachineResetOptions,
-  MachineResetReceipt,
+import {
+  laneHasWork,
+  type MachineResetFailure,
+  type MachineResetLane,
+  type MachineResetOptions,
+  type MachineResetReceipt,
 } from "../../../../desktop/src/shared/types/machineReset";
 import {
   adeHomeCandidates,
@@ -18,6 +19,7 @@ import {
   inventoryLanes,
   inventoryMachinePaths,
   inventoryProcesses,
+  isAdeProcessCommand,
   isInside,
   listDir,
   realPath,
@@ -210,9 +212,6 @@ async function stopProcesses(deps: MachineResetDeps, receipt: MachineResetReceip
   if (targets.length) receipt.notes.push(`Stopped ${targets.length} ADE process${targets.length === 1 ? "" : "es"}.`);
 }
 
-function laneHasWork(lane: MachineResetLane): boolean {
-  return lane.uncommittedFiles > 0 || lane.unpushedCommits > 0;
-}
 
 function uniqueDestination(base: string): string {
   let candidate = base;
@@ -228,7 +227,9 @@ function commitLaneWork(deps: MachineResetDeps, lane: MachineResetLane): { ok: t
     const created = deps.run("git", ["-C", lane.path, "checkout", "-b", branch]);
     if (created.status !== 0) return { ok: false, error: created.stderr.trim() || "could not create a rescue branch" };
   }
-  if (lane.uncommittedFiles > 0) {
+  // Unknown status is committed like known changes: `git add` and `commit`
+  // are the real test, and "nothing to commit" is the answer that was missing.
+  if (lane.uncommittedFiles > 0 || lane.workUnknown) {
     const added = deps.run("git", ["-C", lane.path, "add", "-A"]);
     if (added.status !== 0) return { ok: false, error: added.stderr.trim() || "git add failed" };
     const message = "ADE reset: saved lane work before removing the lane";
@@ -239,7 +240,8 @@ function commitLaneWork(deps: MachineResetDeps, lane: MachineResetLane): { ok: t
         "commit", "--no-verify", "-m", message,
       ]);
     }
-    if (committed.status !== 0) return { ok: false, error: committed.stderr.trim() || "git commit failed" };
+    const nothingToCommit = /nothing to commit|nothing added to commit/i.test(`${committed.stdout}\n${committed.stderr}`);
+    if (committed.status !== 0 && !nothingToCommit) return { ok: false, error: committed.stderr.trim() || "git commit failed" };
   }
   return { ok: true, branch };
 }
@@ -316,6 +318,9 @@ function resetProject(
     const lanes = inventoryLanes(deps, project.rootPath, project.adeDir);
     for (const lane of lanes) {
       let moved = false;
+      // A failed move is only a failure if nothing else saves the work; the
+      // commit fallback usually does, and then it is a note.
+      let moveError: string | null = null;
       if (options.rescue !== "none" && laneHasWork(lane)) {
         if (options.rescue === "move" && options.rescueDir) {
           const result = moveLane(deps, project, lane, options.rescueDir);
@@ -324,7 +329,7 @@ function resetProject(
             if (lane.branch) keptBranches.add(lane.branch);
             receipt.rescued.push({ projectRoot: project.rootPath, lane: lane.name, mode: "move", branch: lane.branch, location: result.location });
           } else {
-            receipt.failed.push({ target: lane.path, error: `move failed, committing instead: ${result.error}` });
+            moveError = result.error;
           }
         }
         if (!moved) {
@@ -332,6 +337,9 @@ function resetProject(
           if (committed.ok) {
             keptBranches.add(committed.branch);
             receipt.rescued.push({ projectRoot: project.rootPath, lane: lane.name, mode: "commit", branch: committed.branch, location: null });
+            if (moveError) {
+              receipt.notes.push(`Lane ${lane.name} could not be moved (${moveError}), so its work was committed on ${committed.branch} instead.`);
+            }
           } else {
             // Never delete work a rescue could not save: park the folder.
             const parked = moveLane(deps, project, lane, fallbackRescueRoot);
@@ -340,7 +348,10 @@ function resetProject(
               if (lane.branch) keptBranches.add(lane.branch);
               receipt.rescued.push({ projectRoot: project.rootPath, lane: lane.name, mode: "move", branch: lane.branch, location: parked.location });
             } else {
-              receipt.failed.push({ target: lane.path, error: `could not save this lane's work (${committed.error}); left in place` });
+              receipt.failed.push({
+                target: lane.path,
+                error: `could not save this lane's work (${moveError ? `move: ${moveError}; ` : ""}commit: ${committed.error}); left in place`,
+              });
               if (lane.branch) keptBranches.add(lane.branch);
               continue;
             }
@@ -470,6 +481,33 @@ export type MachineResetRunOptions = MachineResetOptions & {
   receiptPath?: string;
 };
 
+/**
+ * The desktop that handed the reset off did not quit. It is this process's
+ * parent, so the process sweep protects it; it has to be stopped here, by
+ * pid, and only when that pid still is ADE. A desktop that survives even
+ * that would write into the folders being removed, so the reset stops before
+ * it changes anything.
+ */
+async function stopStuckDesktop(pid: number, deps: MachineResetDeps, receipt: MachineResetReceipt): Promise<void> {
+  const entry = deps.listProcesses().find((candidate) => candidate.pid === pid);
+  if (!entry || !isAdeProcessCommand(entry.command)) {
+    receipt.notes.push(`Process ${pid} is no longer ADE; it was left alone.`);
+    return;
+  }
+  for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+    try {
+      deps.kill(pid, signal);
+    } catch {
+      // gone between the check and the signal
+    }
+    if (await waitForExit(deps, pid, 5_000)) {
+      receipt.notes.push(`ADE did not quit by itself, so the reset stopped it (${signal}).`);
+      return;
+    }
+  }
+  throw new Error(`ADE (process ${pid}) would not quit, so the reset stopped before changing anything. Quit ADE, then run the reset again.`);
+}
+
 export async function executeMachineReset(
   options: MachineResetRunOptions,
   deps: MachineResetDeps,
@@ -490,9 +528,7 @@ export async function executeMachineReset(
   if (options.waitPid && options.waitPid !== deps.selfPid) {
     deps.log(`waiting for process ${options.waitPid} to exit`);
     if (!await waitForExit(deps, options.waitPid, 30_000)) {
-      // The desktop did not quit; it is an ADE process, so the sweep below
-      // stops it like every other.
-      receipt.notes.push(`Process ${options.waitPid} did not exit by itself and was stopped.`);
+      await stopStuckDesktop(options.waitPid, deps, receipt);
     }
   }
 

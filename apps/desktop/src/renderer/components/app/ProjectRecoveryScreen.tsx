@@ -205,8 +205,14 @@ export function ProjectRecoveryScreen() {
     });
   }, [rootPath]);
 
+  // Set and read synchronously: `phase` reaches this callback only after
+  // React commits, so a poll (or a second click) landing before that commit
+  // would otherwise start a second repair that stops and restarts ADE under
+  // the first one.
+  const repairInFlightRef = useRef(false);
   const runRepair = useCallback(async () => {
-    if (!rootPath || phase === "repairing") return;
+    if (!rootPath || phase === "repairing" || repairInFlightRef.current) return;
+    repairInFlightRef.current = true;
     reopenStartedRef.current = false;
     setReport(null);
     setRevealed(0);
@@ -223,6 +229,8 @@ export function ProjectRecoveryScreen() {
       setReport(null);
       setFailedFixes((count) => count + 1);
       setPhase("failure");
+    } finally {
+      repairInFlightRef.current = false;
     }
   }, [rootPath, phase]);
   // The watcher below runs on an interval; it reads the latest runRepair

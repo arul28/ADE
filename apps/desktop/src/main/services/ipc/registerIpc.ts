@@ -4901,9 +4901,25 @@ export function registerIpc({
     return await planMachineResetFromDesktop(app.getVersion());
   });
 
-  ipcMain.handle(IPC.machineResetStart, async (_event, arg: MachineResetOptions): Promise<{ started: boolean; error?: string }> => {
+  ipcMain.handle(IPC.machineResetStart, async (event, arg: MachineResetOptions): Promise<{ started: boolean; cancelled?: boolean; error?: string }> => {
     const rescue = arg?.rescue === "move" || arg?.rescue === "none" ? arg.rescue : "commit";
     const rescueDir = typeof arg?.rescueDir === "string" && arg.rescueDir.trim() ? path.resolve(arg.rescueDir.trim()) : null;
+    // The typed RESET lives in the renderer, which this process does not
+    // trust with a wipe of the whole machine. The last word is a native
+    // dialog only a person can answer.
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const confirmOptions: Electron.MessageBoxOptions = {
+      type: "warning",
+      buttons: ["Cancel", "Reset ADE"],
+      defaultId: 0,
+      cancelId: 0,
+      message: "Reset ADE completely?",
+      detail: "ADE quits, removes everything it put on this computer, and opens again as a new install. Your code and repositories stay.",
+    };
+    const confirmed = owner
+      ? await dialog.showMessageBox(owner, confirmOptions)
+      : await dialog.showMessageBox(confirmOptions);
+    if (confirmed.response !== 1) return { started: false, cancelled: true };
     const result = startMachineResetFromDesktop({ rescue, rescueDir }, app.getVersion());
     if (!result.started) return { started: false, error: result.error };
     // Long enough for this reply to reach the window. `exit`, not `quit`: a
