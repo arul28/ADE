@@ -56,11 +56,18 @@ export function LanePrBadge({
   pr,
   prs = [pr],
   onOpen,
+  onOpenPill,
   onOpenList,
 }: {
   pr: PrSummary;
   prs?: PrSummary[];
+  /** A PR row in the hover list. Opens the PRs tab. */
   onOpen: (pr: PrSummary) => void;
+  /**
+   * The pill itself. Opens the PR in a chat's PR tool when the caller has a
+   * chat to open it in; falls back to `onOpen` otherwise.
+   */
+  onOpenPill?: (pr: PrSummary) => void;
   /** Opens the PRs tab with this lane selected. The hover list's last row. */
   onOpenList?: () => void;
 }) {
@@ -69,9 +76,14 @@ export function LanePrBadge({
   const stackDescription = primaryPr.stack
     ? `, position ${primaryPr.stack.position} of ${primaryPr.stack.size} in GitHub Stack #${primaryPr.stack.number}`
     : "";
-  const open = (event: React.SyntheticEvent, target: PrSummary = primaryPr) => {
+  const open = (event: React.SyntheticEvent, target: PrSummary) => {
     event.stopPropagation();
     onOpen(target);
+  };
+  const openPill = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+    if (onOpenPill) onOpenPill(primaryPr);
+    else onOpen(primaryPr);
   };
 
   if (allPrs.length === 1) {
@@ -81,11 +93,11 @@ export function LanePrBadge({
       <span
         role="button"
         tabIndex={0}
-        onClick={open}
+        onClick={openPill}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            open(event);
+            openPill(event);
           }
         }}
         className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
@@ -185,11 +197,11 @@ export function LanePrBadge({
         <span
           role="button"
           tabIndex={0}
-          onClick={(event) => open(event)}
+          onClick={openPill}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
-              open(event);
+              openPill(event);
             }
           }}
           className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] py-px pl-1.5 pr-1 text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"

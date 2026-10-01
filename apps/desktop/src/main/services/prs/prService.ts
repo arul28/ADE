@@ -191,6 +191,13 @@ import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationV
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import {
+  buildLaneBranchHistoryIndex,
+  pickLaneBranchHistoryPr,
+  prOpenedDuringLane,
+  resolveLaneBranchHistoryOwner,
+  type LaneBranchHistoryIndex,
+} from "./laneBranchHistoryOwnership";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
   buildLinearPrTitle,
@@ -3280,66 +3287,21 @@ export function createPrService({
     };
   };
 
-  /** branch → ids of the active lanes whose worktree has used it. */
-  type LaneBranchHistoryIndex = Map<string, Set<string>>;
-
   const loadLaneBranchHistoryIndex = (): LaneBranchHistoryIndex => {
-    const index: LaneBranchHistoryIndex = new Map();
-    let entries: Array<{ laneId: string; branchRef: string }> = [];
     try {
-      entries = laneService.listBranchHistory?.() ?? [];
+      return buildLaneBranchHistoryIndex(laneService.listBranchHistory());
     } catch (error) {
       logger.warn("prs.lane_branch_history_read_failed", { error: getErrorMessage(error) });
+      return new Map();
     }
-    for (const entry of entries) {
-      const branch = normalizeBranchName(branchNameFromRef(entry.branchRef));
-      if (!branch) continue;
-      const laneIds = index.get(branch) ?? new Set<string>();
-      laneIds.add(entry.laneId);
-      index.set(branch, laneIds);
-    }
-    return index;
-  };
-
-  /**
-   * The one lane whose worktree used `headBranch` without recording it as its
-   * branch — the follow-up branch an agent cut inside its lane. `null` when a
-   * lane records the branch (the strict match owns that case), when no lane or
-   * more than one lane used it, or when the lane is primary or archived.
-   */
-  const resolveLaneBranchHistoryOwner = (
-    headBranch: string,
-    lanes: LaneSummary[],
-    history: LaneBranchHistoryIndex,
-  ): LaneSummary | null => {
-    const recordedByLane = lanes.some((lane) =>
-      !lane.archivedAt && normalizeBranchName(branchNameFromRef(lane.branchRef)) === headBranch,
-    );
-    if (recordedByLane) return null;
-    const laneIds = history.get(headBranch);
-    if (!laneIds || laneIds.size !== 1) return null;
-    const [laneId] = [...laneIds];
-    const lane = lanes.find((entry) => entry.id === laneId) ?? null;
-    if (!lane || lane.archivedAt || lane.laneType === "primary") return null;
-    return lane;
-  };
-
-  // A reused branch name can carry PRs from long before this lane existed.
-  // Only a PR opened while the lane was alive is its work. Five minutes of
-  // slack covers clock skew between this machine and GitHub.
-  const LANE_BRANCH_HISTORY_CREATED_SKEW_MS = 5 * 60_000;
-  const prOpenedDuringLane = (createdAt: string | null, lane: LaneSummary): boolean => {
-    const prMs = createdAt ? Date.parse(createdAt) : Number.NaN;
-    const laneMs = Date.parse(lane.createdAt);
-    if (!Number.isFinite(prMs) || !Number.isFinite(laneMs)) return false;
-    return prMs >= laneMs - LANE_BRANCH_HISTORY_CREATED_SKEW_MS;
   };
 
   /**
    * Link a PR's row to the chats that were open in the lane when it was
    * created. A history PR does not match the lane's recorded branch, so lane
-   * surfaces show it only through this edge. Shells are not chats, and a chat
-   * that ended before the PR existed did not open it.
+   * surfaces show it only through this edge. Plain shells (`shell`, `other`)
+   * are not agents, and a session that ended before the PR existed did not
+   * open it.
    */
   const attributeLanePrToChats = (args: { prId: string; laneId: string; createdAt: string | null }): void => {
     const createdMs = args.createdAt ? Date.parse(args.createdAt) : Number.NaN;
@@ -3355,7 +3317,7 @@ export function createPrService({
             from terminal_sessions
            where lane_id = ?
              and tool_type is not null
-             and tool_type <> 'shell'
+             and tool_type not in ('shell', 'other')
              and started_at <= ?
              and (ended_at is null or ended_at >= ?)
            order by started_at desc
@@ -3658,21 +3620,15 @@ export function createPrService({
           continue;
         }
 
-        // One PR per branch, as the strict match keeps one per lane branch:
-        // the open one if there is one, else the newest.
-        let best: AutoMapPrCandidate | null = null;
-        for (const rawPr of rawPulls) {
-          const candidate = autoMapCandidateFromRawPull(rawPr, repo, { includeClosed: true });
-          if (!candidate || candidate.headBranch !== branch) continue;
-          if (!prOpenedDuringLane(candidate.createdAt, lane)) continue;
-          if (
-            !best
-            || (candidate.isOpen && !best.isOpen)
-            || (candidate.isOpen === best.isOpen && candidate.prNumber > best.prNumber)
-          ) {
-            best = candidate;
-          }
-        }
+        const best = pickLaneBranchHistoryPr(
+          rawPulls
+            .map((rawPr) => autoMapCandidateFromRawPull(rawPr, repo, { includeClosed: true }))
+            .filter((candidate): candidate is AutoMapPrCandidate => (
+              candidate !== null
+              && candidate.headBranch === branch
+              && prOpenedDuringLane(candidate.createdAt, lane)
+            )),
+        );
         if (!best) continue;
         try {
           if (await autoMapPrToHistoryLane(best, repo, lanes, history)) linked += 1;

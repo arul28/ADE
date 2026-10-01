@@ -91,10 +91,9 @@ import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   detectLaneBranchDrift,
   laneNameAdvertisesBranch,
-  parseReflogBranchVisits,
   parseWorktreeStatusPorcelainV2,
-  selectLaneHistoryBranches,
 } from "./laneBranchDrift";
+import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -1446,11 +1445,6 @@ export function createLaneService({
   // `setOnWorktreeLaneCreated` because the PR service is constructed after the
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
-  // A lane's worktree is on, or has visited, branches other than the one the
-  // lane records — usually an agent running `git checkout -b` for a follow-up
-  // PR. The PR service links the PRs opened from those branches. Late-bound for
-  // the same reason as `onWorktreeLaneCreated`.
-  let onBranchHistoryObserved: ((args: { laneId: string; branchRefs: string[] }) => void) | null = null;
 
   // Late-bound hook that tears down a lane's environment (Docker Compose stack)
   // when the lane is archived. Set via `setOnLaneArchivedEnvTeardown` because
@@ -3257,149 +3251,24 @@ export function createLaneService({
     invalidateLaneListCache();
   };
 
-  // Branch history: the branches a lane's worktree used besides `branch_ref`.
-  // Agents often cut a follow-up branch inside the same worktree. The lane
-  // record keeps its branch (that is what branch drift reports), but the PRs
-  // opened from those branches are still this lane's work. They are recorded
-  // as branch profiles, which is what the lane's branch list already shows.
-  const BRANCH_HISTORY_RESCAN_MS = 10 * 60_000;
-  const BRANCH_HISTORY_REFLOG_LIMIT = 200;
-  const branchHistoryObservedByLaneId = new Map<string, { headBranchRef: string; atMs: number }>();
-  const branchHistoryScansInFlight = new Set<string>();
-  const branchHistoryReportedByLaneId = new Map<string, Set<string>>();
-
-  // The first lane list after startup sees every lane at once. Scans queue
-  // behind a small limit instead of starting two git processes per lane.
-  const BRANCH_HISTORY_SCAN_CONCURRENCY = 2;
-  let branchHistoryScansRunning = 0;
-  const branchHistoryScanQueue: Array<() => void> = [];
-  const withBranchHistoryScanSlot = async <T>(task: () => Promise<T>): Promise<T> => {
-    if (branchHistoryScansRunning < BRANCH_HISTORY_SCAN_CONCURRENCY) {
-      branchHistoryScansRunning += 1;
-    } else {
-      // The finishing scan hands its slot straight to this one, so the count
-      // never dips and lets a newcomer past the limit.
-      await new Promise<void>((resolve) => branchHistoryScanQueue.push(resolve));
-    }
-    try {
-      return await task();
-    } finally {
-      const next = branchHistoryScanQueue.shift();
-      if (next) next();
-      else branchHistoryScansRunning -= 1;
-    }
-  };
-
-  // Local branches live in the repository's common git dir, so one listing
-  // answers for every lane worktree. Shared for a short window so a burst of
-  // scans does not list them once per lane.
-  const LOCAL_BRANCHES_CACHE_MS = 30_000;
-  let localBranchesCache: { atMs: number; branches: Promise<Set<string> | null> } | null = null;
-  const readLocalBranches = (): Promise<Set<string> | null> => {
-    const nowMs = Date.now();
-    if (localBranchesCache && nowMs - localBranchesCache.atMs < LOCAL_BRANCHES_CACHE_MS) {
-      return localBranchesCache.branches;
-    }
-    const branches = runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], {
-      cwd: projectRoot,
-      timeoutMs: 5_000,
-    }).then((result) => {
-      // A truncated or failed listing would read as "this branch is gone".
-      if (result.exitCode !== 0 || result.stdoutTruncated) return null;
-      return new Set(result.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
-    }).catch(() => null);
-    localBranchesCache = { atMs: nowMs, branches };
-    return branches;
-  };
-
-  const scanLaneBranchHistory = async (row: LaneRow): Promise<string[]> => {
-    const [reflogRes, localBranches] = await Promise.all([
-      runGit(
-        ["reflog", "show", "--date=unix", "--format=%gd%x09%gs", "-n", String(BRANCH_HISTORY_REFLOG_LIMIT), "HEAD"],
-        { cwd: row.worktree_path, timeoutMs: 5_000 },
-      ),
-      readLocalBranches(),
-    ]);
-    if (reflogRes.exitCode !== 0 || !localBranches) return [];
-    // Another lane's branch is that lane's work, even if this worktree once
-    // checked it out. Base branches are never anyone's PR head.
-    const excludedBranches = new Set<string>();
-    for (const other of db.all<{ branch_ref: string; base_ref: string }>(
-      "select branch_ref, base_ref from lanes where project_id = ? and status != 'archived'",
-      [projectId],
-    )) {
-      const branch = normalizeBranchKey(other.branch_ref ?? "");
-      if (branch) excludedBranches.add(branch);
-      const base = normalizeBranchKey(other.base_ref ?? "");
-      if (base) excludedBranches.add(base);
-    }
-    const defaultBase = normalizeBranchKey(defaultBaseRef);
-    if (defaultBase) excludedBranches.add(defaultBase);
-    excludedBranches.add(normalizeBranchKey(row.branch_ref));
-
-    const visited = selectLaneHistoryBranches({
-      visits: parseReflogBranchVisits(reflogRes.stdout),
-      laneCreatedAtMs: Date.parse(row.created_at),
-      localBranches,
-      excludedBranches,
-    });
-    const recorded: string[] = [];
-    for (const visit of visited) {
-      // Insert-only. The lane status refresh runs this for every lane, and an
-      // update here would be a replicated write on every pass.
-      if (!getBranchProfileRow(row.id, visit.branchRef)) {
-        upsertBranchProfileForRow(row, {
-          branchRef: visit.branchRef,
-          baseRef: row.base_ref,
-          parentLaneId: row.parent_lane_id,
-          sourceBranchRef: row.branch_ref,
-          lastCheckedOutAt: new Date(visit.lastVisitedAtMs).toISOString(),
-        });
-      }
-      recorded.push(visit.branchRef);
-    }
-    return recorded;
-  };
-
-  /**
-   * Called with each lane's live HEAD from the status refresh. Reads the
-   * worktree reflog when HEAD moves, on the first sight of a lane in this
-   * process, and otherwise at most every ten minutes — one git read per lane,
-   * never on every refresh.
-   */
-  const observeLaneBranchHistory = (row: LaneRow, headBranchRef: string | null | undefined): void => {
-    if (row.lane_type === "primary" || row.status === "archived" || row.archived_at) return;
-    if (branchHistoryScansInFlight.has(row.id)) return;
-    const head = normalizeBranchKey(headBranchRef ?? "");
-    const previous = branchHistoryObservedByLaneId.get(row.id);
-    const nowMs = Date.now();
-    const headMoved = !previous || previous.headBranchRef !== head;
-    if (!headMoved && nowMs - previous.atMs < BRANCH_HISTORY_RESCAN_MS) return;
-    branchHistoryObservedByLaneId.set(row.id, { headBranchRef: head, atMs: nowMs });
-    branchHistoryScansInFlight.add(row.id);
-    void withBranchHistoryScanSlot(() => scanLaneBranchHistory(row))
-      .then((branchRefs) => {
-        if (branchRefs.length === 0 || !onBranchHistoryObserved) return;
-        // Report every history branch when HEAD moves, not only new ones: a
-        // branch recorded before its PR was opened needs another look once the
-        // worktree has moved on. A timed rescan reports only a changed set.
-        if (!headMoved) {
-          const known = branchHistoryReportedByLaneId.get(row.id);
-          if (known && branchRefs.every((branch) => known.has(branch))) return;
-        }
-        branchHistoryReportedByLaneId.set(row.id, new Set(branchRefs));
-        onBranchHistoryObserved?.({ laneId: row.id, branchRefs });
-      })
-      .catch((error) => {
-        logger.debug("laneService.branch_history_scan_failed", {
-          laneId: row.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        branchHistoryScansInFlight.delete(row.id);
+  const branchHistory = createLaneBranchHistoryObserver<LaneRow>({
+    db,
+    projectId,
+    projectRoot,
+    defaultBaseRef,
+    logger,
+    getLaneRow,
+    hasBranchProfile: (laneId, branchRef) => Boolean(getBranchProfileRow(laneId, branchRef)),
+    recordBranchProfile: (row, visit) => {
+      upsertBranchProfileForRow(row, {
+        branchRef: visit.branchRef,
+        baseRef: row.base_ref,
+        parentLaneId: row.parent_lane_id,
+        sourceBranchRef: row.branch_ref,
+        lastCheckedOutAt: new Date(visit.lastVisitedAtMs).toISOString(),
       });
-  };
+    },
+  });
 
   const repairPrimaryParentedRootLanes = (): void => {
     const primary = getActivePrimaryLane();
@@ -3796,7 +3665,7 @@ export function createLaneService({
             status,
             updatedAt: new Date().toISOString(),
           });
-          if (worktreeAvailable) observeLaneBranchHistory(row, status.headBranchRef);
+          if (worktreeAvailable) branchHistory.observe(row, status.headBranchRef);
         }
       } catch (err) {
         // If building the summary for a single lane fails entirely, skip it
@@ -8646,8 +8515,14 @@ export function createLaneService({
       onWorktreeLaneCreated = hook ?? null;
     },
 
+    /**
+     * A lane's worktree is on, or has visited, branches other than the one the
+     * lane records — usually an agent cutting a follow-up PR branch. The PR
+     * service links the PRs opened from them. Late-bound for the same reason
+     * as `setOnWorktreeLaneCreated`.
+     */
     setOnBranchHistoryObserved(hook: ((args: { laneId: string; branchRefs: string[] }) => void) | null): void {
-      onBranchHistoryObserved = hook ?? null;
+      branchHistory.setOnObserved(hook);
     },
 
     /**

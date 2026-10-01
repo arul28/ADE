@@ -22,6 +22,7 @@ import { PrsProvider } from "../prs/state/PrsContext";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../prs/shared/PrSwitcher";
+import { subscribeChatPrSelections, takeChatPrSelection } from "./chatPrPaneRequests";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
@@ -496,6 +497,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       pinnedChatKeyRef.current = `${laneId}:${sessionId ?? ""}`;
       pinnedPrIdRef.current = null;
     }
+    // A PR pill elsewhere (header, session card, lane divider) asked for this one.
+    const requestedPrId = takeChatPrSelection(laneId, sessionId ?? null);
+    if (requestedPrId) pinnedPrIdRef.current = requestedPrId;
     let cached: PrSummary | null = null;
     // Published together with the selected PR, and only once the request is
     // still the current one: this list is scoped to ONE lane+chat, so a read
@@ -554,6 +558,11 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, [refresh, setCurrentPr]);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
+
+  // The pane is already on screen when a PR pill asks for another PR.
+  useEffect(() => subscribeChatPrSelections((requestedLaneId) => {
+    if (requestedLaneId === laneId) void refresh();
+  }), [laneId, refresh]);
 
   // Manual title-bar ↻: force a best-effort sync of this lane's PR (heals
   // merged/closed state, or maps a merged-but-unmapped PR on the branch), then

@@ -17,6 +17,7 @@ import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 import { lanePrAggregateAttention, lanePrAttention, lanePrAttentionColor, pickPrimaryPr } from "../../lib/lanePrBadge";
 import { LanePrHoverCard } from "./LanePrHoverCard";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -222,7 +223,7 @@ export function LanePrBadgePopover({
 
       {/* Hover popover — pure-CSS group-hover, positioned below the badge. No JS
           positioning library, mirroring LinearIssueBadge's approach. */}
-      <span className="pointer-events-none invisible absolute left-0 top-full z-[80] w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
+      <span style={{ zIndex: Z_LAYERS.popover }} className="pointer-events-none invisible absolute left-0 top-full w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
         <span
           className="block overflow-hidden"
           style={{

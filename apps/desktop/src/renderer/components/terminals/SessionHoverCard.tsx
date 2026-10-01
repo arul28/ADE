@@ -5,6 +5,7 @@ import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampe
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { isInsideRowHoverSuppress, isPointerOnRowHoverSuppress } from "../ui/rowHoverSuppress";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The session row's DETAIL CARD.
@@ -282,7 +283,7 @@ export function SessionHoverCard({
       ref={ref}
       role="tooltip"
       data-testid="session-hover-card"
-      className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.08] px-3 py-2.5 shadow-2xl"
+      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.08] px-3 py-2.5 shadow-2xl"
       initial={false}
       animate={{
         opacity: position ? 1 : 0,
@@ -293,16 +294,13 @@ export function SessionHoverCard({
         ease: [0.22, 1, 0.36, 1],
       }}
       style={{
-        /* `position` MUST be set inline, not left to the `fixed` utility in the
-           class list above. `.ade-liquid-glass` declares `position: relative`
-           (index.css) at the same specificity as Tailwind's `.fixed`, and it
-           wins on source order — so the card silently laid out as a RELATIVE
-           box offset from its normal flow position at the end of <body>.
-           Measured in the browser: inline `top: 76px` resolved to a real
-           `rect.top` of 938 in an 862px viewport, i.e. entirely below the fold.
-           The card was mounting and painting correctly the whole time; nobody
-           could see it. Inline beats both rules and pins the intent here. */
-        position: "fixed",
+        /* `position` MUST be set inline. `.ade-liquid-glass` declares
+           `position: relative` (index.css), and a class at the same specificity
+           loses to it on source order — the card once laid out as a RELATIVE
+           box below the fold, painting correctly where nobody could see it.
+           The host is a viewport-sized fixed layer, so `absolute` here places
+           the card in viewport coordinates. */
+        position: "absolute",
         left: position?.left ?? anchor.x,
         top: position?.top ?? anchor.y,
       }}
@@ -320,7 +318,7 @@ export function SessionHoverCard({
   );
 
   return typeof document !== "undefined" && document.body
-    ? createPortal(card, document.body)
+    ? createPortal(<ViewportOverlayHost layer="tooltip">{card}</ViewportOverlayHost>, document.body)
     : card;
 }
 
