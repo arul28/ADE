@@ -25,7 +25,6 @@ type Stage =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "review"; plan: MachineResetPlan }
-  | { kind: "starting" }
   | { kind: "started" };
 
 const RESCUE_CHOICES: ReadonlyArray<{ mode: MachineResetRescueMode; title: string; detail: string }> = [
@@ -112,11 +111,15 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   const armed = typed.trim() === CONFIRM_WORD && (rescue !== "move" || Boolean(rescueDir));
 
+  const [confirming, setConfirming] = useState(false);
   const start = useCallback(async () => {
-    if (!armed) return;
-    setStage({ kind: "starting" });
+    if (!armed || confirming) return;
+    // The main process asks once more in a native dialog; until that answer
+    // the plan stays on screen, and Cancel there brings the person back here.
+    setConfirming(true);
     try {
       const result = await window.ade.machineReset!.start({ rescue, rescueDir: rescue === "move" ? rescueDir : null });
+      if (result.cancelled) return;
       if (!result.started) {
         setStage({ kind: "error", message: result.error ?? "ADE could not start the reset." });
         return;
@@ -124,10 +127,12 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       setStage({ kind: "started" });
     } catch (error) {
       setStage({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setConfirming(false);
     }
-  }, [armed, rescue, rescueDir]);
+  }, [armed, confirming, rescue, rescueDir]);
 
-  const busy = stage.kind === "starting" || stage.kind === "started";
+  const busy = stage.kind === "started";
 
   return (
     <Dialog
@@ -148,7 +153,7 @@ export function ResetAdeDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         stage.kind === "review"
           ? [
             { label: "Cancel", variant: "secondary", onClick: () => onOpenChange(false) },
-            { label: "Reset and reopen ADE", variant: "solid", disabled: !armed, onClick: () => void start() },
+            { label: "Reset and reopen ADE", variant: "solid", disabled: !armed || confirming, onClick: () => void start() },
           ]
           : stage.kind === "error"
             ? [{ label: "Close", variant: "secondary", onClick: () => onOpenChange(false) }]

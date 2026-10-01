@@ -1266,7 +1266,7 @@ declare global {
       /** The hard reset. Optional: older preloads do not have it. */
       machineReset?: {
         plan: () => Promise<MachineResetPlan>;
-        start: (options: MachineResetOptions) => Promise<{ started: boolean; error?: string }>;
+        start: (options: MachineResetOptions) => Promise<{ started: boolean; cancelled?: boolean; error?: string }>;
         chooseRescueDir: () => Promise<string | null>;
       };
       remoteRuntime: {

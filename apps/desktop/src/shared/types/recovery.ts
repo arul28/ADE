@@ -185,7 +185,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     canAutoRepair: false,
     steps: [
       "Choose Open System Settings.",
-      "Under \"Allow in the Background\", turn on ADE. It can also show as \"Arul Sharma\", the name of ADE's developer.",
+      "Under \"Allow in the Background\", turn on ADE. On some Macs it shows under the name of ADE's developer instead.",
       "Come back here. ADE continues by itself.",
     ],
   },

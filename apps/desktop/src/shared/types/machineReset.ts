@@ -14,11 +14,24 @@ export type MachineResetLane = {
   name: string;
   path: string;
   branch: string | null;
+  /** The commit the lane's HEAD points at, as `git worktree list` gave it. */
+  head?: string;
   /** Files with changes that are not committed (tracked or untracked). */
   uncommittedFiles: number;
-  /** Commits on the lane's branch that no remote has. */
+  /** Commits on the lane's branch (or its detached HEAD) that no remote has. */
   unpushedCommits: number;
+  /**
+   * Git could not answer for this lane (a locked or broken index, a failed
+   * count). The reset treats it as having work: it never deletes work it
+   * could not measure.
+   */
+  workUnknown?: boolean;
 };
+
+/** Whether a lane holds anything the reset must rescue before removing it. */
+export function laneHasWork(lane: MachineResetLane): boolean {
+  return lane.uncommittedFiles > 0 || lane.unpushedCommits > 0 || lane.workUnknown === true;
+}
 
 /** A project ADE was used on, and what ADE keeps inside it. */
 export type MachineResetProject = {
