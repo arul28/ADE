@@ -349,6 +349,7 @@ export function inventoryLanes(deps: MachineResetDeps, rootPath: string, adeDir:
         name: path.basename(worktreePath),
         path: worktreePath,
         branch: current.branch,
+        ...(current.head ? { head: current.head } : {}),
         uncommittedFiles: status?.length ?? 0,
         unpushedCommits: Number.isFinite(unpushed) ? unpushed : 0,
         ...(workUnknown ? { workUnknown: true } : {}),

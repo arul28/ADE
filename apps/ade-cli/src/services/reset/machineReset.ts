@@ -141,8 +141,8 @@ function removePath(
 }
 
 async function waitForExit(deps: MachineResetDeps, pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  const deadline = deps.now().getTime() + timeoutMs;
+  while (deps.now().getTime() < deadline) {
     if (!deps.pidAlive(pid)) return true;
     await deps.sleep(200);
   }
@@ -219,13 +219,26 @@ function uniqueDestination(base: string): string {
   return candidate;
 }
 
-function commitLaneWork(deps: MachineResetDeps, lane: MachineResetLane): { ok: true; branch: string } | { ok: false; error: string } {
+function commitLaneWork(deps: MachineResetDeps, rootPath: string, lane: MachineResetLane): { ok: true; branch: string } | { ok: false; error: string } {
   let branch = lane.branch;
   if (!branch) {
-    // Detached HEAD: give the work a branch to live on first.
-    branch = `ade-rescue/${lane.name}`;
-    const created = deps.run("git", ["-C", lane.path, "checkout", "-b", branch]);
+    // Detached HEAD: give the work a branch to live on first. Made from the
+    // main repository at the HEAD git listed, so it works when the lane
+    // folder is already gone — before `worktree prune` drops the only
+    // record of that HEAD.
+    if (!lane.head) return { ok: false, error: "the lane's HEAD is unknown" };
+    let candidate = `ade-rescue/${lane.name}`;
+    for (let index = 2; deps.run("git", ["-C", rootPath, "rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`]).status === 0; index += 1) {
+      candidate = `ade-rescue/${lane.name}-${index}`;
+    }
+    const created = deps.run("git", ["-C", rootPath, "branch", candidate, lane.head]);
     if (created.status !== 0) return { ok: false, error: created.stderr.trim() || "could not create a rescue branch" };
+    branch = candidate;
+    // Same commit, so switching keeps any uncommitted changes in place.
+    if (exists(lane.path)) {
+      const switched = deps.run("git", ["-C", lane.path, "checkout", "-q", branch]);
+      if (switched.status !== 0) return { ok: false, error: switched.stderr.trim() || "could not switch to the rescue branch" };
+    }
   }
   // Unknown status is committed like known changes: `git add` and `commit`
   // are the real test, and "nothing to commit" is the answer that was missing.
@@ -333,7 +346,7 @@ function resetProject(
           }
         }
         if (!moved) {
-          const committed = commitLaneWork(deps, lane);
+          const committed = commitLaneWork(deps, project.rootPath, lane);
           if (committed.ok) {
             keptBranches.add(committed.branch);
             receipt.rescued.push({ projectRoot: project.rootPath, lane: lane.name, mode: "commit", branch: committed.branch, location: null });
@@ -490,7 +503,17 @@ export type MachineResetRunOptions = MachineResetOptions & {
  */
 async function stopStuckDesktop(pid: number, deps: MachineResetDeps, receipt: MachineResetReceipt): Promise<void> {
   const entry = deps.listProcesses().find((candidate) => candidate.pid === pid);
-  if (!entry || !isAdeProcessCommand(entry.command)) {
+  if (!entry) {
+    // Alive but not listed: the process list itself failed (`ps` or
+    // PowerShell broke), so nothing here can say what the pid is. Changing
+    // anything while an unknown process may still be ADE is the one unsafe
+    // choice.
+    if (deps.pidAlive(pid)) {
+      throw new Error(`ADE (process ${pid}) may still be running and the process list could not be read, so the reset stopped before changing anything. Quit ADE, then run the reset again.`);
+    }
+    return;
+  }
+  if (!isAdeProcessCommand(entry.command)) {
     receipt.notes.push(`Process ${pid} is no longer ADE; it was left alone.`);
     return;
   }

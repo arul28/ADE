@@ -14,6 +14,8 @@ export type MachineResetLane = {
   name: string;
   path: string;
   branch: string | null;
+  /** The commit the lane's HEAD points at, as `git worktree list` gave it. */
+  head?: string;
   /** Files with changes that are not committed (tracked or untracked). */
   uncommittedFiles: number;
   /** Commits on the lane's branch (or its detached HEAD) that no remote has. */

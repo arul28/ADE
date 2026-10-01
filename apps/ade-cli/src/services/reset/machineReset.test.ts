@@ -202,6 +202,24 @@ describe("machine reset engine", () => {
     expect(git(project, ["merge-base", "--is-ancestor", orphan, "ade-rescue/detached-lane"]).status).toBe(0);
   });
 
+  it("rescues a detached lane's commits when its folder is already gone", async () => {
+    const { project, deps } = buildFixture();
+    const lane = path.join(project, ".ade", "worktrees", "gone-lane");
+    git(project, ["worktree", "add", "-q", "--detach", lane, "main"]);
+    fs.writeFileSync(path.join(lane, "orphan.txt"), "orphan\n");
+    git(lane, ["add", "orphan.txt"]);
+    git(lane, ["commit", "-qm", "orphan commit"]);
+    const orphan = git(lane, ["rev-parse", "HEAD"]).stdout.trim();
+    fs.rmSync(lane, { recursive: true, force: true });
+
+    await executeMachineReset(
+      { rescue: "commit", receiptPath: path.join(deps.tmpDir, "receipt.json") },
+      deps,
+    );
+
+    expect(git(project, ["merge-base", "--is-ancestor", orphan, "ade-rescue/gone-lane"]).status).toBe(0);
+  });
+
   it("treats a lane git cannot read as having work, and keeps its branch", async () => {
     const { project, deps } = buildFixture();
     // Git reports worktrees by real path (`/private/var/...` on macOS).
@@ -252,7 +270,13 @@ describe("machine reset engine", () => {
     expect(fs.existsSync(path.join(project, ".ade", "worktrees"))).toBe(false);
   });
 
-  it("stops a desktop that does not quit, and refuses to start when it survives", async () => {
+  it("stops a desktop that does not quit, and never starts while it may still run", async () => {
+    // A clock that moves only when the engine sleeps, so the 30 s and 5 s
+    // waits pass at once.
+    const fakeClock = (): Pick<MachineResetDeps, "now" | "sleep"> => {
+      let at = Date.parse("2026-10-01T00:00:00Z");
+      return { now: () => new Date(at), sleep: async (ms) => { at += ms; } };
+    };
     const desktopPid = 4242;
     const desktop = { pid: desktopPid, ppid: 1, command: "/Applications/ADE.app/Contents/MacOS/ADE" };
 
@@ -263,6 +287,7 @@ describe("machine reset engine", () => {
       { rescue: "none", waitPid: desktopPid, receiptPath: path.join(stoppable.deps.tmpDir, "receipt.json") },
       {
         ...stoppable.deps,
+        ...fakeClock(),
         listProcesses: () => (alive ? [desktop] : []),
         pidAlive: (pid) => pid === desktopPid && alive,
         kill: (pid, signal) => {
@@ -280,12 +305,28 @@ describe("machine reset engine", () => {
         { rescue: "none", waitPid: desktopPid, receiptPath: path.join(stuck.deps.tmpDir, "receipt.json") },
         {
           ...stuck.deps,
+          ...fakeClock(),
           listProcesses: () => [desktop],
           pidAlive: (pid) => pid === desktopPid,
         },
       ),
     ).rejects.toThrow(/would not quit/);
     expect(fs.existsSync(path.join(stuck.project, ".ade", "ade.db"))).toBe(true);
+
+    // Alive but missing from a process list that failed to read: unknown, so no change.
+    const unlisted = buildFixture();
+    await expect(
+      executeMachineReset(
+        { rescue: "none", waitPid: desktopPid, receiptPath: path.join(unlisted.deps.tmpDir, "receipt.json") },
+        {
+          ...unlisted.deps,
+          ...fakeClock(),
+          listProcesses: () => [],
+          pidAlive: (pid) => pid === desktopPid,
+        },
+      ),
+    ).rejects.toThrow(/could not be read/);
+    expect(fs.existsSync(path.join(unlisted.project, ".ade", "ade.db"))).toBe(true);
   });
 
   it("refuses a rescue folder inside a folder it removes, before changing anything", async () => {
