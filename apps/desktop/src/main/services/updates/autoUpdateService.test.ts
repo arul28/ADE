@@ -16,7 +16,7 @@ import {
   estimateUpdateRequiredBytes,
   isStaleHandoffError,
 } from "./autoUpdateErrors";
-import { runUpdateTransaction } from "./updateTransaction";
+import { runUpdateTransaction, UPDATE_TRANSACTION_FAILURE_COPY } from "./updateTransaction";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, type AutoUpdateSnapshot } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
@@ -2900,10 +2900,10 @@ describe("update transaction on the snapshot", () => {
 
     expect(service.getSnapshot().updateTransaction?.ok).toBe(false);
     expect(service.getSnapshot().updateTransaction?.failureMessage).toBe(
-      "Updated the app, but the background service didn't restart — click Repair.",
+      UPDATE_TRANSACTION_FAILURE_COPY.restart,
     );
     expect(seen.at(-1)?.failureMessage).toBe(
-      "Updated the app, but the background service didn't restart — click Repair.",
+      UPDATE_TRANSACTION_FAILURE_COPY.restart,
     );
 
     unsubscribe();

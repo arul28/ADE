@@ -1,4 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
+import { execFile } from "node:child_process";
+import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
+import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -4868,6 +4871,57 @@ export function registerIpc({
         event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
       },
     });
+  });
+
+  // The one place "Allow in the Background" can be switched back on. Apple's
+  // own opener first (it lands on the right pane on every macOS that has
+  // one); the settings URL is the fallback for a Mac where the bridge fails.
+  ipcMain.handle(IPC.recoveryOpenBackgroundSettings, async (): Promise<{ opened: boolean }> => {
+    if (process.platform !== "darwin") return { opened: false };
+    const openedViaServiceManagement = await new Promise<boolean>((resolve) => {
+      execFile(
+        "/usr/bin/osascript",
+        ["-l", "JavaScript", "-e", "ObjC.import('ServiceManagement'); $.SMAppService.openSystemSettingsLoginItems(); 'ok'"],
+        { timeout: 5_000 },
+        (error) => resolve(!error),
+      );
+    });
+    if (openedViaServiceManagement) return { opened: true };
+    try {
+      await shell.openExternal("x-apple.systempreferences:com.apple.LoginItems-Settings.extension");
+      return { opened: true };
+    } catch {
+      return { opened: false };
+    }
+  });
+
+  // The hard reset. The plan and the work both run in the CLI engine; this
+  // process only shows the plan, hands off, and gets out of the way.
+  ipcMain.handle(IPC.machineResetPlan, async (): Promise<MachineResetPlan> => {
+    return await planMachineResetFromDesktop(app.getVersion());
+  });
+
+  ipcMain.handle(IPC.machineResetStart, async (_event, arg: MachineResetOptions): Promise<{ started: boolean; error?: string }> => {
+    const rescue = arg?.rescue === "move" || arg?.rescue === "none" ? arg.rescue : "commit";
+    const rescueDir = typeof arg?.rescueDir === "string" && arg.rescueDir.trim() ? path.resolve(arg.rescueDir.trim()) : null;
+    const result = startMachineResetFromDesktop({ rescue, rescueDir }, app.getVersion());
+    if (!result.started) return { started: false, error: result.error };
+    // Long enough for this reply to reach the window. `exit`, not `quit`: a
+    // quit can be held open by "chats are still running" prompts, and the
+    // engine is waiting for this process to be gone.
+    setTimeout(() => app.exit(0), 600);
+    return { started: true };
+  });
+
+  ipcMain.handle(IPC.machineResetChooseRescueDir, async (event): Promise<string | null> => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options: Electron.OpenDialogOptions = {
+      title: "Where should ADE move the lane folders?",
+      buttonLabel: "Move lanes here",
+      properties: ["openDirectory", "createDirectory"],
+    };
+    const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    return picked.canceled ? null : (picked.filePaths[0] ?? null);
   });
 
   /**

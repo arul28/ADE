@@ -677,6 +677,15 @@ export type CliPlan =
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
   | { kind: "report-issue"; open: boolean; send: boolean }
+  | {
+    kind: "reset";
+    dryRun: boolean;
+    yes: boolean;
+    rescue: "none" | "commit" | "move";
+    rescueDir: string | null;
+    waitPid: number | null;
+    relaunch: string | null;
+  }
   | { kind: "triage"; agent: boolean; provider: TriageProviderName | null }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
@@ -998,6 +1007,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
+    $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -1122,6 +1132,40 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
 }
 
 export const HELP_BY_COMMAND: Record<string, string> = {
+  reset: `${ADE_BANNER}
+  ADE Reset
+
+  The hard reset. Removes everything ADE put on this computer: the background
+  service, every ADE process, ADE's data folder, the desktop app's settings and
+  caches, ADE's Keychain items, the entries ADE added to other tools, and the
+  ADE data and lane folders inside every project ADE was used on. Your code and
+  your repositories stay. The next launch of ADE is a first install.
+
+  It needs no running brain, so it works on a machine where nothing else does.
+
+    $ ade reset --all --dry-run           List everything the reset would remove
+    $ ade reset --all                     Reset; asks you to type RESET first
+    $ ade reset --all --yes               Reset without asking (scripts)
+
+  Flags:
+    --all                  Required. There is no partial reset.
+    --dry-run              Print the plan and change nothing.
+    --yes                  Skip the typed confirmation.
+    --rescue <mode>        What happens to lane work first:
+                             commit  commit unsaved changes on each lane's own
+                                     branch and keep the branch (default)
+                             move    move lane folders with git to --rescue-dir
+                             none    delete lanes with everything else
+    --rescue-dir <path>    Where --rescue move puts lane folders.
+    --wait-pid <pid>       Wait for this process to exit first (the desktop app).
+    --relaunch <app>       Open this app when the reset is done.
+    --text | --json        Output format (default JSON).
+
+  Notes:
+    macOS keeps its own record of whether ADE may run in the background. A
+    reset cannot clear it; if ADE is switched off under Login Items, turn it
+    back on after the reset.
+`,
   triage: `${ADE_BANNER}
   ADE Triage
 
@@ -17153,6 +17197,29 @@ function buildCliPlan(
       online: readFlag(args, ["--online"]),
     };
   }
+  if (primary === "reset") {
+    if (!readFlag(args, ["--all"])) {
+      throw new CliUsageError("ade reset needs --all. It removes everything ADE put on this computer; run `ade reset --all --dry-run` to see what that is.");
+    }
+    const rescueRaw = (readValue(args, ["--rescue"]) ?? "commit").trim().toLowerCase();
+    if (rescueRaw !== "commit" && rescueRaw !== "move" && rescueRaw !== "none") {
+      throw new CliUsageError("--rescue must be commit, move or none.");
+    }
+    const rescueDir = readValue(args, ["--rescue-dir"])?.trim() || null;
+    if (rescueRaw === "move" && !rescueDir) {
+      throw new CliUsageError("--rescue move needs --rescue-dir <path>.");
+    }
+    const waitPidRaw = readIntOption(args, ["--wait-pid"]);
+    return {
+      kind: "reset",
+      dryRun: readFlag(args, ["--dry-run"]),
+      yes: readFlag(args, ["--yes", "-y"]),
+      rescue: rescueRaw,
+      rescueDir: rescueDir ? path.resolve(rescueDir) : null,
+      waitPid: typeof waitPidRaw === "number" && waitPidRaw > 0 ? waitPidRaw : null,
+      relaunch: readValue(args, ["--relaunch"])?.trim() || null,
+    };
+  }
   if (primary === "report-issue") {
     return {
       kind: "report-issue",
@@ -23556,6 +23623,7 @@ async function runServe(
     const knownCodes = new Set<AdeRecoveryErrorCode>([
       "disk_full", "insufficient_headroom", "db_integrity", "migration_incomplete",
       "migration_unknown_state", "brain_not_installed", "brain_crash_looping",
+      "background_item_blocked", "brain_not_running",
       "socket_stale_no_owner", "socket_owned_by_other", "provider_thread_missing",
       "provider_resume_failed", "optional_mcp_failed", "continuity_reconstruction_required",
       "unknown",
@@ -29888,6 +29956,87 @@ function applySyncWebPairingFlags(
   return { outputSuffix, exitCode: null };
 }
 
+async function runResetCommand(
+  plan: Extract<CliPlan, { kind: "reset" }>,
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const {
+    defaultMachineResetDeps,
+    executeMachineReset,
+    formatMachineResetPlan,
+    formatMachineResetReceipt,
+    planMachineReset,
+  } = await import("./services/reset/machineReset");
+  const deps = defaultMachineResetDeps({
+    log: (line) => process.stderr.write(`ade reset: ${line}\n`),
+  });
+  if (plan.dryRun) {
+    const resetPlan = planMachineReset(deps);
+    return {
+      output: options.text ? formatMachineResetPlan(resetPlan) : formatOutput(resetPlan, options, undefined),
+      exitCode: 0,
+    };
+  }
+  // A run typed into an ADE terminal would be stopped with the brain, half
+  // way. The desktop's own handoff is detached and names itself with
+  // `--wait-pid`, so that one parent, and only it, is allowed.
+  {
+    const { findAdeAncestor } = await import("./services/reset/machineReset");
+    const ancestor = findAdeAncestor(deps, { allowPid: plan.waitPid });
+    if (ancestor) {
+      throw new CliUsageError(
+        "This terminal runs inside ADE, and the reset would stop it half-way. Run `ade reset --all` from a terminal outside ADE (for example Terminal.app), or use Settings → About → Reset ADE.",
+      );
+    }
+  }
+  if (!plan.yes) {
+    if (!process.stdin.isTTY) {
+      throw new CliUsageError("ade reset --all asks you to type RESET first. Run it in a terminal, or pass --yes.");
+    }
+    process.stderr.write(formatMachineResetPlan(planMachineReset(deps)));
+    const readline = await import("node:readline/promises");
+    const prompt = readline.createInterface({ input: process.stdin, output: process.stderr });
+    const answer = await prompt.question("\nThis removes everything above. Type RESET to continue: ");
+    prompt.close();
+    if (answer.trim() !== "RESET") return { output: "Reset cancelled. Nothing was changed.\n", exitCode: 1 };
+  }
+  // Reopen the app whatever happens: a reset handed off by the desktop runs
+  // after the app has quit, and one that stops early must not leave the
+  // person with no ADE on screen and no word of why.
+  let receipt: Awaited<ReturnType<typeof executeMachineReset>> | null = null;
+  let failure: unknown = null;
+  try {
+    receipt = await executeMachineReset(
+      { rescue: plan.rescue, rescueDir: plan.rescueDir, waitPid: plan.waitPid },
+      deps,
+    );
+  } catch (error) {
+    failure = error;
+    process.stderr.write(`ade reset: stopped before changing anything: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  if (plan.relaunch) {
+    try {
+      // This process runs the app binary as plain Node. Handed down, that
+      // setting would start the relaunched app as Node too, not as ADE.
+      const appEnv: NodeJS.ProcessEnv = { ...process.env };
+      for (const key of Object.keys(appEnv)) {
+        if (key === "ELECTRON_RUN_AS_NODE" || key === "NODE_PATH" || key.startsWith("ADE_")) delete appEnv[key];
+      }
+      const child = process.platform === "darwin"
+        ? spawn("open", ["-n", plan.relaunch], { detached: true, stdio: "ignore", env: appEnv })
+        : spawn(plan.relaunch, [], { detached: true, stdio: "ignore", windowsHide: false, env: appEnv });
+      child.unref();
+    } catch (error) {
+      process.stderr.write(`ade reset: could not reopen ${plan.relaunch}: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+  if (!receipt) throw failure instanceof Error ? failure : new Error(String(failure));
+  return {
+    output: options.text ? formatMachineResetReceipt(receipt) : formatOutput(receipt, options, undefined),
+    exitCode: receipt.ok ? 0 : 1,
+  };
+}
+
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
@@ -29912,6 +30061,11 @@ async function runCli(
       output: `${JSON.stringify(resolveRemoteProjectIcon(plan.rootPath))}\n`,
       exitCode: 0,
     };
+  }
+  if (plan.kind === "reset") {
+    // Ahead of everything that could start a brain, seed skills or write into
+    // ADE's folders: the reset is about to remove all of them.
+    return await runResetCommand(plan, parsed.options);
   }
   if (plan.kind === "execute" && plan.laneCreationNudge) {
     const notice = detectUnmergedLaneCreateNudge(plan.laneCreationNudge);

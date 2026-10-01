@@ -113,6 +113,14 @@ export const IPC = {
   recoveryRepair: "ade.recovery.repair",
   /** Main → renderer: one repair step as it finishes, so a long repair reads live. */
   recoveryRepairStep: "ade.recovery.repairStep",
+  /** Open System Settings at Login Items, where "Allow in the Background" lives (macOS). */
+  recoveryOpenBackgroundSettings: "ade.recovery.openBackgroundSettings",
+  /** The hard reset's plan: every project, lane and machine item it would remove. */
+  machineResetPlan: "ade.machineReset.plan",
+  /** Hand the hard reset to a detached engine process, then quit. */
+  machineResetStart: "ade.machineReset.start",
+  /** Folder picker for the "move lanes out" rescue option. */
+  machineResetChooseRescueDir: "ade.machineReset.chooseRescueDir",
   /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
   diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */

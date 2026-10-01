@@ -522,6 +522,8 @@ ade report-issue --send                           # also upload the same redacte
 ade triage                                        # build a redacted context.md + repair playbook and hand them to your first installed agent CLI
 ade triage --provider codex                       # pick the agent CLI (claude | codex | cursor-agent | opencode | droid)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
+ade reset --all --dry-run --text                  # list everything a hard reset would remove, changing nothing
+ade reset --all                                   # remove everything ADE put on this computer (asks you to type RESET first)
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set

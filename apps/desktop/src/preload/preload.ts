@@ -80,6 +80,7 @@ import {
   type WorkToolShowRequest,
 } from "../shared/types/workToolShow";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -4746,6 +4747,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.recoveryDiagnose, { projectRoot }),
     repair: (projectRoot: string): Promise<ProjectRepairReport> =>
       ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
+    openBackgroundSettings: (): Promise<{ opened: boolean }> =>
+      ipcRenderer.invoke(IPC.recoveryOpenBackgroundSettings),
     onRepairStep: (
       cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
     ): (() => void) => {
@@ -4756,6 +4759,12 @@ const adeBridge = {
       ipcRenderer.on(IPC.recoveryRepairStep, listener);
       return () => ipcRenderer.removeListener(IPC.recoveryRepairStep, listener);
     },
+  },
+  machineReset: {
+    plan: (): Promise<MachineResetPlan> => ipcRenderer.invoke(IPC.machineResetPlan),
+    start: (options: MachineResetOptions): Promise<{ started: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.machineResetStart, options),
+    chooseRescueDir: (): Promise<string | null> => ipcRenderer.invoke(IPC.machineResetChooseRescueDir),
   },
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>

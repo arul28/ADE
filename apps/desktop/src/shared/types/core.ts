@@ -85,6 +85,8 @@ export type LocalRuntimeStatus = {
      * brain from here, so recurring installs cannot keep it "starting" forever.
      */
     attemptStartedAt?: string | null;
+    /** The installer's typed failure stage, when the last install failed. */
+    failureStep?: string | null;
   };
   serviceHealth: {
     state: LocalRuntimeServiceHealthState;
@@ -93,8 +95,29 @@ export type LocalRuntimeStatus = {
     path: string | null;
     message: string | null;
     checkedAt: string | null;
+    /**
+     * macOS Background Items verdict for the launch agent, read only while it
+     * is installed but not running. `requires_approval` means "Allow in the
+     * Background" is off for ADE and launchd will never start the brain.
+     */
+    backgroundItem?: "enabled" | "requires_approval" | "not_registered" | "not_found" | "unknown" | null;
   };
 };
+
+/**
+ * Whether macOS's "Allow in the Background" switch is what stops the brain.
+ * The live Background Items reading wins over the last install's failure:
+ * that failure stays recorded until the next install, and a person who has
+ * since turned the switch on must not keep reading "blocked".
+ */
+export function isBackgroundItemBlocked(
+  status: Pick<LocalRuntimeStatus, "serviceInstall" | "serviceHealth">,
+): boolean {
+  const live = status.serviceHealth.backgroundItem;
+  if (live === "requires_approval") return true;
+  if (live === "enabled") return false;
+  return status.serviceInstall.failureStep === "background_item_blocked";
+}
 
 export type AppInfo = {
   appVersion: string;

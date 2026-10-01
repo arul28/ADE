@@ -321,6 +321,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "About",
   },
+  {
+    id: "general.reset",
+    label: "Reset ADE",
+    keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
+    tab: "general",
+    anchor: "about.reset",
+    scope: "machine",
+    web: "hidden",
+    group: "About",
+  },
 
   // ── Appearance ───────────────────────────────────────────────────────────
   {
