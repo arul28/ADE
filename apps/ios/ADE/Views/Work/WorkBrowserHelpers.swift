@@ -187,6 +187,8 @@ func workFilteredSessions(
   archivedSessionIds: Set<String>,
   selectedStatus: WorkSessionStatusFilter,
   selectedLaneId: String,
+  /// Machine filter ids (`workMachineFilterId`). Empty means every machine.
+  machineFilter: Set<String> = [],
   searchText: String,
   outputSearchBySessionId: [String: String] = [:],
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
@@ -243,6 +245,9 @@ func workFilteredSessions(
         guard isArchived else { return false }
       }
 
+      if !machineFilter.isEmpty && !machineFilter.contains(workMachineFilterId(laneId: session.laneId)) {
+        return false
+      }
       if selectedLaneId != "all" && session.laneId != selectedLaneId {
         return false
       }
@@ -393,7 +398,7 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
     if status == .waiting {
       return "Nothing is snoozed, and no lane PR is sitting on CI or waiting for a review."
     }
-    return "Change the lane or state filters to widen the Work list."
+    return "Change the lane, status, or machine filters to widen the Work list."
   }
   switch status {
   case .archived:

@@ -430,7 +430,7 @@ describe("SessionListPane", () => {
 
   it("hides an in-flight handoff when its running status is filtered out", () => {
     renderPane({
-      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["settled"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
       handoffJobs: [
         {
@@ -1390,12 +1390,33 @@ describe("SessionListPane", () => {
       seedForeignMachine();
 
       renderPane({
-        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false },
+        workSessionFilters: { status: [], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
         setWorkSessionFilters: vi.fn(),
       });
 
       expect(screen.queryByText("Elsewhere Lane")).toBeNull();
       expect(screen.queryByText("Chat on the other machine")).toBeNull();
+    });
+
+    it("keeps a foreign machine's matching rows when a machine chip hides every local row", () => {
+      seedForeignMachine();
+
+      renderPane({
+        // The hook already removed every local row for the chip; the pane's own
+        // buckets are what is left.
+        runningFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workSessionFilters: {
+          status: [], tool: [], hasPr: false, dirtyLane: false, machine: ["target-studio"],
+        },
+        setWorkSessionFilters: vi.fn(),
+      });
+
+      // The local roster is empty under the chip, but the other machine's chat
+      // still matches, so this must NOT read as a filtered-out empty list.
+      expect(screen.queryByText("No sessions match")).toBeNull();
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
     });
 
     it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
@@ -2202,7 +2223,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
       settledFiltered: [],
       allSessionsUnfiltered: [],
       sessionsGroupedByLane: new Map(),
-      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["awaiting-input"], tool: ["claude"], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters,
     });
 
@@ -2214,7 +2235,7 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
 
   it("marks the funnel as active when only chips are set", () => {
     renderTwoLanes({
-      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false },
+      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
       setWorkSessionFilters: vi.fn(),
     });
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();

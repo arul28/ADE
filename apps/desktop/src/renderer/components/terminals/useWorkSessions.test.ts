@@ -3945,7 +3945,7 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
   });
 
   it("narrows the buckets and the by-lane grouping but not the exported filtered list", async () => {
-    seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false } });
+    seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const { result } = await renderWithSessions([runningSession, snoozedSession]);
 
     // The lane/search result is what pane counts describe, so it must stay whole.
@@ -3961,7 +3961,7 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     // The trap: if the snooze-deadline effect read the chip-filtered list, a
     // snoozed row hidden by a chip would stop scheduling its own wake and never
     // come back. `filtered` still holds it, so the timer still arms.
-    seedViewState({ workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false } });
+    seedViewState({ workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const setTimeoutSpy = vi.spyOn(window, "setTimeout");
     const { result } = await renderWithSessions([runningSession, snoozedSession]);
 

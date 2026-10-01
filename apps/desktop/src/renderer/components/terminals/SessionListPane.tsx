@@ -17,7 +17,8 @@ import {
   type SessionFilingBucket,
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
   requestCrossMachineLanesForMachine,
@@ -39,7 +40,12 @@ import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
-import { LaneCombobox } from "./LaneCombobox";
+import {
+  UNAVAILABLE_MACHINE_NAME,
+  WORK_FILTER_FOCUS_CLASS,
+  WorkFilterPanel,
+  type WorkFilterMachineOption,
+} from "./WorkFilterPanel";
 import {
   orderWorkLanes,
   workLaneTier,
@@ -55,16 +61,11 @@ import {
 import { useWorkLaneReorder } from "./useWorkLaneReorder";
 import {
   EMPTY_WORK_SESSION_FILTERS,
-  WORK_STATUS_FILTERS,
-  WORK_TOOL_FAMILIES,
   activeWorkSessionFilterLabels,
   isWorkSessionFilterEmpty,
   matchesWorkSessionFilters,
-  workStatusFilterLabel,
   workToolFamily,
-  workToolFamilyLabel,
   type WorkSessionFilters,
-  type WorkToolFamily,
 } from "./workSessionFilters";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
 import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
@@ -124,10 +125,6 @@ const EMPTY_FOREIGN_SESSION_ROWS: ReadonlyMap<string, CrossMachineLaneRow> = new
 const EMPTY_BOARD_WAITING_REASONS: ReadonlyMap<string, WorkBoardWaitingReason> = new Map();
 /** Upper bound on the foreign-row snooze-expiry timer. */
 const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
-// Filter pills wrap at their natural width: the list sits in a 240–440px
-// sidebar, and fixed grid cells cut labels like "Running" to "Run…".
-const FILTER_OPTION_GRID_CLASS = "flex min-w-0 flex-1 flex-wrap gap-0.5";
-const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 max-w-full truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 /**
  * One button idiom, top and bottom of the column: no border, no fill, no accent
  * outline — just a muted glyph that picks up a surface on hover, exactly like
@@ -1238,24 +1235,27 @@ export const SessionListPane = React.memo(function SessionListPane({
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
   const [filterOpen, setFilterOpen] = useState(false);
+  // The tab's own machine owns the local roster; every other machine that
+  // reports this repo contributes union rows. Those are the machine choices.
+  const activeMachineId = machineIdForBinding(projectBinding);
+  const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
+    const others = Object.values(crossMachineEntries)
+      .filter((entry) => entry.machineId !== activeMachineId)
+      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: entry.online }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return [
+      {
+        id: activeMachineId,
+        name: machineNameForBinding(projectBinding),
+        online: crossMachineEntries[activeMachineId]?.online ?? true,
+      },
+      ...others,
+    ];
+  }, [activeMachineId, crossMachineEntries, projectBinding]);
+  const localMachineFilteredOut = workSessionFilters.machine.length > 0
+    && !workSessionFilters.machine.includes(activeMachineId);
 
-  /** Toggle one value inside an OR-ed chip axis. */
-  const toggleStatusFilter = useCallback((value: WorkSessionFilters["status"][number]) => {
-    setWorkSessionFilters?.((prev) => {
-      const status = prev.status.includes(value)
-        ? prev.status.filter((entry) => entry !== value)
-        : [...prev.status, value];
-      return { ...prev, status };
-    });
-  }, [setWorkSessionFilters]);
-  const toggleToolFilter = useCallback((value: WorkSessionFilters["tool"][number]) => {
-    setWorkSessionFilters?.((prev) => {
-      const tool = prev.tool.includes(value)
-        ? prev.tool.filter((entry) => entry !== value)
-        : [...prev.tool, value];
-      return { ...prev, tool };
-    });
-  }, [setWorkSessionFilters]);
   const filteredHandoffJobs = useMemo(() => {
     const filtered = handoffJobs.filter((job) => {
       // Once the real session this job is creating is visible in the list, the
@@ -1265,6 +1265,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         return false;
       }
       if (laneFilterActive && job.laneId !== normalizedFilterLaneId) return false;
+      if (localMachineFilteredOut) return false;
       if (!handoffLaunchMatchesQuery(job, q)) return false;
       // A pending handoff is work in flight, so it belongs to the Running chip
       // and its target tool family. Apply lane-scoped chips too so placeholders
@@ -1288,6 +1289,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     handoffJobs,
     laneFilterActive,
     lanes,
+    localMachineFilteredOut,
     normalizedFilterLaneId,
     prsByLaneId,
     q,
@@ -1562,6 +1564,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
+              machineId: row.machineId,
               effectiveFilingBuckets,
             });
           })
@@ -3620,6 +3623,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               className={cn(
                 SIDEBAR_BARE_BUTTON_CLASS,
                 "ade-session-list-toolbar-filter relative h-6 w-6 shrink-0 justify-center",
+                WORK_FILTER_FOCUS_CLASS,
                 (filterOpen || laneFilterActive) && "bg-white/[0.04] text-fg",
               )}
               onClick={() => setFilterOpen(!filterOpen)}
@@ -3656,151 +3660,25 @@ export const SessionListPane = React.memo(function SessionListPane({
           </SmartTooltip>
         </div>
 
-        {/* Expandable filter panel */}
         {filterOpen ? (
-          <div className="ade-chat-drawer-glass mx-2 mt-1.5 mb-1.5 space-y-1.5 p-2">
-            <div className="flex items-start gap-1">
-              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Group</span>
-              <div className={FILTER_OPTION_GRID_CLASS}>
-                {([
-                  { key: "by-lane" as const, label: "Lane" },
-                  { key: "all-lanes-by-status" as const, label: "Status" },
-                  { key: "by-time" as const, label: "Time" },
-                ] as const).map((opt) => (
-                  <SmartTooltip
-                    key={opt.key}
-                    content={{
-                      label: opt.label,
-                      description:
-                        opt.key === "by-lane"
-                          ? "Group sessions by the lane they belong to."
-                          : opt.key === "all-lanes-by-status"
-                            ? "Group by status: running, your move, ended, or settled."
-                            : "Group by when sessions were started.",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className={FILTER_OPTION_BUTTON_CLASS}
-                      data-active={sessionListOrganization === opt.key ? "true" : undefined}
-                      style={{
-                        color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
-                      }}
-                      onClick={() => setSessionListOrganization(opt.key)}
-                    >
-                      {opt.label}
-                    </button>
-                  </SmartTooltip>
-                ))}
-              </div>
-            </div>
-            {setWorkLaneSortMode && isByLane ? (
-              <div className="flex items-start gap-1">
-                <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Sort</span>
-                <div className={FILTER_OPTION_GRID_CLASS}>
-                  {WORK_LANE_SORT_MODES.map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={FILTER_OPTION_BUTTON_CLASS}
-                      data-active={workLaneSortMode === mode ? "true" : undefined}
-                      style={{
-                        color: workLaneSortMode === mode ? "var(--color-fg)" : "var(--color-muted-fg)",
-                      }}
-                      onClick={() => setWorkLaneSortMode(mode)}
-                    >
-                      {WORK_LANE_SORT_LABELS[mode]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {/* Chip axes: OR within a row, AND across rows. */}
-            {setWorkSessionFilters ? (
-              <>
-                <div className="flex items-start gap-1">
-                  <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Status</span>
-                  <div className={FILTER_OPTION_GRID_CLASS}>
-                    {WORK_STATUS_FILTERS.map((bucket) => {
-                      const active = workSessionFilters.status.includes(bucket);
-                      return (
-                        <button
-                          key={bucket}
-                          type="button"
-                          aria-pressed={active}
-                          className={FILTER_OPTION_BUTTON_CLASS}
-                          data-active={active ? "true" : undefined}
-                          style={{ color: active ? "var(--color-fg)" : "var(--color-muted-fg)" }}
-                          onClick={() => toggleStatusFilter(bucket)}
-                        >
-                          {workStatusFilterLabel(bucket)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="flex items-start gap-1">
-                  <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Tool</span>
-                  <div className={FILTER_OPTION_GRID_CLASS}>
-                    {WORK_TOOL_FAMILIES.map((family: WorkToolFamily) => {
-                      const active = workSessionFilters.tool.includes(family);
-                      return (
-                        <button
-                          key={family}
-                          type="button"
-                          aria-pressed={active}
-                          className={FILTER_OPTION_BUTTON_CLASS}
-                          data-active={active ? "true" : undefined}
-                          style={{ color: active ? "var(--color-fg)" : "var(--color-muted-fg)" }}
-                          onClick={() => toggleToolFilter(family)}
-                        >
-                          {workToolFamilyLabel(family)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            ) : null}
-            <div className="flex items-start gap-1">
-              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Lane</span>
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                {setWorkSessionFilters ? (
-                  <div className={FILTER_OPTION_GRID_CLASS}>
-                    {([
-                      { key: "hasPr" as const, label: "Has PR" },
-                      { key: "dirtyLane" as const, label: "Dirty" },
-                    ]).map((opt) => {
-                      const active = workSessionFilters[opt.key];
-                      return (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          aria-pressed={active}
-                          className={FILTER_OPTION_BUTTON_CLASS}
-                          data-active={active ? "true" : undefined}
-                          style={{ color: active ? "var(--color-fg)" : "var(--color-muted-fg)" }}
-                          onClick={() => setWorkSessionFilters((prev) => ({
-                            ...prev,
-                            [opt.key]: !prev[opt.key],
-                          }))}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <LaneCombobox
-                  lanes={orderedLanes}
-                  value={filterLaneId}
-                  onChange={setFilterLaneId}
-                  showAllOption
-                  fullWidth
-                />
-              </div>
-            </div>
-          </div>
+          <WorkFilterPanel
+            organization={sessionListOrganization}
+            onOrganizationChange={setSessionListOrganization}
+            sortMode={setWorkLaneSortMode && isByLane ? workLaneSortMode : undefined}
+            sortModes={WORK_LANE_SORT_MODES}
+            sortLabels={WORK_LANE_SORT_LABELS}
+            onSortModeChange={setWorkLaneSortMode}
+            filters={workSessionFilters}
+            onFiltersChange={setWorkSessionFilters}
+            machines={machineFilterOptions}
+            lanes={orderedLanes}
+            laneId={filterLaneId}
+            onLaneIdChange={setFilterLaneId}
+            onClearAll={() => {
+              setWorkSessionFilters?.(EMPTY_WORK_SESSION_FILTERS);
+              setFilterLaneId("all");
+            }}
+          />
         ) : null}
 
         {selectedCount > 0 ? (
@@ -3890,15 +3768,19 @@ export const SessionListPane = React.memo(function SessionListPane({
       >
         {boardReplacesList ? (
           boardElement
-        ) : !hasAnySessions && chipFiltersActive ? (
+        ) : !hasAnySessions && !hasForeignSessions && chipFiltersActive ? (
           // Chip filters persist across restarts, so an empty list has to say
           // WHY it is empty — otherwise a filter left on last week reads as
-          // "all my work is gone".
+          // "all my work is gone". Another machine's matching rows still count:
+          // a Machine filter often hides every local row on purpose.
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Funnel size={16} weight="regular" className="mb-2 text-muted-fg/25" />
             <div className="text-[11px] font-medium text-fg/70">No sessions match</div>
             <div className="mt-1 max-w-[190px] text-[10px] leading-relaxed text-muted-fg/45">
-              {activeWorkSessionFilterLabels(workSessionFilters).join(" · ")}
+              {activeWorkSessionFilterLabels(
+                workSessionFilters,
+                (machineId) => machineFilterOptions.find((machine) => machine.id === machineId)?.name ?? UNAVAILABLE_MACHINE_NAME,
+              ).join(" · ")}
             </div>
             <button
               type="button"

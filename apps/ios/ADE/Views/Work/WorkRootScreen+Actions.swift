@@ -97,6 +97,7 @@ extension WorkRootListScreen {
     )
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
+    let machineFilterSnapshot = workParseMachineFilter(machineFilterStorage)
     let searchTextSnapshot = searchText
     let outputSearchBySessionId = workSessionOutputSearchIndexBySessionId(
       buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
@@ -120,6 +121,7 @@ extension WorkRootListScreen {
         archivedSessionIds: archivedSessionIdsSnapshot,
         selectedStatus: selectedStatusSnapshot,
         selectedLaneId: selectedLaneIdSnapshot,
+        machineFilter: machineFilterSnapshot,
         searchText: searchTextSnapshot,
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
@@ -827,6 +829,7 @@ extension WorkRootListScreen {
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+    machineFilterStorage = ""
     sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
 
     collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(

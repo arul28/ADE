@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -1961,6 +1962,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    */
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
+    const activeMachineId = machineIdForBinding(projectBinding);
+    // A pending-launch stand-in for a chat whose lane lives on another machine
+    // is listed in this active-binding roster (that machine's slice does not
+    // have its chat yet), so the machine filter must judge it by its OWN
+    // binding — otherwise selecting the foreign machine hides it and selecting
+    // this machine wrongly shows it. Once the real row lands it appears in the
+    // pane's foreign rows, which the pane filters by the same machine id.
+    const launchMachineIdBySessionId = new Map<string, string>();
+    for (const source of chatLaunchRowSources) {
+      const sessionId = source.snapshot.sessionId;
+      if (!sessionId || !source.binding || source.bindingKey === activeChatLaunchBindingKey) continue;
+      launchMachineIdBySessionId.set(sessionId, machineIdForBinding(source.binding));
+    }
     const ctx = {
       nowMs: Date.now(),
       // Union answer on purpose: the chip asks "does this lane have a PR at
@@ -1968,10 +1982,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // use the machine-scoped lookups instead — see `lanePrsForMachine`.
       laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
+      // This roster is the tab's own machine; other machines filter in the pane.
+      machineId: activeMachineId,
       effectiveFilingBuckets,
     };
-    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
-  }, [effectiveFilingBuckets, filtered, workSessionFilters, prsByLaneId, laneStatusById]);
+    return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, {
+      ...ctx,
+      machineId: launchMachineIdBySessionId.get(session.id) ?? activeMachineId,
+    }));
+  }, [
+    activeChatLaunchBindingKey,
+    chatLaunchRowSources,
+    effectiveFilingBuckets,
+    filtered,
+    workSessionFilters,
+    prsByLaneId,
+    laneStatusById,
+    projectBinding,
+  ]);
 
   const {
     runningFiltered,

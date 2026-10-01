@@ -5,112 +5,160 @@ import AVKit
 // The session row card itself (`WorkSessionRow`, its leaf views and the preview-line
 // helpers) lives in `WorkSessionRowCard.swift`; this file keeps the surrounding list chrome.
 
-/// Expanded filter panel under the Work header: status, group-by and lane
-/// chips, plus a Clear affordance while any filter or search is applied. Search
-/// itself and the chip that toggles this panel live in `WorkRootHeader`.
+/// Expanded filter panel under the Work header, laid out like the desktop
+/// panel: the one-of-many Group choice is a segmented control, and the filters
+/// below the rule are rows of chips with a fixed label column. Search itself and
+/// the chip that toggles this panel live in `WorkRootHeader`.
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
   @Binding var selectedStatus: WorkSessionStatusFilter
   @Binding var organization: WorkSessionOrganization
   @Binding var filterOpen: Bool
+  /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
+  var machineFilter: Binding<String> = .constant("")
+  var machineOptions: [WorkMachineFilterOption] = []
   let lanes: [LaneSummary]
   let onClear: () -> Void
 
+  private var selectedMachines: Set<String> { workParseMachineFilter(machineFilter.wrappedValue) }
+
+  /// The choices plus any filtered machine that has since left, so a saved
+  /// filter never hides rows without a chip to turn it off.
+  private var visibleMachineOptions: [WorkMachineFilterOption] {
+    let known = Set(machineOptions.map(\.id))
+    let stale = selectedMachines.subtracting(known).sorted().map {
+      WorkMachineFilterOption(id: $0, name: "Unavailable machine", isLive: false)
+    }
+    return machineOptions + stale
+  }
+
+  private var activeFilterCount: Int {
+    (selectedStatus != .all ? 1 : 0)
+      + (selectedLaneId != "all" ? 1 : 0)
+      + selectedMachines.count
+  }
+
   private var hasActiveFilters: Bool {
-    selectedStatus != .all
-      || selectedLaneId != "all"
+    activeFilterCount > 0
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var selectedLaneName: String {
+    guard selectedLaneId != "all" else { return "All lanes" }
+    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if hasActiveFilters {
+      if hasActiveFilters && !filterOpen {
         HStack(spacing: 6) {
           Spacer(minLength: 0)
-          Button("Clear") {
-            withAnimation(.snappy(duration: 0.18)) {
-              onClear()
-            }
-          }
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .buttonStyle(.plain)
-          .accessibilityLabel("Clear Work filters")
+          clearButton
         }
       }
 
       if filterOpen {
-        VStack(alignment: .leading, spacing: 10) {
-          Text("Status")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .textCase(.uppercase)
-            .tracking(0.5)
-
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-              ForEach(WorkSessionStatusFilter.allCases) { status in
-                WorkFilterChip(
-                  title: status.title,
-                  selected: selectedStatus == status,
-                  tint: statusFilterTint(status)
-                ) {
-                  withAnimation(.snappy(duration: 0.18)) {
-                    selectedStatus = status
-                  }
-                }
+        VStack(alignment: .leading, spacing: 12) {
+          filterRow("Group") {
+            Picker("Group", selection: $organization.animation(.snappy(duration: 0.18))) {
+              ForEach(WorkSessionOrganization.allCases) { option in
+                Text(option.title).tag(option)
               }
             }
-            .padding(.vertical, 1)
+            .pickerStyle(.segmented)
+            .labelsHidden()
           }
 
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Group")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .textCase(.uppercase)
-              .tracking(0.5)
+          Rectangle()
+            .fill(ADEColor.glassBorder)
+            .frame(height: 0.5)
+            .padding(.horizontal, -12)
+
+          filterRow("Status") {
             ScrollView(.horizontal, showsIndicators: false) {
               HStack(spacing: 6) {
-              ForEach(WorkSessionOrganization.allCases) { option in
-                WorkFilterChip(
-                  title: option.title,
-                  selected: organization == option,
-                  tint: ADEColor.accent
-                ) {
-                  withAnimation(.snappy(duration: 0.18)) {
-                    organization = option
+                ForEach(WorkSessionStatusFilter.allCases) { status in
+                  WorkFilterChip(
+                    title: status.title,
+                    selected: selectedStatus == status,
+                    tint: statusFilterTint(status),
+                    dot: status == .all ? nil : statusFilterTint(status)
+                  ) {
+                    withAnimation(.snappy(duration: 0.18)) {
+                      selectedStatus = status
+                    }
                   }
                 }
               }
+              .padding(.vertical, 1)
             }
-            }
+            .workChipRowFade()
+          }
 
-            Text("Lane")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .textCase(.uppercase)
-              .tracking(0.5)
-            ScrollView(.horizontal, showsIndicators: false) {
+          if visibleMachineOptions.count > 1 {
+            filterRow("Machine") {
+              ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                  WorkFilterChip(title: "All", selected: selectedMachines.isEmpty, tint: ADEColor.accent) {
+                    withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
+                  }
+                  ForEach(visibleMachineOptions) { machine in
+                    WorkFilterChip(
+                      title: machine.name,
+                      selected: selectedMachines.contains(machine.id),
+                      tint: ADEColor.accent,
+                      systemImage: "desktopcomputer",
+                      dot: machine.isLive ? ADEColor.success : ADEColor.textMuted.opacity(0.5)
+                    ) {
+                      withAnimation(.snappy(duration: 0.18)) { toggleMachine(machine.id) }
+                    }
+                    .accessibilityLabel(machine.isLive ? machine.name : "\(machine.name), offline")
+                  }
+                }
+                .padding(.vertical, 1)
+              }
+              .workChipRowFade()
+            }
+          }
+
+          filterRow("Lane") {
+            Menu {
+              Picker("Lane", selection: $selectedLaneId) {
+                Text("All lanes").tag("all")
+                ForEach(lanes) { lane in
+                  Text(lane.name).tag(lane.id)
+                }
+              }
+            } label: {
               HStack(spacing: 6) {
-                WorkFilterChip(
-                  title: "All lanes",
-                  selected: selectedLaneId == "all",
-                  tint: ADEColor.accent
-                ) {
-                  selectedLaneId = "all"
-                }
-              ForEach(lanes) { lane in
-                WorkFilterChip(
-                  title: lane.name,
-                  selected: selectedLaneId == lane.id,
-                  tint: ADEColor.accent
-                ) {
-                  selectedLaneId = lane.id
-                }
+                Image(systemName: "arrow.triangle.branch")
+                  .font(.system(size: 11, weight: .semibold))
+                  .foregroundStyle(ADEColor.textMuted)
+                Text(selectedLaneName)
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(ADEColor.textPrimary)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                  .font(.system(size: 9, weight: .semibold))
+                  .foregroundStyle(ADEColor.textMuted)
               }
-              }
+              .padding(.horizontal, 10)
+              .frame(height: 30)
+              .frame(maxWidth: .infinity)
+              .background(ADEColor.surfaceBackground.opacity(0.6), in: Capsule(style: .continuous))
+              .overlay(Capsule(style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
+              .contentShape(Capsule(style: .continuous))
+            }
+            .accessibilityLabel("Lane filter, \(selectedLaneName)")
+          }
+
+          if hasActiveFilters {
+            HStack {
+              Spacer(minLength: 0)
+              clearButton
             }
           }
         }
@@ -123,6 +171,41 @@ struct WorkFiltersSection: View {
         .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
+  }
+
+  private var clearButton: some View {
+    Button {
+      withAnimation(.snappy(duration: 0.18)) {
+        onClear()
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Image(systemName: "xmark")
+          .font(.system(size: 9, weight: .bold))
+        Text(activeFilterCount > 0 ? "Clear \(activeFilterCount)" : "Clear")
+      }
+    }
+    .font(.caption.weight(.semibold))
+    .foregroundStyle(ADEColor.accent)
+    .buttonStyle(.plain)
+    .accessibilityLabel("Clear Work filters")
+  }
+
+  private func filterRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+    HStack(alignment: .center, spacing: 8) {
+      Text(label)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 58, alignment: .leading)
+      content()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private func toggleMachine(_ id: String) {
+    var ids = selectedMachines
+    if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
+    machineFilter.wrappedValue = workSerializeMachineFilter(ids)
   }
 
   /// The chip accents, mapped one-for-one onto the desktop board's column
@@ -147,29 +230,62 @@ struct WorkFiltersSection: View {
   }
 }
 
+private extension View {
+  /// Fades the trailing edge of a sideways-scrolling chip row, so a cut-off
+  /// chip reads as "more this way" instead of a clipped label.
+  func workChipRowFade() -> some View {
+    mask(
+      LinearGradient(
+        stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
+        startPoint: .leading,
+        endPoint: .trailing
+      )
+    )
+  }
+}
+
 struct WorkFilterChip: View {
   let title: String
   let selected: Bool
   let tint: Color
+  var systemImage: String? = nil
+  /// Small leading status dot (or a machine's online dot on its icon).
+  var dot: Color? = nil
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(selected ? tint : ADEColor.textSecondary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-          selected ? tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5),
-          in: Capsule(style: .continuous)
-        )
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(selected ? tint.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.6)
-        )
+      HStack(spacing: 5) {
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 10, weight: .semibold))
+            .overlay(alignment: .bottomTrailing) {
+              if let dot {
+                Circle().fill(dot).frame(width: 5, height: 5).offset(x: 2, y: 1)
+              }
+            }
+        } else if let dot {
+          Circle().fill(dot).frame(width: 6, height: 6)
+        }
+        Text(title)
+          .lineLimit(1)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .frame(height: 28)
+      .background(
+        selected ? tint.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5),
+        in: Capsule(style: .continuous)
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(selected ? tint.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.6)
+      )
+      .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
+    .accessibilityAddTraits(selected ? .isSelected : [])
   }
 }
 

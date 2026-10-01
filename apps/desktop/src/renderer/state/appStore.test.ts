@@ -1271,7 +1271,7 @@ describe("appStore", () => {
         workLaneSortMode: "manual",
         workLaneOrder: ["lane-2", "lane-1"],
         workSessionFilters: {
-          status: ["awaiting-input"], tool: ["claude"], hasPr: true, dirtyLane: false,
+          status: ["awaiting-input"], tool: ["claude"], hasPr: true, dirtyLane: false, machine: [],
         },
       });
 
@@ -1286,7 +1286,7 @@ describe("appStore", () => {
       expect(other.workPinnedLaneIds).toEqual([]);
       expect(other.workLaneSortMode).toBe("created");
       expect(other.workSessionFilters).toEqual({
-        status: [], tool: [], hasPr: false, dirtyLane: false,
+        status: [], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
@@ -1312,7 +1312,7 @@ describe("appStore", () => {
       expect(restored.workPinnedLaneIds).toEqual([]);
       expect(restored.workLaneOrder).toEqual([]);
       expect(restored.workSessionFilters).toEqual({
-        status: [], tool: [], hasPr: false, dirtyLane: false,
+        status: [], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
@@ -1388,7 +1388,7 @@ describe("appStore", () => {
       expect(restored.workLaneOrder).toEqual(["lane-2", "lane-1"]);
       expect(restored.workLaneSortMode).toBe("created");
       expect(restored.workSessionFilters).toEqual({
-        status: ["running"], tool: [], hasPr: false, dirtyLane: false,
+        status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [],
       });
     });
 
