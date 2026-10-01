@@ -326,7 +326,7 @@ export function inventoryLanes(deps: MachineResetDeps, rootPath: string, adeDir:
   if (!lines) return [];
   const realAdeDir = realPath(adeDir);
   const lanes: MachineResetLane[] = [];
-  let current: { path: string; branch: string | null } | null = null;
+  let current: { path: string; branch: string | null; head: string | null } | null = null;
   const flush = () => {
     if (!current) return;
     if (isInside(realPath(current.path), realAdeDir)) {
@@ -336,11 +336,13 @@ export function inventoryLanes(deps: MachineResetDeps, rootPath: string, adeDir:
       // A branch lane: commits no remote has. A detached HEAD (a lane in the
       // middle of a rebase, say): commits no branch, tag or remote holds —
       // removing the worktree would lose them with its HEAD.
+      // Counted from the main repository with the HEAD id git listed, so a
+      // lane whose folder is already gone is still measured.
       const count = current.branch
         ? deps.run("git", ["-C", rootPath, "rev-list", "--count", `refs/heads/${current.branch}`, "--not", "--remotes"])
-        : present
-          ? deps.run("git", ["-C", worktreePath, "rev-list", "--count", "HEAD", "--not", "--branches", "--remotes", "--tags"])
-          : { status: 0, stdout: "0", stderr: "" };
+        : current.head
+          ? deps.run("git", ["-C", rootPath, "rev-list", "--count", current.head, "--not", "--branches", "--remotes", "--tags"])
+          : { status: 1, stdout: "", stderr: "no HEAD listed" };
       const unpushed = count.status === 0 ? Number(count.stdout.trim()) : Number.NaN;
       const workUnknown = status === null || !Number.isFinite(unpushed);
       lanes.push({
@@ -357,7 +359,9 @@ export function inventoryLanes(deps: MachineResetDeps, rootPath: string, adeDir:
   for (const line of lines) {
     if (line.startsWith("worktree ")) {
       flush();
-      current = { path: line.slice("worktree ".length), branch: null };
+      current = { path: line.slice("worktree ".length), branch: null, head: null };
+    } else if (line.startsWith("HEAD ") && current) {
+      current.head = line.slice("HEAD ".length).trim();
     } else if (line.startsWith("branch ") && current) {
       current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
     }
