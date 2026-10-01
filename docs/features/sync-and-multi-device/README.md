@@ -3079,6 +3079,21 @@ phone flow:
    client switched projects is adopted in place and never disconnects.
    If the switch fails, the previous host is restored so the listener
    is never left unowned.
+5. A project that follows another machine's brain cannot be hosted here.
+   `prepareProjectConnection` asks the target's sync service
+   (`getHostBlocker`) before it answers, and replies `ok: false` with the
+   reason. Completion passes `requireHostRole`, so `switchSyncHost` refuses
+   such a target before it deactivates the current host. Without this
+   check, the old host released the machine-wide lease, the target never
+   took it, and every connected client dropped until the switch timed out.
+
+The saved viewer connection (`sync-peer-draft.json`) is in the machine-wide
+pairing directory, but joining another brain is a choice about one project
+database. The draft records the `projectSiteId` of the project that made it,
+and every other project ignores it. A draft written before that tag applies
+only to a project whose cluster record already names another machine's
+brain. A project with no cluster record (for example, one first opened from
+the phone) becomes its own host instead of a viewer of an unrelated machine.
 
 The hosted browser uses the same machine catalog and project-switch protocol
 behind a different shell. Its permanent Hub chooses a machine, while the top

@@ -415,6 +415,17 @@ const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
 const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+
+/**
+ * This project follows another machine's sync brain, so this machine cannot
+ * host it. `saved_connection` is an explicit join; `cluster_record` is a
+ * replicated cluster row that names a brain seen in the last few minutes.
+ */
+export type SyncHostBlocker = {
+  reason: "saved_connection" | "cluster_record";
+  host: string | null;
+  port: number | null;
+};
 const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = [
   "ECONNREFUSED",
   "ETIMEDOUT",
@@ -665,18 +676,43 @@ export function createSyncService(args: SyncServiceArgs) {
     writeTextAtomic(tokenPath, `${token.trim()}\n`);
   };
 
+  // The draft file lives in the machine-wide pairing directory, but joining
+  // another brain is a decision about ONE project database. The draft records
+  // the site id of the project that made it, and every other project ignores
+  // it. A draft from before that tag applies only to a project whose cluster
+  // record already names another machine's brain: a project that never joined
+  // anything (no record, or a record naming this machine) must not be turned
+  // into a viewer of a machine it has never seen.
+  const projectSiteId = deviceRegistryService.getLocalSiteId();
+
+  const savedDraftAppliesToProject = (raw: unknown): boolean => {
+    const owner = (raw as { projectSiteId?: unknown } | null)?.projectSiteId;
+    if (typeof owner === "string" && owner.trim()) {
+      return owner.trim() === projectSiteId;
+    }
+    const cluster = deviceRegistryService.getClusterState();
+    return cluster != null
+      && cluster.brainDeviceId !== deviceRegistryService.getLocalDeviceId();
+  };
+
+  const readSavedDraftFile = (): unknown => {
+    if (!fs.existsSync(draftPath)) return null;
+    return safeJsonParse(fs.readFileSync(draftPath, "utf8"), null);
+  };
+
   const readSavedDraft = (): SyncDesktopConnectionDraft | null => {
     if (forceHostRole) return null;
-    if (!fs.existsSync(draftPath)) return null;
-    const token = readToken();
-    return sanitizeDraft(
-      safeJsonParse(fs.readFileSync(draftPath, "utf8"), null),
-      token,
-    );
+    const raw = readSavedDraftFile();
+    if (!raw || !savedDraftAppliesToProject(raw)) return null;
+    return sanitizeDraft(raw, readToken());
   };
 
   const writeSavedDraft = (draft: SyncDesktopConnectionDraft | null): void => {
     if (!draft) {
+      // Clearing is scoped the same way: a project that does not own the
+      // machine's draft must not delete the connection another project made.
+      const raw = readSavedDraftFile();
+      if (raw && !savedDraftAppliesToProject(raw)) return;
       try {
         fs.rmSync(draftPath, { force: true });
       } catch {
@@ -694,6 +730,7 @@ export function createSyncService(args: SyncServiceArgs) {
           authKind: draft.authKind ?? "bootstrap",
           pairedDeviceId: draft.pairedDeviceId ?? null,
           lastRemoteDbVersion: draft.lastRemoteDbVersion ?? 0,
+          projectSiteId,
         },
         null,
         2,
@@ -1191,6 +1228,34 @@ export function createSyncService(args: SyncServiceArgs) {
     return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
   };
 
+  /**
+   * Why this project would follow another machine instead of hosting, or null
+   * when enabling the host makes this machine its sync host. It mirrors the
+   * decision `refreshRoleState` makes, without dialing anything, so a caller
+   * can refuse a project switch BEFORE the current host is torn down.
+   */
+  const describeHostBlocker = (): SyncHostBlocker | null => {
+    if (forceHostRole) return null;
+    const savedDraft = readSavedDraft();
+    if (savedDraft) {
+      return {
+        reason: "saved_connection",
+        host: savedDraft.host,
+        port: savedDraft.port,
+      };
+    }
+    const cluster = deviceRegistryService.getClusterState();
+    const localDeviceId = deviceRegistryService.getLocalDeviceId();
+    if (!cluster || isStaleNonLocalBrainCluster(cluster, localDeviceId)) return null;
+    if (cluster.brainDeviceId === localDeviceId) return null;
+    const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
+    return {
+      reason: "cluster_record",
+      host: brain ? buildAddressCandidates(brain)[0]?.host ?? null : null,
+      port: brain?.lastPort ?? null,
+    };
+  };
+
   const refreshRoleState = (): Promise<void> => {
     if (disposed) return Promise.resolve();
     refreshQueued = true;
@@ -1614,6 +1679,10 @@ export function createSyncService(args: SyncServiceArgs) {
       hostDiscoveryEnabled = enabled;
       hostService?.setDiscoveryEnabled(enabled);
       void emitStatus();
+    },
+
+    getHostBlocker(): SyncHostBlocker | null {
+      return describeHostBlocker();
     },
 
     async setHostStartupEnabled(enabled: boolean): Promise<void> {
