@@ -476,6 +476,9 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
   AgentChatCancelScheduledWorkResult,
+  AgentChatArmUpdateResumeResult,
+  AgentChatInterruptedChatRef,
+  AgentChatListInterruptedChatsResult,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
   AgentChatUsageLimitResume,
@@ -813,10 +816,16 @@ import {
   AUTO_RESUME_PROMPT,
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
+  isPendingUpdateResumeScheduledWork,
   isUsageLimitChatError,
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
   stripHostOnlyChatMetadata,
+  UPDATE_RESUME_FIRE_DELAY_MS,
+  UPDATE_RESUME_PROMPT,
+  UPDATE_RESUME_REASON,
+  UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+  updateResumeScheduleId,
   usageLimitParkedUntilMirror,
 } from "../../../shared/chatAutoResume";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
@@ -38391,6 +38400,9 @@ export function createAgentChatService(args: {
     // needs to undo the swap).
     if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
       void autoResume.cancelForSession(sessionId, "user_message");
+      // Same intervening event for the update arm: typing into a chat the user
+      // asked ADE to resume means the resume is no longer what they want.
+      void cancelPendingUpdateResume(sessionId);
     }
     const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
     const uuid = randomUUID();
@@ -49078,6 +49090,9 @@ export function createAgentChatService(args: {
     // and leave the chat with a live limit, no state and no schedule.
     if (!metadata?.scheduledWake && metadata?.usageLimitResume !== "manual") {
       void autoResume.cancelForSession(sessionId, "user_message");
+      // Same intervening event for the update arm: typing into a chat the user
+      // asked ADE to resume means the resume is no longer what they want.
+      void cancelPendingUpdateResume(sessionId);
     }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
@@ -53671,6 +53686,117 @@ export function createAgentChatService(args: {
       item: toScheduledWorkItem(schedule),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
+  };
+
+  /**
+   * Chats on this project runtime whose live turn an ADE restart would stop.
+   *
+   * The predicate mirrors `hostSleepChipTracker`'s: a turn is live when the
+   * session is open and either has an active turn id or is marked active. A
+   * chat that is only waiting on the user is not running, so it never appears.
+   */
+  const liveTurnChatRefs = (): AgentChatInterruptedChatRef[] => {
+    const chats: AgentChatInterruptedChatRef[] = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      if (activeTurnIdForManaged(managed) === null && managed.session.status !== "active") continue;
+      const row = sessionService.get(managed.session.id);
+      const title = String(row?.title ?? "").trim();
+      chats.push({
+        sessionId: managed.session.id,
+        title: title || "Untitled chat",
+        laneId: managed.session.laneId ?? null,
+      });
+    }
+    return chats;
+  };
+
+  const listInterruptedChats = async (): Promise<AgentChatListInterruptedChatsResult> => {
+    await scheduledWorkReady;
+    return { chats: liveTurnChatRefs() };
+  };
+
+  /**
+   * Arms one durable "continue" row per chat the update will interrupt.
+   *
+   * The set is re-read here rather than trusted from the dialog: a chat that
+   * finished its turn between the dialog opening and the confirm must not get
+   * a resume it no longer needs.
+   */
+  const armUpdateResume = async (): Promise<AgentChatArmUpdateResumeResult> => {
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) return { chats: [] };
+    const createdAt = Date.now();
+    const armed: AgentChatInterruptedChatRef[] = [];
+    for (const chat of liveTurnChatRefs()) {
+      const row = sessionService.get(chat.sessionId);
+      if (!row || !isSchedulableAgentSession(row)) continue;
+      try {
+        await scheduledWorkScheduler.upsert({
+          id: updateResumeScheduleId(chat.sessionId),
+          sessionId: chat.sessionId,
+          kind: "wakeup",
+          prompt: UPDATE_RESUME_PROMPT,
+          reason: UPDATE_RESUME_REASON,
+          fireAt: createdAt + UPDATE_RESUME_FIRE_DELAY_MS,
+          createdAt,
+          status: "scheduled",
+          lateFlag: false,
+          durable: true,
+          source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+        });
+        armed.push(chat);
+      } catch (error) {
+        logger.warn("agent_chat.update_resume_arm_failed", {
+          sessionId: chat.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { chats: armed };
+  };
+
+  /**
+   * Drops this chat's pending update-resume row, and nothing else.
+   *
+   * A user typing into the chat is the intervening event that makes the arm
+   * wrong: the agent is already being told what to do. Scoped to the
+   * `update_restart` tag so a usage-limit resume or a user-scheduled wakeup is
+   * never collateral.
+   */
+  const cancelPendingUpdateResume = async (sessionId: string): Promise<void> => {
+    try {
+      await scheduledWorkReady;
+      const pending = (scheduledWorkScheduler?.list(sessionId) ?? [])
+        .find(isPendingUpdateResumeScheduledWork);
+      if (pending) await scheduledWorkScheduler?.cancel(pending.id);
+    } catch (error) {
+      logger.warn("agent_chat.update_resume_cancel_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * Drops every pending update-resume row on this runtime.
+   *
+   * The arm happens in the moment before the install handoff, so a handoff that
+   * then aborts (a failed preflight, a rejected native call) would leave rows
+   * armed for a restart that never happens. The rollback path calls this to
+   * undo the arm; a user touch still cancels per chat.
+   */
+  const cancelUpdateResume = async (): Promise<void> => {
+    try {
+      await scheduledWorkReady;
+      const pending = (scheduledWorkScheduler?.list() ?? [])
+        .filter(isPendingUpdateResumeScheduledWork);
+      for (const row of pending) await scheduledWorkScheduler?.cancel(row.id);
+    } catch (error) {
+      logger.warn("agent_chat.update_resume_cancel_all_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const listScheduledWork = async ({
@@ -60712,6 +60838,9 @@ export function createAgentChatService(args: {
     listMentionSuggestions,
     messageSession,
     createScheduledWork,
+    listInterruptedChats,
+    armUpdateResume,
+    cancelUpdateResume,
     listScheduledWork,
     getScheduledWorkState,
     cancelScheduledWork,

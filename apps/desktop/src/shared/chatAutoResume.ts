@@ -223,6 +223,75 @@ export function sessionAutoContinueAtUsageLimit(
 export const HOST_ONLY_CHAT_METADATA_KEYS = ["scheduledWake", "usageLimitResume"] as const;
 
 /**
+ * Resume after an ADE update restart.
+ *
+ * A different trigger on the same mechanism. The user accepted an update while
+ * chats had a live turn, so ADE arms one durable row per chat that asks the
+ * agent to continue the interrupted task once the brain is back.
+ *
+ * This is a SEPARATE source tag, not `auto_resume_limit`. The usage-limit sweep
+ * also clears that chat's usage-limit resume state and posts its own notices,
+ * and an update must not touch any of that. Two tags keep the two sweeps from
+ * reaching into each other's chat state.
+ */
+export const UPDATE_RESUME_SCHEDULED_WORK_SOURCE = "update_restart";
+
+/**
+ * Fires on the restart boundary. The turn did not fail; the machine went away
+ * under it, so the agent needs the reason as much as the instruction.
+ */
+export const UPDATE_RESUME_PROMPT =
+  "ADE restarted to install an update, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
+
+export const UPDATE_RESUME_REASON = "Resume after ADE update";
+
+/**
+ * How long after arming the resume may fire.
+ *
+ * The row is armed in the moment before ADE quits to install, so a fire time of
+ * "now" would let the still-running brain deliver the continue prompt during the
+ * quit. Pushing it a few seconds out clears the quit window; on the relaunch the
+ * row is already due, and the same delay gives the fresh brain time to load its
+ * sessions before the scheduler evaluates it.
+ */
+export const UPDATE_RESUME_FIRE_DELAY_MS = 12_000;
+
+const UPDATE_RESUME_ID_PREFIX = "update-resume:";
+
+/**
+ * Deterministic per-chat id. A repeat arm for the same chat upserts this row
+ * instead of stacking a second resume.
+ */
+export function updateResumeScheduleId(sessionId: string): string {
+  return `${UPDATE_RESUME_ID_PREFIX}${sessionId}`;
+}
+
+/**
+ * Recognises an update-resume row. The tag is authoritative; the id prefix is
+ * the fallback, kept in step with `isAutoResumeScheduledWork` for the same
+ * reason (rows persisted before the tag existed).
+ */
+export function isUpdateResumeScheduledWork(
+  schedule: { id?: string | null; source?: string | null } | null | undefined,
+): boolean {
+  if (!schedule) return false;
+  if (schedule.source === UPDATE_RESUME_SCHEDULED_WORK_SOURCE) return true;
+  return typeof schedule.id === "string" && schedule.id.startsWith(UPDATE_RESUME_ID_PREFIX);
+}
+
+/**
+ * An update-resume row that has not finished or been cancelled — the one the
+ * host cancels the moment the user touches the chat themselves.
+ */
+export function isPendingUpdateResumeScheduledWork(
+  schedule: { id?: string | null; source?: string | null; status?: string | null } | null | undefined,
+): boolean {
+  if (!isUpdateResumeScheduledWork(schedule)) return false;
+  const status = schedule?.status;
+  return status !== "done" && status !== "completed" && status !== "cancelled";
+}
+
+/**
  * Copies `metadata` without the host-only keys. Returns `undefined` when there
  * is nothing left to send, so call sites can spread the result without
  * inventing an empty metadata object for a message that had none.

@@ -169,6 +169,7 @@ export function AutoUpdateControl() {
   const githubReleaseUrl = snapshot.recentlyInstalled?.githubReleaseUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
   const installedReleaseNotes = releaseNotesForVersion(installedVersion);
+  const resumedChats = snapshot.recentlyInstalled?.resumedChats ?? [];
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
   const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
 
@@ -301,7 +302,7 @@ export function AutoUpdateControl() {
         title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
         tone="success"
         icon={<CheckCircle size={16} weight="fill" />}
-        size={installedReleaseNotes ? "md" : "sm"}
+        size={installedReleaseNotes || resumedChats.length > 0 ? "md" : "sm"}
         actions={[
           ...(releaseNotesUrl
             ? [
@@ -323,6 +324,20 @@ export function AutoUpdateControl() {
             : []),
         ]}
       >
+        {resumedChats.length > 0 ? (
+          <div style={{ marginBottom: installedReleaseNotes ? 12 : 0 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              {resumedChats.length === 1
+                ? "Resumed 1 chat"
+                : `Resumed ${resumedChats.length} chats`}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {resumedChats.map((chat) => (
+                <li key={chat.sessionId} style={{ marginBottom: 2 }}>{chat.title}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {installedReleaseNotes ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {installedReleaseNotes.summary ? (

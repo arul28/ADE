@@ -1,9 +1,40 @@
-import type { AutoUpdateSnapshot } from "../../../shared/types";
-import { confirmDialog } from "../ui/dialog/confirm";
+import { createElement } from "react";
+import type { AutoUpdateSnapshot, UpdateInterruptedChat } from "../../../shared/types";
+import { checkboxConfirmDialog, confirmDialog } from "../ui/dialog/confirm";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 
 function versionLabel(version: string | null): string {
   return version ? `v${version}` : "the latest update";
+}
+
+/**
+ * The chats a restart will interrupt, as a compact list. Project names only
+ * appear when the list spans more than one, so a single-project list stays
+ * quiet.
+ */
+function interruptedChatList(chats: UpdateInterruptedChat[]) {
+  const projectNames = new Set(chats.map((chat) => chat.projectName).filter(Boolean));
+  const showProject = projectNames.size > 1;
+  return createElement(
+    "div",
+    { style: { marginTop: 2 } },
+    createElement(
+      "div",
+      { style: { fontWeight: 600, marginBottom: 6, color: "var(--color-fg)" } },
+      chats.length === 1 ? "1 agent is running" : `${chats.length} agents are running`,
+    ),
+    createElement(
+      "ul",
+      { style: { margin: 0, paddingLeft: 18, display: "grid", gap: 3 } },
+      chats.map((chat) =>
+        createElement(
+          "li",
+          { key: chat.sessionId, style: { overflowWrap: "anywhere" } },
+          showProject ? `${chat.title} — ${chat.projectName}` : chat.title,
+        ),
+      ),
+    ),
+  );
 }
 
 /** Shared confirmation and install action for every manual update affordance. */
@@ -15,6 +46,7 @@ export async function requestDownloadedUpdateInstall(
     .then(() => window.ade.updateGetInstallImpact())
     .catch(() => null);
   const phones = impact?.connectedPhones ?? [];
+  const interruptedChats = impact?.interruptedChats ?? [];
   const title = `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`;
   const lines: string[] = [];
   if (phones.length === 1) {
@@ -31,18 +63,39 @@ export async function requestDownloadedUpdateInstall(
     "",
     "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
   );
-  const confirmed = await confirmDialog({ title, message: lines.join("\n"), confirmLabel: "Continue" });
+  const message = lines.join("\n");
+
+  const accepted = async (resumeChats: boolean): Promise<boolean> => {
+    captureUpdatePromptDecision(snapshot, "accepted");
+    onAccepted?.();
+    try {
+      return await window.ade.updateQuitAndInstall({ resumeChats });
+    } catch {
+      // The main process logs updater failures.
+      return false;
+    }
+  };
+
+  if (interruptedChats.length > 0) {
+    const result = await checkboxConfirmDialog({
+      title,
+      message,
+      children: interruptedChatList(interruptedChats),
+      checkboxLabel: "Resume these chats when ADE is back",
+      checkboxDefaultChecked: true,
+      confirmLabel: "Continue",
+    });
+    if (!result.confirmed) {
+      captureUpdatePromptDecision(snapshot, "deferred");
+      return false;
+    }
+    return await accepted(result.checked);
+  }
+
+  const confirmed = await confirmDialog({ title, message, confirmLabel: "Continue" });
   if (!confirmed) {
     captureUpdatePromptDecision(snapshot, "deferred");
     return false;
   }
-
-  captureUpdatePromptDecision(snapshot, "accepted");
-  onAccepted?.();
-  try {
-    return await window.ade.updateQuitAndInstall();
-  } catch {
-    // The main process logs updater failures.
-    return false;
-  }
+  return await accepted(false);
 }

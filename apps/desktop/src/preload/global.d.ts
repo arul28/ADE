@@ -4323,7 +4323,7 @@ declare global {
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;
       updateSetPreferences: (preferences: AutoUpdatePreferences) => Promise<AutoUpdatePreferences>;
       updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
-      updateQuitAndInstall: () => Promise<boolean>;
+      updateQuitAndInstall: (options?: { resumeChats?: boolean }) => Promise<boolean>;
       updateCancelAutoApply: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;

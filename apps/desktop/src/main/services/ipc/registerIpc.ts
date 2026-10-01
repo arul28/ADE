@@ -13043,18 +13043,21 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
     const provider = getCtx().updateInstallImpactProvider;
-    if (!provider) return { connectedPhones: [] };
+    if (!provider) return { connectedPhones: [], interruptedChats: [] };
     try {
       return await provider();
     } catch {
       // Best-effort probe: a failed impact query must never block the update UI.
-      return { connectedPhones: [] };
+      return { connectedPhones: [], interruptedChats: [] };
     }
   });
 
-  ipcMain.handle(IPC.updateQuitAndInstall, () => {
-    return getCtx().autoUpdateService?.quitAndInstall() ?? false;
-  });
+  ipcMain.handle(
+    IPC.updateQuitAndInstall,
+    (_event, args?: { resumeChats?: boolean }) => {
+      return getCtx().autoUpdateService?.quitAndInstall(args?.resumeChats === true) ?? false;
+    },
+  );
 
   ipcMain.handle(IPC.updateCancelAutoApply, () => {
     return getCtx().autoUpdateService?.cancelAutoApply() ?? false;

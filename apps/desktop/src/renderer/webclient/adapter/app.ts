@@ -306,9 +306,9 @@ export const webUpdateMethods = {
     return preferences;
   },
   async updateGetInstallImpact(): Promise<UpdateInstallImpact> {
-    return { connectedPhones: [] };
+    return { connectedPhones: [], interruptedChats: [] };
   },
-  async updateQuitAndInstall() {
+  async updateQuitAndInstall(_options?: { resumeChats?: boolean }) {
     return false;
   },
   async updateCancelAutoApply() {

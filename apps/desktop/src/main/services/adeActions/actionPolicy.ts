@@ -647,6 +647,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createScheduledWork",
     "listScheduledWork",
     "getScheduledWorkState",
+    // Update-install resume: the desktop's main process arms and cancels these
+    // over the runtime action channel before/after quitting to install.
+    "listInterruptedChats",
+    "armUpdateResume",
+    "cancelUpdateResume",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",

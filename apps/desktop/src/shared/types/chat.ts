@@ -4545,8 +4545,12 @@ export type AgentChatScheduledWorkItem = {
   /**
    * Provenance for rows ADE armed itself rather than the user or the agent.
    * Additive and optional: older clients simply ignore it.
+   *
+   * `auto_resume_limit` — armed when a turn died at a provider usage limit.
+   * `update_restart` — armed when the user accepted an ADE update while the
+   * chat had a live turn. See `shared/chatAutoResume.ts`.
    */
-  source?: "auto_resume_limit";
+  source?: "auto_resume_limit" | "update_restart";
 };
 
 export type AgentChatListScheduledWorkArgs = {
@@ -4588,6 +4592,26 @@ export type AgentChatCreateScheduledWorkResult = {
   item: AgentChatScheduledWorkItem;
   /** IANA timezone of the ADE brain that resolved the schedule. */
   timeZone: string;
+};
+
+/** One chat whose live turn an ADE restart would stop mid-flight. */
+export type AgentChatInterruptedChatRef = {
+  sessionId: string;
+  title: string;
+  /** The chat's lane, so the post-update notice can jump straight to it. */
+  laneId: string | null;
+};
+
+export type AgentChatListInterruptedChatsResult = {
+  chats: AgentChatInterruptedChatRef[];
+};
+
+export type AgentChatArmUpdateResumeResult = {
+  /**
+   * The chats actually armed, re-read at arm time. A chat that finished its
+   * turn while the confirmation dialog was open is absent here.
+   */
+  chats: AgentChatInterruptedChatRef[];
 };
 
 export type AgentChatCancelScheduledWorkArgs = {

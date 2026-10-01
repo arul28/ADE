@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, Wrench } from "@phosphor-icons/react";
+import { ArrowsClockwise, Bell, Wrench } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { useBrainRepair, type BrainRepair } from "../../hooks/useBrainRepair";
@@ -184,7 +184,9 @@ export function AutoUpdateBanner() {
       ? {
           id: "auto-update-ready",
           tone: "accent",
-          icon: <ArrowsClockwise size={13} weight="bold" />,
+          // A notice mark on the left; the install action on the right keeps
+          // its arrow so the button still reads as "restart and install".
+          icon: <Bell size={13} weight="bold" />,
           title: `Update v${updateVersion} is ready to install`,
           actions: [{
             label: installRequested ? "Restarting…" : "Restart and install",
