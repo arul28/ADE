@@ -2418,6 +2418,13 @@ final class DatabaseService {
       // Every column the select names must be proven before it is spliced in.
       && tableHasColumn(tableName: "pull_request_chat_sessions", columnName: "project_id")
 
+    // Unlink tombstones arrived with stack-link offers; an older host has no
+    // table, and every PR then falls back exactly as it did before.
+    let hasChatSessionDismissals = hasTable(named: "pull_request_chat_session_dismissals")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "pr_id")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "session_id")
+      && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "project_id")
+
     let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
       && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")
       && tableHasColumn(tableName: "integration_proposals", columnName: "workflow_display_state")
@@ -2467,6 +2474,17 @@ final class DatabaseService {
              null as chat_session_ids,
       """
 
+    let dismissedSessionSelect = hasChatSessionDismissals
+      ? """
+             (select group_concat(pcs.session_id, char(10))
+                from pull_request_chat_session_dismissals pcs
+               where pcs.project_id = pr.project_id
+                 and pcs.pr_id = pr.id),
+      """
+      : """
+             null as dismissed_chat_session_ids,
+      """
+
     let prGroupJoins = hasPrGroupContext
       ? """
         left join pr_group_members gm
@@ -2513,6 +2531,7 @@ final class DatabaseService {
     \(chatSessionSelect)
     \(prGroupSelect)
     \(integrationSelect)
+    \(dismissedSessionSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
         left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
@@ -2608,6 +2627,11 @@ final class DatabaseService {
         checksReason: stringValue(statement, index: 20),
         checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self),
         chatSessionIds: (stringValue(statement, index: 22)?
+          .split(separator: "\n")
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty })
+          .flatMap { $0.isEmpty ? nil : $0 },
+        dismissedChatSessionIds: (stringValue(statement, index: 31)?
           .split(separator: "\n")
           .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
           .filter { !$0.isEmpty })
@@ -2886,6 +2910,7 @@ final class DatabaseService {
       "pull_request_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
       try exec("""
@@ -3182,6 +3207,18 @@ final class DatabaseService {
     try exec("create index if not exists idx_pull_request_chat_sessions_session on pull_request_chat_sessions(project_id, session_id)")
     try exec("create index if not exists idx_pull_request_chat_sessions_lane on pull_request_chat_sessions(project_id, lane_id)")
     try exec("""
+      create table if not exists pull_request_chat_session_dismissals (
+        id text primary key,
+        project_id text not null,
+        pr_id text not null,
+        session_id text not null,
+        created_at text not null,
+        updated_at text not null
+      )
+    """)
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_pr on pull_request_chat_session_dismissals(project_id, pr_id)")
+    try exec("create index if not exists idx_pull_request_chat_session_dismissals_session on pull_request_chat_session_dismissals(project_id, session_id)")
+    try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,
         detail_json text,
@@ -3295,6 +3332,7 @@ final class DatabaseService {
       "pull_request_stack_snapshots",
       "pull_request_ai_summaries",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "pr_group_members",
     ]
 
@@ -3483,6 +3521,9 @@ final class DatabaseService {
     }
     if hasTable(named: "pull_request_chat_sessions") {
       _ = try execute("delete from pull_request_chat_sessions where session_id in (\(placeholders))", bind: bindSessionIds)
+    }
+    if hasTable(named: "pull_request_chat_session_dismissals") {
+      _ = try execute("delete from pull_request_chat_session_dismissals where session_id in (\(placeholders))", bind: bindSessionIds)
     }
     _ = try execute("delete from terminal_sessions where id in (\(placeholders))", bind: bindSessionIds)
     return retiredSessionIds.count

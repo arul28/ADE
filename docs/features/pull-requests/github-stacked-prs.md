@@ -147,6 +147,27 @@ Card actions navigate to the stack inspector, GitHub review surface, or owning
 agent. Rebase, restructure, and unstack never execute directly from transcript
 history.
 
+## Chat linking
+
+Work chats own PRs through hybrid edges (`pull_request_chat_sessions`) plus
+unlink tombstones (`pull_request_chat_session_dismissals`). `selectPrsForChat`
+is edges-first: a chat that linked any PRs shows only those (including
+cross-lane GitHub stack members); a zero-edge chat may display unedged
+current-branch PRs with no silent write; an unlinked PR never revives as
+fallback. Merge and rebase are not chat-peek actions.
+
+The desktop Work peek is a peek: an `#N` header or a chip switcher, status, and
+a stack-offer banner. When the selected PR belongs to a GitHub stack, the
+banner lists unclaimed siblings and offers **Link stack**; **Not now** hides it
+for that chat+stack. Agents silent-expand the next layer onto parent chats that
+already linked the base instead of emitting an offer. A chat that created a
+layer edges that PR.
+
+When every member of a GitHub stack is merged, linked Work chats receive one
+stable `pr_stack_land` card (`pr-stack-land:{owner}:{repo}:{stackNumber}`) so
+later layers update the same episode. The card fans out to every linked chat,
+including chats on another lane.
+
 ## Agent behavior
 
 Bundled ADE skills teach agents to:
