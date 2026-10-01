@@ -138,6 +138,17 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       }
       return { windowId: null };
     },
+    // The hosted client has no OS windows, so a tab can only be reordered.
+    async projectTabDragStart() {
+      return { windowId: null };
+    },
+    projectTabDragMove() {},
+    async projectTabDragEnd() {
+      return { merged: false, targetWindowId: null };
+    },
+    onAdoptProjectTab() {
+      return () => {};
+    },
     async closeWindow() {
       if (typeof window !== "undefined") window.close();
       return { closed: false };

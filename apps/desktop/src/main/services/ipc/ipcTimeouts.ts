@@ -140,6 +140,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeAddProject:
     case IPC.remoteRuntimeBrowseDirectories:
     case IPC.remoteRuntimeGetProjectDetail:
+    // Includes the time the user spends in the native file dialog.
+    case IPC.remoteRuntimeChooseProjectIcon:
+    case IPC.remoteRuntimeRemoveProjectIcon:
     case IPC.remoteRuntimeGetDefaultParentDir:
     case IPC.remoteRuntimeCreateProject:
     case IPC.remoteRuntimeCloneProject:

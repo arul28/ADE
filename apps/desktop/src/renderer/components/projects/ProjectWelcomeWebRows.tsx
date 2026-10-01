@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   Folder,
@@ -14,6 +14,7 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
+import { projectIconListeners } from "./ProjectIconDialog";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { abbreviateHome } from "../../lib/pathUtils";
 import type {
@@ -98,6 +99,18 @@ function RecentProjectIcon({
   onResolved?: (hasArtwork: boolean) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(null);
+  const [iconVersion, setIconVersion] = useState(0);
+
+  // A new icon chosen from a project menu shows here at once.
+  useEffect(() => {
+    const listener = (changedRoot: string) => {
+      if (changedRoot === rootPath) setIconVersion((version) => version + 1);
+    };
+    projectIconListeners.add(listener);
+    return () => {
+      projectIconListeners.delete(listener);
+    };
+  }, [rootPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,7 +126,7 @@ function RecentProjectIcon({
     return () => {
       cancelled = true;
     };
-  }, [rootPath]);
+  }, [rootPath, iconVersion]);
 
   useEffect(() => {
     onResolved?.(Boolean(icon?.dataUrl));
@@ -307,6 +320,7 @@ export function RecentProjectRow({
   onTogglePin,
   onForget,
   onMerge,
+  onContextMenu,
   primary,
   locations,
   onSelectMachine,
@@ -323,6 +337,8 @@ export function RecentProjectRow({
   onTogglePin: () => void;
   onForget: () => void;
   onMerge?: () => void;
+  /** Opens the project's right-click menu. */
+  onContextMenu?: (event: ReactMouseEvent) => void;
   primary: RecentProjectLocation;
   locations: readonly RecentProjectLocation[];
   onSelectMachine?: (location: RecentProjectLocation) => void;
@@ -367,6 +383,7 @@ export function RecentProjectRow({
         if ((event.target as HTMLElement).closest("button")) return;
         onOpen();
       }}
+      onContextMenu={onContextMenu}
     >
       <button
         type="button"

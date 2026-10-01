@@ -6,20 +6,42 @@ import React, {
   useState,
 } from "react";
 import {
+  AppWindow,
+  ArrowLineRight,
   ArrowSquareOut,
   ChatCircleDots,
   CircleNotch,
+  Copy,
   DesktopTower,
+  DownloadSimple,
   Folder,
   FolderOpen,
+  ImageSquare,
   Plus,
   Plugs,
+  PushPin,
+  PushPinSlash,
+  TextT,
   Trash,
   UploadSimple,
   WarningCircle,
   X,
+  XSquare,
 } from "@phosphor-icons/react";
-import { Dialog as AppDialog } from "../ui/dialog/Dialog";
+import { resolveOpenInTarget } from "../../../shared/editorTargets";
+import {
+  ProjectContextMenu,
+  type ProjectContextMenuState,
+  type ProjectMenuEntry,
+} from "../projects/ProjectContextMenu";
+import { CloneLocallyDialog, type CloneLocallyTarget } from "../projects/CloneLocallyDialog";
+import {
+  ProjectIconDialog,
+  getProjectIconFromCache,
+  projectIconListeners,
+  setProjectIconCache,
+  type ProjectIconDialogTarget,
+} from "../projects/ProjectIconDialog";
 
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
@@ -31,7 +53,6 @@ import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { cn } from "../ui/cn";
-import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
@@ -44,10 +65,20 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  recentProjectLocationKey,
+  remoteBindingFromRecent,
   resolveProjectTabFallback,
   type ProjectTabGroup,
+  type ProjectTabMachine,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
+import {
+  PROJECT_TAB_KEY_ATTR,
+  cssToScreenScale,
+  useProjectTabDrag,
+  type ScreenPoint,
+  type TearOffGrab,
+} from "./useProjectTabDrag";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -97,17 +128,6 @@ const WebConnectionsChip = React.lazy(() =>
   })),
 );
 
-const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
-const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
-const ADE_PROJECT_TAB_DROP_HANDLED_PREFIX =
-  "ade.projectTabDropHandled.v1:";
-const ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS = 5_000;
-
-// Bounded LRU so we don't accumulate icons for every project ever opened in
-// long-lived sessions. 24 entries keeps the working set hot for typical usage
-// (current project + a few recents in the tab list) without unbounded growth.
-const PROJECT_ICON_CACHE_MAX = 24;
-const projectIconCache = new Map<string, ProjectIcon>();
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
@@ -119,46 +139,6 @@ let recentProjectsCacheSource:
   | (() => Promise<RecentProjectSummary[]>)
   | null = null;
 type RemoteProjectTab = Extract<OpenProjectBinding, { kind: "remote" }>;
-
-function projectTabDropMarkerKey(
-  sourceWindowId: number | null,
-  rootPath: string,
-): string {
-  return `${ADE_PROJECT_TAB_DROP_HANDLED_PREFIX}${sourceWindowId ?? "unknown"}:${encodeURIComponent(rootPath)}`;
-}
-
-function markProjectTabDropHandled(
-  sourceWindowId: number | null,
-  rootPath: string,
-): void {
-  try {
-    window.localStorage.setItem(
-      projectTabDropMarkerKey(sourceWindowId, rootPath),
-      String(Date.now()),
-    );
-  } catch {
-    // localStorage may be unavailable in tests or hardened browser contexts.
-  }
-}
-
-function consumeRecentProjectTabDropHandled(
-  sourceWindowId: number | null,
-  rootPath: string,
-): boolean {
-  const key = projectTabDropMarkerKey(sourceWindowId, rootPath);
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw == null) return false;
-    window.localStorage.removeItem(key);
-    const timestamp = Number(raw);
-    return (
-      Number.isFinite(timestamp) &&
-      Date.now() - timestamp < ADE_PROJECT_TAB_DROP_HANDLED_TTL_MS
-    );
-  } catch {
-    return false;
-  }
-}
 
 function rememberRecentProjects(rows: RecentProjectSummary[]): void {
   recentProjectsCache = { rows, fetchedAtMs: Date.now() };
@@ -193,26 +173,6 @@ function listRecentProjectsCached(options?: {
       recentProjectsInFlight = null;
     });
   return recentProjectsInFlight;
-}
-function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
-  const cached = projectIconCache.get(rootPath);
-  if (cached === undefined) return undefined;
-  // Touch on read to mark as most-recently-used.
-  projectIconCache.delete(rootPath);
-  projectIconCache.set(rootPath, cached);
-  return cached;
-}
-function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
-  if (projectIconCache.has(rootPath)) {
-    projectIconCache.delete(rootPath);
-  } else if (projectIconCache.size >= PROJECT_ICON_CACHE_MAX) {
-    // Map iteration order is insertion order, so the first key is the LRU.
-    const oldestKey = projectIconCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      projectIconCache.delete(oldestKey);
-    }
-  }
-  projectIconCache.set(rootPath, icon);
 }
 function isSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   if (!snapshot) return false;
@@ -522,15 +482,6 @@ function HeaderStatusMenu({
   );
 }
 
-function projectIconErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  const cleaned = raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
-  return cleaned || "Failed to update project icon.";
-}
-
 function fallbackProjectName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
 }
@@ -544,12 +495,19 @@ function confirmProjectTabRemoval(projectName: string): Promise<boolean> {
   });
 }
 
+function confirmProjectTabsRemoval(count: number): Promise<boolean> {
+  return confirmDialog({
+    title: `Close ${count} project tabs?`,
+    message: "This does not remove them from Recent Projects or delete any files on disk.",
+    confirmLabel: "Close",
+  });
+}
+
 function ProjectTabIcon({
   rootPath,
   isCurrent,
   animate,
   disabled,
-  readOnly = false,
   iconDataUrlOverride,
   onAccentColorChange,
 }: {
@@ -557,12 +515,11 @@ function ProjectTabIcon({
   isCurrent: boolean;
   animate: boolean;
   disabled: boolean;
-  readOnly?: boolean;
   /**
-   * When defined, the caller owns this tab's icon (remote tabs, whose files
-   * live on another machine). A non-empty data URL is rendered directly; null
-   * falls back to the folder glyph. Either way the local resolveIcon path is
-   * skipped, since it can only read the local filesystem.
+   * When defined, the caller owns this tab's icon (a project on another
+   * machine, whose icon the host resolves). A non-empty data URL is rendered
+   * directly; null falls back to the folder glyph. Either way the local
+   * resolveIcon path is skipped, since it can only read the local filesystem.
    */
   iconDataUrlOverride?: string | null;
   onAccentColorChange?: (rootPath: string, color: string | null) => void;
@@ -571,13 +528,7 @@ function ProjectTabIcon({
     disabled ? null : (getProjectIconFromCache(rootPath) ?? null),
   );
   const [failed, setFailed] = useState(false);
-  const [iconDialogOpen, setIconDialogOpen] = useState(false);
-  const [choosing, setChoosing] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [iconError, setIconError] = useState<string | null>(null);
 
-  // Remote tabs supply their icon via the override (resolved on the host), so
-  // the local resolveIcon path is bypassed entirely.
   const managedIcon = iconDataUrlOverride !== undefined;
   const overrideIcon: ProjectIcon | null = iconDataUrlOverride
     ? { dataUrl: iconDataUrlOverride, sourcePath: null, mimeType: null }
@@ -585,9 +536,20 @@ function ProjectTabIcon({
   const displayIcon: ProjectIcon | null = managedIcon ? overrideIcon : icon;
 
   useEffect(() => {
+    if (managedIcon || disabled) return;
+    const listener = (changedRoot: string) => {
+      if (changedRoot !== rootPath) return;
+      setFailed(false);
+      setIcon(getProjectIconFromCache(rootPath) ?? null);
+    };
+    projectIconListeners.add(listener);
+    return () => {
+      projectIconListeners.delete(listener);
+    };
+  }, [disabled, managedIcon, rootPath]);
+
+  useEffect(() => {
     setFailed(false);
-    // Caller-managed icons (remote tabs) never resolve against the local
-    // filesystem — the project lives on another machine.
     if (managedIcon) {
       setIcon(null);
       return;
@@ -630,7 +592,7 @@ function ProjectTabIcon({
 
   useEffect(() => {
     let cancelled = false;
-    const dataUrl = icon?.dataUrl;
+    const dataUrl = displayIcon?.dataUrl;
     if (!dataUrl || failed) {
       onAccentColorChange?.(rootPath, null);
       return () => {
@@ -647,179 +609,37 @@ function ProjectTabIcon({
     return () => {
       cancelled = true;
     };
-  }, [failed, icon?.dataUrl, onAccentColorChange, rootPath]);
-
-  const fallbackIcon = (
-    <Folder
-      size={14}
-      weight="regular"
-      className={cn(
-        "shrink-0 transition-opacity duration-150",
-        isCurrent ? "opacity-90" : "opacity-70",
-        animate && "animate-pulse",
-      )}
-    />
-  );
-
-  const iconNode =
-    !displayIcon?.dataUrl || failed ? (
-      fallbackIcon
-    ) : (
-      <img
-        src={displayIcon.dataUrl}
-        alt=""
-        className={cn(
-          "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
-          isCurrent ? "opacity-95" : "opacity-75",
-          animate && "animate-pulse",
-        )}
-        draggable={false}
-        onError={() => setFailed(true)}
-      />
-    );
-
-  const handleChooseIcon = useCallback(async () => {
-    if (disabled || choosing) return;
-    setChoosing(true);
-    setIconError(null);
-    try {
-      const nextIcon = await window.ade.project.chooseIcon(rootPath);
-      if (nextIcon) {
-        setProjectIconCache(rootPath, nextIcon);
-        setFailed(false);
-        setIcon(nextIcon);
-        if (nextIcon.dataUrl) {
-          setIconDialogOpen(false);
-        } else {
-          setIconError(
-            "ADE saved the path, but the image could not be rendered as a project icon.",
-          );
-        }
-      }
-    } catch (error) {
-      // Keep the current icon while surfacing why replacement failed.
-      setIconError(projectIconErrorMessage(error));
-    } finally {
-      setChoosing(false);
-    }
-  }, [choosing, disabled, rootPath]);
-
-  const handleRemoveIcon = useCallback(async () => {
-    if (disabled || removing) return;
-    setRemoving(true);
-    setIconError(null);
-    try {
-      const nextIcon = await window.ade.project.removeIcon(rootPath);
-      setProjectIconCache(rootPath, nextIcon);
-      setFailed(false);
-      setIcon(nextIcon);
-      setIconDialogOpen(false);
-    } catch (error) {
-      // Keep the current icon while surfacing why removal failed.
-      setIconError(projectIconErrorMessage(error));
-    } finally {
-      setRemoving(false);
-    }
-  }, [disabled, removing, rootPath]);
-
-  if (disabled) return iconNode;
-
-  if (readOnly) {
-    return (
-      <span
-        aria-label="Project icon"
-        title="Project icon"
-        className={cn(
-          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-current",
-        )}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {iconNode}
-      </span>
-    );
-  }
+  }, [failed, displayIcon?.dataUrl, onAccentColorChange, rootPath]);
 
   return (
-    <>
-      <button
-        type="button"
-        aria-label="Project icon"
-        title="Project icon"
-        aria-haspopup="dialog"
-        aria-expanded={iconDialogOpen}
-        className={cn(
-          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
-          "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          setIconDialogOpen(true);
-        }}
-        onKeyDown={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {choosing || removing ? (
-          <CircleNotch
-            size={15}
-            weight="bold"
-            className="animate-spin opacity-80"
-          />
-        ) : (
-          iconNode
-        )}
-      </button>
-      <AppDialog
-        open={iconDialogOpen}
-        onOpenChange={(open) => {
-          setIconDialogOpen(open);
-          if (!open) setIconError(null);
-        }}
-        title="Project icon"
-        size="sm"
-        width={320}
-        tone="accent"
-        stopClickPropagation
-        actions={[
-          {
-            label: "Remove",
-            variant: "secondary",
-            busy: removing,
-            disabled: choosing || removing,
-            onClick: () => void handleRemoveIcon(),
-          },
-          {
-            label: "Replace",
-            variant: "solid",
-            busy: choosing,
-            disabled: choosing || removing,
-            onClick: () => void handleChooseIcon(),
-          },
-        ]}
-      >
-        <div className="flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
-          {icon?.dataUrl && !failed ? (
-            <img
-              src={icon.dataUrl}
-              alt=""
-              className="h-20 w-20 rounded-md object-contain"
-              draggable={false}
-            />
-          ) : (
-            <Folder size={52} className="text-muted-fg" />
+    <span
+      aria-hidden
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-current"
+    >
+      {!displayIcon?.dataUrl || failed ? (
+        <Folder
+          size={14}
+          weight="regular"
+          className={cn(
+            "shrink-0 transition-opacity duration-150",
+            isCurrent ? "opacity-90" : "opacity-70",
+            animate && "animate-pulse",
           )}
-        </div>
-
-        {iconError ? (
-          <Banner
-            model={{ id: "project-icon-error", tone: "error", title: iconError }}
-            layout="inline"
-            style={{ marginTop: 12 }}
-          />
-        ) : null}
-      </AppDialog>
-    </>
+        />
+      ) : (
+        <img
+          src={displayIcon.dataUrl}
+          alt=""
+          className={cn(
+            "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
+            isCurrent ? "opacity-95" : "opacity-75",
+            animate && "animate-pulse",
+          )}
+          draggable={false}
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
   );
 }
 
@@ -844,7 +664,6 @@ export function TopBar({
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
-  const closeProject = useAppStore((s) => s.closeProject);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
@@ -908,8 +727,8 @@ export function TopBar({
   const [preferredBindingKeyByGroup, setPreferredBindingKeyByGroup] = useState<
     Record<string, string>
   >({});
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
+  /** The user's tab order, as binding keys, across every kind of tab. */
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [windowId, setWindowId] = useState<number | null>(null);
   const [windowSessionRestored, setWindowSessionRestored] = useState(false);
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -926,7 +745,6 @@ export function TopBar({
     setConnectionsTab(tab);
     setConnectionsOpen(true);
   }, [webMode]);
-  const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
@@ -1182,19 +1000,8 @@ export function TopBar({
       byKey.set(binding.key, binding);
     };
     for (const recent of recentProjects) {
-      if (recent.kind !== "remote" || !recent.remote) continue;
-      add({
-        kind: "remote",
-        key: remoteProjectBindingKey(recent.remote.targetId, recent.remote.projectId),
-        targetId: recent.remote.targetId,
-        runtimeName: recent.remote.runtimeName,
-        hostname: recent.remote.hostname,
-        projectId: recent.remote.projectId,
-        rootPath: recent.rootPath,
-        displayName: recent.displayName,
-        gitOriginUrl: recent.gitOriginUrl ?? recent.remote.gitOriginUrl ?? null,
-        iconDataUrl: recent.remote.iconDataUrl ?? null,
-      });
+      const binding = remoteBindingFromRecent(recent);
+      if (binding) add(binding);
     }
     for (const connection of remoteSnapshot?.connections ?? []) {
       for (const remoteProject of connection.projects ?? []) {
@@ -1228,6 +1035,7 @@ export function TopBar({
         remoteOriginByKey,
         activeBindingKey: activeTabBindingKey,
         preferredBindingKeyByGroup,
+        order: tabOrder,
       }),
     [
       activeTabBindingKey,
@@ -1237,6 +1045,7 @@ export function TopBar({
       preferredBindingKeyByGroup,
       projectTabs,
       remoteOriginByKey,
+      tabOrder,
     ],
   );
 
@@ -1526,8 +1335,8 @@ export function TopBar({
   }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
 
   // Resolves when the switch has settled, so a caller that has to reconcile tab
-  // state afterwards (the machine switcher, below) runs against the new binding
-  // rather than racing the in-flight transition.
+  // state afterwards runs against the new binding rather than racing the
+  // in-flight transition.
   const handleSwitchProject = useCallback(
     (rootPath: string, opts?: { skipWorktreeGate?: boolean }): Promise<void> => {
       if (isProjectBusy) return Promise.resolve();
@@ -1573,114 +1382,136 @@ export function TopBar({
     ],
   );
 
-  const handleRemoveTab = useCallback(
-    (rootPath: string) => {
-      void (async () => {
-        const target = projectTabs.find((entry) => entry.rootPath === rootPath);
-        const fallbackName = fallbackProjectName(rootPath);
-        const confirmed = await confirmProjectTabRemoval(
-          target?.displayName ?? fallbackName,
-        );
-        if (!confirmed) return;
+  /**
+   * Closes one or more tabs. Every tab is a project, wherever its checkout
+   * lives, so one path handles all of them: it closes the tabs in the visual
+   * order the user sees, and when the active tab closes it moves to the
+   * nearest remaining tab on the right, else on the left.
+   *
+   * `forgetState` drops a closed project's view state and remembered route. A
+   * tab that moves to another window keeps nothing here either, but the state
+   * belongs to that window now, so the caller decides.
+   */
+  const closeTabGroups = useCallback(
+    async (
+      groupIds: readonly string[],
+      opts: { confirm: boolean; checkWorkloads: boolean; forgetState: boolean },
+    ): Promise<boolean> => {
+      const groups = tabGroupsRef.current;
+      const closingIds = new Set(groupIds);
+      const closing = groups.filter((group) => closingIds.has(group.id));
+      if (closing.length === 0) return false;
+      if (opts.confirm) {
+        const confirmed = closing.length === 1
+          ? await confirmProjectTabRemoval(closing[0]!.displayName)
+          : await confirmProjectTabsRemoval(closing.length);
+        if (!confirmed) return false;
+      }
 
-        const shouldClose = await checkForActiveWorkloads(rootPath);
-        if (!shouldClose) return;
+      const openLocalRoots = new Set(openProjectTabRootsRef.current);
+      const openRemoteKeys = new Set(openRemoteProjectTabsRef.current.map((entry) => entry.key));
+      const localRoots = new Set<string>();
+      const remoteKeys = new Set<string>();
+      for (const group of closing) {
+        for (const machine of group.machines) {
+          if (openLocalRoots.has(machine.bindingKey)) localRoots.add(machine.bindingKey);
+          else if (openRemoteKeys.has(machine.bindingKey)) remoteKeys.add(machine.bindingKey);
+        }
+      }
+      if (opts.checkWorkloads) {
+        for (const rootPath of localRoots) {
+          if (!(await checkForActiveWorkloads(rootPath))) return false;
+        }
+      }
 
-        const latestTabRoots = openProjectTabRootsRef.current;
-        const currentIndex = latestTabRoots.indexOf(rootPath);
-        if (currentIndex === -1) return;
-        const nextTabRoots = latestTabRoots.filter(
-          (entry) => entry !== rootPath,
-        );
-        openProjectTabRootsRef.current = nextTabRoots;
-        setOpenProjectTabRoots((prev) =>
-          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
-        );
-
-        const latestState = useAppStore.getState();
-        const latestProjectRoot = latestState.project?.rootPath ?? null;
-        const latestRemoteBinding =
-          latestState.projectBinding?.kind === "remote"
-            ? latestState.projectBinding
-            : null;
-        const latestRemoteTabs = openRemoteProjectTabsRef.current;
-        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
-          const nextRoot =
-            nextTabRoots[currentIndex] ??
-            nextTabRoots[currentIndex - 1] ??
-            null;
-          if (nextRoot) {
-            latestState.switchProjectToPath(nextRoot).catch(() => {});
-          } else if (latestRemoteTabs[0]) {
-            latestState.switchRemoteProject(
-              latestRemoteTabs[0].targetId,
-              latestRemoteTabs[0].projectId,
-            ).catch(() => {});
-          } else {
-            latestState.closeProject().catch(() => {});
+      const removeFromLists = () => {
+        const nextRoots = openProjectTabRootsRef.current.filter((root) => !localRoots.has(root));
+        openProjectTabRootsRef.current = nextRoots;
+        setOpenProjectTabRoots((prev) => prev.filter((root) => !localRoots.has(root)));
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !remoteKeys.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs((prev) => prev.filter((entry) => !remoteKeys.has(entry.key)));
+        setTabOrder((prev) => prev.filter((key) => !localRoots.has(key) && !remoteKeys.has(key)));
+        if (opts.forgetState) {
+          for (const key of remoteKeys) {
+            evictProjectState(key);
+            removeStoredProjectRoute(key);
           }
         }
-      })().catch(() => {});
+      };
+
+      const state = useAppStore.getState();
+      const activeKey = state.projectBinding?.kind === "remote"
+        ? state.projectBinding.key
+        : state.project?.rootPath ?? null;
+      const activeIndex = activeKey == null
+        ? -1
+        : groups.findIndex((group) => group.machines.some((machine) => machine.bindingKey === activeKey));
+      if (activeIndex === -1 || !closingIds.has(groups[activeIndex]!.id)) {
+        removeFromLists();
+        return true;
+      }
+
+      const nextGroup =
+        groups.slice(activeIndex + 1).find((group) => !closingIds.has(group.id))
+        ?? groups.slice(0, activeIndex).reverse().find((group) => !closingIds.has(group.id))
+        ?? null;
+      const next = nextGroup ? activeMachineForGroup(nextGroup) : null;
+      try {
+        if (next?.isLocal) {
+          await state.switchProjectToPath(next.rootPath);
+        } else if (next?.binding?.kind === "remote") {
+          await state.switchRemoteProject(next.binding.targetId, next.binding.projectId);
+        } else {
+          removeFromLists();
+          await state.closeProject();
+          return true;
+        }
+      } catch {
+        return false;
+      }
+      // Remove only after the switch: while a project is still active, the
+      // binding effects above would put its tab straight back.
+      removeFromLists();
+      return true;
     },
     [
       checkForActiveWorkloads,
-      projectTabs,
+      evictProjectState,
+      setOpenProjectTabRoots,
+      setOpenRemoteProjectTabs,
     ],
+  );
+
+  const groupIdForBindingKey = useCallback(
+    (bindingKey: string) => {
+      const groups = tabGroupsRef.current;
+      // A tab's own checkout wins over a checkout it merely lists.
+      return (
+        groups.find((group) => group.machines[0]?.bindingKey === bindingKey)
+        ?? groups.find((group) =>
+          group.machines.some((machine) => machine.bindingKey === bindingKey),
+        )
+      )?.id ?? null;
+    },
+    [],
+  );
+
+  const handleRemoveTab = useCallback(
+    (rootPath: string) => {
+      const groupId = groupIdForBindingKey(rootPath);
+      if (!groupId) return;
+      void closeTabGroups([groupId], { confirm: true, checkWorkloads: true, forgetState: true });
+    },
+    [closeTabGroups, groupIdForBindingKey],
   );
 
   const handleCloseRemoteTab = useCallback((binding: RemoteProjectTab) => {
     if (isProjectBusy) return;
-    const closedIndex = openRemoteProjectTabs.findIndex(
-      (entry) => entry.key === binding.key,
-    );
-    const nextRemoteTabs = openRemoteProjectTabs.filter(
-      (entry) => entry.key !== binding.key,
-    );
-    const finishClose = () => {
-      setOpenRemoteProjectTabs((prev) =>
-        prev.filter((entry) => entry.key !== binding.key),
-      );
-      // Explicit tab close is a deliberate "forget this surface": drop the view
-      // state and the remembered route as well. Disconnects take the narrower
-      // `evictProjectDataCaches` path in `confirmAndCloseRemoteTargetTabs` so
-      // reconnecting can restore the chat that was open.
-      evictProjectState(binding.key);
-      removeStoredProjectRoute(binding.key);
-    };
-    if (remoteBinding?.key !== binding.key) {
-      finishClose();
-      return;
-    }
-
-    const nextRemoteTab =
-      nextRemoteTabs[closedIndex] ?? nextRemoteTabs[closedIndex - 1] ?? null;
-    if (nextRemoteTab) {
-      void switchRemoteProject(
-        nextRemoteTab.targetId,
-        nextRemoteTab.projectId,
-      ).then(finishClose).catch(() => {});
-      return;
-    }
-
-    const nextLocalRoot =
-      openProjectTabRoots[openProjectTabRoots.length - 1] ?? null;
-    if (nextLocalRoot) {
-      void switchProjectToPath(nextLocalRoot).then(finishClose).catch(() => {});
-    } else {
-      void closeProject()
-        .then(() => removeStoredProjectRoute(binding.key))
-        .catch(() => {});
-    }
-  }, [
-    closeProject,
-    evictProjectState,
-    isProjectBusy,
-    openProjectTabRoots,
-    openRemoteProjectTabs,
-    remoteBinding?.key,
-    switchProjectToPath,
-    switchRemoteProject,
-  ]);
+    const groupId = groupIdForBindingKey(binding.key);
+    if (!groupId) return;
+    void closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+  }, [closeTabGroups, groupIdForBindingKey, isProjectBusy]);
 
   const confirmAndCloseRemoteTargetTabs = useCallback(
     async (
@@ -1913,169 +1744,358 @@ export function TopBar({
     [openRepo],
   );
 
-  const handleDragStart = useCallback(
-    (e: React.DragEvent, idx: number, rootPath: string) => {
-      setDragIdx(idx);
-      dragCounterRef.current = 0;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(idx));
-      e.dataTransfer.setData(ADE_PROJECT_TAB_ROOT_MIME, rootPath);
-      if (windowId != null) {
-        e.dataTransfer.setData(ADE_PROJECT_TAB_WINDOW_MIME, String(windowId));
-      }
-    },
-    [windowId],
-  );
+  /** The order key of a tab: the binding key of the checkout it opened on. */
+  const tabOrderKey = (group: ProjectTabGroup) => group.machines[0]?.bindingKey ?? group.id;
 
-  const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDropIdx(idx);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setDropIdx(null);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent, targetIdx: number) => {
-      if (
-        dragIdx === null &&
-        Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)
-      ) {
-        return;
-      }
-      e.preventDefault();
-      e.stopPropagation();
-      setDropIdx(null);
-      if (dragIdx === null || dragIdx === targetIdx) {
-        setDragIdx(null);
-        return;
-      }
-      const items = [...openProjectTabRoots];
-      const [moved] = items.splice(dragIdx, 1);
-      items.splice(targetIdx, 0, moved);
-      setOpenProjectTabRoots(items);
-      setDragIdx(null);
-    },
-    [dragIdx, openProjectTabRoots],
-  );
-
-  const handleProjectTabDrop = useCallback(
-    (e: React.DragEvent) => {
-      const rootPath = e.dataTransfer.getData(ADE_PROJECT_TAB_ROOT_MIME);
-      if (!rootPath) return;
-      e.preventDefault();
-      setDropIdx(null);
-      setDragIdx(null);
-
-      const sourceWindowIdRaw = e.dataTransfer.getData(
-        ADE_PROJECT_TAB_WINDOW_MIME,
+  const handleReorderTabs = useCallback(
+    (orderedKeys: string[]) => {
+      setTabOrder(orderedKeys);
+      // Main persists the local tab list in its own order, so keep that list
+      // in the same relative order for the next launch.
+      const ranked = new Map(orderedKeys.map((key, index) => [key, index]));
+      setOpenProjectTabRoots((prev) =>
+        [...prev].sort(
+          (a, b) => (ranked.get(a) ?? orderedKeys.length) - (ranked.get(b) ?? orderedKeys.length),
+        ),
       );
-      const parsedSourceWindowId = sourceWindowIdRaw
-        ? Number(sourceWindowIdRaw)
-        : null;
-      const sourceWindowId =
-        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
-          ? parsedSourceWindowId
-          : null;
-      if (sourceWindowId != null && sourceWindowId === windowId) return;
-
-      markProjectTabDropHandled(sourceWindowId, rootPath);
-
-      if (project?.rootPath === rootPath) {
-        if (sourceWindowId != null) {
-          window.ade.app.closeWindow(sourceWindowId).catch(() => {});
-        }
-        return;
-      }
-      switchProjectToPath(rootPath, { skipWorktreeGate: true }).catch(() => {});
     },
-    [project?.rootPath, switchProjectToPath, windowId],
+    [setOpenProjectTabRoots],
   );
 
-  const handleProjectTabDragOver = useCallback((e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME))
-      return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }, []);
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+  const tearOffRef = useRef<{
+    key: string;
+    moveSource: boolean;
+    started: Promise<{ windowId: number | null }>;
+  } | null>(null);
 
-  const handleDragEnd = useCallback(
-    (e: React.DragEvent, rootPath?: string) => {
-      const draggedOutside =
-        rootPath &&
-        (e.clientX < 0 ||
-          e.clientY < 0 ||
-          e.clientX > window.innerWidth ||
-          e.clientY > window.innerHeight);
-      const droppedOnAdeTarget =
-        e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
-      const sourceWindowIdRaw = e.dataTransfer.getData(
-        ADE_PROJECT_TAB_WINDOW_MIME,
-      );
-      const parsedSourceWindowId = sourceWindowIdRaw
-        ? Number(sourceWindowIdRaw)
-        : null;
-      const sourceWindowId =
-        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
-          ? parsedSourceWindowId
-          : null;
-      const handledByAdeDropTarget =
-        rootPath && droppedOnAdeTarget
-          ? consumeRecentProjectTabDropHandled(sourceWindowId, rootPath)
-          : false;
-      setDragIdx(null);
-      setDropIdx(null);
-      if (!draggedOutside || handledByAdeDropTarget || !rootPath) return;
-
-      void (async () => {
-        try {
-          await window.ade.app.openProjectInNewWindow(rootPath);
-        } catch {
-          return;
-        }
-
-        // Detach skips the confirmation + active workload checks intentionally:
-        // the user already committed to detaching by dragging the tab out, and
-        // the work is moving to a new window rather than terminating. Only remove
-        // the source tab after the destination window has a bound project.
-        const latestTabRoots = openProjectTabRootsRef.current;
-        const currentIndex = latestTabRoots.indexOf(rootPath);
-        if (currentIndex === -1) return;
-        const nextTabRoots = latestTabRoots.filter(
-          (entry) => entry !== rootPath,
-        );
-        openProjectTabRootsRef.current = nextTabRoots;
-        setOpenProjectTabRoots((prev) =>
-          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
-        );
-
-        const latestState = useAppStore.getState();
-        const latestProjectRoot = latestState.project?.rootPath ?? null;
-        const latestRemoteBinding =
-          latestState.projectBinding?.kind === "remote"
-            ? latestState.projectBinding
-            : null;
-        const latestRemoteTabs = openRemoteProjectTabsRef.current;
-        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
-          const nextRoot =
-            nextTabRoots[currentIndex] ?? nextTabRoots[currentIndex - 1] ?? null;
-          if (nextRoot) {
-            await latestState.switchProjectToPath(nextRoot).catch(() => {});
-          } else if (latestRemoteTabs[0]) {
-            await latestState.switchRemoteProject(
-              latestRemoteTabs[0].targetId,
-              latestRemoteTabs[0].projectId,
-            ).catch(() => {});
-          } else {
-            await latestState.closeProject().catch(() => {});
-          }
-        }
-      })();
+  const handleTearOff = useCallback(
+    (key: string, grab: TearOffGrab, moveSource: boolean, point: ScreenPoint) => {
+      const group = tabGroupsRef.current.find((entry) => tabOrderKey(entry) === key);
+      const binding = group?.machines[0]?.binding;
+      if (!binding) return;
+      tearOffRef.current = {
+        key,
+        moveSource,
+        started: window.ade.app
+          .projectTabDragStart({ binding, grab, moveSource, point })
+          .catch(() => ({ windowId: null })),
+      };
     },
     [],
   );
+
+  const handleTearOffMove = useCallback((point: ScreenPoint) => {
+    if (tearOffRef.current) window.ade.app.projectTabDragMove(point);
+  }, []);
+
+  const handleTearOffEnd = useCallback((point: ScreenPoint | null) => {
+    const tearOff = tearOffRef.current;
+    tearOffRef.current = null;
+    if (!tearOff) return;
+    void (async () => {
+      const started = await tearOff.started;
+      const result = await window.ade.app
+        .projectTabDragEnd(point ?? undefined)
+        .catch(() => ({ merged: false, targetWindowId: null }));
+      // A lone tab moved its own window; there is nothing left to remove here.
+      if (started.windowId == null || tearOff.moveSource) return;
+      // Dropped back on this window's own strip: the adopt event reorders it.
+      if (result.merged && result.targetWindowId === windowId) return;
+      const groupId = groupIdForBindingKey(tearOff.key);
+      if (!groupId) return;
+      // The tab now lives in another window, so its work is not stopped and
+      // nothing is asked: the project only moved.
+      await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: false });
+    })();
+  }, [closeTabGroups, groupIdForBindingKey, windowId]);
+
+  const projectTabDrag = useProjectTabDrag({
+    stripRef: tabStripRef,
+    canTearOff: !isWebClientMode() && !isProjectBusy,
+    onReorder: handleReorderTabs,
+    onTearOff: handleTearOff,
+    onTearOffMove: handleTearOffMove,
+    onTearOffEnd: handleTearOffEnd,
+  });
+
+  // A tab dragged out of another window (or out of this one and back) and
+  // released over this strip joins it where it was dropped, and opens.
+  useEffect(() => {
+    const subscribe = window.ade?.app?.onAdoptProjectTab;
+    if (typeof subscribe !== "function") return;
+    return subscribe(({ binding, clientX: screenOffsetX }) => {
+      // Main measures in screen points; the strip is laid out in CSS pixels.
+      const clientX = screenOffsetX / cssToScreenScale();
+      const key = binding.kind === "remote" ? binding.key : binding.rootPath;
+      const strip = tabStripRef.current;
+      const keys = tabGroupsRef.current.map(tabOrderKey).filter((entry) => entry !== key);
+      let insertAt = keys.length;
+      if (strip) {
+        const tabs = Array.from(strip.querySelectorAll<HTMLElement>(`[${PROJECT_TAB_KEY_ATTR}]`))
+          .filter((tab) => tab.getAttribute(PROJECT_TAB_KEY_ATTR) !== key);
+        const index = tabs.findIndex((tab) => {
+          const rect = tab.getBoundingClientRect();
+          return clientX < rect.left + rect.width / 2;
+        });
+        if (index !== -1) insertAt = index;
+      }
+      keys.splice(insertAt, 0, key);
+      handleReorderTabs(keys);
+      const state = useAppStore.getState();
+      if (binding.kind === "remote") {
+        state.switchRemoteProject(binding.targetId, binding.projectId).catch(() => {});
+      } else {
+        state.switchProjectToPath(binding.rootPath, { skipWorktreeGate: true }).catch(() => {});
+      }
+    });
+  }, [handleReorderTabs]);
+
+  const [tabMenu, setTabMenu] = useState<(NonNullable<ProjectContextMenuState> & { groupId: string }) | null>(null);
+  const closeTabMenu = useCallback(() => setTabMenu(null), []);
+  const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
+  const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
+  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<
+    (CloneLocallyTarget & { remoteKey: string }) | null
+  >(null);
+
+  /** The host's latest icon per project, so a changed icon shows at once. */
+  const hostIconByKey = useMemo(() => {
+    const byKey = new Map<string, string | null>();
+    for (const binding of knownRemoteProjectTabs) byKey.set(binding.key, binding.iconDataUrl ?? null);
+    return byKey;
+  }, [knownRemoteProjectTabs]);
+
+  /**
+   * A project with no checkout on this machine can be cloned here. It needs a
+   * git origin to clone from.
+   */
+  const cloneTargetForGroup = useCallback(
+    (group: ProjectTabGroup): (CloneLocallyTarget & { remoteKey: string }) | null => {
+      if (group.machines.some((machine) => machine.isLocal)) return null;
+      const binding = group.machines[0]?.binding;
+      if (binding?.kind !== "remote") return null;
+      const origin = remoteOriginByKey[binding.key] ?? binding.gitOriginUrl ?? null;
+      if (!origin) return null;
+      return {
+        displayName: binding.displayName,
+        machineName: binding.runtimeName,
+        gitOriginUrl: origin,
+        remoteKey: binding.key,
+      };
+    },
+    [remoteOriginByKey],
+  );
+
+  const activeCloneTarget = useMemo(() => {
+    if (!remoteBinding) return null;
+    const group = tabGroups.find((entry) =>
+      entry.machines.some((machine) => machine.bindingKey === remoteBinding.key),
+    );
+    return group ? cloneTargetForGroup(group) : null;
+  }, [cloneTargetForGroup, remoteBinding, tabGroups]);
+
+  // The clone opens in the tab the project already had, in the same place.
+  const handleClonedLocally = useCallback(
+    async (rootPath: string, remoteKey: string) => {
+      const keys = tabGroupsRef.current.map(tabOrderKey);
+      const at = keys.indexOf(remoteKey);
+      try {
+        await useAppStore.getState().switchProjectToPath(rootPath, { skipWorktreeGate: true });
+      } catch {
+        return;
+      }
+      const next = keys.filter((key) => key !== remoteKey && key !== rootPath);
+      next.splice(at === -1 ? next.length : at, 0, rootPath);
+      handleReorderTabs(next);
+      const groupId = groupIdForBindingKey(remoteKey);
+      if (groupId) {
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+      }
+    },
+    [closeTabGroups, groupIdForBindingKey, handleReorderTabs],
+  );
+
+  const handleMoveTabToNewWindow = useCallback(
+    (group: ProjectTabGroup) => {
+      const binding = group.machines[0]?.binding;
+      if (!binding) return;
+      void (async () => {
+        try {
+          const result = await window.ade.app.openProjectInNewWindow(
+            binding.rootPath,
+            binding.kind === "remote" ? binding : undefined,
+          );
+          if (result.windowId == null) return;
+        } catch {
+          return;
+        }
+        await closeTabGroups([group.id], { confirm: false, checkWorkloads: false, forgetState: false });
+      })();
+    },
+    [closeTabGroups],
+  );
+
+  const recentForMachine = useCallback(
+    (machine: ProjectTabMachine): RecentProjectSummary | null => {
+      const binding = machine.binding;
+      if (binding?.kind === "remote") {
+        return recentProjects.find(
+          (entry) =>
+            entry.kind === "remote"
+            && entry.remote?.targetId === binding.targetId
+            && entry.remote?.projectId === binding.projectId,
+        ) ?? null;
+      }
+      return recentProjects.find(
+        (entry) => entry.kind !== "remote" && entry.rootPath === machine.rootPath,
+      ) ?? null;
+    },
+    [recentProjects],
+  );
+
+  const tabMenuEntries = useMemo((): ProjectMenuEntry[] => {
+    if (!tabMenu) return [];
+    const index = tabGroups.findIndex((group) => group.id === tabMenu.groupId);
+    const group = index === -1 ? null : tabGroups[index]!;
+    const machine = group ? activeMachineForGroup(group) : null;
+    if (!group || !machine) return [];
+    const binding = machine.binding ?? null;
+    const remote = binding?.kind === "remote" ? binding : null;
+    const missing = machine.isLocal && !machine.exists;
+    const openIn = missing ? null : resolveOpenInTarget({ worktreePath: machine.rootPath, binding });
+    const recent = recentForMachine(machine);
+    const clone = cloneTargetForGroup(group);
+    const otherIds = tabGroups.filter((entry) => entry.id !== group.id).map((entry) => entry.id);
+    const rightIds = tabGroups.slice(index + 1).map((entry) => entry.id);
+    const closeMany = (ids: string[]) =>
+      void closeTabGroups(ids, { confirm: true, checkWorkloads: true, forgetState: true });
+    const entries: Array<ProjectMenuEntry | null> = [
+      !webMode && tabGroups.length > 1
+        ? {
+            kind: "item",
+            key: "new-window",
+            label: "Move to new window",
+            icon: AppWindow,
+            disabled: isProjectBusy,
+            onSelect: () => handleMoveTabToNewWindow(group),
+          }
+        : null,
+      openIn
+        ? { kind: "open-in", key: "open-in", rootPath: openIn.rootPath, remote: openIn.remote ?? null }
+        : null,
+      { kind: "separator", key: "sep-project" },
+      {
+        kind: "item",
+        key: "icon",
+        label: "Change icon…",
+        icon: ImageSquare,
+        disabled: missing,
+        onSelect: () =>
+          setIconDialogTarget({
+            rootPath: machine.rootPath,
+            displayName: machine.displayName,
+            hostTargetId: remote?.targetId ?? null,
+            hostName: remote?.runtimeName ?? null,
+            hostIconDataUrl: remote
+              ? (hostIconByKey.get(remote.key) ?? remote.iconDataUrl ?? null)
+              : null,
+          }),
+      },
+      clone
+        ? {
+            kind: "item",
+            key: "clone",
+            label: "Clone to this machine…",
+            icon: DownloadSimple,
+            onSelect: () => setCloneLocallyTarget(clone),
+          }
+        : null,
+      recent
+        ? {
+            kind: "item",
+            key: "pin",
+            label: recent.pinned ? "Unpin from recents" : "Pin to top of recents",
+            icon: recent.pinned ? PushPinSlash : PushPin,
+            onSelect: () => {
+              void window.ade.project
+                .setRecentPinned(recentProjectLocationKey(recent), !recent.pinned)
+                .then((rows) => {
+                  rememberRecentProjects(rows);
+                  setRecentProjects(rows);
+                })
+                .catch(() => {});
+            },
+          }
+        : null,
+      { kind: "separator", key: "sep-copy" },
+      {
+        kind: "item",
+        key: "copy-path",
+        label: "Copy path",
+        icon: Copy,
+        onSelect: () => void window.ade.app.writeClipboardText(machine.rootPath).catch(() => {}),
+      },
+      {
+        kind: "item",
+        key: "copy-name",
+        label: "Copy name",
+        icon: TextT,
+        onSelect: () => void window.ade.app.writeClipboardText(machine.displayName).catch(() => {}),
+      },
+      { kind: "separator", key: "sep-close" },
+      {
+        kind: "item",
+        key: "close",
+        label: "Close tab",
+        icon: X,
+        disabled: isProjectBusy,
+        onSelect: () => {
+          if (remote) handleCloseRemoteTab(remote);
+          else handleRemoveTab(machine.rootPath);
+        },
+      },
+      otherIds.length > 0
+        ? {
+            kind: "item",
+            key: "close-others",
+            label: "Close other tabs",
+            icon: XSquare,
+            disabled: isProjectBusy,
+            onSelect: () => closeMany(otherIds),
+          }
+        : null,
+      rightIds.length > 0
+        ? {
+            kind: "item",
+            key: "close-right",
+            label: "Close tabs to the right",
+            icon: ArrowLineRight,
+            disabled: isProjectBusy,
+            onSelect: () => closeMany(rightIds),
+          }
+        : null,
+    ];
+    return entries.filter((entry): entry is ProjectMenuEntry => entry != null);
+  }, [
+    closeTabGroups,
+    cloneTargetForGroup,
+    handleCloseRemoteTab,
+    handleMoveTabToNewWindow,
+    handleRemoveTab,
+    hostIconByKey,
+    isProjectBusy,
+    recentForMachine,
+    tabGroups,
+    tabMenu,
+    webMode,
+  ]);
+
+  const openTabMenu = useCallback((event: React.MouseEvent, groupId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setTabMenu({ x: event.clientX, y: event.clientY, groupId });
+  }, []);
 
   const handleProjectAccentColorChange = useCallback(
     (rootPath: string, color: string | null) => {
@@ -2226,9 +2246,8 @@ export function TopBar({
 
       {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
+        ref={tabStripRef}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
-        onDragOver={handleProjectTabDragOver}
-        onDrop={handleProjectTabDrop}
       >
         {tabGroups.length > 0 ||
         isNewTabOpen ||
@@ -2258,11 +2277,17 @@ export function TopBar({
                     : remoteTabParked
                       ? "Parked"
                       : "Disconnected";
+                const remoteTabKey = tabOrderKey(group);
                 return (
                   <div
                     key={group.id}
                     role="button"
                     tabIndex={0}
+                    {...{ [PROJECT_TAB_KEY_ATTR]: remoteTabKey }}
+                    onPointerDown={(event) => {
+                      if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
+                    }}
+                    onContextMenu={(event) => openTabMenu(event, group.id)}
                     data-state={isCurrentRemote && !personalChatsRouteActive && !hubRouteActive ? "active" : undefined}
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
@@ -2279,10 +2304,16 @@ export function TopBar({
                           : "border-red-400/60",
                     )}
                     style={
-                      { WebkitAppRegion: "no-drag" } as React.CSSProperties
+                      {
+                        WebkitAppRegion: "no-drag",
+                        ...projectTabDrag.tabDragStyle(remoteTabKey),
+                      } as React.CSSProperties
                     }
                     title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
-                    onClick={() => handleSwitchRemoteProject(remoteTab)}
+                    onClick={() => {
+                      if (projectTabDrag.consumeDragClick()) return;
+                      handleSwitchRemoteProject(remoteTab);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
@@ -2295,8 +2326,9 @@ export function TopBar({
                       isCurrent={isCurrentRemote}
                       animate={false}
                       disabled={false}
-                      readOnly={true}
-                      iconDataUrlOverride={remoteTab.iconDataUrl ?? null}
+                      iconDataUrlOverride={
+                        hostIconByKey.get(remoteTab.key) ?? remoteTab.iconDataUrl ?? null
+                      }
                     />
                     <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                       {remoteTab.displayName}
@@ -2364,8 +2396,8 @@ export function TopBar({
                 projectTransition.rootPath === rp.rootPath;
               const isClosingTarget =
                 projectTransition?.kind === "closing" && isCurrent;
-              const isDragging = dragIdx === idx;
-              const isDropTarget = dropIdx === idx && dragIdx !== idx;
+              const localTabKey = tabOrderKey(group);
+              const canDragTab = !isMissing && !isRelocating && !isProjectBusy;
               const projectAccentColor =
                 projectAccentColors[rp.rootPath] ?? null;
               const projectTabStyle = {
@@ -2396,12 +2428,11 @@ export function TopBar({
                   aria-disabled={
                     isRelocating || isProjectBusy ? true : undefined
                   }
-                  draggable={!isMissing && !isRelocating && !isProjectBusy}
-                  onDragStart={(e) => handleDragStart(e, idx, rp.rootPath)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(e) => handleDrop(e, idx)}
-                  onDragEnd={(e) => handleDragEnd(e, rp.rootPath)}
+                  {...{ [PROJECT_TAB_KEY_ATTR]: localTabKey }}
+                  onPointerDown={(event) => {
+                    if (canDragTab) projectTabDrag.onTabPointerDown(event, localTabKey);
+                  }}
+                  onContextMenu={(event) => openTabMenu(event, group.id)}
                   className={cn(
                     "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
@@ -2410,11 +2441,10 @@ export function TopBar({
                     isRelocating && "pointer-events-none opacity-80",
                     (isSwitchTarget || isClosingTarget) &&
                       "pointer-events-none opacity-80",
-                    isDragging && "opacity-40",
-                    isDropTarget && "ring-1 ring-accent/50",
                   )}
-                  style={projectTabStyle}
+                  style={{ ...projectTabStyle, ...projectTabDrag.tabDragStyle(localTabKey) }}
                   onClick={() => {
+                    if (projectTabDrag.consumeDragClick()) return;
                     if (!isMissing) handleSwitchProject(rp.rootPath);
                   }}
                   onKeyDown={(event) => {
@@ -2648,6 +2678,40 @@ export function TopBar({
         </div>
       ) : null}
 
+      {activeCloneTarget && !isProjectBusy ? (
+        <SmartTooltip
+          content={{
+            label: "Clone locally",
+            description: `${activeCloneTarget.displayName} runs on ${activeCloneTarget.machineName}. Clone it to this machine to work on it here too.`,
+          }}
+          wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            aria-label="Clone locally"
+            onClick={() => setCloneLocallyTarget(activeCloneTarget)}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors duration-150"
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-accent)",
+              background:
+                "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
+          >
+            <DownloadSimple size={11} weight="bold" />
+            Clone locally
+          </button>
+        </SmartTooltip>
+      ) : null}
+
       {showPublishPill ? (
         <SmartTooltip
           content={{
@@ -2742,6 +2806,21 @@ export function TopBar({
         />
       </HeaderSheet>
 
+      <ProjectContextMenu
+        menu={tabMenu}
+        entries={tabMenuEntries}
+        onClose={closeTabMenu}
+        label="Project tab"
+      />
+      <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
+      <CloneLocallyDialog
+        target={cloneLocallyTarget}
+        onClose={() => setCloneLocallyTarget(null)}
+        onCloned={(result) => {
+          const remoteKey = cloneLocallyTarget?.remoteKey;
+          if (remoteKey) void handleClonedLocally(result.rootPath, remoteKey);
+        }}
+      />
       <PublishToGitHubDialog
         open={publishOpen}
         onOpenChange={setPublishOpen}

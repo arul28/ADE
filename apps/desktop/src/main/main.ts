@@ -178,6 +178,7 @@ import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOr
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
+import { createProjectTabDragService } from "./services/projects/projectTabDragService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
@@ -809,6 +810,12 @@ async function createWindow(args: {
   onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
   onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
+  /**
+   * Opens the window at these bounds without taking focus. A tab dragged out
+   * of another window uses this: the new window must appear under the cursor
+   * and must not steal the pointer from the window that owns the drag.
+   */
+  bounds?: { x: number; y: number; width: number; height: number };
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory. In dev (`npm run dev` sets
   // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
@@ -852,7 +859,8 @@ async function createWindow(args: {
   const MIN_WINDOW_WIDTH = 1026;
 
   const win = new BrowserWindow({
-    ...defaultWindowBounds,
+    ...(args.bounds ?? defaultWindowBounds),
+    ...(args.bounds ? { show: false } : {}),
     minWidth: MIN_WINDOW_WIDTH,
     icon,
     ...windowChromeOptions(process.platform),
@@ -875,6 +883,7 @@ async function createWindow(args: {
   });
 
   args.onCreated?.(win);
+  if (args.bounds) win.showInactive();
   installEditableContextMenu(win);
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
@@ -8013,20 +8022,31 @@ app.whenReady().then(async () => {
   };
 
   const openAdeWindow = async (
-    args: { projectRoot?: string | null } = {},
+    args: {
+      projectRoot?: string | null;
+      /** Opens the window on a project that lives on another machine. */
+      remoteBinding?: RemoteOpenProjectBinding | null;
+      bounds?: { x: number; y: number; width: number; height: number };
+      /** Fires once the window exists, before its project loads. */
+      onWindow?: (win: BrowserWindow) => void;
+    } = {},
   ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
     const openWindows = BrowserWindow.getAllWindows().filter(
       (win) => !win.isDestroyed(),
     );
     const restoredRemoteBinding =
-      args.projectRoot || openWindows.length > 0
+      args.remoteBinding
+      ?? (args.projectRoot || openWindows.length > 0
         ? null
-        : readLastRemoteProjectBinding();
+        : readLastRemoteProjectBinding());
     const win = await createWindow({
       logger: getActiveContext().logger,
+      bounds: args.bounds,
       onRendererRecovery: reportRendererRecovery,
-      onCreated: (createdWindow) =>
-        registerWindowSession(createdWindow, null, restoredRemoteBinding),
+      onCreated: (createdWindow) => {
+        registerWindowSession(createdWindow, null, restoredRemoteBinding);
+        args.onWindow?.(createdWindow);
+      },
       onCloseRequested: handleMainWindowCloseRequested,
     });
     builtInBrowserService.attachToWindow(win);
@@ -8272,6 +8292,19 @@ app.whenReady().then(async () => {
   for (const filePath of pendingProjectOpenFiles.splice(0)) {
     handleProjectOpenFile(filePath);
   }
+
+  const projectTabDrag = createProjectTabDragService({
+    openWindow: ({ binding, bounds, onWindow }) =>
+      binding.kind === "remote"
+        ? openAdeWindow({ remoteBinding: binding, bounds, onWindow })
+        : openAdeWindow({ projectRoot: binding.rootPath, bounds, onWindow }),
+    closeWindow: (win) => closeWindowWithoutPrompt(win),
+    sendAdopt: (target, request) => {
+      if (!target.webContents.isDestroyed()) {
+        target.webContents.send(IPC.appAdoptProjectTab, request);
+      }
+    },
+  });
 
   const closeAdeWindow = async (windowId: number | null): Promise<{ closed: boolean }> => {
     if (windowId == null) return { closed: false };
@@ -8974,6 +9007,7 @@ app.whenReady().then(async () => {
     },
     autoDiagnosticsService,
     createWindow: openAdeWindow,
+    projectTabDrag,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
     attemptedProjectRoots,

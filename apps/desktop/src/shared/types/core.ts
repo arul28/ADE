@@ -395,6 +395,17 @@ export type OpenProjectBinding =
       iconDataUrl?: string | null;
     };
 
+/**
+ * Sent to a window when a project tab dragged out of another window is
+ * released over its tab strip. `clientX` is the release point measured from
+ * the target window's left edge in screen points, so the tab lands where the
+ * user dropped it.
+ */
+export type ProjectTabAdoptRequest = {
+  binding: OpenProjectBinding;
+  clientX: number;
+};
+
 export type AppNavigationTarget =
   | {
       kind: "work" | "chat";

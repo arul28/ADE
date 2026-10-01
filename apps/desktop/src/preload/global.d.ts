@@ -625,6 +625,7 @@ import type {
   ProjectConfigValidationResult,
   ProjectInfo,
   OpenProjectBinding,
+  ProjectTabAdoptRequest,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -1067,9 +1068,23 @@ declare global {
           bindings: OpenProjectBinding[],
         ) => Promise<{ openProjectBindings: OpenProjectBinding[] }>;
         newWindow: () => Promise<{ windowId: number | null }>;
+        /** `remoteBinding` opens a project that runs on another machine. */
         openProjectInNewWindow: (
           rootPath: string,
+          remoteBinding?: Extract<OpenProjectBinding, { kind: "remote" }>,
         ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
+        projectTabDragStart: (args: {
+          binding: OpenProjectBinding;
+          grab: { x: number; y: number };
+          moveSource: boolean;
+          /** The pointer, in screen coordinates. */
+          point: { x: number; y: number };
+        }) => Promise<{ windowId: number | null }>;
+        projectTabDragMove: (point: { x: number; y: number }) => void;
+        projectTabDragEnd: (
+          point?: { x: number; y: number },
+        ) => Promise<{ merged: boolean; targetWindowId: number | null }>;
+        onAdoptProjectTab: (cb: (request: ProjectTabAdoptRequest) => void) => () => void;
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
         requestWindowClose: () => Promise<{ requested: boolean }>;
         onMenuCommand: (cb: (command: AppMenuCommand) => void) => () => void;
@@ -1278,6 +1293,21 @@ declare global {
           id: string,
           rootPath: string,
         ) => Promise<ProjectDetail>;
+        /**
+         * Pick an image on this machine and store it as the icon of a project
+         * on the remote host (every device then sees it). Resolves null when
+         * the user cancels; rejects with "Update ADE on <machine> to change its
+         * icon." when the host is too old.
+         */
+        chooseProjectIcon: (
+          id: string,
+          rootPath: string,
+        ) => Promise<ProjectIcon | null>;
+        /** Clear the host project's custom icon; resolves the fallback icon, if any. */
+        removeProjectIcon: (
+          id: string,
+          rootPath: string,
+        ) => Promise<ProjectIcon | null>;
         getDefaultParentDir: (id: string) => Promise<string>;
         getHandoffStoragePreflight: (
           id: string,

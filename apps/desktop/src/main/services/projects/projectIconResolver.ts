@@ -728,8 +728,11 @@ function assertUsableProjectIconFile(iconPath: string): void {
 }
 
 function importedProjectIconRelativePath(sourcePath: string, data: Buffer): string {
-  const ext = path.extname(sourcePath).toLowerCase();
-  const rawBase = path.basename(sourcePath, path.extname(sourcePath));
+  // Split on both separators so a Windows-style name uploaded to a POSIX host
+  // (or the reverse) still reduces to its last segment.
+  const fileName = sourcePath.split(/[\\/]/).pop() ?? "";
+  const ext = path.extname(fileName).toLowerCase();
+  const rawBase = path.basename(fileName, path.extname(fileName));
   const safeBase = rawBase
     .trim()
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
@@ -752,11 +755,33 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
   }
 
   const data = fs.readFileSync(selectedPath);
-  // TOCTOU safety net: file may have grown between assertUsableProjectIconFile's stat and this read.
+  return importProjectIconBytes(root, selectedPath, data);
+}
+
+/**
+ * Store icon bytes that came from outside the project (a file picked elsewhere
+ * on this machine, or bytes a remote desktop uploaded) under the project's
+ * `.ade/project-icons` folder with a content-hash name, then point the
+ * project's icon override at that copy.
+ *
+ * `fileName` only supplies the extension and a readable base name; any
+ * directory part is dropped, so it can never steer the write outside the
+ * import folder.
+ */
+export function importProjectIconBytes(projectRoot: string, fileName: string, data: Buffer): ProjectIcon {
+  const root = canonicalProjectRoot(projectRoot);
+  if (!isSupportedIconPath(fileName)) {
+    throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
+  }
+  if (data.length === 0) {
+    throw new Error("Project icon file is empty.");
+  }
+  // Also the TOCTOU safety net for the selection path: the file may have
+  // grown between assertUsableProjectIconFile's stat and the read.
   if (data.length > ICON_MAX_BYTES) {
     throw new Error(`Project icon must be ${ICON_MAX_LABEL} or smaller.`);
   }
-  const relativeImportPath = importedProjectIconRelativePath(selectedPath, data);
+  const relativeImportPath = importedProjectIconRelativePath(fileName, data);
   const importDir = resolvePathWithinRoot(root, IMPORTED_PROJECT_ICON_DIR, { allowMissing: true });
   fs.mkdirSync(importDir, { recursive: true });
   const importPath = resolvePathWithinRoot(root, relativeImportPath, { allowMissing: true });

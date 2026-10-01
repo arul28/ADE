@@ -7,6 +7,7 @@ import React, {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import type { Icon } from "@phosphor-icons/react";
 
 /**
  * Hover *intent*, not hover. A menu is a list you scan by dragging the pointer
@@ -312,4 +313,26 @@ export function MenuSectionLabel({ children }: { children: ReactNode }) {
 
 export function MenuSeparator() {
   return <div className="my-0.5 h-px bg-border/10" />;
+}
+
+/* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
+   `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
+   dark menu is imperceptible. Menu rows now use the same white-alpha fill every
+   other hoverable surface in the sidebar uses, so "this row is under my cursor"
+   is actually visible. */
+export const MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.07] focus-visible:bg-white/[0.07] outline-none";
+export const DESTRUCTIVE_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
+
+export function MenuRowIcon({ icon: Icon, danger = false }: { icon: Icon; danger?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      data-menu-icon=""
+      className={danger ? "inline-flex shrink-0 text-red-300/70" : "inline-flex shrink-0 text-fg/45"}
+    >
+      <Icon size={13} weight="duotone" />
+    </span>
+  );
 }
