@@ -130,6 +130,27 @@ Main process:
 - `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
+- `apps/desktop/src/main/services/archive/archiveService.ts` — the archive:
+  `list`/`summary` read archived lanes (from `laneService.list`) and archived
+  chats/shells (from `terminal_sessions.archived_at`), and `restore`/`delete`
+  run one item at a time so a bad ref reports its own failure. Delete keeps a
+  lane's branch (`deleteBranch: false`) and forwards `force` only when the
+  caller sent it; a dirty lane is refused, not discarded, without it. Delete is
+  user-only and restore CTO-only (`ADE_ACTION_USER_ONLY` / `ADE_ACTION_CTO_ONLY`
+  in `adeActions/actionPolicy.ts`), so no agent or automation can reach them.
+- `apps/desktop/src/shared/archive.ts` and `shared/types/archive.ts` — the one
+  archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
+  by the service, the Settings page, the reminder, ADE Code, and `ade archive`.
+- `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
+  per-machine Settings → Archive tab: the list split at the two-week line, the
+  selection bar, restore, and delete. Deleting batches non-lane items together
+  and at most five lanes per request, then offers a single forced retry by name
+  for lanes with uncommitted changes.
+- `apps/desktop/src/renderer/components/app/useArchiveReminderBanner.tsx` — the
+  weekly docked reminder. It asks at most once per project per
+  `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something is
+  `DEFAULT_ARCHIVE_STALE_DAYS` (14 days) old, and a summary read that lands
+  after the person snoozed is dropped rather than re-shown.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
   machine's provider accounts (Claude and Codex only): the plain-JSON registry,
   the always-present base account whose `configHome` is recomputed on every read,
@@ -472,8 +493,8 @@ Renderer — settings:
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The tabs are General, Appearance, Chat, Notifications,
-  Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics, and
-  Usage. Notifications and Activity are one page: the event policies, the
+  Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
+  Archive, and Usage. Notifications and Activity are one page: the event policies, the
   notch, per-machine mute, privacy, sounds, and scheduled work all read and
   write through one `useActivitySettings()` model, so a change on one control
   can no longer be overwritten by a save from another copy. The retired
@@ -2394,6 +2415,35 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
   countdown, and an explicit cancel sets `autoApplySuppressedUntil`. It is off
   under `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev/source launches that have no
   auto-check timers.
+
+## Archive
+
+Archiving **hides** a lane, chat, or shell; ADE never deletes one on its own.
+The archive is the one place the three kinds are listed together, so it has a
+per-machine Settings tab (Settings → Archive), an `ade archive` CLI, an ADE Code
+weekly notice, and a weekly desktop banner that all read the same
+`archive.list` / `archive.summary` result.
+
+- **Dead agent shells auto-archive.** A shell an agent started under a chat
+  (`launchedBy: "agent"` with a `chat_session_id`) and nobody typed into is
+  archived once dead: at once when App Control relaunches it, after a
+  10-minute grace on a clean exit or an ADE stop, and only once its chat settles
+  after a crash. Typing into it (`terminal.write { fromUser }` from a user client,
+  or a hand resume) makes it the person's, and it is never archived. See
+  [terminals and sessions](../terminals-and-sessions/README.md#dead-agent-shells).
+- **Delete is the person's alone.** `archive.delete` is `ADE_ACTION_USER_ONLY`
+  and `archive.restore` is `ADE_ACTION_CTO_ONLY`, so an agent or automation can
+  read the archive and a CTO can restore, but only a user client may delete. The
+  CLI refuses `ade archive delete` and points at Settings. Deleting a lane keeps
+  its branch; a dirty worktree is refused unless the person confirms a forced
+  delete.
+- **The reminder asks, never acts.** The desktop banner and the ADE Code notice
+  appear at most once per project per week when something has been archived for
+  at least 14 days, and every answer (review, snooze, dismiss) pushes the next
+  ask a week out.
+
+iOS reads archived lanes, chats, and shells from the same shared model, but the
+iOS archive screen and banner are not built yet; that is a follow-up.
 
 ## Cross-links
 

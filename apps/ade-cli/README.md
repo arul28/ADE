@@ -807,6 +807,12 @@ ade storage snapshot --refresh --text                # force a fresh scan instea
 ade storage compress --text                          # losslessly compress old chat/terminal history
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
+ade archive list --text                              # archived lanes, chats, and shells, newest first (archived rows are hidden from chat/terminal lists unless --include-archived)
+ade archive list --kind chat --older-than 14 --text  # archived chats from 14+ days ago
+ade archive summary --text                           # counts per kind and what is 14+ days old
+ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Settings → Archive — the CLI refuses `ade archive delete`
+ade chat list --include-archived --text              # archived chats too
+ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text
 ade actions run account_settings.list --args-list-json '["all"]' --text
 ade actions run account_settings.set --args-list-json '["all","appearance.theme","dark"]' --text

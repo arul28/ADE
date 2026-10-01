@@ -5275,11 +5275,15 @@ async function runTool(args: {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
     } else if (!callerIsCto && domain === "terminal") {
+      // Base the scope on `scopedObjectArgs`, not `rawObjectArgs`: the
+      // `terminal.write` `fromUser` strip above already removed a claim a
+      // non-user caller may not make, and re-reading the raw args would put it
+      // back.
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
       );
     } else if (
       !callerIsCto

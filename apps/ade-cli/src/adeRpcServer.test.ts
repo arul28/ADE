@@ -4709,6 +4709,45 @@ describe("adeRpcServer", () => {
     expect(graphql.structuredContent.result).toMatchObject({ viewer: { id: "user-1" } });
   });
 
+  it("strips terminal.write fromUser for agents but keeps it for a user client", async () => {
+    const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
+
+    const agentFixture = createRuntime();
+    agentFixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "terminal-1" ? ownTerminal : null,
+    );
+    const agentHandler = createAdeRpcRequestHandler({ runtime: agentFixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+    await callTool(agentHandler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { terminalId: "terminal-1", data: "y\n", fromUser: true },
+    });
+    // An agent may not claim a shell as the person's: the flag is dropped.
+    expect(agentFixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      terminalId: "terminal-1",
+      data: "y\n",
+    });
+
+    const userFixture = createRuntime();
+    userFixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "terminal-1" ? ownTerminal : null,
+    );
+    const userHandler = createAdeRpcRequestHandler({ runtime: userFixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "ade-code:test", role: "cto" }, { clientName: "ade-code" });
+    await callTool(userHandler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { terminalId: "terminal-1", data: "y\n", fromUser: true },
+    });
+    // The user's own client may claim the shell, so the flag survives dispatch.
+    expect(userFixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      terminalId: "terminal-1",
+      data: "y\n",
+      fromUser: true,
+    });
+  });
+
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
     const fixture = createRuntime();
     const getChatEventHistory = vi.fn(async (sessionId: string) => ({

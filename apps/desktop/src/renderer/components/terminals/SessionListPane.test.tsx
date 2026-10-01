@@ -557,6 +557,52 @@ describe("SessionListPane", () => {
     expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("drawer-open:chat:chat-parent");
   });
 
+  it("reveals a collapsed drawer once when the selection lands inside it", () => {
+    const parent = makeSession({
+      id: "chat-parent",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      title: "Parent chat",
+    });
+    const child = makeSession({
+      id: "child-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Child shell",
+      ptyId: "pty-child",
+      chatSessionId: parent.id,
+    });
+    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    const view = renderPane({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    });
+
+    // A deeplink/notification landing on the child opens the drawer holding it.
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+      "drawer-open:chat:chat-parent",
+      { preserveDeeplink: true },
+    );
+
+    // Re-rendering the same selection must not toggle it again.
+    view.rerender(paneElement({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+  });
+
   it("nests same-lane subagent chats under the parent in a second drawer", () => {
     const parent = makeSession({
       id: "chat-parent",
