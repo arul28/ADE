@@ -40,7 +40,12 @@ import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
-import { WORK_FILTER_FOCUS_CLASS, WorkFilterPanel, type WorkFilterMachineOption } from "./WorkFilterPanel";
+import {
+  UNAVAILABLE_MACHINE_NAME,
+  WORK_FILTER_FOCUS_CLASS,
+  WorkFilterPanel,
+  type WorkFilterMachineOption,
+} from "./WorkFilterPanel";
 import {
   orderWorkLanes,
   workLaneTier,
@@ -3774,7 +3779,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             <div className="mt-1 max-w-[190px] text-[10px] leading-relaxed text-muted-fg/45">
               {activeWorkSessionFilterLabels(
                 workSessionFilters,
-                (machineId) => machineFilterOptions.find((machine) => machine.id === machineId)?.name ?? machineId,
+                (machineId) => machineFilterOptions.find((machine) => machine.id === machineId)?.name ?? UNAVAILABLE_MACHINE_NAME,
               ).join(" · ")}
             </div>
             <button

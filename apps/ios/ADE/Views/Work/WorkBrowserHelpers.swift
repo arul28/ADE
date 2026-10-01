@@ -187,6 +187,8 @@ func workFilteredSessions(
   archivedSessionIds: Set<String>,
   selectedStatus: WorkSessionStatusFilter,
   selectedLaneId: String,
+  /// Machine filter ids (`workMachineFilterId`). Empty means every machine.
+  machineFilter: Set<String> = [],
   searchText: String,
   outputSearchBySessionId: [String: String] = [:],
   /// Lane → PR-derived wait, from `workLaneWaitingReasonByLaneId`. Empty is a
@@ -243,6 +245,9 @@ func workFilteredSessions(
         guard isArchived else { return false }
       }
 
+      if !machineFilter.isEmpty && !machineFilter.contains(workMachineFilterId(laneId: session.laneId)) {
+        return false
+      }
       if selectedLaneId != "all" && session.laneId != selectedLaneId {
         return false
       }

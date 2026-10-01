@@ -23,6 +23,16 @@ struct WorkFiltersSection: View {
 
   private var selectedMachines: Set<String> { workParseMachineFilter(machineFilter.wrappedValue) }
 
+  /// The choices plus any filtered machine that has since left, so a saved
+  /// filter never hides rows without a chip to turn it off.
+  private var visibleMachineOptions: [WorkMachineFilterOption] {
+    let known = Set(machineOptions.map(\.id))
+    let stale = selectedMachines.subtracting(known).sorted().map {
+      WorkMachineFilterOption(id: $0, name: "Unavailable machine", isLive: false)
+    }
+    return machineOptions + stale
+  }
+
   private var activeFilterCount: Int {
     (selectedStatus != .all ? 1 : 0)
       + (selectedLaneId != "all" ? 1 : 0)
@@ -86,14 +96,14 @@ struct WorkFiltersSection: View {
             .workChipRowFade()
           }
 
-          if machineOptions.count > 1 {
+          if visibleMachineOptions.count > 1 {
             filterRow("Machine") {
               ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                   WorkFilterChip(title: "All", selected: selectedMachines.isEmpty, tint: ADEColor.accent) {
                     withAnimation(.snappy(duration: 0.18)) { machineFilter.wrappedValue = "" }
                   }
-                  ForEach(machineOptions) { machine in
+                  ForEach(visibleMachineOptions) { machine in
                     WorkFilterChip(
                       title: machine.name,
                       selected: selectedMachines.contains(machine.id),

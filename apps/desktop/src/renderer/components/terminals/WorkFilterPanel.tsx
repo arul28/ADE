@@ -20,12 +20,15 @@ import { ToolLogo } from "./ToolLogos";
 import {
   WORK_STATUS_FILTERS,
   WORK_TOOL_FAMILIES,
-  isWorkSessionFilterEmpty,
+  activeWorkSessionFilterLabels,
   workStatusFilterLabel,
   workToolFamilyLabel,
   type WorkSessionFilters,
   type WorkToolFamily,
 } from "./workSessionFilters";
+
+/** Name for a filtered machine that no longer reports this repo. */
+export const UNAVAILABLE_MACHINE_NAME = "Unavailable machine";
 
 export type WorkFilterMachineOption = {
   id: string;
@@ -190,20 +193,14 @@ export function WorkFilterPanel({
   onClearAll,
 }: WorkFilterPanelProps) {
   const laneActive = laneId.trim().length > 0 && laneId !== "all";
-  const activeCount = filters.status.length
-    + filters.tool.length
-    + filters.machine.length
-    + (filters.hasPr ? 1 : 0)
-    + (filters.dirtyLane ? 1 : 0)
-    + (laneActive ? 1 : 0);
-  const anyActive = laneActive || !isWorkSessionFilterEmpty(filters);
+  const activeCount = activeWorkSessionFilterLabels(filters).length + (laneActive ? 1 : 0);
   // A filter for a machine that has since left must stay visible, or it would
   // hide sessions with no chip left to turn it off.
   const machineOptions = React.useMemo(() => {
     const known = new Set(machines.map((machine) => machine.id));
     const stale = filters.machine
       .filter((id) => !known.has(id))
-      .map((id) => ({ id, name: id, online: false }));
+      .map((id) => ({ id, name: UNAVAILABLE_MACHINE_NAME, online: false }));
     return [...machines, ...stale];
   }, [filters.machine, machines]);
 
@@ -333,7 +330,7 @@ export function WorkFilterPanel({
               </FilterChip>
             </>
           ) : null}
-          {anyActive ? (
+          {activeCount > 0 ? (
             <button
               type="button"
               className={cn(

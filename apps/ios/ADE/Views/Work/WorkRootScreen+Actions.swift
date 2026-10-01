@@ -80,21 +80,15 @@ extension WorkRootListScreen {
       lanes: rosterProjection.lanes,
       launches: localProjectionIsCurrent ? syncService.activeProjectChatLaunches() : []
     )
-    // Machine filter: keep only rows owned by a chosen machine. Empty = all.
-    let machineFilter = workParseMachineFilter(machineFilterStorage)
-    let keepsMachine: (String) -> Bool = { laneId in
-      machineFilter.isEmpty || machineFilter.contains(workMachineFilterId(laneId: laneId))
-    }
-    let sessionsSnapshot = launchProjection.sessions.filter { keepsMachine($0.laneId) }
+    let sessionsSnapshot = launchProjection.sessions
     let deletingLaneIds = syncService.pendingLaneDeletionIds
-    let lanesSnapshot = launchProjection.lanes.filter { !deletingLaneIds.contains($0.id) && keepsMachine($0.id) }
+    let lanesSnapshot = launchProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
     // they render through the same machinery; committed rows win on id collision.
     let optimisticSessionsSnapshot = localProjectionIsCurrent
       ? optimisticSessions.merging(pendingChatCreationOptimisticSessions) { current, _ in current }
-        .filter { keepsMachine($0.value.laneId) }
       : [:]
     let archivedSessionIdsSnapshot = resolvedWorkArchivedSessionIds(
       localStorage: archivedSessionIdsStorage,
@@ -103,6 +97,7 @@ extension WorkRootListScreen {
     )
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
+    let machineFilterSnapshot = workParseMachineFilter(machineFilterStorage)
     let searchTextSnapshot = searchText
     let outputSearchBySessionId = workSessionOutputSearchIndexBySessionId(
       buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
@@ -126,6 +121,7 @@ extension WorkRootListScreen {
         archivedSessionIds: archivedSessionIdsSnapshot,
         selectedStatus: selectedStatusSnapshot,
         selectedLaneId: selectedLaneIdSnapshot,
+        machineFilter: machineFilterSnapshot,
         searchText: searchTextSnapshot,
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
