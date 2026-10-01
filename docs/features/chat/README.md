@@ -2136,14 +2136,14 @@ session primitives:
 
 Inactivity eviction runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A
 runtime is torn down when its session is idle, has no live pending
-input, and has exceeded its provider-specific inactivity window:
-`SESSION_INACTIVITY_TIMEOUT_MS = 5 min` for Claude/Codex/Cursor runtimes,
-`OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 s` for OpenCode runtimes
-(OpenCode holds a pooled server, so its idle window is much shorter to
-free the underlying server sooner). Teardown routes through
-`teardownRuntime(managed, "idle_ttl")`.
+input, and has exceeded the inactivity window
+(`SESSION_INACTIVITY_TIMEOUT_MS = 5 min`, the same for every provider).
+Teardown routes through `teardownRuntime(managed, "idle_ttl")`. OpenCode used
+to have a 60 s window; it released the chat's hold on the shared server while
+an OpenCode background shell was still due to wake the agent, so the wake-up
+reached nobody and the server later stopped with the shell still running.
 
-A Claude runtime whose only remaining claim is background work is exempt from
+A Claude or OpenCode runtime whose only remaining claim is background work is exempt from
 that sweep — but not forever. After `RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS`
 (= `SESSION_STALE_AFTER_MS`, 3 h) with no emitted event and no real change to
 the background-task level, the sweep reclaims it anyway: it logs
@@ -2152,7 +2152,8 @@ it overrode, and emits a `system_notice` in the chat, because this is the one
 teardown path that ends background work the session still claimed and stopped
 rows with no reason attached are worse than none. Anything bounded and
 attributable — a live turn, a queued steer, an unanswered approval — still
-exempts the runtime unconditionally, and every other provider is untouched
+exempts the runtime unconditionally. OpenCode's background claims are its
+running `background: true` shells and unsettled child sessions. Every other provider is untouched
 (Codex clears its subagents on turn end and Cursor reconciles cloud runs against
 the server, so neither can wedge this way).
 

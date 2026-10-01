@@ -450,6 +450,11 @@ import {
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 /** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
+/** Providers whose runtime can stop one background task (`agentChat.stopTask`). */
+function supportsPerTaskStop(provider: string | null | undefined): boolean {
+  return provider === "claude" || provider === "opencode";
+}
+
 function devinCloudErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
@@ -14095,7 +14100,7 @@ export function AgentChatPane({
         }
         setError("Per-task stop is not available for this provider.");
       } : undefined}
-      onStopSubagent={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "claude"
+      onStopSubagent={selectedSessionId && supportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
         ? (snapshot) => {
           const taskId = snapshot.taskId.trim();
           if (!taskId || snapshot.childSessionId) return;
@@ -16091,7 +16096,7 @@ export function AgentChatPane({
                         onStopSubagent={
                           !subagentView
                           && selectedSessionId
-                          && (selectedSession?.provider ?? sessionProvider) === "claude"
+                          && supportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
                             ? (taskId) => {
                                 void window.ade.agentChat.stopTask({
                                   sessionId: selectedSessionId,

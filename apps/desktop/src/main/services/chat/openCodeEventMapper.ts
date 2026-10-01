@@ -64,6 +64,8 @@ export type OpenCodeTurnMapper = {
   readonly childSessionForCall: (callId: string) => string | null;
   readonly callForChildSession: (childSessionId: string) => string | null;
   readonly toolName: (callId: string) => string | null;
+  /** The input a tool call was made with, once `session.tool.called` arrived. */
+  readonly toolInput: (callId: string) => unknown;
 };
 
 function textFromContent(content: unknown): string {
@@ -242,6 +244,10 @@ export function createOpenCodeTurnMapper(args: {
         toolFinished.add(data.id);
         const tool = toolNames.get(data.id) ?? "tool";
         const message = data.error?.message ?? "Tool failed";
+        // The failed tool row is the whole report. A failed tool call does not
+        // end the turn — the model reads the error and carries on — so a
+        // chat-level `error` here drew a turn-failure card over a turn that
+        // went on to finish (and over every tool a Stop interrupted).
         return [
           {
             event: {
@@ -254,7 +260,6 @@ export function createOpenCodeTurnMapper(args: {
               status: "failed",
             },
           },
-          { event: { type: "error", message: `Tool '${tool}' failed: ${message}`, itemId: data.id, turnId } },
         ];
       }
       case "session.step.ended": {
@@ -341,7 +346,81 @@ export function createOpenCodeTurnMapper(args: {
     childSessionForCall: (callId) => childByCall.get(callId) ?? null,
     callForChildSession: (childId) => callByChild.get(childId) ?? null,
     toolName: (callId) => toolNames.get(callId) ?? null,
+    toolInput: (callId) => toolInputs.get(callId),
   };
+}
+
+// ── Background shells ──────────────────────────────────────────────────────
+//
+// OpenCode's `shell` tool takes `background: true`. The call then returns at
+// once with `metadata: { status: "running", shellID }`, the command keeps
+// running inside the OpenCode server, and OpenCode wakes the session with a
+// `session.synthetic` notice (`metadata.source: "shell"`) when it ends. The
+// server also publishes server-wide `shell.exited` / `shell.deleted` events
+// that carry only the shell id.
+
+export type OpenCodeBackgroundShellStart = { shellId: string; command: string };
+
+export type OpenCodeBackgroundShellEnd = {
+  shellId: string;
+  status: "completed" | "failed" | "stopped";
+  exitCode: number | null;
+};
+
+function readRecordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** The background shell a successful tool call left running, if it did. */
+export function openCodeBackgroundShellStarted(
+  event: OpenCodeEvent,
+  toolInput: unknown,
+): OpenCodeBackgroundShellStart | null {
+  if (event.type !== "session.tool.success") return null;
+  const metadata = readRecordValue(event.data.metadata);
+  const shellId = metadata?.shellID;
+  if (typeof shellId !== "string" || !shellId || metadata?.status !== "running") return null;
+  const input = readRecordValue(toolInput);
+  const command = typeof input?.command === "string" ? input.command.trim() : "";
+  return { shellId, command };
+}
+
+function shellEndFromExit(status: unknown, exit: unknown): OpenCodeBackgroundShellEnd["status"] {
+  if (status === "killed" || status === "cancelled") return "stopped";
+  if (status === "timeout" || status === "error" || status === "failed") return "failed";
+  // OpenCode records a signal death as `exited` with no exit code.
+  if (typeof exit !== "number") return "stopped";
+  return exit !== 0 ? "failed" : "completed";
+}
+
+/** The background shell an event reports as ended, if any. */
+export function openCodeBackgroundShellEnded(event: OpenCodeEvent): OpenCodeBackgroundShellEnd | null {
+  if (event.type === "shell.exited") {
+    if (event.data.status === "running") return null;
+    return {
+      shellId: event.data.id,
+      status: shellEndFromExit(event.data.status, event.data.exit),
+      exitCode: typeof event.data.exit === "number" ? event.data.exit : null,
+    };
+  }
+  if (event.type === "shell.deleted") {
+    // Only meaningful for a shell still tracked as running: a normal exit is
+    // reported first, and deletion then follows it.
+    return { shellId: event.data.id, status: "stopped", exitCode: null };
+  }
+  if (event.type === "session.synthetic") {
+    const metadata = readRecordValue(event.data.metadata);
+    const shellId = metadata?.shellID;
+    if (metadata?.source !== "shell" || typeof shellId !== "string" || !shellId) return null;
+    // The notice names the job's state, not the process's: a completed job
+    // with no exit code still completed.
+    const exit = typeof metadata.exit === "number" ? metadata.exit : null;
+    const status = metadata.state === "completed"
+      ? (exit !== null && exit !== 0 ? "failed" : "completed")
+      : shellEndFromExit(metadata.state, exit ?? undefined);
+    return { shellId, status, exitCode: exit };
+  }
+  return null;
 }
 
 type SessionMessageInfo = Awaited<ReturnType<OpenCodeClient["message"]["list"]>>["data"][number];

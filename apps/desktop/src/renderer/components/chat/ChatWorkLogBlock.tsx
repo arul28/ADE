@@ -5,6 +5,7 @@ import {
   deriveWebSearchResultDisplay,
   formatStructuredValue,
   readRecord,
+  readToolFailureText,
   summarizeDiffStats,
   summarizeInlineText,
   type ChatLocalhostUrl,
@@ -381,9 +382,12 @@ export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): Chat
   return Array.from(byId.values());
 }
 
-function FlatPre({ children }: { children: React.ReactNode }) {
+function FlatPre({ children, failed = false }: { children: React.ReactNode; failed?: boolean }) {
   return (
-    <pre className="mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55] text-fg/55">
+    <pre className={cn(
+      "mt-1 ml-[18px] max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-white/[0.05] pt-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.55]",
+      failed ? "text-red-300/75" : "text-fg/55",
+    )}>
       {children}
     </pre>
   );
@@ -509,6 +513,9 @@ function ToolCallRow({
   const searchUrlActions = searchResults.length > 0 ? [] : webSearchUrlActions(entry);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
+  // A failed tool says why on its own row, so the reason is readable without
+  // opening it (the turn carries on; this row is the whole report).
+  const failureText = useMemo(() => toolEntryFailureText(entry), [entry]);
   const detailIsTruncated = Boolean(detailBody && detailBody.length > WORK_LOG_DETAIL_TRUNCATE_LIMIT);
   const visibleDetailBody = detailBody && detailIsTruncated && !detailExpanded
     ? `${detailBody.slice(0, WORK_LOG_DETAIL_TRUNCATE_LIMIT)}...`
@@ -528,6 +535,15 @@ function ToolCallRow({
         </span>
         {argText ? (
           <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{argText}</span>
+        ) : null}
+        {failureText && !open ? (
+          <span
+            className="ml-auto min-w-0 max-w-[50%] shrink truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-red-300/70"
+            title={failureText}
+            data-testid="work-log-failure-text"
+          >
+            {failureText}
+          </span>
         ) : null}
         {resultCount !== null ? (
           <span
@@ -575,7 +591,7 @@ function ToolCallRow({
       ) : null}
       {open && visibleDetailBody ? (
         <>
-          <FlatPre>{visibleDetailBody}</FlatPre>
+          <FlatPre failed={failureText !== null}>{visibleDetailBody}</FlatPre>
           {detailIsTruncated ? (
             <button
               type="button"
@@ -589,6 +605,12 @@ function ToolCallRow({
       ) : null}
     </div>
   );
+}
+
+/** A failed tool entry's error sentence, or null for any other entry. */
+function toolEntryFailureText(entry: ChatWorkLogEntry): string | null {
+  if (entry.entryKind !== "tool" || entry.status !== "failed") return null;
+  return readToolFailureText(entry.result);
 }
 
 function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
@@ -608,7 +630,7 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   }
   if (entry.entryKind === "tool") {
     if (entry.result !== undefined) {
-      return formatStructuredValue(entry.result);
+      return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
     }
     const args = readRecord(entry.args);
     if (args && Object.keys(args).length > 0) return formatStructuredValue(args);

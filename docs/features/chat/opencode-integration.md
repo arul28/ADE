@@ -174,6 +174,43 @@ provider that offers a sign-in.
 - Drill-in reads the child's stored messages (`message.list`) and maps each
   part to a formed chat event.
 
+## Background shells
+
+- `shell` with `background: true` returns at once with
+  `metadata: { status: "running", shellID }`; the command keeps running inside
+  the OpenCode server. The runtime tracks it in `backgroundShells` from that
+  `session.tool.success` (`openCodeBackgroundShellStarted`) and projects it onto
+  the same `scheduled_work_update {kind: "background_task"}` rows Claude's
+  background commands use: a live job line with a timer and Stop in the thread,
+  the Background popover, and **Background work** on the Work row.
+- The end comes from the server-wide `shell.exited` (or `shell.deleted`) event,
+  which carries only the shell id (`openCodeBackgroundShellEnded`). OpenCode
+  then wakes the session itself, and that execution becomes a turn with no user
+  message. `session.synthetic` with `metadata.source: "shell"` is also accepted,
+  though 2.0.18 does not publish it on the event bus. An `exited` shell with no
+  exit code died from a signal and reads as stopped.
+- A live shell or child counts as background workload, so the idle sweep and
+  the runtime budget leave the chat connected (and its hold on the shared
+  server in place) until it ends. The three-hour stale-work backstop applies.
+- Stop on the job row (`agentChat.stopTask`) and the interrupt modes that stop
+  background work kill the shell's process tree (`killOpenCodeShellProcessTree`;
+  `taskkill /T` on Windows). OpenCode then tells the agent the command was
+  killed. Deleting the shell record instead made the agent read a stopped
+  command as one that never started.
+- A teardown that stops listening (close, delete, model switch, provider
+  switch, shutdown) first stops every live shell and child, settles their rows
+  as stopped, and posts a notice, because no one would hear their wake-up.
+  `agent_chat.opencode_runtime_teardown` logs each teardown with its reason and
+  counts; `opencode.server_released` pairs with `opencode.server_acquired`.
+- After a stream gap, `shell.list` settles shells that ended unseen. OpenCode
+  drops a shell once its result is read, so a missing shell has ended.
+
+## Tool failures
+
+- A failed tool call is a failed tool row only (red, with the error sentence on
+  the row). It does not end the turn — the model reads the error and continues —
+  so it raises no chat-level `error` card.
+
 ## Fork and handoff
 
 - Local fork: `session.fork`.

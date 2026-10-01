@@ -861,6 +861,9 @@ jobs:
       # `if (process.platform === ...) return;` form that reports green while
       # asserting nothing. Pure source + workflow parsing, no dependencies.
       - run: node scripts/validate-platform-gates.mjs
+      # A literal NUL in a source file makes git, GitHub and agent read tools
+      # treat it as binary. Source must use the `\u0000` escape instead.
+      - run: node scripts/check-source-nul-bytes.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:

@@ -939,6 +939,7 @@ import {
   type OpenCodeAgentProfile,
 } from "../opencode/openCodeConfig";
 import { acquireOpenCodeServer } from "../opencode/openCodeServer";
+import { killOpenCodeShellProcessTree } from "../opencode/openCodeServerOrphans";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   applyOpenCodeSessionContext,
@@ -971,6 +972,9 @@ import {
 import {
   createOpenCodeTurnMapper,
   mapOpenCodeMessagesToTranscript,
+  openCodeBackgroundShellEnded,
+  openCodeBackgroundShellStarted,
+  type OpenCodeBackgroundShellEnd,
   openCodeEventSessionId,
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
@@ -2813,7 +2817,23 @@ type OpenCodeRuntime = {
   subagents: Map<string, OpenCodeSubagent>;
   /** `subagent` calls of the parent whose child session has not appeared yet. */
   pendingSubagentCalls: OpenCodeSubagentCall[];
+  /**
+   * Commands the agent ran with `shell` + `background: true` that OpenCode has
+   * not yet reported ended, by shell id. OpenCode wakes the session when one
+   * ends, so while any is live the chat is still working and must keep
+   * listening (and keep its hold on the server).
+   */
+  backgroundShells: Map<string, OpenCodeBackgroundShell>;
   stopListening: () => void;
+};
+
+type OpenCodeBackgroundShell = {
+  shellId: string;
+  command: string;
+  startedAt: number;
+  /** The `shell` tool call that started it. */
+  callId: string;
+  turnId: string | null;
 };
 
 type CursorPermissionWaiter =
@@ -3412,11 +3432,11 @@ const NO_BACKGROUND_WORK: SessionBackgroundWork = Object.freeze({
  *     ADE's process tree entirely,
  *   • long-lived processes started inside a user-owned terminal pane, which are
  *     the user's to manage and deliberately out of scope,
- *   • opencode / droid / pi work — those harnesses expose no background-task,
- *     subagent, or remote-run level to track at all, so they contribute zero
- *     here. That is a checked fact per harness, not a default: the switch below
- *     is exhaustive over `ChatRuntime["kind"]`, so a newly landed harness fails
- *     to compile until someone decides which column it belongs in.
+ *   • droid / pi work — those harnesses expose no background-task, subagent,
+ *     or remote-run level to track at all, so they contribute zero here. That
+ *     is a checked fact per harness, not a default: the switch below is
+ *     exhaustive over `ChatRuntime["kind"]`, so a newly landed harness fails to
+ *     compile until someone decides which column it belongs in.
  */
 function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWork {
   if (!runtime) return NO_BACKGROUND_WORK;
@@ -3447,6 +3467,20 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       // turn ends — the clearest case of work outliving its turn ADE has.
       return summarizeBackgroundWork(new Array(runtime.cloudRuns.size).fill(null));
     }
+    case "opencode": {
+      // OpenCode 2.0 runs `background: true` shells and subagents inside its
+      // server and wakes the session when each ends. A child still running
+      // after the parent's turn is a background subagent; during a turn it is
+      // foreground work the turn already accounts for.
+      const backgroundTypes: Array<string | null> = [];
+      for (const _shellId of runtime.backgroundShells.keys()) backgroundTypes.push("background_task");
+      if (!runtime.activeTurn) {
+        for (const child of runtime.subagents.values()) {
+          if (!child.settled) backgroundTypes.push(null);
+        }
+      }
+      return summarizeBackgroundWork(backgroundTypes);
+    }
     // ── Harnesses with no background-work surface ───────────────────────────
     //
     // Listed individually rather than swept up by a `default`, so the
@@ -3458,7 +3492,6 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
     // from `SUBAGENT_CAPABILITIES` so `resolveSubagentCapability` already
     // degrades it to the no-op descriptor. Zero here is a verified fact about
     // Pi, not an unexamined default.
-    case "opencode":
     case "droid":
     case "pi":
     // ACP: a session is bounded by its prompt. No dialect exposes a background
@@ -3487,6 +3520,13 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
  * `lastActivityAt` fallback rather than being handed a made-up timestamp.
  */
 function runtimeBackgroundWorkSince(runtime: ChatRuntime | null): string | null {
+  if (runtime?.kind === "opencode") {
+    let earliest: number | null = null;
+    for (const shell of runtime.backgroundShells.values()) {
+      if (earliest === null || shell.startedAt < earliest) earliest = shell.startedAt;
+    }
+    return earliest === null ? null : new Date(earliest).toISOString();
+  }
   if (!runtime || runtime.kind !== "claude") return null;
   const startedAt = runtime.backgroundWorkStartedAt;
   return startedAt == null ? null : new Date(startedAt).toISOString();
@@ -3529,6 +3569,26 @@ function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
   return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
 }
 
+/**
+ * An OpenCode runtime's BACKGROUND claims: a child session or a background
+ * shell still running. OpenCode wakes the parent session when either ends, so
+ * the chat must still be listening then — the same split as Claude's.
+ */
+function openCodeHasBackgroundWorkload(runtime: OpenCodeRuntime): boolean {
+  return runtime.backgroundShells.size > 0
+    || [...runtime.subagents.values()].some((child) => !child.settled);
+}
+
+function openCodeHasBoundedWorkload(runtime: OpenCodeRuntime): boolean {
+  return Boolean(
+    runtime.busy
+    || runtime.activeTurn
+    || runtime.pendingApprovals.size > 0
+    || runtime.pendingForms.size > 0
+    || runtime.pendingSteers.length > 0
+  );
+}
+
 function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
   if (!runtime) return false;
   switch (runtime.kind) {
@@ -3546,15 +3606,7 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
     case "claude":
       return claudeHasBoundedWorkload(runtime) || claudeHasBackgroundWorkload(runtime);
     case "opencode":
-      return Boolean(
-        runtime.busy
-        || runtime.activeTurn
-        || runtime.pendingApprovals.size > 0
-        || runtime.pendingForms.size > 0
-        || runtime.pendingSteers.length > 0
-        // A background child still running wakes the parent when it finishes.
-        || [...runtime.subagents.values()].some((child) => !child.settled)
-      );
+      return openCodeHasBoundedWorkload(runtime) || openCodeHasBackgroundWorkload(runtime);
     case "cursor":
       return Boolean(
         runtime.busy
@@ -3630,15 +3682,25 @@ const RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS = SESSION_STALE_AFTER_MS;
  *   • Anything bounded and attributable (a live turn, a queued steer, an
  *     unanswered approval) still exempts the runtime unconditionally.
  *
- * Claude-only on purpose: it is the only runtime whose exemption has no other
- * writer. Codex clears its subagents on turn end, Cursor's cloud runs are
- * reconciled against the server, and neither can wedge this way.
+ * Claude and OpenCode only: their exemptions are cleared solely by an end
+ * event the provider may never send (a Claude task edge, an OpenCode child's
+ * idle or a shell's exit). Codex clears its subagents on turn end, Cursor's
+ * cloud runs are reconciled against the server, and neither can wedge this way.
  */
 function isRuntimeWorkloadExemptionStale(runtime: ChatRuntime | null, silentForMs: number): boolean {
-  if (!runtime || runtime.kind !== "claude") return false;
+  if (!runtime) return false;
   if (silentForMs <= RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS) return false;
-  if (claudeHasBoundedWorkload(runtime)) return false;
-  return claudeHasBackgroundWorkload(runtime);
+  if (runtime.kind === "claude") {
+    if (claudeHasBoundedWorkload(runtime)) return false;
+    return claudeHasBackgroundWorkload(runtime);
+  }
+  if (runtime.kind === "opencode") {
+    // A child whose end event never arrived would otherwise pin the runtime,
+    // and its hold on the shared server, for the life of the app.
+    if (openCodeHasBoundedWorkload(runtime)) return false;
+    return openCodeHasBackgroundWorkload(runtime);
+  }
+  return false;
 }
 
 function isSignalPermissionError(error: unknown): boolean {
@@ -4578,14 +4640,10 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
 // can always interrupt manually if something is genuinely stuck.
+// One idle window for every harness. OpenCode once had a 1-minute one; it
+// released the chat's hold on the shared server while OpenCode background
+// work was still due to wake the agent, so that wake-up reached nobody.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
-/**
- * How long an OpenCode turn's event stream may stay silent before the server
- * is asked whether the sessions it waits on are still busy. Long enough that a
- * normal tool call never triggers it; short enough that a lost `session.idle`
- * costs half a minute, not a turn that never ends.
- */
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
@@ -10078,7 +10136,7 @@ export function createAgentChatService(args: {
     const presetId = managed.session.presetId?.trim() ?? "";
     const credentialId = managed.session.credentialId?.trim() ?? "";
     if (!presetId && !credentialId) return null;
-    const cacheKey = `${managed.session.provider} ${presetId} ${credentialId}`;
+    const cacheKey = `${managed.session.provider}\u0000${presetId}\u0000${credentialId}`;
     const cached = sessionLaunchPlanCache.get(managed.session.id);
     // A plan whose token expired (an OpenCode OAuth login) is resolved again,
     // which reads the refreshed token and rewrites the proxy upstream with it.
@@ -15695,6 +15753,7 @@ export function createAgentChatService(args: {
       interrupted: false,
       subagents: new Map(),
       pendingSubagentCalls: [],
+      backgroundShells: new Map(),
       stopListening: () => {},
     };
     runtime.stopListening = handle.lease.listen({
@@ -22888,6 +22947,7 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
+      stopOpenCodeBackgroundWorkForTeardown(managed, runtime, openCodeReason);
       runtime.interrupted = true;
       runtime.stopListening();
       // The OpenCode server outlives this runtime and would keep running an
@@ -23019,13 +23079,6 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
-  };
-
-  const getSessionInactivityTimeoutMs = (managed: ManagedChatSession): number => {
-    if (managed.runtime?.kind === "opencode") {
-      return OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS;
-    }
-    return SESSION_INACTIVITY_TIMEOUT_MS;
   };
 
   const maybeGenerateSessionSummary = async (
@@ -30543,6 +30596,140 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  // ── OpenCode background shells ──────────────────────────────────────────
+  //
+  // Projected onto the same `scheduled_work_update {kind:"background_task"}`
+  // rows Claude's background commands use, so the thread shows one live job
+  // line per command and the Work row reads it as background work.
+
+  const emitOpenCodeBackgroundShellUpdate = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    shell: OpenCodeBackgroundShell,
+    status: "running" | "completed" | "failed" | "stopped",
+    detail?: { summary?: string; stopReason?: string; stopSource?: AgentChatStopSource },
+  ): void => {
+    const turnId = runtime.activeTurnId ?? shell.turnId ?? undefined;
+    emitChatEvent(managed, {
+      type: "scheduled_work_update",
+      id: `background:${shell.shellId}`,
+      kind: "background_task",
+      status,
+      origin: "background_task",
+      title: shell.command || "Background command",
+      ...(detail?.summary ? { summary: detail.summary } : {}),
+      ...(detail?.stopReason ? { stopReason: detail.stopReason } : {}),
+      ...(detail?.stopSource ? { stopSource: detail.stopSource } : {}),
+      sourceTaskId: shell.shellId,
+      sourceToolUseId: shell.callId,
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const trackOpenCodeBackgroundShell = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    start: { shellId: string; command: string },
+    callId: string,
+  ): void => {
+    if (runtime.backgroundShells.has(start.shellId)) return;
+    const shell: OpenCodeBackgroundShell = {
+      shellId: start.shellId,
+      command: start.command,
+      startedAt: Date.now(),
+      callId,
+      turnId: runtime.activeTurnId,
+    };
+    runtime.backgroundShells.set(shell.shellId, shell);
+    emitOpenCodeBackgroundShellUpdate(managed, runtime, shell, "running");
+  };
+
+  const settleOpenCodeBackgroundShell = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    end: OpenCodeBackgroundShellEnd,
+    detail?: { summary?: string; stopReason?: string; stopSource?: AgentChatStopSource },
+  ): void => {
+    const shell = runtime.backgroundShells.get(end.shellId);
+    if (!shell) return;
+    runtime.backgroundShells.delete(end.shellId);
+    const summary = detail?.summary
+      ?? (end.exitCode !== null && end.exitCode !== 0 ? `Exited with code ${end.exitCode}` : undefined);
+    emitOpenCodeBackgroundShellUpdate(managed, runtime, shell, end.status, { ...detail, ...(summary ? { summary } : {}) });
+  };
+
+  /**
+   * Stop every background shell and running child session this runtime owns,
+   * and settle their rows. The shell's process tree is killed (OpenCode then
+   * reports the signal to the agent); a child is interrupted. Returns what it
+   * stopped.
+   */
+  const stopAllOpenCodeBackgroundWork = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    detail: { stopSource: AgentChatStopSource; stopReason?: string; summary?: string },
+  ): { shells: number; children: number } => {
+    const shells = [...runtime.backgroundShells.values()];
+    const children = [...runtime.subagents.entries()].filter(([, child]) => !child.settled).map(([id]) => id);
+    const client = runtime.handle.client;
+    const location = { directory: runtime.handle.directory };
+    for (const shell of shells) {
+      void client.shell
+        .get({ id: shell.shellId, location })
+        .then((info) => {
+          if (info.data.status === "running" && typeof info.data.pid === "number") killOpenCodeShellProcessTree(info.data.pid);
+        })
+        .catch(() => {});
+      settleOpenCodeBackgroundShell(managed, runtime, { shellId: shell.shellId, status: "stopped", exitCode: null }, detail);
+    }
+    for (const childId of children) {
+      void client.session.interrupt({ sessionID: childId }).catch(() => {});
+      settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
+    }
+    return { shells: shells.length, children: children.length };
+  };
+
+  /**
+   * Stop what this runtime still has running in the background before ADE
+   * stops listening. OpenCode would otherwise wake the session when the work
+   * ends, with nobody to hear it, and the shared server stopping later kills
+   * it without a word. Stopping it now keeps the transcript truthful.
+   */
+  const stopOpenCodeBackgroundWorkForTeardown = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    reason: string,
+  ): void => {
+    const live = {
+      shells: runtime.backgroundShells.size,
+      children: [...runtime.subagents.values()].filter((child) => !child.settled).length,
+    };
+    logger.info("agent_chat.opencode_runtime_teardown", {
+      sessionId: managed.session.id,
+      providerSessionId: runtime.handle.sessionId,
+      reason,
+      backgroundShellCount: live.shells,
+      runningSubagentCount: live.children,
+    });
+    if (!live.shells && !live.children) return;
+    const stopped = stopAllOpenCodeBackgroundWork(managed, runtime, {
+      stopSource: "system",
+      stopReason: "ADE closed this chat's connection to OpenCode.",
+    });
+    // The idle and budget paths only reach live work through the stale-work
+    // backstop, which announces the stop itself.
+    if (reason === "idle_ttl" || reason === "budget_eviction") return;
+    const parts = [
+      stopped.shells ? `${stopped.shells} background ${stopped.shells === 1 ? "command" : "commands"}` : null,
+      stopped.children ? `${stopped.children} ${stopped.children === 1 ? "subagent" : "subagents"}` : null,
+    ].filter(Boolean).join(" and ");
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `ADE stopped ${parts} when it closed this chat's connection to OpenCode. Ask the agent to start ${stopped.shells + stopped.children === 1 ? "it" : "them"} again if still needed.`,
+    });
+  };
+
   const handleOpenCodeEvent = (
     managed: ManagedChatSession,
     runtime: OpenCodeRuntime,
@@ -30550,6 +30737,13 @@ export function createAgentChatService(args: {
   ): void => {
     if (managed.runtime !== runtime) return;
     const parentId = runtime.handle.sessionId;
+    // Server-wide shell events carry only the shell id; this runtime's own
+    // background shells are the ones it tracks.
+    if (event.type === "shell.exited" || event.type === "shell.deleted") {
+      const ended = openCodeBackgroundShellEnded(event);
+      if (ended) settleOpenCodeBackgroundShell(managed, runtime, ended);
+      return;
+    }
     if (event.type === "session.created") {
       const parent = event.data.parentID;
       if (parent && (parent === parentId || runtime.subagents.has(parent))) {
@@ -30561,6 +30755,12 @@ export function createAgentChatService(args: {
     if (!sessionId) return;
     const child = sessionId === parentId ? undefined : runtime.subagents.get(sessionId);
     if (sessionId !== parentId && !child) return;
+    if (event.type === "session.synthetic") {
+      // OpenCode's completion notice for a background shell. It arrives before
+      // the execution it starts, so the job row settles ahead of the new turn.
+      const ended = openCodeBackgroundShellEnded(event);
+      if (ended) settleOpenCodeBackgroundShell(managed, runtime, ended);
+    }
     if (handleOpenCodeAskEvent(managed, runtime, event)) return;
     if (child) {
       for (const mapped of mapOpenCodeChildEvent(openCodeChildState(runtime), sessionId, child, event)) {
@@ -30610,6 +30810,10 @@ export function createAgentChatService(args: {
     if (event.type === "session.tool.called" && turn.mapper.toolName(event.data.id) === "subagent") {
       rememberOpenCodeSubagentCall(openCodeChildState(runtime), event.data.id, event.data.input);
     }
+    if (event.type === "session.tool.success") {
+      const started = openCodeBackgroundShellStarted(event, turn.mapper.toolInput(event.data.id));
+      if (started) trackOpenCodeBackgroundShell(managed, runtime, started, event.data.id);
+    }
   };
 
   /**
@@ -30658,6 +30862,8 @@ export function createAgentChatService(args: {
     }
     await recoverOpenCodePendingAsks(managed, runtime);
     if (managed.runtime !== runtime) return;
+    await reconcileOpenCodeBackgroundShells(managed, runtime);
+    if (managed.runtime !== runtime) return;
     for (const [childId, child] of runtime.subagents) {
       if (child.settled || active[childId]) continue;
       const info = await client.session.get({ sessionID: childId }).catch(() => null);
@@ -30665,6 +30871,38 @@ export function createAgentChatService(args: {
       if (info?.outcome === "failed") settleOpenCodeChild(managed, runtime, childId, "failed", "Subagent failed");
       else if (info?.outcome === "interrupted") settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
       else if (info) settleOpenCodeChild(managed, runtime, childId, "completed", child.description);
+    }
+  };
+
+  /** Settle background shells that ended while the event stream was down. */
+  const reconcileOpenCodeBackgroundShells = async (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+  ): Promise<void> => {
+    if (runtime.backgroundShells.size === 0) return;
+    const listed = await runtime.handle.client.shell
+      .list({ location: { directory: runtime.handle.directory } })
+      .catch(() => null);
+    if (!listed || managed.runtime !== runtime) return;
+    const byId = new Map(listed.data.map((info) => [info.id, info] as const));
+    for (const shell of [...runtime.backgroundShells.values()]) {
+      const info = byId.get(shell.shellId);
+      if (info?.status === "running") continue;
+      if (info) {
+        const ended = openCodeBackgroundShellEnded({
+          type: "shell.exited",
+          data: { id: info.id, status: info.status, ...(typeof info.exit === "number" ? { exit: info.exit } : {}) },
+        } as OpenCodeEvent);
+        if (ended) settleOpenCodeBackgroundShell(managed, runtime, ended);
+        continue;
+      }
+      // OpenCode drops a shell once its result is read, so a missing one ended.
+      settleOpenCodeBackgroundShell(
+        managed,
+        runtime,
+        { shellId: shell.shellId, status: "completed", exitCode: null },
+        { summary: "Ended while ADE was reconnecting" },
+      );
     }
   };
 
@@ -32262,6 +32500,42 @@ export function createAgentChatService(args: {
     }));
   };
 
+  const stopOpenCodeBackgroundShell = async (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    sessionId: string,
+    shellId: string,
+  ): Promise<AgentChatStopTaskResult> => {
+    if (!runtime.backgroundShells.has(shellId)) {
+      return { sessionId, taskId: shellId, stopped: false, reason: "That background command is not running." };
+    }
+    const location = { directory: runtime.handle.directory };
+    try {
+      // Kill the process, not the record: OpenCode then tells the agent the
+      // command was killed. Removing the record first made the agent read a
+      // stopped command as one that never started (`Shell.NotFoundError`).
+      // Best effort, like every tree kill: the group signal can take the root
+      // before the final per-pid signal, which then reports failure.
+      const info = await runtime.handle.client.shell.get({ id: shellId, location });
+      const pid = info.data.pid;
+      if (info.data.status === "running" && typeof pid === "number") killOpenCodeShellProcessTree(pid);
+    } catch (error) {
+      logger.warn("agent_chat.opencode_stop_shell_failed", {
+        sessionId: managed.session.id,
+        shellId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { sessionId, taskId: shellId, stopped: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+    settleOpenCodeBackgroundShell(
+      managed,
+      runtime,
+      { shellId, status: "stopped", exitCode: null },
+      { stopSource: "user", summary: "Stopped by user" },
+    );
+    return { sessionId, taskId: shellId, stopped: true };
+  };
+
   const stopTask = async (
     { sessionId, taskId }: AgentChatStopTaskArgs,
   ): Promise<AgentChatStopTaskResult> => {
@@ -32270,12 +32544,15 @@ export function createAgentChatService(args: {
     if (!id) {
       return { sessionId, taskId, stopped: false, reason: "A task id is required." };
     }
+    if (managed.runtime?.kind === "opencode") {
+      return stopOpenCodeBackgroundShell(managed, managed.runtime, sessionId, id);
+    }
     if (managed.runtime?.kind !== "claude") {
       return {
         sessionId,
         taskId: id,
         stopped: false,
-        reason: "Per-task stop is only available for Claude chats.",
+        reason: "Per-task stop is only available for Claude and OpenCode chats.",
       };
     }
     const runtime = managed.runtime;
@@ -51465,6 +51742,11 @@ export function createAgentChatService(args: {
     // queued follow-ups stay in OpenCode's inbox only for `stop_only`.
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
+      // Background work outlives the turn by design; only the background
+      // modes reach it, and they do so even when no turn is running.
+      if (stopModeStopsBackground(mode)) {
+        stopAllOpenCodeBackgroundWork(managed, runtime, { stopSource: "user", summary: "Stopped by user" });
+      }
       if (!runtime.activeTurn && runtime.interrupted) return result;
       runtime.interrupted = true;
       if (stopModeClearsQueue(mode)) cancelOpenCodeInboxRows(managed, runtime, "interrupted");
@@ -56563,7 +56845,10 @@ export function createAgentChatService(args: {
         : 0,
       activeSubagentCount: managed.runtime?.kind === "claude"
         ? managed.runtime.activeSubagents.size
-        : 0,
+        : managed.runtime?.kind === "opencode"
+          ? [...managed.runtime.subagents.values()].filter((child) => !child.settled).length
+          : 0,
+      backgroundShellCount: managed.runtime?.kind === "opencode" ? managed.runtime.backgroundShells.size : 0,
     });
     emitChatEvent(managed, {
       type: "system_notice",
@@ -56580,7 +56865,7 @@ export function createAgentChatService(args: {
       if (managed.session.status !== "idle") continue;
       if (hasLivePendingInput(managed)) continue;
       const silentForMs = now - managed.lastActivityTimestamp;
-      if (silentForMs <= getSessionInactivityTimeoutMs(managed)) continue;
+      if (silentForMs <= SESSION_INACTIVITY_TIMEOUT_MS) continue;
       // Only meaningful when the runtime is actually claiming work — otherwise
       // this is the ordinary idle path and there is nothing to override.
       const claimsWorkload = hasRuntimeActiveWorkload(managed.runtime);

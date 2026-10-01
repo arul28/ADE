@@ -26,6 +26,11 @@ export type ChatErrorPresentationKind =
   | "unknown";
 
 const TITLE_COULDNT_START = "Couldn't start this turn";
+/**
+ * Most failures reach the card after the turn has run for a while. "Couldn't
+ * start" is true only for the configuration case, where nothing ever ran.
+ */
+const TITLE_TURN_STOPPED = "This turn stopped";
 
 /** Matches the ACP host's capture cap, so a card can never show more than was kept. */
 export const ACP_STDERR_TAIL_LIMIT = 4_000;
@@ -200,7 +205,7 @@ function failureCopy(
     // turn says.
     default:
       return {
-        title: TITLE_COULDNT_START,
+        title: TITLE_TURN_STOPPED,
         fallbackBody: provider
           ? `${provider} stopped this turn before it could finish.`
           : "This turn stopped before it could finish.",
