@@ -753,7 +753,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "List archived lanes, chats, and shells, newest first. Archived items are hidden from every other list "
         + "unless it is asked to include them.",
-      input: "object { kinds?: Array<\"lane\" | \"chat\" | \"shell\"> }",
+      input: "object { kinds?: Array<\"lane\" | \"chat\" | \"shell\">, olderThanDays?: number }",
       example: "ade actions run archive.list --input-json '{\"kinds\":[\"chat\"]}' --text",
     },
     summary: {
@@ -762,14 +762,15 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run archive.summary --input-json '{\"olderThanDays\":30}' --text",
     },
     restore: {
-      description: "Unarchive lanes, chats, or shells. Each item reports done or failed on its own.",
+      description: "Unarchive lanes, chats, or shells (CTO only for agents). Each item reports done or failed on its own.",
       input: "object { items: Array<{ kind: \"lane\" | \"chat\" | \"shell\", id: string }> }",
       example: "ade actions run archive.restore --input-json '{\"items\":[{\"kind\":\"chat\",\"id\":\"session-id\"}]}' --text",
     },
     delete: {
       description:
-        "Permanently delete archived items. Refuses anything not archived. A lane delete removes the lane and its "
-        + "worktree but keeps its git branch; `force` also removes a worktree with uncommitted changes.",
+        "Permanently delete archived items. The user's action only: agents and automations are refused. Refuses "
+        + "anything not archived. A lane delete removes the lane and its worktree but keeps its git branch; `force` "
+        + "also removes a worktree with uncommitted changes.",
       input: "object { items: Array<{ kind, id }>, force?: boolean }",
       example: "ade actions run archive.delete --input-json '{\"items\":[{\"kind\":\"shell\",\"id\":\"session-id\"}]}' --text",
     },

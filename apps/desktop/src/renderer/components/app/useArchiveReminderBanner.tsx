@@ -67,7 +67,9 @@ export function useArchiveReminderBanner({
       if (Date.now() < archiveReminderSnoozedUntil(projectRoot)) return;
       window.ade.archive.summary({ olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS })
         .then((next) => {
-          if (!cancelled) setSummary(next.staleTotal > 0 ? next : null);
+          // The user may have answered the banner while this check was out.
+          if (cancelled || Date.now() < archiveReminderSnoozedUntil(projectRoot)) return;
+          setSummary(next.staleTotal > 0 ? next : null);
         })
         .catch(() => {});
     };

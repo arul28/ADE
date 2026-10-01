@@ -5182,6 +5182,12 @@ async function runTool(args: {
       : safeObject(toolArgs.args);
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
+    // `terminal.write { fromUser }` claims an agent's shell for the person (it is
+    // then never auto-archived). Only a user client may say that.
+    if (domain === "terminal" && action === "write" && "fromUser" in scopedObjectArgs && !isUserClientSession(session)) {
+      const { fromUser: _notTheUser, ...agentWrite } = scopedObjectArgs;
+      scopedObjectArgs = agentWrite;
+    }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */

@@ -131,6 +131,23 @@ export function resolveReadableHistoryPath(filePath: string): string | null {
   return fs.existsSync(gzipPath) ? gzipPath : null;
 }
 
+/**
+ * Bytes on disk of a history file in whichever form it is stored (plain or
+ * `.gz`), without blocking: for listings that size many files at once.
+ */
+export async function readableHistoryBytes(filePath: string): Promise<number | null> {
+  const normalizedPath = path.resolve(filePath);
+  const plainPath = normalizedPath.endsWith(".gz") ? normalizedPath.slice(0, -3) : normalizedPath;
+  for (const candidate of [plainPath, `${plainPath}.gz`]) {
+    try {
+      return (await fs.promises.stat(candidate)).size;
+    } catch {
+      // Not stored in this form; try the next.
+    }
+  }
+  return null;
+}
+
 /** Read an exact bounded raw byte range, tolerating permitted short FileHandle reads. */
 async function readPlainHistoryFileRange(
   filePath: string,

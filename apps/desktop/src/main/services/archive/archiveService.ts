@@ -10,7 +10,7 @@ import {
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
-import { resolveReadableHistoryPath } from "../storage/historyCompression";
+import { readableHistoryBytes } from "../storage/historyCompression";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import {
   ARCHIVE_ITEM_KINDS,
@@ -68,22 +68,16 @@ function sessionKind(toolType: string | null): ArchiveItemKind {
   return isChatToolType(toolType) ? "chat" : "shell";
 }
 
-function fileBytes(filePath: string | null): number | null {
+async function transcriptBytes(filePath: string | null): Promise<number | null> {
   const trimmed = typeof filePath === "string" ? filePath.trim() : "";
-  if (!trimmed) return null;
-  try {
-    const readable = resolveReadableHistoryPath(trimmed);
-    if (!readable) return null;
-    return fs.statSync(readable).size;
-  } catch {
-    return null;
-  }
+  return trimmed ? readableHistoryBytes(trimmed) : null;
 }
 
-function pathExists(filePath: string | null | undefined): boolean {
+async function pathExists(filePath: string | null | undefined): Promise<boolean> {
   if (!filePath) return false;
   try {
-    return fs.existsSync(filePath);
+    await fs.promises.access(filePath);
+    return true;
   } catch {
     return false;
   }
@@ -93,7 +87,7 @@ function asRecord(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
 }
 
-function positiveDays(raw: unknown): number | undefined {
+function nonNegativeDays(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : undefined;
 }
 
@@ -102,22 +96,22 @@ function positiveDays(raw: unknown): number | undefined {
  * sync). Unknown kinds are kept, not dropped, so `restore`/`delete` report them
  * per item instead of silently doing less than asked.
  */
-export function parseArchiveListArgs(raw: unknown): ArchiveListArgs {
+function parseArchiveListArgs(raw: unknown): ArchiveListArgs {
   const record = asRecord(raw);
   const kinds = Array.isArray(record.kinds) ? record.kinds.filter(isArchiveKind) : [];
-  const olderThanDays = positiveDays(record.olderThanDays);
+  const olderThanDays = nonNegativeDays(record.olderThanDays);
   return {
     ...(kinds.length > 0 ? { kinds } : {}),
     ...(olderThanDays !== undefined ? { olderThanDays } : {}),
   };
 }
 
-export function parseArchiveSummaryArgs(raw: unknown): ArchiveSummaryArgs {
-  const olderThanDays = positiveDays(asRecord(raw).olderThanDays);
+function parseArchiveSummaryArgs(raw: unknown): ArchiveSummaryArgs {
+  const olderThanDays = nonNegativeDays(asRecord(raw).olderThanDays);
   return olderThanDays !== undefined ? { olderThanDays } : {};
 }
 
-export function parseArchiveActionArgs(raw: unknown): ArchiveActionArgs {
+function parseArchiveActionArgs(raw: unknown): ArchiveActionArgs {
   const record = asRecord(raw);
   const items = Array.isArray(record.items) ? record.items.map(asRecord) : [];
   return {
@@ -146,8 +140,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     } catch {
       // Older databases without the table: sizes stay unknown.
     }
-    return archived.map((lane): ArchivedItem => {
-      const worktreePresent = pathExists(lane.worktreePath);
+    return Promise.all(archived.map(async (lane): Promise<ArchivedItem> => {
+      const worktreePresent = await pathExists(lane.worktreePath);
       return {
         kind: "lane",
         id: lane.id,
@@ -160,7 +154,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         worktreePresent,
         branchRef: lane.branchRef || null,
       };
-    });
+    }));
   };
 
   const readArchivedSessions = (sessionId?: string): ArchivedSessionRow[] =>
@@ -183,7 +177,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
       sessionId ? [sessionId] : [],
     );
 
-  const toSessionItem = (row: ArchivedSessionRow): ArchivedItem => {
+  const toSessionItem = async (row: ArchivedSessionRow): Promise<ArchivedItem> => {
     const kind = sessionKind(row.toolType);
     return {
       kind,
@@ -193,7 +187,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
       laneName: row.laneName ?? null,
       laneColor: row.laneColor ?? null,
       archivedAt: row.archivedAt,
-      sizeBytes: fileBytes(row.transcriptPath),
+      sizeBytes: await transcriptBytes(row.transcriptPath),
       toolType: row.toolType ?? null,
       ...(kind === "shell" ? { parentChatId: row.chatSessionId ?? null } : {}),
     };
@@ -205,9 +199,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     const items: ArchivedItem[] = [];
     if (kinds.has("lane")) items.push(...(await listArchivedLanes()));
     if (kinds.has("chat") || kinds.has("shell")) {
-      for (const row of readArchivedSessions()) {
-        if (kinds.has(sessionKind(row.toolType))) items.push(toSessionItem(row));
-      }
+      const rows = readArchivedSessions().filter((row) => kinds.has(sessionKind(row.toolType)));
+      items.push(...(await Promise.all(rows.map(toSessionItem))));
     }
     const { olderThanDays } = args;
     const filtered = olderThanDays !== undefined && olderThanDays > 0
@@ -268,9 +261,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
     if (!ref.id) throw new Error("Item id is required.");
     if (ref.kind === "lane") {
       const index = await lanes();
-      const lane = index.has(ref.id) ? { archivedAt: index.get(ref.id) } : null;
-      if (!lane) throw new Error(`Lane '${ref.id}' not found.`);
-      if (!lane.archivedAt) throw new Error(`Lane '${ref.id}' is not archived.`);
+      if (!index.has(ref.id)) throw new Error(`Lane '${ref.id}' not found.`);
+      if (!index.get(ref.id)) throw new Error(`Lane '${ref.id}' is not archived.`);
       return;
     }
     const row = readArchivedSessions(ref.id)[0];

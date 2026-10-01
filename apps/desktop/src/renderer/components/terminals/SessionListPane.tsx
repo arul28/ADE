@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, Circle, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -104,7 +104,6 @@ import {
   workNestingDrawers,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
-import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
 import { NestedDrawers, nestedDrawerOpenMarker } from "./NestedDrawers";
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";

@@ -145,18 +145,18 @@ function IconAction({
 }) {
   return (
     <button
-        type="button"
-        aria-label={label}
-        title={label}
-        disabled={disabled}
-        onClick={onClick}
-        className={cn(
-          "flex size-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors disabled:pointer-events-none disabled:opacity-40",
-          danger ? "hover:bg-red-500/10 hover:text-red-300" : "hover:bg-white/[0.06] hover:text-fg",
-        )}
-      >
-        {children}
-      </button>
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex size-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors disabled:pointer-events-none disabled:opacity-40",
+        danger ? "hover:bg-red-500/10 hover:text-red-300" : "hover:bg-white/[0.06] hover:text-fg",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -201,21 +201,18 @@ function ArchiveRow({
           <span className="shrink-0 tabular-nums">{meta.join(" · ")}</span>
         </div>
       </div>
-      <div
-        className={cn(
-          "flex shrink-0 items-center gap-0.5 transition-opacity",
-          selecting
-            ? "pointer-events-none opacity-0"
-            : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-        )}
-      >
-        <IconAction label="Restore" onClick={onRestore} disabled={busy}>
-          <ArrowCounterClockwise size={14} />
-        </IconAction>
-        <IconAction label="Delete" onClick={onDelete} disabled={busy} danger>
-          <Trash size={14} />
-        </IconAction>
-      </div>
+      {/* While selecting, the selection bar is the only place to act: the
+          row's own actions leave the tab order too, not just the screen. */}
+      {selecting ? null : (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          <IconAction label="Restore" onClick={onRestore} disabled={busy}>
+            <ArrowCounterClockwise size={14} />
+          </IconAction>
+          <IconAction label="Delete" onClick={onDelete} disabled={busy} danger>
+            <Trash size={14} />
+          </IconAction>
+        </div>
+      )}
     </div>
   );
 }
@@ -233,6 +230,30 @@ function GroupHeader({ title, items, action }: { title: string; items: ArchivedI
       {action}
     </div>
   );
+}
+
+/**
+ * A lane delete can take a couple of minutes (worktree removal, services
+ * teardown) and one request has a 15-minute budget, so lanes go at most
+ * `LANES_PER_DELETE` to a request. Chats and shells are quick and go together.
+ */
+const LANES_PER_DELETE = 5;
+
+async function deleteInBatches(
+  refs: ArchiveItemRef[],
+  pin: Parameters<typeof window.ade.archive.delete>[1],
+): Promise<ArchiveActionResult> {
+  const lanes = refs.filter((ref) => ref.kind === "lane");
+  const batches = [refs.filter((ref) => ref.kind !== "lane")];
+  for (let i = 0; i < lanes.length; i += LANES_PER_DELETE) batches.push(lanes.slice(i, i + LANES_PER_DELETE));
+  const total: ArchiveActionResult = { done: [], failed: [] };
+  for (const items of batches) {
+    if (items.length === 0) continue;
+    const result = await window.ade.archive.delete({ items }, pin);
+    total.done.push(...result.done);
+    total.failed.push(...result.failed);
+  }
+  return total;
 }
 
 export function ArchiveSection() {
@@ -330,7 +351,7 @@ export function ArchiveSection() {
     if (!ok) return;
     setBusy(true);
     try {
-      let result = await window.ade.archive.delete({ items: refs }, pin);
+      let result = await deleteInBatches(refs, pin);
       // A lane with uncommitted files is refused unless forced. Ask once, by
       // name, instead of silently discarding someone's unfinished work.
       // Match the refusal itself, not "could not verify whether…", which

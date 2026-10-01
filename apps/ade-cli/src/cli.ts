@@ -2943,17 +2943,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Archived chats from 14+ days ago
     $ ade archive summary --text                    Counts per kind and what is 14+ days old
     $ ade archive summary --older-than 30 --text    Same, with a 30-day cutoff
-    $ ade archive restore chat:<id> lane:<id>       Unarchive items
-    $ ade archive delete shell:<id> --confirm       Permanently delete archived items
-    $ ade archive delete lane:<id> --confirm --force
-                                                    Also delete a lane worktree with uncommitted changes
+    $ ade --role cto archive restore chat:<id> lane:<id>
+                                                    Unarchive items (needs the CTO role)
 
-  A lane delete removes the lane and its worktree and keeps its git branch.
-  Delete refuses anything that is not archived. Each item reports done or failed
-  on its own; the command exits non-zero when any item failed.
-
-  Only you can delete: agents and automations are refused. Restore needs the CTO
-  role when an agent asks.
+  Each item reports done or failed on its own; the command exits non-zero when
+  any item failed. Deleting is yours alone: do it in Settings → Archive on the
+  desktop, the web client, or the phone. Agents and automations can't delete.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -15137,24 +15132,13 @@ function buildArchivePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "delete" || sub === "rm" || sub === "remove") {
-    const confirmed = readFlag(args, ["--confirm", "--yes"]);
-    const force = readFlag(args, ["--force"]);
-    const items = readArchiveRefs(args, "archive delete");
-    if (!confirmed) {
-      throw new CliUsageError(
-        "archive delete permanently deletes the items. Pass --confirm to delete them.",
-      );
-    }
-    return {
-      kind: "execute",
-      label: "archive delete",
-      formatter: "archive-action",
-      exitCodeFromResult: archiveActionExitCode,
-      minTimeoutMs: longRunningLocalRuntimeActionTimeoutMs("archive.delete") ?? undefined,
-      steps: [actionStep("result", "archive", "delete", { items, ...(force ? { force: true } : {}) })],
-    };
+    // The runtime cannot tell this terminal from an agent's (both are `ade`
+    // clients), and only the person may delete from the archive.
+    throw new CliUsageError(
+      "Delete archived items in ADE: Settings → Archive (desktop, web, or phone). The command line can list and restore them.",
+    );
   }
-  throw new CliUsageError("archive supports list, summary, restore, or delete.");
+  throw new CliUsageError("archive supports list, summary, or restore.");
 }
 
 function buildStoragePlan(args: string[]): CliPlan {
@@ -24982,6 +24966,8 @@ function formatArchiveList(value: unknown): string {
         : cell(item.toolType, 20),
     ]),
     "Nothing is archived.",
+    // A ref is pasted back into `ade archive restore`; a shortened one matches nothing.
+    { fullColumns: ["REF"] },
   );
 }
 

@@ -332,7 +332,6 @@ import {
   restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import { createArchiveService } from "../../../../desktop/src/main/services/archive/archiveService";
-import type { ArchiveActionArgs, ArchiveItemKind } from "../../../../desktop/src/shared/types/archive";
 import { resolveChatCreateModel } from "../../../../desktop/src/main/services/chat/chatCreateModelResolution";
 import {
   parseAgentChatCreateFields,
