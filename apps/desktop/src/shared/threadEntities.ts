@@ -356,6 +356,36 @@ export function findProseEntities(text: string, lookup: ThreadEntityLookup): Thr
   return out;
 }
 
+/** The Linear team key of an issue identifier (`ADE` for `ADE-159`), or null. */
+export function linearTeamKeyFromIdentifier(identifier: string | null | undefined): string | null {
+  const match = identifier ? LINEAR_ID_RE.exec(identifier.trim()) : null;
+  return match ? match[1]!.toUpperCase() : null;
+}
+
+const TIME_SAME_DAY = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+const TIME_OTHER_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const TIME_RANGE = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const TIME_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+
+/**
+ * A zoned timestamp (or same-day range) in the reader's local time, the one
+ * format every surface shows: "1:20:04 AM" today, "Sep 30, 10:24 PM" on
+ * another day, "Sep 30, 9:52 – 10:24 PM" for a range.
+ */
+export function formatThreadEntityTimestamp(
+  epochMs: number,
+  endEpochMs: number | null = null,
+  now: number = Date.now(),
+): string {
+  const date = new Date(epochMs);
+  const sameDay = new Date(now).toDateString() === date.toDateString();
+  if (endEpochMs != null) {
+    const range = TIME_RANGE.formatRange(date, new Date(endEpochMs));
+    return sameDay ? range : `${TIME_DAY.format(date)}, ${range}`;
+  }
+  return (sameDay ? TIME_SAME_DAY : TIME_OTHER_DAY).format(date);
+}
+
 /** Stable identity for "these two chips point at the same thing". */
 export function threadEntityKey(entity: ThreadEntity): string | null {
   if (entity.type !== "chip") return null;

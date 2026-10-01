@@ -100,6 +100,8 @@ function useImageViewSrc(target: ImageViewTarget): string | null {
   const [localSrc, setLocalSrc] = useState<string | null>(null);
   const { inlineSrc, localPath } = target;
   useEffect(() => {
+    // A new path must not keep showing the previous picture while it loads.
+    setLocalSrc(null);
     if (inlineSrc || !localPath) return;
     let cancelled = false;
     readAttachmentImageDataUrl(localPath, pin)

@@ -301,6 +301,20 @@ type InlineEntityScope = { lookup: ThreadEntityLookup; block: ThreadEntityBlockC
 // A code span that names a workspace file, with an optional `:line[:col]`.
 // Narrow on purpose: it only feeds the "bare line range after a file" rule.
 const TUI_FILE_SPAN_RE = /^((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?::\d+(?::\d+)?)?$/;
+// A slash-less token with one of these suffixes is a domain, not a file —
+// the desktop's `looksLikeWorkspacePath` refuses the same list.
+const TUI_NON_FILE_SUFFIXES = new Set(["com", "org", "net", "io", "ai", "dev", "gov", "edu"]);
+
+/** The workspace file a code span names, or null. */
+function tuiFileSpanPath(code: string): string | null {
+  const path = TUI_FILE_SPAN_RE.exec(code.trim())?.[1];
+  if (!path || path.startsWith("../") || path === "..") return null;
+  if (!path.includes("/")) {
+    const suffix = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+    if (TUI_NON_FILE_SUFFIXES.has(suffix)) return null;
+  }
+  return path;
+}
 
 function pushEntityRun(runs: InlineRun[], entity: ThreadEntity): void {
   const entityRun = tuiRunForThreadEntity(entity);
@@ -344,8 +358,8 @@ function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags
         break;
       case "codespan": {
         const code = (token as Tokens.Codespan).text;
-        const file = scope ? TUI_FILE_SPAN_RE.exec(code.trim()) : null;
-        if (scope && file) scope.block.lastFilePath = file[1]!;
+        const file = scope ? tuiFileSpanPath(code) : null;
+        if (scope && file) scope.block.lastFilePath = file;
         const entity = scope && !file && !flags.link ? matchInlineCodeEntity(code, scope.lookup, scope.block) : null;
         if (entity) pushEntityRun(runs, entity);
         else pushInlineRun(runs, code, { ...flags, code: true });

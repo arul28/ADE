@@ -37,11 +37,9 @@ import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip } from "
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
 import { navigateToAppTarget, openAdeDeeplink, openLinkFromUi } from "../../lib/openExternal";
 import { modelPermissionPresentation, permissionToneTextClass } from "../../lib/modelPermissionOptions";
-import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
-import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { useChipHoverCard } from "./ChipHoverCard";
+import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./ChipHoverCard";
 import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
@@ -50,6 +48,13 @@ import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 function openChip(chip: Chip): void {
   const source = chip.source;
   if (source.origin === "deeplink") {
+    // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
+    // the repo to parse, so that one opens through the in-app PR route, which
+    // resolves the number against this project's PRs.
+    if (source.target.kind === "pr" && !source.target.repoOwner) {
+      navigateToAppTarget({ kind: "pr", prNumber: source.target.prNumber });
+      return;
+    }
     openAdeDeeplink(source.url);
     return;
   }
@@ -198,10 +203,7 @@ const NO_FACTS: ChipFacts = { label: null, color: null, live: null };
  * machine (see `ChipHoverCard` for why it is never the project tab's lanes).
  * The parse only knows an id; the name, colour and state are live.
  */
-function useChipFacts(chip: Chip): ChipFacts {
-  const scope = useChatRuntimeScope();
-  const lanes = useLanesForPin(scope.binding);
-  const sessions = useSessionsForPin(scope.binding);
+function useChipFacts(chip: Chip, { lanes, sessions }: ChipScopeSources): ChipFacts {
   const target = chipEntityTarget(chip);
   const lane = target?.kind === "lane"
     ? lanes?.find((candidate) => candidate.id.toLowerCase() === target.id) ?? null
@@ -259,10 +261,11 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const markSvg = useMemo(() => chipProviderMarkSvg(chip), [chip]);
   const preview = useChipPreview(previewUrl);
 
-  const facts = useChipFacts(chip);
+  const scoped = useChipScopeSources();
+  const facts = useChipFacts(chip, scoped);
   const label = facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
   const actionable = isActionable(chip);
-  const hoverCard = useChipHoverCard(chip, preview?.title ?? null);
+  const hoverCard = useChipHoverCard(chip, preview?.title ?? null, scoped);
   const tokenTitle = chip.detail ? `${chip.token} — ${chip.detail}` : chip.token;
 
   return (

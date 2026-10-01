@@ -11,10 +11,11 @@
 // prop threaded into only some of them would make the counts disagree.
 
 import { chipDisplayLabel } from "../../../desktop/src/shared/chips";
-import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
+import { buildDeeplink, parseDeeplink } from "../../../desktop/src/shared/deeplinks";
 import {
   buildThreadEntityLookup,
   EMPTY_THREAD_ENTITY_LOOKUP,
+  formatThreadEntityTimestamp,
   type ThreadEntity,
   type ThreadEntityLookup,
 } from "../../../desktop/src/shared/threadEntities";
@@ -43,11 +44,14 @@ export function setTuiThreadEntityFacts(args: {
   lanes: ReadonlyArray<{ id: string; name: string; color: string | null }>;
   chats: ReadonlyArray<{ id: string; title: string | null }>;
   linearTeamKeys?: readonly string[];
+  /** Slash commands and skills the attached chat can run, without the slash. */
+  skillNames?: readonly string[];
 }): void {
   const signature = JSON.stringify([
     args.lanes.map((lane) => [lane.id, lane.name, lane.color]),
     args.chats.map((chat) => [chat.id, chat.title]),
     args.linearTeamKeys ?? [],
+    args.skillNames ?? [],
   ]);
   if (signature === factsSignature) return;
   factsSignature = signature;
@@ -57,6 +61,7 @@ export function setTuiThreadEntityFacts(args: {
       lanes: args.lanes,
       sessions: args.chats,
       linearTeamKeys: args.linearTeamKeys,
+      skillNames: args.skillNames,
     }),
     laneById: new Map(args.lanes.map((lane) => [lane.id.toLowerCase(), { name: lane.name, color: lane.color }])),
     chatTitleById: new Map(
@@ -74,11 +79,6 @@ export function tuiThreadEntityFactsVersion(): number {
   return factsVersion;
 }
 
-const TIME_SAME_DAY = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
-const TIME_OTHER_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const TIME_RANGE = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const TIME_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-
 const CHAT_COLOR = "#7dd3fc";
 const ENTITY_COLOR = "#c4b5fd";
 
@@ -87,13 +87,7 @@ export type TuiEntityRun = { text: string; color?: string; href?: string; link?:
 /** The terminal run for one matched entity. */
 export function tuiRunForThreadEntity(entity: ThreadEntity, now: number = Date.now()): TuiEntityRun {
   if (entity.type === "time") {
-    const date = new Date(entity.epochMs);
-    const sameDay = new Date(now).toDateString() === date.toDateString();
-    if (entity.endEpochMs != null) {
-      const range = TIME_RANGE.formatRange(date, new Date(entity.endEpochMs));
-      return { text: sameDay ? range : `${TIME_DAY.format(date)}, ${range}` };
-    }
-    return { text: (sameDay ? TIME_SAME_DAY : TIME_OTHER_DAY).format(date) };
+    return { text: formatThreadEntityTimestamp(entity.epochMs, entity.endEpochMs, now) };
   }
   if (entity.type === "file_line") {
     return {
@@ -122,6 +116,9 @@ export function tuiRunForThreadEntity(entity: ThreadEntity, now: number = Date.n
     };
   }
   if (source.origin === "deeplink") {
+    // A repo-less PR (`#1407`) has no deeplink that parses; colour it, but do
+    // not hand the terminal a link that opens nothing.
+    if (!parseDeeplink(source.url).ok) return { text: chipDisplayLabel(chip), color: ENTITY_COLOR };
     return { text: chipDisplayLabel(chip), color: ENTITY_COLOR, link: true, href: source.url };
   }
   // Model, permission and skill chips name a setting, not a place.

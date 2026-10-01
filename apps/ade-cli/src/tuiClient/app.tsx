@@ -375,6 +375,7 @@ import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
 import { theme } from "./theme";
 import { setTuiThreadEntityFacts } from "./threadEntityRuns";
+import { linearTeamKeyFromIdentifier } from "../../../desktop/src/shared/threadEntities";
 import { resolveTuiChatRefreshTarget } from "./project";
 import {
   RIGHT_CHAT_CLOSED_TOGGLE_ID,
@@ -3719,21 +3720,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   prByLaneIdRef.current = prByLaneId;
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
-  // The transcript draws lanes and chats an agent names by their real name and
-  // lane colour. Set during render (before ChatView renders) so the first paint
-  // after a lane list change already uses it; the setter ignores no-op updates.
-  useMemo(() => {
-    const linearTeamKeys = new Set<string>();
-    for (const lane of lanes) {
-      const key = lane.linearIssue?.identifier?.match(/^([A-Za-z][A-Za-z0-9]{0,9})-\d+$/)?.[1];
-      if (key) linearTeamKeys.add(key.toUpperCase());
-    }
-    setTuiThreadEntityFacts({
-      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name, color: theme.lane(lane) })),
-      chats: sessions.map((session) => ({ id: session.sessionId, title: session.title ?? null })),
-      linearTeamKeys: [...linearTeamKeys],
-    });
-  }, [lanes, sessions]);
   /**
    * The host's answer when a manual `/resume-now` was refused, kept per session
    * so switching chats cannot show one chat's refusal against another's limit.
@@ -3778,6 +3764,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
+  // The transcript draws lanes and chats an agent names by their real name and
+  // lane colour. Set during render (before ChatView renders) so the first paint
+  // after a lane list change already uses it; the setter ignores no-op updates.
+  useMemo(() => {
+    const linearTeamKeys = new Set<string>();
+    for (const lane of lanes) {
+      for (const identifier of [lane.linearIssue?.identifier, ...(lane.linearIssueLinks ?? []).map((link) => link.issue?.identifier)]) {
+        const key = linearTeamKeyFromIdentifier(identifier);
+        if (key) linearTeamKeys.add(key);
+      }
+    }
+    setTuiThreadEntityFacts({
+      lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name, color: theme.lane(lane) })),
+      chats: sessions.map((session) => ({ id: session.sessionId, title: session.title ?? null })),
+      linearTeamKeys: [...linearTeamKeys],
+      skillNames: slashCommands.map((command) => command.name.replace(/^\//, "")),
+    });
+  }, [lanes, sessions, slashCommands]);
   const [keybindings, setKeybindings] = useState(() => readClaudeKeybindingsFile({ create: false }).bindings);
   const [models, setModels] = useState<AgentChatModelInfo[]>([]);
   const [initialAdeCodeState] = useState(() => (

@@ -17,10 +17,13 @@ import {
   buildThreadEntityLookup,
   EMPTY_THREAD_ENTITY_LOOKUP,
   findProseEntities,
+  formatThreadEntityTimestamp,
+  linearTeamKeyFromIdentifier,
   matchInlineCodeEntity,
   threadEntityKey,
   type ThreadEntity,
   type ThreadEntityBlockContext,
+  type ThreadEntityIndex,
   type ThreadEntityLookup,
 } from "../../../shared/threadEntities";
 import { useLanesForPin, useSessionsForPin } from "../../state/crossMachineLanes";
@@ -33,8 +36,6 @@ export function useThreadEntityLookup(): ThreadEntityLookup {
   return useContext(ThreadEntityLookupContext);
 }
 
-const LINEAR_KEY_RE = /^([A-Za-z][A-Za-z0-9]{0,9})-\d+$/;
-
 export function ThreadEntityProvider({
   skillNames,
   children,
@@ -46,40 +47,31 @@ export function ThreadEntityProvider({
   const lanes = useLanesForPin(scope.binding);
   const sessions = useSessionsForPin(scope.binding);
 
-  // Lane status refreshes replace these arrays every few seconds. Matching only
-  // needs ids, names and keys, so reduce to a signature first and rebuild the
-  // lookup (and re-parse the transcript) only when that string changes.
-  const signature = useMemo(() => {
-    const laneParts = (lanes ?? []).map((lane) => `${lane.id}\u0001${lane.name}`);
-    const keys = new Set<string>();
+  // Matching only needs ids, names and keys, so reduce to that index first.
+  const index = useMemo<ThreadEntityIndex>(() => {
+    const linearTeamKeys = new Set<string>();
     for (const lane of lanes ?? []) {
       const identifiers = [lane.linearIssue?.identifier, ...(lane.linearIssueLinks ?? []).map((link) => link.issue?.identifier)];
       for (const identifier of identifiers) {
-        const key = identifier ? LINEAR_KEY_RE.exec(identifier)?.[1] : null;
-        if (key) keys.add(key.toUpperCase());
+        const key = linearTeamKeyFromIdentifier(identifier);
+        if (key) linearTeamKeys.add(key);
       }
     }
-    const sessionPart = (sessions ?? []).map((session) => session.id).join("\u0002");
-    return [
-      laneParts.join("\u0002"),
-      sessionPart,
-      [...keys].sort().join(","),
-      [...(skillNames ?? [])].sort().join(","),
-    ].join("\u0003");
+    return {
+      lanes: (lanes ?? []).map((lane) => ({ id: lane.id, name: lane.name })),
+      sessions: (sessions ?? []).map((session) => ({ id: session.id })),
+      linearTeamKeys: [...linearTeamKeys].sort(),
+      skillNames: [...(skillNames ?? [])].sort(),
+    };
   }, [lanes, sessions, skillNames]);
 
-  const lookup = useMemo(() => {
-    const [laneBlob = "", sessionBlob = "", keyBlob = "", skillBlob = ""] = signature.split("\u0003");
-    return buildThreadEntityLookup({
-      lanes: laneBlob ? laneBlob.split("\u0002").map((part) => {
-        const [id = "", name = ""] = part.split("\u0001");
-        return { id, name };
-      }) : [],
-      sessions: sessionBlob ? sessionBlob.split("\u0002").map((id) => ({ id })) : [],
-      linearTeamKeys: keyBlob ? keyBlob.split(",") : [],
-      skillNames: skillBlob ? skillBlob.split(",") : [],
-    });
-  }, [signature]);
+  // Lane status refreshes replace the lane and session arrays every few
+  // seconds without changing the index's VALUE. Rebuilding the lookup changes
+  // its identity and re-parses every message in the transcript, so key it on
+  // the value, not on the arrays.
+  const signature = useMemo(() => JSON.stringify(index), [index]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the index's value (signature) on purpose
+  const lookup = useMemo(() => buildThreadEntityLookup(index), [signature]);
 
   return <ThreadEntityLookupContext.Provider value={lookup}>{children}</ThreadEntityLookupContext.Provider>;
 }
@@ -213,30 +205,6 @@ export function remarkThreadEntities(options: {
 
 /* ── node view ── */
 
-const TIME_FORMAT_SAME_DAY = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
-const TIME_FORMAT_OTHER_DAY = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
-
-const TIME_FORMAT_RANGE = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-
-/**
- * A zoned timestamp (or same-day range) in the reader's local time: "1:20:04 AM"
- * today, "Sep 30, 10:24 PM" on another day, "Sep 30, 9:52 – 10:24 PM" for a range.
- */
-export function formatThreadTimestamp(epochMs: number, endEpochMs: number | null = null, now: number = Date.now()): string {
-  const date = new Date(epochMs);
-  const sameDay = new Date(now).toDateString() === date.toDateString();
-  if (endEpochMs != null) {
-    const range = TIME_FORMAT_RANGE.formatRange(date, new Date(endEpochMs));
-    return sameDay ? range : `${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date)}, ${range}`;
-  }
-  return sameDay ? TIME_FORMAT_SAME_DAY.format(date) : TIME_FORMAT_OTHER_DAY.format(date);
-}
-
 export function ThreadEntityNode({
   node,
   renderFileLine,
@@ -265,7 +233,7 @@ export function ThreadEntityNode({
       title={entity.raw}
       className="cursor-help underline decoration-dotted decoration-current/35 underline-offset-2"
     >
-      {formatThreadTimestamp(entity.epochMs, entity.endEpochMs)}
+      {formatThreadEntityTimestamp(entity.epochMs, entity.endEpochMs)}
     </time>
   );
 }
