@@ -324,6 +324,11 @@ function familySearchText(entry: AdeThemeFamily): string {
   ].join(" ").toLowerCase();
 }
 
+/** Every word in the query must appear in the entry, so "warm serif" narrows. */
+function matchesSearch(text: string, needle: string): boolean {
+  return !needle || needle.split(/\s+/).every((word) => text.includes(word));
+}
+
 export function ThemeGallery() {
   const { themeId, effectiveId, mode, customThemes, family, setTheme, setThemeFollowsSystem } = useThemeSelection();
   const [query, setQuery] = useState("");
@@ -331,10 +336,10 @@ export function ThemeGallery() {
 
   const searchable = useMemo(() => ADE_THEME_FAMILIES.map((entry) => ({ entry, text: familySearchText(entry) })), []);
   const visible = useMemo(
-    () => searchable.filter(({ text }) => !needle || needle.split(/\s+/).every((word) => text.includes(word))),
+    () => searchable.filter(({ text }) => matchesSearch(text, needle)),
     [searchable, needle],
   );
-  const visibleCustom = customThemes.filter((theme) => !needle || theme.name.toLowerCase().includes(needle));
+  const visibleCustom = customThemes.filter((theme) => matchesSearch(theme.name.toLowerCase(), needle));
   const nothing = visible.length === 0 && visibleCustom.length === 0;
 
   const shelfLabel: React.CSSProperties = {

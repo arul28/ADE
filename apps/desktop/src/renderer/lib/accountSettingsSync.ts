@@ -287,8 +287,9 @@ function readDirtyKeys(storage: Pick<Storage, "getItem" | "setItem"> | undefined
 
 function sameValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
-  // Terminal preferences are an object the setter replaces wholesale; a deep
-  // compare is what keeps a rehydrate from looking like a user edit.
+  // Several synced preferences are objects the setter replaces wholesale
+  // (harness presets, the Codex voice settings, the chat shell geometry); a
+  // deep compare is what keeps a rehydrate from looking like a user edit.
   try {
     return JSON.stringify(left) === JSON.stringify(right);
   } catch {
