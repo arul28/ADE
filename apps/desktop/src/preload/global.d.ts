@@ -4087,16 +4087,17 @@ declare global {
         unstackGitHubStack: (
           args: UnstackGitHubPrStackArgs,
         ) => Promise<GitHubPrStack | null>;
-        linkChatSession: (args: LinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
-        unlinkChatSession: (args: UnlinkPrChatSessionArgs) => Promise<{ ok: boolean }>;
-        linkChatStack: (args: LinkPrChatStackArgs) => Promise<{ ok: boolean; linked: number }>;
+        linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<PrChatSessionLink[]>;
         getStackLinkOffer: (args: {
           sessionId: string;
           prId?: string | null;
-        }) => Promise<StackLinkOffer | null>;
+        }, pin?: OpenProjectBinding | null) => Promise<StackLinkOffer | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
           pin?: OpenProjectBinding | null,

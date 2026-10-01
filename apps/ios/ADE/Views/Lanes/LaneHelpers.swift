@@ -597,10 +597,14 @@ func selectChatPrs(
   return (owned + linkedElsewhere).sorted(by: lanePrTagPrecedes)
 }
 
-/// Scope a set of PRs to one chat. A row with no link at all is legacy data and
-/// may use the lane fallback; that fallback is decided PER PR, so one linked row
-/// does not hide every older row in the same lane. Mirrors `selectPrsForChat`.
-func selectPrsForChat(
+/// Scope a set of lane-owned PRs to one chat, lane-first. A row with no link at
+/// all is legacy data and may use the lane fallback; that fallback is decided
+/// PER PR, so one linked row does not hide every older row in the same lane.
+/// Unlike the desktop `selectPrsForChat` (edges-first), iOS scopes the lane list
+/// first via `selectChatPrs`, then drops rows another chat claimed or this chat
+/// unlinked. Named for its real semantics so it is not mistaken for the shared
+/// desktop function.
+func scopeLaneChatPrsByLinks(
   _ pullRequests: [PullRequestListItem],
   sessionId: String?
 ) -> [PullRequestListItem] {
@@ -649,7 +653,7 @@ func workChatPullRequests(
   sessionId: String?
 ) -> [PullRequestListItem] {
   guard let lane else { return [] }
-  let visible = selectPrsForChat(
+  let visible = scopeLaneChatPrsByLinks(
     selectChatPrs(lane: lane, pullRequests: pullRequests, sessionId: sessionId),
     sessionId: sessionId
   )

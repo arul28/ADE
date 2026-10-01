@@ -98,7 +98,7 @@ function toneOf(value: string | null | undefined): ChatCardTone {
 /** Head glyph per variant family. Everything else falls back to the tone glyph. */
 function variantIcon(variant: string): PhosphorIcon | undefined {
   if (variant === "pr_merged" || variant === "pr_merge_ready") return GitMerge;
-  if (variant === "pr_stack_offer" || variant === "pr_stack_land") return Stack;
+  if (variant === "pr_stack_land") return Stack;
   if (variant === "pr_conflict") return Warning;
   if (variant === "proof_artifact") return Cube;
   if (variant === "claude_session_quota") return Warning;
@@ -443,7 +443,6 @@ export function AdeCard({
     hasWarning
     || isLive
     || card.variant === "proof_artifact"
-    || card.variant === "pr_stack_offer"
     || card.variant === "pr_stack_land"
   );
   const skin = isSessionQuota || hasWarning

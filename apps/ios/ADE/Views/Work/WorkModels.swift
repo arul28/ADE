@@ -1033,6 +1033,7 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merged",
     "pr_merge_ready",
     "pr_conflict",
+    "pr_stack_land",
     "claude_session_quota",
     "lane_setup",
   ]

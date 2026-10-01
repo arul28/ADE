@@ -585,7 +585,7 @@ export async function emitPrCardsForChange(args: {
     if (!chat.getSessionSummary) return;
     await Promise.all([...sessionIds].map(async (sessionId) => {
       if (listedById.has(sessionId)) return;
-      const summary = await chat.getSessionSummary?.(sessionId);
+      const summary = await chat.getSessionSummary?.(sessionId).catch(() => null);
       if (summary) listedById.set(summary.sessionId, summary);
     }));
   };
@@ -665,12 +665,13 @@ export async function emitPrCardsForChange(args: {
       }))
       : []),
   ]);
+  const totalCardPayloads = cards.length + (stackLanded && stackNumber != null ? 1 : 0);
   const failures = results.filter((result) => result.status === "rejected");
   if (failures.length > 0) {
     throw new AggregateError(
       failures.map((failure) => failure.reason),
-      `Failed to emit ${failures.length} of ${cards.length} PR chat cards.`,
+      `Failed to emit ${failures.length} of ${results.length} PR chat cards.`,
     );
   }
-  return cards.length + (stackLanded && stackNumber != null ? 1 : 0);
+  return totalCardPayloads;
 }

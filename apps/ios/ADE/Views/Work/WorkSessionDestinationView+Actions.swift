@@ -1646,7 +1646,8 @@ extension WorkSessionDestinationView {
         baseBranch: baseBranch,
         labels: labels,
         reviewers: reviewers,
-        strategy: strategy
+        strategy: strategy,
+        sessionId: sessionId
       )
       createPrPresented = false
       try? await syncService.refreshPullRequestSnapshots()

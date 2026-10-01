@@ -11,6 +11,7 @@ import {
   GitPullRequest,
   MinusCircle,
   Sparkle,
+  Stack,
   X,
   XCircle,
 } from "@phosphor-icons/react";
@@ -33,7 +34,7 @@ import { prStateTone, selectPrsForChatInLane } from "../../../shared/prChatScope
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
-import { ChatPrStackOffer } from "./ChatPrStackOffer";
+import { Banner } from "../ui/notice";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -711,7 +712,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       return;
     }
     let cancelled = false;
-    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id })
+    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, runtimePinRef.current)
       .then((offer) => {
         if (cancelled) return;
         const linkable = (offer?.siblings ?? []).filter((sibling) => !sibling.claimedByOtherChat);
@@ -735,7 +736,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         sessionId: visibleStackOffer.sessionId,
         stackNumber: visibleStackOffer.stackNumber,
         prId: visibleStackOffer.prId,
-      });
+      }, runtimePinRef.current);
       if (!result?.ok) {
         setStackLinkError("Could not link this GitHub stack.");
         return;
@@ -922,12 +923,24 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           />
           {visibleStackOffer ? (
             <div className="pt-2">
-              <ChatPrStackOffer
-                offer={visibleStackOffer}
-                busy={stackLinkBusy}
-                error={stackLinkError}
-                onLink={() => void linkStack()}
-                onDismiss={() => setDismissedOfferKey(stackOfferKey)}
+              <Banner
+                layout="inline"
+                model={{
+                  id: `pr-stack-offer:${visibleStackOffer.sessionId}:${visibleStackOffer.stackNumber}`,
+                  tone: "accent",
+                  icon: <Stack size={13} weight="fill" />,
+                  title: `Also in GitHub Stack #${visibleStackOffer.stackNumber}`,
+                  detail: visibleStackOffer.siblings
+                    .filter((sibling) => !sibling.claimedByOtherChat)
+                    .map((sibling) => `#${sibling.githubPrNumber}`)
+                    .join(", "),
+                  actions: [
+                    { label: "Link stack", onClick: () => void linkStack(), disabled: stackLinkBusy },
+                    { label: "Not now", onClick: () => setDismissedOfferKey(stackOfferKey) },
+                  ],
+                  busy: stackLinkBusy,
+                  ...(stackLinkError ? { error: stackLinkError } : {}),
+                }}
               />
             </div>
           ) : null}

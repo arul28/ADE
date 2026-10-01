@@ -15879,6 +15879,9 @@ final class SyncService: ObservableObject {
     guard supportsRemoteAction("prs.linkChatSession") else {
       throw sessionLifecycleUnsupportedError("prs.linkChatStack")
     }
+    // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+    // stack-link action, so we re-derive "link each unclaimed sibling, roll back
+    // on failure" here. The offer remains the owner of that policy.
     var linked: [String] = []
     do {
       for siblingPrId in siblingPrIds {

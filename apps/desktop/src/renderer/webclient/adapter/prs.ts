@@ -322,6 +322,10 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
         invalidatePrsReads();
         return result;
       }
+      // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+      // stack-link action, so the adapter re-derives "unclaimed siblings, roll
+      // back on failure" from the offer. Keep it a thin per-PR loop — the offer
+      // is the owner; do not grow policy here.
       const record = asRecord(args);
       const sessionId = String(record.sessionId ?? "");
       const stackNumber = Number(record.stackNumber);

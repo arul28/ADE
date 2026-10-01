@@ -11751,40 +11751,49 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.prsUnstackGitHubStack, args),
       ),
-    linkChatSession: (args: LinkPrChatSessionArgs): Promise<{ ok: boolean }> =>
-      callProjectRuntimeActionOr(
+    linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "pr",
         "linkChatSession",
         { args },
         () => ipcRenderer.invoke(IPC.prsLinkChatSession, args),
       ),
-    unlinkChatSession: (args: UnlinkPrChatSessionArgs): Promise<{ ok: boolean }> =>
-      callProjectRuntimeActionOr(
+    unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "pr",
         "unlinkChatSession",
         { args },
         () => ipcRenderer.invoke(IPC.prsUnlinkChatSession, args),
       ),
-    linkChatStack: (args: LinkPrChatStackArgs): Promise<{ ok: boolean; linked: number }> =>
-      callProjectRuntimeActionOr(
+    linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; linked: number }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "pr",
         "linkChatStack",
         { args },
         () => ipcRenderer.invoke(IPC.prsLinkChatStack, args),
       ),
-    listChatSessionsForPr: (args: ListPrChatSessionsArgs): Promise<PrChatSessionLink[]> =>
+    listChatSessionsForPr: (
+      args: ListPrChatSessionsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrChatSessionLink[]> =>
       callPrReadRuntimeActionOr(
-        null,
+        pin,
         "listChatSessionsForPr",
         { args },
         () => ipcRenderer.invoke(IPC.prsListChatSessionsForPr, args),
       ),
-    getStackLinkOffer: (args: {
-      sessionId: string;
-      prId?: string | null;
-    }): Promise<StackLinkOffer | null> =>
+    getStackLinkOffer: (
+      args: {
+        sessionId: string;
+        prId?: string | null;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<StackLinkOffer | null> =>
       callPrReadRuntimeActionOr(
-        null,
+        pin,
         "getStackLinkOffer",
         { args },
         () => ipcRenderer.invoke(IPC.prsGetStackLinkOffer, args),

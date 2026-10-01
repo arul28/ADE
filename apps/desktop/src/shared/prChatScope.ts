@@ -1,4 +1,4 @@
-import type { PrFile, PrSummary } from "./types";
+import type { PrSummary } from "./types";
 
 function normalizeBranch(value: string | null | undefined): string {
   return (value ?? "").replace(/^refs\/heads\//i, "").trim().toLowerCase();
@@ -10,13 +10,6 @@ function linkedSessionIds(pr: PrSummary): string[] {
 
 function dismissedSessionIds(pr: PrSummary): string[] {
   return (pr.dismissedChatSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean);
-}
-
-export function chatHasExplicitPrEdges(
-  prs: readonly PrSummary[],
-  sessionId: string,
-): boolean {
-  return prs.some((pr) => linkedSessionIds(pr).includes(sessionId));
 }
 
 /**
@@ -50,11 +43,13 @@ export function selectPrsForChat(
 }
 
 /**
- * Every PR this chat should show: owned by the lane OR explicitly linked to
- * this chat session, never detached, then scoped to the session. Kept
- * lane-first (rather than `selectPrsForChat`'s edges-first) so the desktop
- * toolbar/pane do not suddenly hide a lane's legacy unedged rows when a
- * sibling row gains an edge.
+ * Scope PRs to one chat, lane-first.
+ *
+ * Every PR this lane owns (or this chat explicitly linked) is the candidate
+ * set; then a row whose link belongs to another chat is dropped, and a row this
+ * chat explicitly unlinked (a tombstone) stays gone even though the lane still
+ * owns it. Kept lane-first rather than edges-first so the desktop toolbar/pane
+ * do not hide a lane's legacy unedged rows when a sibling row gains an edge.
  */
 export function selectPrsForChatInLane(
   prs: readonly PrSummary[],
@@ -64,12 +59,13 @@ export function selectPrsForChatInLane(
   const owned = prs.filter((pr) => {
     if (pr.detached) return false;
     if (pr.laneId === laneId) return true;
-    return Boolean(sessionId && pr.chatSessionIds?.includes(sessionId));
+    return Boolean(sessionId && linkedSessionIds(pr).includes(sessionId));
   });
   if (!sessionId) return owned;
   return owned.filter((pr) => {
-    const ids = (pr.chatSessionIds ?? []).filter(Boolean);
-    return ids.length === 0 || ids.includes(sessionId);
+    if (dismissedSessionIds(pr).includes(sessionId)) return false;
+    const linked = linkedSessionIds(pr);
+    return linked.length === 0 || linked.includes(sessionId);
   });
 }
 
@@ -86,30 +82,6 @@ export function prStateTone(state: PrSummary["state"]): { dot: string; label: st
     case "closed": return { dot: "bg-red-400/70", label: "Closed" };
     default: return { dot: "bg-fg/25", label: String(state) };
   }
-}
-
-/** Parse a `#123` / `123` palette query into a PR number, or null. */
-export function parsePrNumberQuery(query: string): number | null {
-  const match = query.trim().match(/^#?(\d+)$/);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-/** Highest-churn files first, capped at `limit`, with a remainder count. */
-export function rankPrFilesByChurn<T extends Pick<PrFile, "filename" | "additions" | "deletions">>(
-  files: readonly T[],
-  limit = 3,
-): { files: T[]; remaining: number } {
-  const ranked = [...files].sort((left, right) => {
-    const byChurn = (right.additions + right.deletions) - (left.additions + left.deletions);
-    if (byChurn !== 0) return byChurn;
-    return left.filename.localeCompare(right.filename);
-  });
-  return {
-    files: ranked.slice(0, Math.max(0, limit)),
-    remaining: Math.max(0, ranked.length - Math.max(0, limit)),
-  };
 }
 
 /** True when the chat still has an open/draft linked PR other than `excludingPrId`. */
