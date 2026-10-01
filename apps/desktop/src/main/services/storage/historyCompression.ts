@@ -121,14 +121,15 @@ export function readHistoryFileSync(filePath: string): Buffer {
 }
 
 /** Prefer the plain append target, then its transparent gzip replacement. */
-export function resolveReadableHistoryPath(filePath: string): string | null {
+/** The two forms a history file may be stored in: plain first, then `.gz`. */
+function historyPathForms(filePath: string): [plain: string, gzip: string] {
   const normalizedPath = path.resolve(filePath);
-  const plainPath = normalizedPath.endsWith(".gz")
-    ? normalizedPath.slice(0, -3)
-    : normalizedPath;
-  if (fs.existsSync(plainPath)) return plainPath;
-  const gzipPath = `${plainPath}.gz`;
-  return fs.existsSync(gzipPath) ? gzipPath : null;
+  const plainPath = normalizedPath.endsWith(".gz") ? normalizedPath.slice(0, -3) : normalizedPath;
+  return [plainPath, `${plainPath}.gz`];
+}
+
+export function resolveReadableHistoryPath(filePath: string): string | null {
+  return historyPathForms(filePath).find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
 /**
@@ -136,9 +137,7 @@ export function resolveReadableHistoryPath(filePath: string): string | null {
  * `.gz`), without blocking: for listings that size many files at once.
  */
 export async function readableHistoryBytes(filePath: string): Promise<number | null> {
-  const normalizedPath = path.resolve(filePath);
-  const plainPath = normalizedPath.endsWith(".gz") ? normalizedPath.slice(0, -3) : normalizedPath;
-  for (const candidate of [plainPath, `${plainPath}.gz`]) {
+  for (const candidate of historyPathForms(filePath)) {
     try {
       return (await fs.promises.stat(candidate)).size;
     } catch {

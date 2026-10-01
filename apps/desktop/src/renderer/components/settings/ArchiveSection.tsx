@@ -242,6 +242,7 @@ const LANES_PER_DELETE = 5;
 async function deleteInBatches(
   refs: ArchiveItemRef[],
   pin: Parameters<typeof window.ade.archive.delete>[1],
+  force = false,
 ): Promise<ArchiveActionResult> {
   const lanes = refs.filter((ref) => ref.kind === "lane");
   const batches = [refs.filter((ref) => ref.kind !== "lane")];
@@ -249,7 +250,7 @@ async function deleteInBatches(
   const total: ArchiveActionResult = { done: [], failed: [] };
   for (const items of batches) {
     if (items.length === 0) continue;
-    const result = await window.ade.archive.delete({ items }, pin);
+    const result = await window.ade.archive.delete({ items, ...(force ? { force: true } : {}) }, pin);
     total.done.push(...result.done);
     total.failed.push(...result.failed);
   }
@@ -370,10 +371,7 @@ export function ArchiveSection() {
           destructive: true,
         });
         if (force) {
-          const retry = await window.ade.archive.delete(
-            { items: dirtyLanes.map(({ kind, id }) => ({ kind, id })), force: true },
-            pin,
-          );
+          const retry = await deleteInBatches(dirtyLanes.map(({ kind, id }) => ({ kind, id })), pin, true);
           const retried = new Set(dirtyLanes.map(refKey));
           result = {
             done: [...result.done, ...retry.done],
