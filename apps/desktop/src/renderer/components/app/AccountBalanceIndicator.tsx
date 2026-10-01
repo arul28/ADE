@@ -6,6 +6,9 @@ import { cn } from "../ui/cn";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useUsageSnapshot } from "../usage/useUsageSnapshot";
 
+const WARNING = "#FBBF24";
+const WARNING_TEXT = "#FCD34D";
+
 /**
  * Settings entry that fixes each kind of issue. A signed-out account is fixed
  * on its provider's accounts panel; the other kinds are read on the same page,
@@ -45,10 +48,17 @@ export function AccountBalanceIndicator() {
         data-ade-account-balance-issue={first.kind}
         className={cn(
           "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-          "border border-amber-300/55 bg-amber-400/15 text-[11px] font-medium text-amber-100",
-          "shadow-[0_0_18px_rgba(245,158,11,0.2)] transition-colors duration-150 hover:bg-amber-400/24",
+          "text-[11px] font-medium transition-[background-color,box-shadow] duration-150",
         )}
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        // Inline, not Tailwind: `.ade-shell-control` is unlayered CSS and wins
+        // over utility colors, which turned the warning gray.
+        style={{
+          WebkitAppRegion: "no-drag",
+          color: WARNING_TEXT,
+          borderColor: `${WARNING}8c`,
+          background: `${WARNING}38`,
+          boxShadow: `0 0 18px ${WARNING}33`,
+        } as React.CSSProperties}
         aria-label={`${label}. ${description}`}
         onClick={() => {
           window.location.hash = `#${settingsRouteFor(settingsEntryFor(first))}`;
