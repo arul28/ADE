@@ -120,8 +120,9 @@ const macDesktopStartStream = vi.fn(async () => makeStreamStatus({
 }));
 const macDesktopStopStream = vi.fn(async () => makeStreamStatus());
 const macDesktopGetStreamStatus = vi.fn(async () => makeStreamStatus());
-const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus>> => ({
+const macDesktopGetStatus = vi.fn(async (): Promise<Partial<MacDesktopStatus> & Pick<MacDesktopStatus, "platform" | "supported">> => ({
   supported: true,
+  platform: "darwin",
   display: null,
   lease: null,
   windows: [],
@@ -1084,6 +1085,7 @@ describe("Mac Desktop floating player", () => {
   it("keeps a closed player closed through a recreated display, until the toggle (M2)", async () => {
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1176,6 +1178,7 @@ describe("Mac Desktop floated by the chat's agent", () => {
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1229,7 +1232,7 @@ describe("Mac Desktop floated by the chat's agent", () => {
     withLaneDisplay();
     grantMacDesktopCardForChat("lane-1", "chat-1");
     setMacDesktopFrame(macDesktopFrame());
-    const start = vi.fn(async () => ({ supported: true, display: macDesktopDisplay({ displayId: 57 }) }));
+    const start = vi.fn(async () => ({ supported: true, platform: "darwin", display: macDesktopDisplay({ displayId: 57 }) }));
     (window.ade.macDesktop as unknown as { start: unknown }).start = start;
     renderCard({ activeTool: "browser" });
     const player = await findMacPlayer();
@@ -1263,6 +1266,7 @@ describe("Mac Desktop floating preview on by default", () => {
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
@@ -1272,7 +1276,7 @@ describe("Mac Desktop floating preview on by default", () => {
 
   afterEach(() => {
     resetWorkToolOnScreenForTests();
-    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+    macDesktopGetStatus.mockResolvedValue({ supported: true, platform: "darwin", display: null, lease: null, windows: [], recording: null });
   });
 
   it("floats for a chat of the lane while its display runs, like the Apple device", async () => {
@@ -1314,7 +1318,7 @@ describe("Mac Desktop floating preview on by default", () => {
     expect(macPlayer()).toBeNull();
     view.unmount();
 
-    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+    macDesktopGetStatus.mockResolvedValue({ supported: true, platform: "darwin", display: null, lease: null, windows: [], recording: null });
     renderCard({ activeTool: "browser", sessionLaneId: "lane-1" });
     await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1413,6 +1417,7 @@ describe("Mac Desktop floating player: who drives, recording, picture in picture
     );
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
+      platform: "darwin",
       display: macDesktopDisplay(),
       lease: null,
       windows: [],
