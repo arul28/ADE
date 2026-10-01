@@ -6258,18 +6258,23 @@ html[data-motion="reduced"] *::after {
   white-space: nowrap;
 }
 
-@media (max-width: 900px) {
+.import-chat-pill__container {
+  container-name: import-chat-pill;
+  container-type: inline-size;
+}
+
+@container import-chat-pill (max-width: 620px) {
   .import-chat-pill__provider:nth-child(n + 8) { display: none; }
 }
 
-@media (max-width: 680px) {
+@container import-chat-pill (max-width: 520px) {
   .import-chat-pill__provider:nth-child(n + 6) { display: none; }
 }
 
-@media (max-width: 520px) {
+@container import-chat-pill (max-width: 440px) {
   .import-chat-pill__provider:nth-child(n + 4) { display: none; }
 }
 
-@media (max-width: 440px) {
+@container import-chat-pill (max-width: 360px) {
   .import-chat-pill__provider { display: none; }
 }

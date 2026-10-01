@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "@phosphor-icons/react";
-import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import { cn } from "../../ui/cn";
-import { PiLogo } from "../../shared/ProviderLogos";
-import type { ExternalSessionProvider } from "../../../../shared/types/externalSessions";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
-import droidMarkSrc from "../../../assets/provider-logos/droid-mark.svg";
+import { ToolLogo } from "../ToolLogos";
+import { PROVIDER_TOOL_TYPE } from "./contract";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -28,23 +26,6 @@ export function writeImportBadgeDismissed(projectRoot: string): void {
   } catch {
     // Machine-local only; quota or private mode just keeps the pill visible.
   }
-}
-
-function ExternalProviderMark({ provider }: { provider: ExternalSessionProvider }) {
-  const monoStyle = (color: string) => ({ color });
-  switch (provider) {
-    case "claude": return <Claude.Color size={20} />;
-    case "codex": return <Codex size={20} style={monoStyle("#A7B4FF")} />;
-    case "cursor": return <Cursor size={20} style={monoStyle("#A7B4FF")} />;
-    case "droid": return <img src={droidMarkSrc} alt="" width={20} height={20} className="brightness-0 invert" />;
-    case "opencode": return <OpenCode size={20} style={monoStyle("#F5F3FF")} />;
-    case "pi": return <PiLogo size={20} className="brightness-0 invert" />;
-    case "qwen": return <Qwen.Color size={20} />;
-    case "kimi": return <Kimi.Color size={20} />;
-    case "grok": return <Grok size={20} style={monoStyle("#F5F3FF")} />;
-    case "copilot": return <GithubCopilot size={20} style={monoStyle("#7DD3FC")} />;
-  }
-  return null;
 }
 
 export function ImportFloatingBadge({
@@ -84,7 +65,7 @@ export function ImportFloatingBadge({
     // reads as a footnote to the column rather than part of that card. Short
     // windows drop it: the column is already at its floor there, and the extra
     // gap would only push the pill further past the bottom edge.
-    <div className="flex w-full shrink-0 justify-center [@media(min-height:760px)]:mt-6">
+    <div className="import-chat-pill__container flex w-full shrink-0 justify-center [@media(min-height:760px)]:mt-6">
       <div
         // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
         data-draft-depart="fade"
@@ -106,7 +87,11 @@ export function ImportFloatingBadge({
                 key={provider}
                 className="import-chat-pill__provider inline-flex h-6 w-6 shrink-0 items-center justify-center"
               >
-                <ExternalProviderMark provider={provider} />
+                <ToolLogo
+                  toolType={PROVIDER_TOOL_TYPE[provider]}
+                  size={20}
+                  appearance="provider-mark"
+                />
               </span>
             ))}
           </span>
