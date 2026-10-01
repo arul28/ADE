@@ -26,6 +26,7 @@ import {
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
+import { Banner } from "../ui/notice";
 import { H264StreamView } from "./H264StreamView";
 import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
@@ -55,6 +56,7 @@ import {
   type MacDesktopPanelController,
 } from "./useMacDesktopPanelController";
 import { MacDesktopFullscreenView } from "./MacDesktopFullscreenView";
+import { WindowsDesktopStateCard } from "./WindowsDesktopStateCard";
 
 const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
 
@@ -179,6 +181,20 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   // the flicker a reopened tab used to have.
   if (stopping) {
     return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title="Stopping Mac Desktop…" />);
+  }
+
+  // Windows hosts have four states macOS does not — setup, held, locked, and a
+  // shared seat — and they all live on their own card. Only ever reached on a
+  // Windows host, because `status.windowsDesktop` is null elsewhere.
+  if (!display && status?.windowsDesktop) {
+    return idle(
+      <WindowsDesktopStateCard
+        laneId={laneId}
+        laneName={laneName}
+        windows={status.windowsDesktop}
+        onChanged={() => void readAgain()}
+      />,
+    );
   }
 
   if (!display) {
@@ -946,6 +962,22 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
+      {/* Windows Mode B: the seat is the user's own desktop, so the pane keeps a
+          reminder and a Stop for as long as it is live. A state, so a banner. */}
+      {status?.windowsDesktop && display?.mode === "offscreen-region" ? (
+        <Banner
+          layout="inline"
+          testId="windows-desktop-shared-reminder"
+          model={{
+            id: "windows-desktop-shared",
+            tone: "warning",
+            icon: <Monitor size={16} aria-hidden="true" />,
+            title: "Using your main Windows desktop",
+            detail: "ADE takes over the window you are using while it acts.",
+            actions: [{ label: "Stop", onClick: () => void stopDisplay() }],
+          }}
+        />
+      ) : null}
       {/* ── The one strip ─────────────────────────────────────────────
           A missing grant, a refused action, or a stopped video, one at a
           time and each with the button that fixes it. */}

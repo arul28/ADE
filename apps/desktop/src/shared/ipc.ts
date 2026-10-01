@@ -504,6 +504,12 @@ export const IPC = {
   macDesktopGetStatus: "ade.macDesktop.getStatus",
   macDesktopRecheckPermissions: "ade.macDesktop.recheckPermissions",
   macDesktopRequestPermission: "ade.macDesktop.requestPermission",
+  /** Windows only: the wizard's one admin step. */
+  macDesktopSetupWindows: "ade.macDesktop.setupWindows",
+  /** Windows only: user-approved takeover of a held private screen. */
+  macDesktopTakeoverWindows: "ade.macDesktop.takeoverWindows",
+  /** Windows only: the user consented to Mode B for this lane. */
+  macDesktopUseSharedDesktop: "ade.macDesktop.useSharedDesktop",
   macDesktopStart: "ade.macDesktop.start",
   macDesktopStop: "ade.macDesktop.stop",
   macDesktopListWindows: "ade.macDesktop.listWindows",

@@ -36,6 +36,8 @@ struct MacDesktopViewer: View {
   /// display; only that button does.
   @State private var starting = false
   @State private var startError: String?
+  @State private var stopping = false
+  @State private var stopError: String?
   @State private var orientation = MacDesktopViewerOrientation()
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
@@ -52,6 +54,9 @@ struct MacDesktopViewer: View {
       // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
         controls
+        if let stopError {
+          Text(stopError).font(.caption).foregroundStyle(ADEColor.warning).padding(.horizontal)
+        }
         // The stage fills the space between the controls and the footer, and
         // a zoomed picture may use all of it.
         stage
@@ -94,6 +99,20 @@ struct MacDesktopViewer: View {
         dismiss()
       }
       Spacer(minLength: 0)
+      if desktop?.windowsDesktop != nil && desktop?.display?.mode == "virtual" && syncService.supportsWindowsDesktopStop {
+        controlButton(systemName: "stop.fill", label: "Stop private Windows screen") {
+          Task {
+            stopping = true
+            stopError = nil
+            defer { stopping = false }
+            do {
+              try await syncService.windowsDesktopStop(laneId: laneId)
+              await refresh()
+            } catch { stopError = macDesktopVisibleMessage(for: error) }
+          }
+        }
+        .disabled(stopping)
+      }
       if let session {
         MacDesktopViewerReconnectButton(session: session) { reconnect() }
       }
@@ -107,7 +126,7 @@ struct MacDesktopViewer: View {
   }
 
   private var title: some View {
-    Label("macOS", systemImage: "desktopcomputer")
+    Label(desktop?.windowsDesktop == nil ? "macOS" : "Windows", systemImage: "desktopcomputer")
       .font(.footnote.weight(.semibold))
       .foregroundStyle(.white.opacity(0.85))
       .accessibilityAddTraits(.isHeader)
@@ -178,7 +197,8 @@ struct MacDesktopViewer: View {
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
         error: startError,
-        canStart: syncService.supportsMacDesktopStart
+        canStart: syncService.supportsMacDesktopStart,
+        hostIsWindows: desktop?.windowsDesktop != nil
       ))
       if !starting && syncService.supportsMacDesktopStart {
         Button {
@@ -252,6 +272,7 @@ struct MacDesktopViewer: View {
     macDesktopStartDisplay(
       using: syncService,
       laneId: laneId,
+      hostIsWindows: desktop?.windowsDesktop != nil,
       starting: $starting,
       errorText: $startError,
       refresh: { await refresh() }
@@ -465,7 +486,12 @@ func macDesktopVisibleMessage(for error: Error) -> String {
 
 /// The Off card's one line: the start in flight, why the last one failed, or
 /// that the display is off.
-func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool) -> String {
+func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool, hostIsWindows: Bool = false) -> String {
+  if hostIsWindows {
+    if starting { return "Waiting for Windows sign-in…" }
+    if let error { return error }
+    return canStart ? "The Windows desktop is off." : "Start this lane’s Windows desktop in ADE on the PC."
+  }
   if starting { return "Starting the macOS desktop…" }
   if let error = macDesktopVisibleMessage(error) {
     return error

@@ -32,8 +32,8 @@
     "test:ade-media": "swift test --package-path ./native/ADEMedia",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win && npm run validate:win:release",
-    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build && npm run package:win && npm run validate:win:release",
+    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build:desktop-driver:win && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
     "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",
     "package:win:signed": "node ./scripts/run-electron-builder.mjs --require-signing --win --x64 --publish never",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:mac-native && npm run build && electron-builder --mac --publish never",
@@ -79,7 +79,8 @@
     "test:lint-tooling": "node --test ./eslint-rules/ade-ui.test.mjs ./scripts/lint-ratchet.test.mjs",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
-    "version:release": "node ./scripts/set-release-version.mjs"
+    "version:release": "node ./scripts/set-release-version.mjs",
+    "build:desktop-driver:win": "node ./scripts/build-windows-desktop-driver.mjs"
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
@@ -330,7 +331,8 @@
           "ade-capture-helper",
           "ade-capture-helper.exe",
           "ade-sim-helper",
-          "ade-media"
+          "ade-media",
+          "ade-desktop-driver.exe"
         ]
       },
       {

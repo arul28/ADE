@@ -69,6 +69,9 @@ import type {
   MacDesktopWaitArgs,
   MacDesktopWaitResult,
   MacDesktopWindow,
+  WindowsDesktopSetupArgs,
+  WindowsDesktopSetupResult,
+  WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
   BuiltInBrowserRemoteRequest,
@@ -2816,6 +2819,18 @@ declare global {
           args: MacDesktopRequestPermissionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopPermissions>;
+        setupWindows: (
+          args: WindowsDesktopSetupArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<WindowsDesktopSetupResult>;
+        takeoverWindows: (
+          args: WindowsDesktopTakeoverArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        useSharedDesktop: (
+          args: { laneId: string; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
         start: (
           args: MacDesktopStartArgs,
           pin?: OpenProjectBinding | null,

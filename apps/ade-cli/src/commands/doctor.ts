@@ -42,6 +42,12 @@ import {
 import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
+import { resolveRuntimeServiceName } from "../serviceManager/common";
+import { windowsPowerShellCommand } from "../serviceManager/windowsSupervisor";
+import {
+  resolveWindowsServiceLauncherPath,
+  windowsRunValuePrefix,
+} from "../serviceManager/installWindows";
 
 export type DoctorRowStatus = "ok" | "warn" | "fail";
 
@@ -56,7 +62,12 @@ export type DoctorRow = {
     | "account"
     | "credentials"
     | "storage"
-    | "diagnostics";
+    | "diagnostics"
+    | "windows_child_sessions"
+    | "windows_remote_desktop"
+    | "windows_saved_password"
+    | "windows_brain_session"
+    | "windows_single_supervisor";
   label: string;
   status: DoctorRowStatus;
   detail: string;
@@ -139,6 +150,15 @@ export type DoctorInput = {
    * supply it gets a truthful "not checked" row rather than a fabricated one.
    */
   diagnostics?: DoctorDiagnosticsSharing | null;
+  /**
+   * Windows Desktop prerequisites, read on win32 only. The Mac Desktop
+   * counterpart has none of these machine-level prerequisites.
+   *
+   * OPTIONAL, like the other additive inputs: an absent probe (non-Windows
+   * host, or a host that cannot run PowerShell) produces no Windows rows rather
+   * than fabricated ones.
+   */
+  windowsDesktop?: WindowsDesktopDoctorProbe | null;
 };
 
 /**
@@ -215,6 +235,8 @@ export type DoctorCommandResult = {
   credentials: DoctorInput["credentials"];
   storage: DoctorInput["storage"];
   diagnostics: DoctorInput["diagnostics"];
+  /** Present only on a Windows host that could answer the Windows Desktop probe. */
+  windowsDesktop?: WindowsDesktopDoctorProbe | null;
 };
 
 type DoctorBrainProbe = {
@@ -522,6 +544,244 @@ export function readInstalledWindowsDesktopVersion(args: {
   );
   if (result.status !== 0) return { version: null, path: null };
   return parseWindowsDesktopInstallProbe(result.stdout);
+}
+
+/**
+ * The Windows Desktop prerequisites, in one probe.
+ *
+ * Each field can be `null` on its own: wtsapi32 may not answer, the policy key
+ * may be absent, the brain pid may be unknown. `null` is never read as "fine"
+ * by the row builder.
+ */
+export type WindowsDesktopDoctorProbe = {
+  childSessionsEnabled: boolean | null;
+  remoteDesktopAllowed: boolean | null;
+  savedPasswordExists: boolean | null;
+  brainSessionId: number | null;
+  consoleSessionId: number | null;
+  supervisorCount: number | null;
+  runValueCount: number | null;
+};
+
+/** `WTSGetActiveConsoleSessionId` reports this when no session is attached. */
+const WINDOWS_CONSOLE_SESSION_UNKNOWN = 0xffffffff;
+
+function powerShellSingleQuotedLiteral(value: string): string {
+  if (value.includes("\0")) throw new Error("PowerShell values cannot contain NUL bytes.");
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * The doctor's Windows Desktop probes in ONE PowerShell invocation. A row per
+ * probe would mean five powershell.exe cold starts on a check that must stay
+ * quick, so every probe runs in one program and answers as one JSON object.
+ *
+ * Read through the same hardened System32 powershell the service manager uses;
+ * an unresolvable tool, or a host that is not Windows, degrades to `null` so
+ * the Windows rows are simply absent.
+ */
+export function readWindowsDesktopDoctorProbe(args: {
+  env?: NodeJS.ProcessEnv;
+  brainPid?: number | null;
+  run?: typeof spawnSync;
+} = {}): WindowsDesktopDoctorProbe | null {
+  if (process.platform !== "win32") return null;
+  const env = args.env ?? process.env;
+  const run = args.run ?? spawnSync;
+  let powerShell: string;
+  try {
+    powerShell = windowsPowerShellCommand();
+  } catch {
+    return null;
+  }
+  const serviceName = resolveRuntimeServiceName(env);
+  const launcherPath = resolveWindowsServiceLauncherPath({ env, serviceName });
+  const runPrefix = windowsRunValuePrefix(serviceName);
+  const brainPid = args.brainPid != null && Number.isInteger(args.brainPid) && args.brainPid > 0
+    ? args.brainPid
+    : null;
+  const wtsMember = powerShellSingleQuotedLiteral(
+    '[DllImport("wtsapi32.dll")] public static extern bool WTSIsChildSessionsEnabled(out bool enabled);',
+  );
+  const sessionMember = powerShellSingleQuotedLiteral(
+    '[DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();',
+  );
+  let credentialHash = 14695981039346656037n;
+  const credentialHome = resolveMachineAdeLayout(env).adeDir.toLowerCase();
+  for (let index = 0; index < credentialHome.length; index += 1) {
+    credentialHash = BigInt.asUintN(64, (credentialHash ^ BigInt(credentialHome.charCodeAt(index))) * 1099511628211n);
+  }
+  const credentialMember = powerShellSingleQuotedLiteral(
+    '[DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential); [DllImport("advapi32.dll")] public static extern void CredFree(IntPtr credential);',
+  );
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$child = $null",
+    "try {",
+    `  Add-Type -Namespace AdeDoctor -Name WtsApi -MemberDefinition ${wtsMember}`,
+    "  $enabled = $false",
+    "  if ([AdeDoctor.WtsApi]::WTSIsChildSessionsEnabled([ref]$enabled)) { $child = $enabled }",
+    "} catch { }",
+    "$rdp = $null",
+    "try { $rdp = ((Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -ErrorAction Stop).fDenyTSConnections -eq 0) } catch { }",
+    "$pw = $null",
+    "try {",
+    `  Add-Type -Namespace AdeDoctor -Name CredentialApi -MemberDefinition ${credentialMember}`,
+    "  $credential = [IntPtr]::Zero",
+    "  $pw = [AdeDoctor.CredentialApi]::CredRead($env:ADE_DOCTOR_CREDENTIAL_TARGET, 1, 0, [ref]$credential)",
+    "  if ($pw) { [AdeDoctor.CredentialApi]::CredFree($credential) } elseif ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 1168) { $pw = $null }",
+    "} catch { }",
+    "$console = $null",
+    "try {",
+    `  Add-Type -Namespace AdeDoctor -Name SessionApi -MemberDefinition ${sessionMember}`,
+    "  $console = [long][AdeDoctor.SessionApi]::WTSGetActiveConsoleSessionId()",
+    "} catch { }",
+    "$brainSession = $null",
+    "if (-not [string]::IsNullOrEmpty($env:ADE_DOCTOR_BRAIN_PID)) {",
+    "  try { $brainSession = [int](Get-Process -Id ([int]$env:ADE_DOCTOR_BRAIN_PID) -ErrorAction Stop).SessionId } catch { }",
+    "}",
+    "$sup = $null",
+    "if (-not [string]::IsNullOrEmpty($env:ADE_DOCTOR_LAUNCHER_PATH)) {",
+    "  try {",
+    "    $sup = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.Name -match '^powershell(?:\\.exe)?$' -and $_.CommandLine.IndexOf($env:ADE_DOCTOR_LAUNCHER_PATH, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count",
+    "  } catch { }",
+    "}",
+    "$runCount = $null",
+    "if (-not [string]::IsNullOrEmpty($env:ADE_DOCTOR_RUN_PREFIX)) {",
+    "  try {",
+    "    $runKey = Get-Item 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -ErrorAction Stop",
+    "    $runCount = @($runKey.GetValueNames() | Where-Object { $_.StartsWith($env:ADE_DOCTOR_RUN_PREFIX) }).Count",
+    "  } catch { }",
+    "}",
+    "[Console]::Out.Write((@{ childSessions = $child; remoteDesktop = $rdp; savedPassword = $pw; brainSessionId = $brainSession; consoleSessionId = $console; supervisorCount = $sup; runValueCount = $runCount } | ConvertTo-Json -Compress))",
+  ].join("\n");
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = run(powerShell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8",
+      timeout: 6_000,
+      windowsHide: true,
+      env: {
+        ...env,
+        ADE_DOCTOR_BRAIN_PID: brainPid == null ? "" : String(brainPid),
+        ADE_DOCTOR_LAUNCHER_PATH: launcherPath,
+        ADE_DOCTOR_RUN_PREFIX: runPrefix,
+        ADE_DOCTOR_CREDENTIAL_TARGET: `ADE/WindowsDesktop/${credentialHash}`,
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (result.status !== 0) return null;
+  return parseWindowsDesktopDoctorProbe(result.stdout);
+}
+
+export function parseWindowsDesktopDoctorProbe(
+  output: string | Buffer | null | undefined,
+): WindowsDesktopDoctorProbe | null {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8").trim() : String(output ?? "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const asBool = (value: unknown): boolean | null =>
+      typeof value === "boolean" ? value : null;
+    const asCount = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0
+        ? Math.floor(value)
+        : null;
+    const asSession = (value: unknown): number | null =>
+      typeof value === "number"
+        && Number.isInteger(value)
+        && value >= 0
+        && value !== WINDOWS_CONSOLE_SESSION_UNKNOWN
+        ? value
+        : null;
+    return {
+      childSessionsEnabled: asBool(parsed.childSessions),
+      remoteDesktopAllowed: asBool(parsed.remoteDesktop),
+      savedPasswordExists: asBool(parsed.savedPassword),
+      brainSessionId: asSession(parsed.brainSessionId),
+      consoleSessionId: asSession(parsed.consoleSessionId),
+      supervisorCount: asCount(parsed.supervisorCount),
+      runValueCount: asCount(parsed.runValueCount),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Windows Desktop rows. Only present on Windows, where the feature has
+ * machine-level prerequisites the Mac Desktop counterpart does not.
+ *
+ * Every row is `ok` or `warn`, never `fail`: none of these stops the brain or
+ * the product from working, they stop the *private screen* from being
+ * available, and a `fail` here would turn `ade doctor` red on a machine that is
+ * merely not set up for it yet.
+ */
+function windowsDesktopRows(
+  probe: WindowsDesktopDoctorProbe | null | undefined,
+): DoctorRow[] {
+  if (!probe) return [];
+  const setupFix = "Open Windows Desktop in ADE and run its setup.";
+  const rows: DoctorRow[] = [
+    {
+      key: "windows_child_sessions",
+      label: "Windows Desktop: private screens",
+      status: probe.childSessionsEnabled === true ? "ok" : "warn",
+      detail: probe.childSessionsEnabled === true
+        ? "child sessions are on"
+        : probe.childSessionsEnabled === false
+          ? `child sessions are off · ${setupFix}`
+          : `child sessions could not be checked · ${setupFix}`,
+    },
+    {
+      key: "windows_remote_desktop",
+      label: "Windows Desktop: local Remote Desktop",
+      status: probe.remoteDesktopAllowed === true ? "ok" : "warn",
+      detail: probe.remoteDesktopAllowed === true
+        ? "allowed"
+        : probe.remoteDesktopAllowed === false
+          ? `Remote Desktop connections are off · ${setupFix}`
+          : `could not be checked · ${setupFix}`,
+    },
+    {
+      key: "windows_saved_password",
+      label: "Windows Desktop: sign-in",
+      status: probe.savedPasswordExists == null ? "warn" : "ok",
+      detail: probe.savedPasswordExists === true
+        ? "saved on this PC in Windows Credential Manager"
+        : probe.savedPasswordExists === false
+          ? "Not saved · choose Save Windows password in the Windows Desktop pane to avoid repeated sign-in."
+          : "The saved Windows password could not be checked.",
+    },
+  ];
+  // Skipped, not guessed, when the brain's session could not be read: a row
+  // claiming the brain is in the console session without proof is worse than no
+  // row at all.
+  if (probe.brainSessionId != null && probe.consoleSessionId != null) {
+    const inConsole = probe.brainSessionId === probe.consoleSessionId;
+    rows.push({
+      key: "windows_brain_session",
+      label: "Windows Desktop: brain session",
+      status: inConsole ? "ok" : "warn",
+      detail: inConsole
+        ? `console session ${probe.brainSessionId}`
+        : `session ${probe.brainSessionId}, console is ${probe.consoleSessionId} · Start ADE from your Windows desktop, not over SSH.`,
+    });
+  }
+  const oneSupervisor = probe.supervisorCount === 1 && probe.runValueCount === 1;
+  rows.push({
+    key: "windows_single_supervisor",
+    label: "Windows Desktop: one supervisor",
+    status: oneSupervisor ? "ok" : "warn",
+    detail: oneSupervisor
+      ? "one supervisor and one startup entry"
+      : `${probe.supervisorCount ?? "?"} supervisor${probe.supervisorCount === 1 ? "" : "s"}`
+        + ` · ${probe.runValueCount ?? "?"} startup ${probe.runValueCount === 1 ? "entry" : "entries"}`
+        + " · Run `ade brain restart` to remove the duplicate.",
+  });
+  return rows;
 }
 
 async function readLatestDesktopVersionOnline(): Promise<string | null> {
@@ -1129,6 +1389,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     credentialsRow(input.credentials),
     storageRow(input.storage),
     diagnosticsRow(input.diagnostics),
+    ...windowsDesktopRows(input.windowsDesktop),
   ];
 }
 
@@ -1177,6 +1438,10 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
     ?? brainProbe.runtimeLastWedge;
   const storage = await readStorageEnvironmentForDoctor(layout);
+  // Windows Desktop prerequisites. Cheap and platform-guarded: on a non-Windows
+  // host this returns null without spawning anything, so the extra rows appear
+  // only where they mean something.
+  const windowsDesktop = readWindowsDesktopDoctorProbe({ brainPid: brainProbe.brain.pid });
   // Asked only of a brain that did not answer: a responding brain is running,
   // never starting.
   const startupState = brainProbe.brain.running
@@ -1206,6 +1471,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
     storage,
     diagnostics: readAutoDiagnosticsSharingForDoctor(layout.adeDir),
+    windowsDesktop,
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -1224,5 +1490,6 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     credentials: input.credentials,
     storage,
     diagnostics: input.diagnostics,
+    windowsDesktop,
   };
 }

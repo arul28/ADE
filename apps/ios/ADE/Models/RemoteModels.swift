@@ -7081,7 +7081,15 @@ struct WorkToolsMacDesktopNotParked: Codable, Equatable {
   var reason: String
 }
 
+/// Windows-specific host facts. Missing on older hosts and on macOS.
+struct WindowsDesktopHostState: Codable, Equatable {
+  var state: String
+  var seatMode: String?
+  var locked: Bool?
+}
+
 struct WorkToolsMacDesktopState: Codable, Equatable {
+  var windowsDesktop: WindowsDesktopHostState? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   /// Absent from a host that sends no list; both nil and empty read as "nothing
@@ -7112,6 +7120,7 @@ struct WorkToolsObservationPreview: Codable, Equatable {
 /// this type does not name. The stream token is deliberately absent — the host
 /// redacts it on this method and only `startStream` ever carries it.
 struct MacDesktopStatus: Codable, Equatable {
+  var windowsDesktop: WindowsDesktopHostState? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   var windows: [WorkToolsMacDesktopWindow]?

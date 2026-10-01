@@ -160,6 +160,13 @@ export function NativeToolFeedsProvider({
     isWebClient: isWebClientMode(),
     supportsMacDesktop: macDesktopSupport?.supported ?? null,
     macDesktopUnsupportedReason: macDesktopSupport?.reason ?? null,
+    // The same read answers both seats: a Windows host that can host a screen
+    // shows Windows Desktop, a Mac host shows Mac Desktop, and only one is
+    // available at a time because one platform answers.
+    supportsWindowsDesktop: macDesktopSupport
+      ? macDesktopSupport.platform === "win32" && macDesktopSupport.supported
+      : null,
+    windowsDesktopUnsupportedReason: "This lane's host isn't Windows",
   }), [macDesktopSupport, supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep

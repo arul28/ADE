@@ -7743,6 +7743,11 @@ export function buildComputerUseDirective(
      * a plain "record opening Safari" quit the user's own Safari).
      */
     macDesktopAvailable?: boolean;
+    /**
+     * This host can give the lane a Windows screen (Windows Desktop). The same
+     * "tell the agent" rule as above, for the Windows seat.
+     */
+    windowsDesktopAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -7762,6 +7767,16 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
+  // Either seat means "this lane has its own screen". Exactly one is set per
+  // host: the seat follows the runtime host's platform.
+  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
+  const recordingSurfaces = [
+    ...(options.macDesktopAvailable ? ["Apple", "Mac Desktop"] : []),
+    ...(options.windowsDesktopAvailable ? ["Windows Desktop"] : []),
+    "App Control",
+    "browser",
+  ].join(", ");
+
   // --- Header (always when we have any capability) ---
   sections.push(
     [
@@ -7771,7 +7786,7 @@ export function buildComputerUseDirective(
       "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
       "",
       "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
-      options.macDesktopAvailable
+      options.macDesktopAvailable || options.windowsDesktopAvailable
         ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
         : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
@@ -7779,12 +7794,27 @@ export function buildComputerUseDirective(
       "App Control (`ade app-control`, the **ade-app-control** skill) drives a dev Electron app, one session per lane: `launch`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
       "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
-      `Every recording (${options.macDesktopAvailable ? "Apple, Mac Desktop, App Control, browser" : "App Control, browser"}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
+      `Every recording (${recordingSurfaces}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
     ].join("\n"),
   );
 
-  // --- Mac Desktop (this host can give the lane its own screen) ---
-  if (options.macDesktopAvailable) {
+  // --- Windows Desktop (this Windows host can give the lane its own screen) ---
+  if (options.windowsDesktopAvailable) {
+    sections.push(
+      [
+        "### Windows Desktop — this lane's own screen (use it for desktop apps)",
+        "For anything that needs a Windows app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's Windows Desktop with `ade screen` (aliases `ade windows-desktop`, `ade mac-desktop`). The default seat is a private Windows screen; the user can also allow a shared seat that takes over the window they are using. Read the **ade-computer-use** skill before your first action.",
+        "Pick the surface: any Windows app → `ade screen`; a dev Electron app you launch or attach to → `ade app-control` (it records and proves its own window); a web page or localhost → `ade browser`.",
+        "Use the built-in browser (`ade browser`, the **ade-browser** skill) for web tasks; open a real browser window on the Windows screen only when the user names that app or asks for it.",
+        "Setup, the private screen's sign-in, and the Mode B consent are the user's: ask with an ask card rather than passing `--allow-prompt` or `--consent` yourself. Starting a private screen after setup is yours to do (`ade screen start`).",
+        "The loop: `ade screen start`, `ade screen open <app or file>`, `ade screen observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade screen record start --caption \"<what it shows>\"` … `ade screen record stop`, or file a still with `ade screen proof --caption \"<what>\"`. To show the screen to the user, run `ade screen show`.",
+        "Errors name the fix: `WINDOWS_DESKTOP_SETUP_REQUIRED` (ask the user to set up), `WINDOWS_DESKTOP_HELD` (another lane holds the private screen; ask), `WINDOWS_DESKTOP_LOCKED` (wait for unlock), `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` (private is unavailable here; ask about the shared seat).",
+        "In the private screen, ignore the user's own startup apps: open only the apps and files you name, and never rely on a restored tab or a file association.",
+        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade screen observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
+      ].join("\n"),
+    );
+  } else if (options.macDesktopAvailable) {
+    // --- Mac Desktop (this host can give the lane its own screen) ---
     sections.push(
       [
         "### Mac Desktop — this lane's own screen (use it for desktop apps)",
@@ -9509,7 +9539,7 @@ export function createAgentChatService(args: {
   macDesktopTurnRecorder?: Pick<
     MacDesktopRuntimeService,
     "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
-  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
+  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync" | "seatHostPlatform">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   /**
@@ -43462,7 +43492,10 @@ export function createAgentChatService(args: {
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true,
+        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
+          && macDesktopTurnRecorder?.seatHostPlatform?.() !== "win32",
+        windowsDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
+          && macDesktopTurnRecorder?.seatHostPlatform?.() === "win32",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`

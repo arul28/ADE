@@ -14,6 +14,10 @@ The feature is macOS-only on the **runtime host**. A Windows desktop, a Linux
 desktop, the hosted web client, and the phone all render the tool for a lane
 whose runtime host is a Mac, because the display lives on that Mac.
 
+A Windows runtime host has its own seat, sharing this service, lease, ownership,
+proof and streaming: see [Windows Desktop](../windows-desktop/README.md). The
+`ade screen` command family is the neutral spelling both hosts answer.
+
 ## Why a virtual display
 
 ADE lanes isolate code with git worktrees. They do not isolate a screen. Host

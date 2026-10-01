@@ -2784,6 +2784,7 @@ export type SyncRemoteCommandAction =
   | "macDesktop.getStatus"
   | "macDesktop.start"
   | "macDesktop.stop"
+  | "macDesktop.stopPrivate"
   | "macDesktop.streamSubscribe"
   | "macDesktop.streamUnsubscribe"
   // Takeover from the hosted web client. Deliberately NOT viewer-allowed: a

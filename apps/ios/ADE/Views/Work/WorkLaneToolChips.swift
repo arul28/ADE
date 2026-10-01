@@ -37,6 +37,7 @@ enum WorkToolChipKind: Equatable {
 
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
+  var desktopPlatformLabel: String? = nil
 
   /// The chip's full name, derived from `kind` so the two cannot drift.
   var label: String {
@@ -44,7 +45,7 @@ struct WorkToolChip: Equatable, Identifiable {
     case .simulator(let name, _): return name
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
     case .appControl: return appControlTagLabel
-    case .macDesktop: return "macOS"
+    case .macDesktop: return desktopPlatformLabel ?? "macOS"
     }
   }
 
@@ -109,7 +110,7 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
   return WorkToolChip(kind: .macDesktop(
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
-  ))
+  ), desktopPlatformLabel: macDesktop.windowsDesktop == nil ? nil : "Windows")
 }
 
 /// The lane state the chips show after one poll.

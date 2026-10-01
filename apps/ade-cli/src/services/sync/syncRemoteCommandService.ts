@@ -5746,6 +5746,23 @@ function registerMacDesktopRemoteCommands({
         laneId: requireString(payload.laneId, "macDesktop.stop requires laneId."),
       }));
 
+    // A phone or any watch-only viewer's Stop. Distinct from `macDesktop.stop`
+    // on purpose: the general stop is a controller's, while signing the private
+    // screen out is the one action the plan gives a view-only client. It stops
+    // the lane's seat and nothing else.
+    register("macDesktop.stopPrivate", {
+      viewerAllowed: true,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.stopPrivate requires laneId.");
+      const status = await macDesktopService.getStatus({ laneId });
+      if (!status.windowsDesktop || (status.display && status.display.mode !== "virtual")) {
+        throw new Error("Only a private Windows screen can be stopped by a watch-only viewer.");
+      }
+      return await macDesktopService.stop({ laneId });
+    });
+
     register("macDesktop.takeControl", {
       viewerAllowed: false,
       controllerAllowed: true,

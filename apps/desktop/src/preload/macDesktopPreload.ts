@@ -37,6 +37,9 @@ import type {
   MacDesktopWaitArgs,
   MacDesktopWaitResult,
   MacDesktopWindow,
+  WindowsDesktopSetupArgs,
+  WindowsDesktopSetupResult,
+  WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 
 /**
@@ -108,6 +111,21 @@ export function createMacDesktopBridge(deps: MacDesktopBridgeDeps) {
     requestPermission: call<MacDesktopRequestPermissionArgs, MacDesktopPermissions>(
       "requestPermission",
       IPC.macDesktopRequestPermission,
+    ),
+    /** Windows only: the wizard's one admin step. */
+    setupWindows: call<WindowsDesktopSetupArgs, WindowsDesktopSetupResult>(
+      "setupWindows",
+      IPC.macDesktopSetupWindows,
+    ),
+    /** Windows only: take the private screen from its holder, on the user's approval. */
+    takeoverWindows: call<WindowsDesktopTakeoverArgs, MacDesktopStatus>(
+      "takeoverWindows",
+      IPC.macDesktopTakeoverWindows,
+    ),
+    /** Windows only: the user consented to Mode B for this lane. */
+    useSharedDesktop: call<{ laneId: string; chatSessionId?: string | null }, MacDesktopStatus>(
+      "useSharedDesktop",
+      IPC.macDesktopUseSharedDesktop,
     ),
     start: call<MacDesktopStartArgs, MacDesktopStatus>("start", IPC.macDesktopStart),
     stop: call<MacDesktopStopArgs, MacDesktopStopResult>("stop", IPC.macDesktopStop),

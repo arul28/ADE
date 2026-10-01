@@ -1101,6 +1101,11 @@ function commandHelpText(key: string): string | undefined {
       "ADE_ENABLE_AUTOMATIONS",
     );
   }
+  if (key === "screen" || key === "windows-desktop" || key === "windows-desk") {
+    // The neutral family and the Windows name share one host-neutral help; the
+    // Mac-only name keeps its own.
+    return HELP_BY_COMMAND["screen"];
+  }
   return HELP_BY_COMMAND[key];
 }
 
@@ -2487,6 +2492,62 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   matches your claim before you rely on the record. "screenshot --out" and
   "proof --out" write inside the lane worktree or the OS temp dir ($TMPDIR);
   anywhere else is refused.
+`,
+  "screen": `${ADE_BANNER}
+  Screen
+
+  One private screen per lane, on the runtime host. On macOS that is a virtual
+  display (Mac Desktop); on Windows it is a private child session, with a shared
+  desktop as the fallback. The verbs below are the same on both.
+
+  Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` (macOS) and
+  \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
+  desktop-app launcher, not this.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID, and a
+  chat-bound caller is pinned to its chat's lane.
+
+  Display:
+    $ ade screen status --text                      Host, seat, holder, display
+    $ ade screen start --text                       Create this lane's screen
+    $ ade screen start --seat-mode shared --consent  Windows: use the main desktop
+    $ ade screen stop --text                        Stop it
+    $ ade screen show --text                        Show it to the user
+
+  Windows only:
+    $ ade screen setup --allow-prompt --text        One-time admin step (user)
+    $ ade screen setup --allow-prompt --save-password --text   Native password dialog (user)
+    $ ade screen setup --allow-prompt --forget-password --text Forget ADE's saved password
+    $ ade screen takeover --text                    Take the private screen (user)
+
+  Apps and windows:
+    $ ade screen open <app|path|url> --text         Launch an app onto the screen
+    $ ade screen windows --text                     List windows
+    $ ade screen claim --window <id> --text         Move an existing window here
+    $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
+
+  Observe, then act by handle:
+    $ ade screen observe --text                     Screenshot + numbered elements
+    $ ade screen click <handle> --text              Click what you observed
+    $ ade screen type "hello" --submit --text       Type, then press Return
+    $ ade screen press return --cmd --shift --text  One key, with modifiers
+    $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen wait --label "Done" --timeout 8000 --text
+
+  Capture:
+    $ ade screen screenshot --out shot.png --text   Capture without filing proof
+    $ ade screen record start --caption "<what>"    Record; a caption files it
+    $ ade screen record stop --text
+    $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
+
+  Windows errors: WINDOWS_DESKTOP_SETUP_REQUIRED (ask the user to set up),
+  WINDOWS_DESKTOP_HELD (another lane holds the private screen),
+  WINDOWS_DESKTOP_LOCKED (unlock the PC),
+  WINDOWS_DESKTOP_NOT_CONSOLE_SESSION (private unavailable over SSH).
+  Setup, takeover and the Mode B consent belong to the user; an agent cannot
+  pass --allow-prompt or --consent itself.
+
+  For the full surface, run \`ade mac-desktop --help\` on macOS; the verbs match.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -17141,11 +17202,15 @@ function buildCliPlan(
   )
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   // `ade desktop` is the ADE desktop-app launcher and stays that way; the Mac
-  // Desktop family is `ade mac-desktop`.
+  // Desktop family is `ade mac-desktop`. `ade screen` is the neutral spelling
+  // the plan adds for both operating systems, and its verbs are the same ones.
   if (
     primary === "mac-desktop" ||
     primary === "mac-desk" ||
-    primary === "desk"
+    primary === "desk" ||
+    primary === "screen" ||
+    primary === "windows-desktop" ||
+    primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
   if (

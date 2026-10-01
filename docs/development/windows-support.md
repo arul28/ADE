@@ -66,6 +66,54 @@ containing supervisor and runtime process ids. Status validates that the
 recorded supervisor is a PowerShell process whose command line names the exact
 launcher before treating it as ADE-owned.
 
+The Run value's name is `ADE Runtime (<channel>-<hash>)`, and the hash is derived
+from the channel and the user's **SID**, never from `USERDOMAIN`. That variable
+is `WORKGROUP` inside an OpenSSH session and the machine name at the desktop, so
+an install over SSH used to register a second value for the same launcher and
+every sign-in then started two supervisors. Install, repair and uninstall
+enumerate every value whose name starts `ADE Runtime (<channel>-` or whose
+command names this channel's launcher and delete all but the current one;
+uninstall deletes all of them. A host where the SID cannot be read falls back to
+the bare account name, which is also session-independent.
+
+One supervisor and one brain exist per user and channel, whatever the number of
+logon sessions. Before starting a supervisor the launcher:
+
+1. **checks the session.** `WTSGetActiveConsoleSessionId()` must equal the
+   launcher's own `Process.SessionId`. Outside the console session it starts
+   no supervisor or brain. If the API cannot answer, it logs the failure and
+   exits rather than guessing.
+2. **takes a cross-session mutex,** `Global\ade-supervisor-<launcher-hash>-<SID>`.
+   An existing owner causes the newcomer to exit 0, leaving that owner alone.
+   A mutex API or creation failure causes it to exit 1. The handle is held for
+   the supervisor's lifetime; Windows releases it on exit. `Global\` excludes
+   duplicates across sessions rather than just inside one session.
+
+Outside the console session the launcher reads
+`<ADE home>\windows-desktop\child-launch.json`, the Windows Desktop feature's
+launch request:
+
+```json
+{
+  "driverPath": "C:\\Program Files\\ADE\\resources\\native\\ade-desktop-driver.exe",
+  "args": ["child", "--pipe", "\\\\.\\pipe\\ade-screen-..."],
+  "expiresAt": "2026-09-30T12:00:00.000Z"
+}
+```
+
+When the file exists, parses, `expiresAt` is in the future, and `driverPath`
+exists and ends in `ade-desktop-driver.exe`, the launcher starts it hidden with
+those arguments and no wait, so the driver can connect back to the console brain
+over the named pipe. It logs one line either way. That branch never starts a
+supervisor or a brain.
+
+Install and repair treat the PID record as advisory. They also enumerate live
+supervisors by command line — PowerShell processes whose command line names this
+launcher, in any session of the user — and stop every one of them before
+starting the replacement. And when the brain exits having failed with
+`socket_owned_by_other` (another brain already owns the pipe), the supervisor
+logs that and exits instead of restarting on a backoff forever.
+
 Release proof records these as separate bounded signals, not one inferred
 "service is running" claim:
 

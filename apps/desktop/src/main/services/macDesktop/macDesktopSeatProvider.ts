@@ -14,13 +14,20 @@
  */
 
 import type {
+  DesktopSeatKind,
   DesktopSeatProvider,
   DesktopSeatReply,
   MacDesktopAppLeftOpen,
+  MacDesktopDriverHealth,
   MacDesktopInputMode,
   MacDesktopWalkStop,
   MacDesktopWindow,
+  WindowsDesktopSeatMode,
+  WindowsDesktopSetupArgs,
+  WindowsDesktopSetupResult,
+  WindowsDesktopStatus,
 } from "../../../shared/types/macDesktop";
+import type { Logger } from "../logging/logger";
 import { MAC_DESKTOP_DRIVER_OPS, type MacDesktopDriverClient } from "./macDesktopDriverClient";
 
 /** Launching an app can wait on Gatekeeper and a first-run dialog. */
@@ -94,19 +101,71 @@ export const asDisplayLaneIds = (value: unknown): Set<string> | null =>
     ? new Set(value.filter((laneId): laneId is string => typeof laneId === "string" && laneId.length > 0))
     : null);
 
-export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {
-  const request = async (
-    op: (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS],
-    payload: Record<string, unknown> = {},
-    options: { timeoutMs?: number } = {},
-  ): Promise<DesktopSeatReply> => asReply(await client.request(op, payload, options));
+/**
+ * One `op` sender, so both seat providers map ops the same way.
+ *
+ * Exported because the Windows provider (which adds two Windows-only ops) is a
+ * sibling of this file and must not re-implement the reply coercion.
+ */
+export type SeatRequester = (
+  op: (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS],
+  payload?: Record<string, unknown>,
+  options?: { timeoutMs?: number },
+) => Promise<DesktopSeatReply>;
 
-  return {
-    id: "mac-virtual-display",
+export function createSeatRequester(client: MacDesktopDriverClient): SeatRequester {
+  return async (op, payload = {}, options = {}) => asReply(await client.request(op, payload, options));
+}
+
+/** The Windows-only methods a seat provider may add. */
+export type SeatProviderWindowsHooks = {
+  status: (request: SeatRequester) => Promise<WindowsDesktopStatus>;
+  setup: (request: SeatRequester, args: WindowsDesktopSetupArgs) => Promise<WindowsDesktopSetupResult>;
+};
+
+export type SeatProviderConfig = {
+  /** Defaults to the Mac virtual display. */
+  id?: DesktopSeatKind;
+  /** Extra fields merged into `display.create` (Windows seat mode + consent). */
+  createArgs?: (args: {
+    laneId: string;
+    name: string;
+    width: number;
+    height: number;
+    scale: number;
+    seatMode?: WindowsDesktopSeatMode;
+    sharedDesktopConsent?: boolean;
+  }) => Record<string, unknown>;
+  /**
+   * The `display.create` timeout. A Windows private create waits on an
+   * interactive sign-in prompt and needs the long ceiling; the Mac create does
+   * not, and the default client timeout applies.
+   */
+  createTimeoutMs?: (args: {
+    seatMode?: WindowsDesktopSeatMode;
+  }) => number | undefined;
+  /** Windows only: the two ops the Mac helper does not answer. */
+  windows?: SeatProviderWindowsHooks;
+};
+
+export function createSeatProvider(
+  client: MacDesktopDriverClient,
+  config: SeatProviderConfig = {},
+): DesktopSeatProvider {
+  const request = createSeatRequester(client);
+  const provider: DesktopSeatProvider = {
+    id: config.id ?? "mac-virtual-display",
 
     health: () => request(MAC_DESKTOP_DRIVER_OPS.health, {}, { timeoutMs: HEALTH_TIMEOUT_MS }),
 
-    create: (args) => request(MAC_DESKTOP_DRIVER_OPS.createDisplay, { ...args }),
+    create: (args) => request(
+      MAC_DESKTOP_DRIVER_OPS.createDisplay,
+      {
+        ...args,
+        ...(config.createArgs?.(args) ?? {}),
+      },
+      config.createTimeoutMs ? { timeoutMs: config.createTimeoutMs(args) } : {},
+    ),
 
     destroy: (args) => request(MAC_DESKTOP_DRIVER_OPS.destroyDisplay, { laneId: args.laneId }),
 
@@ -251,4 +310,57 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
       { timeoutMs: RECORDING_STOP_TIMEOUT_MS },
     ),
   };
+
+  if (config.windows) {
+    const hooks = config.windows;
+    provider.windowsStatus = () => hooks.status(request);
+    provider.setupWindows = (args) => hooks.setup(request, args);
+  }
+
+  return provider;
 }
+
+export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {
+  return createSeatProvider(client, { id: "mac-virtual-display" });
+}
+
+/**
+ * The host-specific half of the seat service.
+ *
+ * `createMacDesktopService` owns lifecycle, ownership, the lease, proof, and
+ * streaming — all of it identical whatever hosts the screen. This adapter is
+ * the small set of facts that differ: which native helper to spawn, which
+ * provider speaks to it, what a wrong-platform rejection says, and whether the
+ * host has permission grants at all. The Mac adapter is the default when no
+ * adapter is passed, so macOS behavior is unchanged; the Windows adapter is the
+ * second implementation and the reason the interface exists.
+ */
+export type DesktopSeatAdapter = {
+  readonly id: DesktopSeatKind;
+  /** The one platform this adapter serves. */
+  readonly platform: NodeJS.Platform;
+  /** The sentence a wrong-platform rejection carries. */
+  readonly unsupportedMessage: string;
+  /** The health card's title for a wrong-platform host. */
+  readonly unsupportedTitle: string;
+  /** The health card's name for the driver. */
+  readonly driverLabel: string;
+  /** Where this adapter's native helper lives, or null when it is missing. */
+  resolveExecutablePath: () => string | null;
+  /** Builds the provider that talks to the helper. */
+  createProvider: (client: MacDesktopDriverClient) => DesktopSeatProvider;
+  /**
+   * Windows only: builds the driver client with the host-mode launch args. The
+   * Mac adapter leaves this null and the lifecycle builds its own default.
+   */
+  createDriverClient?: ((args: {
+    logger: Logger;
+    platform: NodeJS.Platform;
+    onHealthChanged: (health: MacDesktopDriverHealth) => void;
+    onDriverLost: (reason: string) => void;
+  }) => MacDesktopDriverClient) | null;
+  /** macOS needs Screen Recording + Accessibility; Windows has no grants. */
+  readonly permissionsSupported: boolean;
+  /** The display name for the pane/title. */
+  displayName: (laneName: string | null | undefined) => string;
+};

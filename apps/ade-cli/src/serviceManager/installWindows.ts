@@ -139,16 +139,73 @@ function resolvedServiceName(
   });
 }
 
+let cachedWindowsUserSid: string | null | undefined;
+
+/**
+ * The current user's Windows SID, or `null` when it cannot be read.
+ *
+ * ADE-160: the registered Run value's name must be identical whichever session
+ * the install runs in. `USERDOMAIN` is not — it is `WORKGROUP` inside an
+ * OpenSSH session and the machine name at the desktop — so an install over SSH
+ * used to add a SECOND `ADE Runtime (stable-*)` value pointing at the same
+ * launcher, and every later sign-in started two supervisors. A SID is the same
+ * in every context of one account, so the value name is derived from it now.
+ * `whoami` is not one of the hardened tools this file resolves, so the SID
+ * comes from PowerShell's own identity; a host where even that fails falls back
+ * to the bare account name.
+ *
+ * Memoized for the process: one account's SID cannot change, and install,
+ * status and uninstall all call into this helper during a single CLI run.
+ */
+export function resolveWindowsUserSid(run: ServiceManagerSpawnSync = spawnSync): string | null {
+  if (process.platform !== "win32") return null;
+  if (cachedWindowsUserSid !== undefined) return cachedWindowsUserSid;
+  let sid: string | null = null;
+  try {
+    const result = run(
+      windowsPowerShellCommand(),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::Out.Write([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)",
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    const value = typeof result.stdout === "string"
+      ? result.stdout.trim()
+      : Buffer.isBuffer(result.stdout)
+        ? result.stdout.toString("utf8").trim()
+        : "";
+    if (result.status === 0 && /^S-\d-\d+(?:-\d+)*$/i.test(value)) sid = value;
+  } catch {
+    // A host that will not hand over the trusted powershell, or a spawn that
+    // failed outright, is a fallback case, not a failure of the install.
+    sid = null;
+  }
+  cachedWindowsUserSid = sid;
+  return sid;
+}
+
 export function resolveWindowsTaskUser(env: NodeJS.ProcessEnv = process.env): string {
+  // Stable, session-independent identity for the Run value name and the
+  // cross-session supervisor mutex.
+  const sid = resolveWindowsUserSid();
+  if (sid) return sid;
+  // Fallback when the SID cannot be read. Deliberately NOT `USERDOMAIN`: that
+  // is exactly the value that made an SSH install and a desktop install
+  // disagree. The bare account name is the same in both contexts.
   const username = env.USERNAME?.trim() || os.userInfo().username.trim();
   if (!username) {
     throw new Error("Unable to resolve the current Windows user for background-service registration.");
   }
-  const domain = env.USERDOMAIN?.trim();
-  if (domain && !username.includes("\\")) {
-    return `${domain}\\${username}`;
+  const account = username.includes("\\")
+    ? username.slice(username.lastIndexOf("\\") + 1).trim()
+    : username;
+  if (!account) {
+    throw new Error("Unable to resolve the current Windows user for background-service registration.");
   }
-  return username;
+  return account;
 }
 
 function serviceChannelLabel(serviceName: string): string {
@@ -173,13 +230,17 @@ export function resolveWindowsTaskName(args: {
   return `${TASK_NAME} (${serviceChannelLabel(serviceName)}-${shortHash(identity)})`;
 }
 
+export function resolveWindowsAdeDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.resolve(env.ADE_HOME?.trim() || resolveMachineAdeDir(env));
+}
+
 export function resolveWindowsServiceLauncherPath(args: {
   env?: NodeJS.ProcessEnv;
   serviceName?: string;
 } = {}): string {
   const env = args.env ?? process.env;
   const serviceName = args.serviceName ?? resolveRuntimeServiceName(env);
-  const adeDir = path.win32.resolve(env.ADE_HOME?.trim() || resolveMachineAdeDir(env));
+  const adeDir = resolveWindowsAdeDir(env);
   return path.win32.join(
     adeDir,
     "runtime",
@@ -384,6 +445,53 @@ export function buildWindowsRunKeyAddArgs(valueName: string, command: string): s
 
 export function buildWindowsRunKeyDeleteArgs(valueName: string): string[] {
   return ["DELETE", WINDOWS_RUN_KEY, "/V", valueName, "/F"];
+}
+
+/**
+ * The `ADE Runtime (<channel>-` prefix shared by every Run value this channel
+ * owns, whatever user identity (and therefore hash) wrote it. Pruning by
+ * prefix catches a value an older, SSH-run install left behind under a
+ * different hash.
+ */
+export function windowsRunValuePrefix(serviceName: string): string {
+  return `${TASK_NAME} (${serviceChannelLabel(serviceName)}-`;
+}
+
+/** Enumerates every value under the current user's Run key, not just one name. */
+export function buildWindowsRunKeyListArgs(): string[] {
+  return ["QUERY", WINDOWS_RUN_KEY];
+}
+
+export type WindowsRunValue = { name: string; command: string };
+
+/**
+ * Parse `reg query HKCU\...\Run` output. `reg` separates a value's name, type
+ * and data with runs of four spaces; ADE's value names never carry one, the
+ * same assumption `buildWindowsRunKeyQueryArgs` already relies on.
+ */
+export function parseWindowsRunKeyValues(
+  output: string | Buffer | null | undefined,
+): WindowsRunValue[] {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8") : output ?? "";
+  const values: WindowsRunValue[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s{4}(.+?)\s{4}(REG_[A-Z_]+)\s{4}(.*)$/.exec(line);
+    if (!match) continue;
+    const name = match[1]!.trim();
+    if (name) values.push({ name, command: match[3]!.trim() });
+  }
+  return values;
+}
+
+/** True when a Run value's command launches this exact launcher script. */
+export function windowsRunCommandNamesLauncher(
+  command: string,
+  launcherPath: string,
+): boolean {
+  const normalizedLauncher = normalizeWindowsPathText(launcherPath);
+  if (!normalizedLauncher) return false;
+  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
+  return fileArg != null && normalizeWindowsPathText(fileArg[1] ?? fileArg[2] ?? "") === normalizedLauncher;
 }
 
 /**
@@ -795,6 +903,115 @@ async function removeWindowsRunEntryIfPresent(
   return { ok: true, removed: installed || supervisor.running };
 }
 
+type WindowsRunPruneResult =
+  | { ok: true; removed: string[] }
+  | { ok: false; removed: string[]; message: string };
+
+/**
+ * Delete every Run value that belongs to this channel or names this launcher,
+ * except `keepValueName` when one is given.
+ *
+ * The ADE-160 residue was TWO `ADE Runtime (stable-*)` values pointing at the
+ * same launcher, because an SSH install hashed a different `USERDOMAIN` than a
+ * desktop install. Removing only the value the current context computes a name
+ * for never removed the other one, so every sign-in started two supervisors.
+ * Matching on the channel prefix AND on the launcher path also reaps a value
+ * written before the naming scheme stabilised. Returns what it removed so the
+ * caller can report it.
+ */
+function pruneWindowsRunValues(
+  run: ServiceManagerSpawnSync,
+  args: { serviceName: string; launcherPath: string; keepValueName?: string | null },
+): WindowsRunPruneResult {
+  const query = run(windowsRegCommand(), buildWindowsRunKeyListArgs(), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (query.status !== 0 && query.status !== REGISTRY_VALUE_NOT_FOUND_EXIT_CODE) {
+    return {
+      ok: false,
+      removed: [],
+      message: `Unable to list the ADE per-user startup entries: ${serviceManagerResultText(query) || "reg query failed."}`,
+    };
+  }
+  const prefix = windowsRunValuePrefix(args.serviceName);
+  const removed: string[] = [];
+  for (const value of parseWindowsRunKeyValues(query.stdout)) {
+    if (args.keepValueName && value.name === args.keepValueName) continue;
+    const matchesChannel = value.name.startsWith(prefix);
+    const matchesLauncher = windowsRunCommandNamesLauncher(value.command, args.launcherPath);
+    if (!matchesChannel && !matchesLauncher) continue;
+    const remove = run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(value.name), {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (remove.status !== 0) {
+      return {
+        ok: false,
+        removed,
+        message: `Unable to remove a stale ADE per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
+      };
+    }
+    removed.push(value.name);
+  }
+  if (removed.length > 0) {
+    try {
+      process.stderr.write(
+        `ADE removed ${removed.length} stale startup ${removed.length === 1 ? "entry" : "entries"}: ${removed.join(", ")}\n`,
+      );
+    } catch { /* logging is best effort */ }
+  }
+  return { ok: true, removed };
+}
+
+/**
+ * PIDs of powershell processes whose command line names this launcher, in any
+ * session of this user.
+ *
+ * The PID record is last-writer-wins, so a live supervisor the record does not
+ * name is invisible to `queryWindowsSupervisor`. The command line is the
+ * durable identity, so install/repair uses this to find and stop every
+ * predecessor — including one started by another logon session — before it
+ * starts a replacement.
+ */
+function stopWindowsSupervisorsByCommandLine(
+  run: ServiceManagerSpawnSync,
+  launcherPath: string,
+): WindowsTaskRemovalResult {
+  // Hold the process handle before checking its identity. A PID collected in
+  // one command and taskkilled in a second can target an unrelated reused PID.
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$launcher = ${powerShellSingleQuotedLiteral(launcherPath)}`,
+    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    "$escaped = [Regex]::Escape($launcher)",
+    `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
+    "$removed = 0",
+    "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
+    "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
+    "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
+    "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { continue }",
+    "  $process = $null",
+    "  try {",
+    "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $handle = $process.Handle } catch [ArgumentException] { continue }",
+    "    if ($process.HasExited) { continue }",
+    "    if ([Math]::Abs(($process.StartTime.ToUniversalTime() - $row.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { throw 'Supervisor identity changed during repair.' }",
+    "    $process.Kill()",
+    "    if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
+    "    $removed++",
+    "  } finally { if ($null -ne $process) { $process.Dispose() } }",
+    "}",
+    "[Console]::Out.Write($removed)",
+  ].join("\n");
+  const result = run(windowsPowerShellCommand(), ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8", timeout: 30_000, windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return { ok: false, message: `Unable to stop ADE supervisors: ${serviceManagerResultText(result) || "the identity check failed."}` };
+  }
+  return { ok: true, removed: Number(String(result.stdout ?? "").trim()) > 0 };
+}
+
 export async function installWindowsService(
   deps: WindowsServiceManagerDeps = {},
 ): Promise<ServiceManagerResult> {
@@ -846,12 +1063,24 @@ async function installWindowsServiceImpl(
     machineLayout.runtimeDir,
     BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
   );
+  // Baked into the launcher, not read there: the rendered script must compute
+  // the same cross-session mutex name and the same child-session path no matter
+  // which logon session runs it. The mutex is keyed by this channel's launcher
+  // and the user's SID (a hash of the fallback identity when the SID is not
+  // available), matching the identity the Run value name is hashed from.
+  const adeDir = resolveWindowsAdeDir(runtimeEnv);
+  const mutexUserKey = /^S-\d-\d+/i.test(userName) ? userName : shortHash(userName);
+  const mutexName = `Global\\ade-supervisor-${shortHash(launcherPath)}-${mutexUserKey}`;
   const renderedLauncher = `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
     pidPath,
     logPath,
     brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
     heartbeatPath,
     wedgeBreadcrumbPath,
+    adeDir,
+    mutexName,
+    socketPath,
+    lastFailurePath: path.win32.join(machineLayout.runtimeDir, "last-failure.json"),
   })}`;
   let existingLauncher: string | null = null;
   try {
@@ -970,6 +1199,34 @@ async function installWindowsServiceImpl(
       action: "install",
       path: taskName,
       message: startupRemoval.message,
+    };
+  }
+  // ADE-160: the Run value the current context computes a name for is only one
+  // of the values that may point at this launcher. Delete every other one (a
+  // different user identity hashed it, or it predates stable naming) before the
+  // current value is registered below, so a later sign-in cannot find two.
+  const runPrune = pruneWindowsRunValues(run, { serviceName, launcherPath });
+  if (!runPrune.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: runPrune.message,
+    };
+  }
+  // The PID record is advisory and last-writer-wins, so a second supervisor
+  // started by another logon session is invisible to it. Find and stop every
+  // supervisor whose command line names this launcher before starting another
+  // one, or the new brain would fight the old supervisor's over the pipe.
+  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
+  if (!predecessorStop.ok) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: predecessorStop.message,
     };
   }
   // launchd parity: the macOS install reaps stale same-channel serve processes
@@ -1139,9 +1396,19 @@ async function uninstallWindowsServiceImpl(
       socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
     },
   );
+  // ADE-160: uninstall removes EVERY Run value that belongs to this channel or
+  // names this launcher, not just the one the current identity hashes to — an
+  // SSH-run install may have left a second one under a different hash.
+  const runPrune = pruneWindowsRunValues(run, { serviceName, launcherPath });
+  // A supervisor whose command line names this launcher can outlive the value
+  // that started it (last-writer-wins PID record, another logon session). Stop
+  // every one so the removed startup entry cannot come straight back.
+  const predecessorStop = stopWindowsSupervisorsByCommandLine(run, launcherPath);
   const removalErrors = [currentRemoval, legacyRemoval, startupRemoval]
     .filter((result): result is Extract<WindowsTaskRemovalResult, { ok: false }> => !result.ok)
     .map((result) => result.message);
+  if (!runPrune.ok) removalErrors.push(runPrune.message);
+  if (!predecessorStop.ok) removalErrors.push(predecessorStop.message);
   if (removalErrors.length > 0) {
     return {
       ok: false,

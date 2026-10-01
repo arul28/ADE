@@ -87,7 +87,7 @@ struct WorkToolsSheet: View {
         }
       }
       .adeScreenBackground()
-      .navigationTitle(tool.title)
+      .navigationTitle(tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

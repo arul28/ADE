@@ -15384,7 +15384,7 @@ final class SyncService: ObservableObject {
   /// Creates the lane's display on the host. Only the Off card's Start calls
   /// this: watching never starts a display. The host is idempotent per lane and
   /// finds the lane's name itself, so a second press is safe.
-  func macDesktopStart(laneId: String) async throws {
+  func macDesktopStart(laneId: String, hostIsWindows: Bool = false) async throws {
     guard supportsMacDesktopStart else {
       throw NSError(
         domain: "ADE",
@@ -15400,8 +15400,31 @@ final class SyncService: ObservableObject {
       action: "macDesktop.start",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
-      timeoutMessage: "The macOS desktop is taking too long to start.",
-      timeoutNanoseconds: Self.macDesktopStartTimeoutNanoseconds,
+      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The macOS desktop is taking too long to start.",
+      timeoutNanoseconds: hostIsWindows ? 160_000_000_000 : Self.macDesktopStartTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// A paired viewer may stop its lane's private Windows screen. The host
+  /// advertises this separately from controller-only desktop actions.
+  var supportsWindowsDesktopStop: Bool {
+    supportsViewerRemoteAction("macDesktop.stopPrivate")
+  }
+
+  func windowsDesktopStop(laneId: String) async throws {
+    guard supportsWindowsDesktopStop else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the private screen from here."])
+    }
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
+    }
+    _ = try await sendCommand(
+      action: "macDesktop.stopPrivate",
+      args: ["laneId": trimmed],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
   }

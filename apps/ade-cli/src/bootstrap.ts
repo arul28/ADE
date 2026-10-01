@@ -193,6 +193,7 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
@@ -1719,11 +1720,22 @@ export async function createAdeRuntime(args: {
      * false` off macOS, which is what lets a Windows desktop hide the tab by
      * reading rather than by catching a throw.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMacDesktopMachineLogger());
     const macDesktopService = chatOnlyRuntime
       ? null
       : createMacDesktopService({
         projectRoot,
-        logger: createMacDesktopLogger(logger, getMacDesktopMachineLogger()),
+        logger: macDesktopLogger,
+        // Windows hosts reuse the whole seat service; only the helper, the
+        // provider, and the permission story differ. `adeHome` is what the
+        // helper's host mode takes as `--ade-home`.
+        seat: process.platform === "win32"
+          ? createWindowsDesktopSeatAdapter({
+            logger: macDesktopLogger,
+            adeHome: resolveMachineAdeLayout().adeDir,
+          })
+          : null,
+        adeHome: resolveMachineAdeLayout().adeDir,
         onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
         resolveLaneWorktreePath: (laneId: string): string | null => {
           try {

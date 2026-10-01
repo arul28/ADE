@@ -473,6 +473,9 @@ function summarizeMacDesktop(
     lease: status.lease,
     stream: status.stream,
     permissions: status.permissions,
+    // Windows-only host facts; null on a Mac host. A mirror uses this to render
+    // the held/locked/setup cards for a Windows-held lane.
+    windowsDesktop: status.windowsDesktop ?? null,
     // A frame captured before the display went away describes a screen that no
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
@@ -520,6 +523,9 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
       return event.timeLapse.laneId;
     case "permission-changed":
     case "driver-health":
+    // Windows host state is host-wide too: a lock, a holder change, or setup
+    // completing changes every lane's answer at once.
+    case "windows-desktop-changed":
       return null;
     default: {
       // A new event type is a compile error here until someone decides whether

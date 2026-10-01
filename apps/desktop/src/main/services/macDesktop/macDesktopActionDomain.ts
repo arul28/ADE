@@ -221,10 +221,52 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       }
       return service.requestPermission({ which });
     }),
-    start: (args?: unknown) => gated(() => service.start({
-      laneId: requiredLaneId(args, "start"),
-      resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
-      laneName: optionalString(args, "laneName"),
+    start: (args?: unknown) => gated(() => {
+      // An agent may only start a PRIVATE screen. The Mode B consent lives in
+      // its own CTO-only action (`useSharedDesktop`) so an agent cannot turn the
+      // user's own desktop into a lane screen by passing a boolean, and the
+      // service refuses a shared create that arrives without the field anyway.
+      const requestedMode = enumOf(args, "seatMode", ["private", "shared"] as const, "start");
+      if (requestedMode === "shared") {
+        throw new Error("macDesktop.start is private-only; a shared desktop needs the user's consent via macDesktop.useSharedDesktop.");
+      }
+      return service.start({
+        laneId: requiredLaneId(args, "start"),
+        resolution: enumOf(args, "resolution", MAC_DESKTOP_RESOLUTIONS, "start"),
+        laneName: optionalString(args, "laneName"),
+        ...(requestedMode ? { seatMode: requestedMode } : {}),
+        ...chatSessionId(args),
+      });
+    }),
+    /**
+     * Windows only, CTO-only: the user consented to Mode B for this lane. The
+     * service refuses the shared create without `sharedDesktopConsent`, so this
+     * is the one path that can set it — and an agent cannot reach a CTO action.
+     */
+    useSharedDesktop: (args?: unknown) => gated(() => service.start({
+      laneId: requiredLaneId(args, "useSharedDesktop"),
+      seatMode: "shared",
+      sharedDesktopConsent: true,
+      ...chatSessionId(args),
+    })),
+    /**
+     * Windows only: the wizard's one admin step. CTO-only: it raises a Windows
+     * admin/Remote Desktop prompt at whoever is at the PC, which a session-bound
+     * agent cannot see. `allowPrompt` is passed by the caller but honored by the
+     * service only for a local user's click.
+     */
+    setupWindows: (args?: unknown) => gated(() => service.setupWindowsDesktop({
+      allowPrompt: optionalBoolean(args, "allowPrompt") ?? false,
+      savePassword: optionalBoolean(args, "savePassword") ?? false,
+      forgetPassword: optionalBoolean(args, "forgetPassword") ?? false,
+    })),
+    /**
+     * Windows only: the user approved taking the private screen from its holder.
+     * CTO-only: it signs the old holder out. The pane's Take over button and the
+     * thread's ask card are the callers; an agent asks with a card instead.
+     */
+    takeoverWindows: (args?: unknown) => gated(() => service.takeoverWindowsDesktop({
+      laneId: requiredLaneId(args, "takeoverWindows"),
       ...chatSessionId(args),
     })),
     stop: (args?: unknown) => gated(() => service.stop({

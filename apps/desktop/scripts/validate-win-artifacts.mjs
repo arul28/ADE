@@ -259,6 +259,8 @@ function validatePreflight() {
   // SOURCE is present - the .exe does not exist yet at this point in dist:win.
   // The release-mode check below asserts the built binary actually shipped.
   requireFile("native/ADECaptureHelperWin/src/main.cpp", "Windows capture helper source");
+  requireFile("native/ADEDesktopDriverWin/src/main.cpp", "Windows Desktop driver source");
+  requireFile("scripts/build-windows-desktop-driver.mjs", "Windows Desktop driver build");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -269,10 +271,10 @@ function validatePreflight() {
     .find((entry) => entry?.to === "native");
   if (!captureHelperResource
     || !Array.isArray(captureHelperResource.filter)
-    || !captureHelperResource.filter.includes("ade-capture-helper.exe")) {
+    || !captureHelperResource.filter.includes("ade-capture-helper.exe")
+    || !captureHelperResource.filter.includes("ade-desktop-driver.exe")) {
     fail(
-      "package.json build.extraResources must ship resources/native -> native including ade-capture-helper.exe; "
-      + "without it the Windows package has no capture gesture.",
+      "package.json build.extraResources must ship the Windows capture helper and Desktop driver from resources/native -> native.",
     );
   }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
@@ -632,6 +634,7 @@ async function validatePackagedRuntime(appDir) {
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
+  const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
@@ -650,6 +653,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
+  await assertPathExists(desktopDriverExePath, "packaged Windows Desktop driver");
   // `ADE_SKIP_CAPTURE_HELPER_BUILD=1` is the documented way to build on a PC
   // with no C++ toolchain, and the helper build honors it; this check used to
   // fail that same build afterwards. Only a local test build may skip it: a
@@ -954,6 +958,11 @@ async function validateReleaseArtifacts() {
   const appIdentity = await validateAuthenticodeSignature(
     path.join(appDir, `${productName}.exe`),
     "packaged Windows app executable",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-desktop-driver.exe"),
+    "Windows Desktop driver",
     expectedIdentity,
   );
   // Both artifacts are pinned to the same Subject above, but a Subject match
