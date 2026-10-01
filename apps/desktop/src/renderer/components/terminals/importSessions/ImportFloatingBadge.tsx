@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
-import { ToolLogo } from "../ToolLogos";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
+import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "./contract";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
@@ -65,12 +65,12 @@ export function ImportFloatingBadge({
     // reads as a footnote to the column rather than part of that card. Short
     // windows drop it: the column is already at its floor there, and the extra
     // gap would only push the pill further past the bottom edge.
-    <div className="flex w-full shrink-0 justify-center [@media(min-height:760px)]:mt-6">
+    <div className="import-chat-pill__container flex w-full shrink-0 justify-center [@media(min-height:760px)]:mt-6">
       <div
         // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
         data-draft-depart="fade"
         className={cn(
-          "relative inline-flex items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
+          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",
         )}
       >
@@ -78,25 +78,24 @@ export function ImportFloatingBadge({
           type="button"
           disabled={disabled}
           onClick={open}
-          className="inline-flex items-center gap-3 disabled:cursor-not-allowed"
+          className="import-chat-pill__action inline-flex min-w-0 max-w-full items-center gap-3 disabled:cursor-not-allowed"
           aria-label="Import your chats from outside ADE"
         >
-          <span className="relative flex h-7 w-[92px] shrink-0 items-center">
-            {EXTERNAL_SESSION_PROVIDERS.map((provider, index) => (
+          <span className="import-chat-pill__providers flex h-7 shrink-0 items-center gap-1">
+            {EXTERNAL_SESSION_PROVIDERS.map((provider) => (
               <span
                 key={provider}
-                className="absolute rounded-full border border-black/40 bg-[#12101C] shadow-sm"
-                style={{
-                  left: index * 12,
-                  transform: `rotate(${index % 2 === 0 ? -8 : 7}deg)`,
-                  zIndex: EXTERNAL_SESSION_PROVIDERS.length - index,
-                }}
+                className="import-chat-pill__provider inline-flex h-6 w-6 shrink-0 items-center justify-center"
               >
-                <ToolLogo toolType={PROVIDER_TOOL_TYPE[provider]} size={22} />
+                <ToolLogo
+                  toolType={PROVIDER_TOOL_TYPE[provider]}
+                  size={20}
+                  appearance="provider-mark"
+                />
               </span>
             ))}
           </span>
-          <span className="pr-5 text-left text-[12px] font-medium tracking-tight text-fg/90">
+          <span className="import-chat-pill__label shrink-0 text-left text-[12px] font-medium tracking-tight text-fg/90">
             Import your chats from outside ADE
           </span>
         </button>
@@ -104,7 +103,7 @@ export function ImportFloatingBadge({
           type="button"
           aria-label="Hide import hint"
           onClick={dismiss}
-          className="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-white/10 hover:text-fg hover:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-white/10 hover:text-fg hover:opacity-100"
         >
           <X size={11} />
         </button>

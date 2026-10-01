@@ -3,19 +3,48 @@ import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { DevinLogo, DroidLogo, PiLogo } from "../shared/ProviderLogos";
+import droidMarkSrc from "../../assets/provider-logos/droid-mark.svg";
+import piMarkSrc from "../../assets/provider-logos/pi.svg";
 
-type LogoProps = { size?: number; className?: string };
+type LogoProps = { size?: number; className?: string; appearance?: "default" | "provider-mark" };
 
 function lobeMarkClass(className?: string) {
   return cn("shrink-0 inline-flex [&_svg]:max-h-none [&_svg]:max-w-none", className);
 }
 
-export const ClaudeLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <Claude.Avatar size={size} className={lobeMarkClass(className)} />
+function MaskedProviderMark({ src, color, size }: { src: string; color: string; size: number }) {
+  const mask = `url(${src})`;
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-block shrink-0"
+      style={{
+        width: size,
+        height: size,
+        backgroundColor: color,
+        maskImage: mask,
+        maskPosition: "center",
+        maskRepeat: "no-repeat",
+        maskSize: "contain",
+        WebkitMaskImage: mask,
+        WebkitMaskPosition: "center",
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskSize: "contain",
+      }}
+    />
+  );
+}
+
+export const ClaudeLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <Claude.Color size={size} className={lobeMarkClass(className)} />
+    : <Claude.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
-export const CodexLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />
+export const CodexLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <Codex size={size} className={lobeMarkClass(className)} style={{ color: "#78D6B1" }} />
+    : <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />
 );
 
 export const ShellLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
@@ -34,16 +63,22 @@ export const ShellLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   </svg>
 );
 
-export const CursorAgentLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <Cursor.Avatar size={size} className={lobeMarkClass(className)} />
+export const CursorAgentLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <Cursor size={size} className={lobeMarkClass(className)} style={{ color: "#62B6FF" }} />
+    : <Cursor.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
-export const OpenCodeLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <OpenCode.Avatar size={size} className={lobeMarkClass(className)} />
+export const OpenCodeLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <OpenCode size={size} className={lobeMarkClass(className)} style={{ color: "#FF9A6B" }} />
+    : <OpenCode.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
-export const CopilotLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <GithubCopilot.Avatar size={size} className={lobeMarkClass(className)} />
+export const CopilotLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <GithubCopilot size={size} className={lobeMarkClass(className)} style={{ color: "#65D4C1" }} />
+    : <GithubCopilot.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
 export const QwenLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
@@ -54,8 +89,22 @@ export const KimiLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   <Kimi.Color size={size} className={lobeMarkClass(className)} />
 );
 
-export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <Grok.Avatar size={size} className={lobeMarkClass(className)} />
+export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <Grok size={size} className={lobeMarkClass(className)} style={{ color: "#D69BFF" }} />
+    : <Grok.Avatar size={size} className={lobeMarkClass(className)} />
+);
+
+const DroidToolLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <MaskedProviderMark src={droidMarkSrc} color="#FF9B66" size={size} />
+    : <DroidLogo size={size} className={className} />
+);
+
+const PiToolLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
+  appearance === "provider-mark"
+    ? <MaskedProviderMark src={piMarkSrc} color="#B99AFF" size={size} />
+    : <PiLogo size={size} className={className} />
 );
 
 export const DevinToolLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
@@ -87,13 +136,13 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "codex-orchestrated": CodexLogo,
   cursor: CursorAgentLogo,
   "cursor-cli": CursorAgentLogo,
-  droid: DroidLogo,
-  "droid-chat": DroidLogo,
+  droid: DroidToolLogo,
+  "droid-chat": DroidToolLogo,
   opencode: OpenCodeLogo,
   "opencode-chat": OpenCodeLogo,
   "opencode-orchestrated": OpenCodeLogo,
-  pi: PiLogo,
-  "pi-chat": PiLogo,
+  pi: PiToolLogo,
+  "pi-chat": PiToolLogo,
   qwen: QwenLogo,
   "qwen-chat": QwenLogo,
   kimi: KimiLogo,
@@ -111,12 +160,14 @@ export function ToolLogo({
   toolType,
   size = 16,
   className,
+  appearance = "default",
 }: {
   toolType: TerminalToolType | null | undefined;
   size?: number;
   className?: string;
+  appearance?: "default" | "provider-mark";
 }) {
   const Logo = toolType ? LOGO_MAP[toolType] : undefined;
-  if (Logo) return <Logo size={size} className={className} />;
+  if (Logo) return <Logo size={size} className={className} appearance={appearance} />;
   return <ShellLogo size={size} className={className} />;
 }
