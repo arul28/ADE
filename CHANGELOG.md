@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.85] - 2026-10-01
+
+### Desktop
+
+- ADE entities in agent replies (lanes, chats, models, PRs, commits, Linear issues, skills, and more) render as live chips on desktop, in the TUI, and on iOS (#1411).
+- Chat drawers fold into one status mark, dead App Control shells archive themselves, and Settings → Archive manages archived items (#1408).
+- The Work filter panel is redesigned and filters by machine (#1409); the import hint stays readable at narrow widths (#1407).
+- Account lists show only working logins, one row per login, and a click picks the account for new chats (#1406).
+- Login Items detection, plain-language recovery, and a Hard reset for a background service that never starts (#1410).
+
 ## [1.2.84] - 2026-09-30
 
 ### Desktop
@@ -2247,6 +2257,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.85]: https://github.com/arul28/ADE/compare/v1.2.84...v1.2.85
 [1.2.84]: https://github.com/arul28/ADE/compare/v1.2.83...v1.2.84
 [1.2.83]: https://github.com/arul28/ADE/compare/v1.2.82...v1.2.83
 [1.2.82]: https://github.com/arul28/ADE/compare/v1.2.81...v1.2.82
