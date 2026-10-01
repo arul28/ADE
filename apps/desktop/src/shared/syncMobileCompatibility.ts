@@ -170,6 +170,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // host advertises the action, so an older host stays "full".
   "prs.setDraft",
   "prs.setAutoMerge",
+  // One archive across lanes, chats, and shells. A phone hides its archive
+  // screen until the host advertises these.
+  "archive.list",
+  "archive.summary",
+  "archive.restore",
+  "archive.delete",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

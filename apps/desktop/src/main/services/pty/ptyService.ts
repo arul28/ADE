@@ -17,6 +17,7 @@ import {
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
+import { writeCarriesTypedInput, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -771,6 +772,11 @@ type PtyEntry = {
   lastUserInputAt: number;
   /** Monotonic generation used to detect user takeover of deferred input. */
   userInputGeneration: number;
+  /**
+   * An agent started this shell under a chat and nobody has typed into it yet,
+   * so it is still a candidate for `agentShellCleanup`. Cleared on first typing.
+   */
+  agentShellCleanupCandidate: boolean;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   runtimeWindowTitleScanBuffer: string;
@@ -4551,6 +4557,8 @@ export function createPtyService({
       endEndedAt = priorEndState.endedAt ?? endedAt;
     }
     sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
+    // A shell App Control just replaced goes now, not on the next tick.
+    if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
     flushTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
@@ -5784,6 +5792,21 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The user typed into a shell an agent started: it is theirs now, so the
+   * dead-shell cleanup must never archive it. Only the user write paths call
+   * this — an agent's own `writeTerminal` input does not claim the shell.
+   */
+  const claimAgentShellForUser = (entry: PtyEntry, data: string): void => {
+    if (!entry.agentShellCleanupCandidate || !writeCarriesTypedInput(data)) return;
+    entry.agentShellCleanupCandidate = false;
+    try {
+      sessionService.agentShells.markUserInput(entry.sessionId);
+    } catch (error) {
+      logger.warn("pty.agent_shell_claim_failed", { sessionId: entry.sessionId, error: String(error) });
+    }
+  };
+
   const clearCommittedCliActivity = (entry: PtyEntry, data: string): void => {
     if (
       entry.tracked
@@ -5793,6 +5816,11 @@ export function createPtyService({
       sessionService.clearSessionActivity(entry.sessionId);
     }
   };
+
+  // The process that owns the PTYs archives their dead agent shells.
+  sessionService.agentShells.start((error) => {
+    logger.warn("pty.agent_shell_sweep_failed", { error: String(error) });
+  });
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -6180,6 +6208,13 @@ export function createPtyService({
           ownerProcessStartedAt,
         });
         setRuntimeState(sessionId, "running");
+        if (args.launchedBy === "agent" && chatSessionId) {
+          try {
+            sessionService.agentShells.markAgentLaunched(sessionId);
+          } catch (error) {
+            logger.warn("pty.agent_shell_mark_failed", { sessionId, error: String(error) });
+          }
+        }
 
         // Attach any requested Linear issues to the freshly-created session row
         // BEFORE env is built below, so getSessionLinearEnv resolves them and the
@@ -6212,6 +6247,15 @@ export function createPtyService({
             if (sha) sessionService.setHeadShaStart(sessionId, sha);
           })
           .catch(() => {});
+      } else if (args.launchedBy !== "agent") {
+        // Someone resumed this shell by hand: it is theirs now, so the
+        // dead-shell cleanup must not archive it later. A no-op for any shell
+        // the cleanup never tracked.
+        try {
+          sessionService.agentShells.markUserInput(sessionId);
+        } catch (error) {
+          logger.warn("pty.agent_shell_claim_failed", { sessionId, error: String(error) });
+        }
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
@@ -6724,6 +6768,7 @@ export function createPtyService({
         processOutputData: null,
         lastUserInputAt: 0,
         userInputGeneration: 0,
+        agentShellCleanupCandidate: !existingSession && args.launchedBy === "agent" && Boolean(chatSessionId),
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
@@ -7534,11 +7579,21 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
+    /** See `agentShellCleanup.markRetiredByAde`; App Control's handle on it. */
+    retireAgentShell({ sessionId, reason }: { sessionId: string; reason: AgentShellRetireReason }): void {
+      try {
+        sessionService.agentShells.markRetiredByAde(sessionId, reason);
+      } catch (error) {
+        logger.warn("pty.agent_shell_retire_failed", { sessionId, error: String(error) });
+      }
+    },
+
     write({ ptyId, data }: { ptyId: string; data: string }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -7578,8 +7633,10 @@ export function createPtyService({
         ...(laneId ? { laneId } : {}),
         limit,
       }));
+      const includeArchived = args.includeArchived === true;
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
+        .filter((summary) => includeArchived || !summary.archivedAt)
         .filter((summary) => {
           if (!chatSessionId) return true;
           const linkedChatSessionId = terminalChatSessions.get(summary.id)
@@ -7871,6 +7928,7 @@ export function createPtyService({
       }
       try {
         markPtyUserInput(entry, args.data);
+        if (args.fromUser === true) claimAgentShellForUser(entry, args.data);
         entry.pty.write(args.data);
         clearCommittedCliActivity(entry, args.data);
         tryCliUserTitleFromWrite(entry, args.data);
@@ -7963,6 +8021,7 @@ export function createPtyService({
       const [, entry] = live;
       try {
         markPtyUserInput(entry, data);
+        claimAgentShellForUser(entry, data);
         entry.pty.write(data);
         clearCommittedCliActivity(entry, data);
         tryCliUserTitleFromWrite(entry, data);
@@ -8510,6 +8569,7 @@ export function createPtyService({
     },
 
     disposeAll(): void {
+      sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {
         try {
           service.dispose({ ptyId });

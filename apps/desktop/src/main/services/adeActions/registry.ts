@@ -147,6 +147,7 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
+import { createArchiveService } from "../archive/archiveService";
 import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import {
   parseChatLaunchArgs,
@@ -3472,6 +3473,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
 }
 
 
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -3514,6 +3516,7 @@ export function getAdeActionDomainServices(
     usage: toService(runtime.usageTrackingService),
     analytics: toService(runtime.productAnalyticsService),
     storage: toService(buildStorageDomainService(runtime)),
+    archive: toService(createArchiveService(runtime)),
     budget: toService(runtime.budgetCapService),
     update: toService(runtime.autoUpdateService),
     file: toService(buildFileDomainService(runtime)),

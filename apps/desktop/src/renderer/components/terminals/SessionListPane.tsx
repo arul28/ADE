@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, Circle, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -100,12 +100,12 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import {
   attachedShellSectionId,
-  nestedSubagentDrawerAttention,
   nestedSubagentSectionId,
   workNestingDrawers,
   type WorkNestingDrawers,
 } from "../../../shared/sessionSpawnNesting";
-import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
+import { NestedDrawers, nestedDrawerOpenMarker } from "./NestedDrawers";
+import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 
@@ -186,16 +186,6 @@ const QUIET_ZONE_STACK_CLASS = "flex flex-col gap-2";
 const SHELF_BODY_STACK_CLASS = ROW_STACK_CLASS;
 const SHELF_EXPANDED_ROW_CLASS = "my-[7px] first:mt-0 last:mb-0";
 
-/**
- * The quiet shelf's label idiom: small, uppercase, letter-spaced, grey — and
- * with NO hairline rule, which is the cue that separates it from a lane divider
- * (coloured sentence-case name + hairline + count). Two folding rows of the same
- * shape in one list is exactly what made "is this a lane or a shelf?" unanswerable.
- *
- * Shared verbatim with the in-lane snoozed/settled tails, one step smaller, so
- * "quiet" reads the same everywhere while staying subordinate inside a group.
- */
-const QUIET_LABEL_CLASS = "font-semibold uppercase tracking-[0.09em] text-muted-fg/45";
 
 type PaletteCombo = { key: string; ctrl: boolean; meta: boolean; alt: boolean; shift: boolean };
 
@@ -1988,6 +1978,33 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [handoffJobsByLaneId, lanes, missingLaneSessionGroups]);
+  const isNestedDrawerCollapsed = useCallback(
+    (sectionId: string) => !workCollapsedSectionIds.includes(nestedDrawerOpenMarker(sectionId)),
+    [workCollapsedSectionIds],
+  );
+  // A selection that lands inside a collapsed drawer (a deeplink, a
+  // notification, the tab strip) opens that drawer once, so the selected row is
+  // on screen. Closing it again sticks until the selection moves.
+  const drawerRevealedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedSessionId || drawerRevealedForRef.current === selectedSessionId) return;
+    const subagentParent = workNesting.nestedChildToRootParentId.get(selectedSessionId);
+    let sectionId = subagentParent ? nestedSubagentSectionId(subagentParent) : null;
+    if (!sectionId) {
+      for (const [parentId, shells] of workNesting.shellsByParentId) {
+        if (shells.some((shell) => shell.id === selectedSessionId)) {
+          sectionId = attachedShellSectionId(parentId);
+          break;
+        }
+      }
+    }
+    // Not filed yet (the roster is still loading): try again on the next update.
+    if (!sectionId && !allSessionsUnfiltered.some((session) => session.id === selectedSessionId)) return;
+    drawerRevealedForRef.current = selectedSessionId;
+    if (sectionId && isNestedDrawerCollapsed(sectionId)) {
+      toggleWorkSectionCollapsed(nestedDrawerOpenMarker(sectionId), { preserveDeeplink: true });
+    }
+  }, [allSessionsUnfiltered, isNestedDrawerCollapsed, selectedSessionId, toggleWorkSectionCollapsed, workNesting]);
   const expandSessionWithChildren = useCallback((
     session: TerminalSessionSummary,
     drawers: WorkNestingDrawers<TerminalSessionSummary> = workNesting,
@@ -1995,14 +2012,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     const shells = drawers.shellsByParentId.get(session.id) ?? [];
     const subagents = drawers.subagentsByParentId.get(session.id) ?? [];
     const ids = [session.id];
-    if (subagents.length > 0 && !workCollapsedSectionIds.includes(nestedSubagentSectionId(session.id))) {
+    if (subagents.length > 0 && !isNestedDrawerCollapsed(nestedSubagentSectionId(session.id))) {
       ids.push(...subagents.map((child) => child.id));
     }
-    if (shells.length > 0 && !workCollapsedSectionIds.includes(attachedShellSectionId(session.id))) {
+    if (shells.length > 0 && !isNestedDrawerCollapsed(attachedShellSectionId(session.id))) {
       ids.push(...shells.map((child) => child.id));
     }
     return ids;
-  }, [workCollapsedSectionIds, workNesting]);
+  }, [isNestedDrawerCollapsed, workNesting]);
   const collectVisibleIdsFrom = useCallback((
     sessions: TerminalSessionSummary[],
     drawers: WorkNestingDrawers<TerminalSessionSummary>,
@@ -2304,103 +2321,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     );
   };
 
-  const renderNestedSection = (
-    parentId: string,
-    kind: "shells" | "subagents",
-    children: TerminalSessionSummary[],
-    cardOptions?: RenderCardOptions,
-  ) => {
-    if (children.length === 0) return null;
-    const sectionId = kind === "shells"
-      ? attachedShellSectionId(parentId)
-      : nestedSubagentSectionId(parentId);
-    const collapsed = workCollapsedSectionIds.includes(sectionId);
-    const label = kind === "shells"
-      ? (children.length === 1 ? "1 shell" : `${children.length} shells`)
-      : (children.length === 1 ? "1 subagent" : `${children.length} subagents`);
-    const attention = kind === "subagents" ? nestedSubagentDrawerAttention(children, foreignFilingNowMs) : null;
-    let attentionBadge: React.ReactNode = null;
-    if (attention === "failed") {
-      attentionBadge = (
-        <span className={cn("ml-auto shrink-0 font-medium", SESSION_TONE_TEXT_CLASS.red)}>
-          Failed
-        </span>
-      );
-    } else if (attention === "needs_you") {
-      attentionBadge = (
-        <span className={cn("ml-auto inline-flex shrink-0", SESSION_TONE_TEXT_CLASS.amber)}>
-          <Circle size={7} weight="fill" aria-hidden />
-          <span className="sr-only">Needs you</span>
-        </span>
-      );
-    }
-    return (
-      // `data-indented` for the card's bleed rule, same as a lane group body:
-      // these rows hang off their own rail, so a left bleed would cross it.
-      <div
-        key={`${kind}-${parentId}`}
-        className="ml-3 mt-1 border-l border-white/[0.06] pl-1.5"
-        data-indented="true"
-        data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
-      >
-        <button
-          type="button"
-          onClick={() => toggleWorkSectionCollapsed(sectionId)}
-          className={cn(
-            "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
-            QUIET_LABEL_CLASS,
-          )}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? (
-            <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-          ) : (
-            <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-          )}
-          {kind === "shells" ? (
-            <Terminal size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
-          ) : (
-            <UsersThree size={9} weight="regular" className="shrink-0 text-muted-fg/40" />
-          )}
-          <span className="truncate">{label}</span>
-          {attentionBadge}
-        </button>
-        {!collapsed ? (
-          <div className={cn(ROW_STACK_CLASS, "mt-1")}>
-            {children.map((child) => (
-              <div key={child.id}>
-                {renderCardCore(child, {
-                  ...cardOptions,
-                  compact: true,
-                  nestedSubagent: kind === "subagents",
-                  showLaneIdentity: false,
-                  laneActions: null,
-                  machineMarker: null,
-                  laneAppleDevice: null,
-                  laneMacDesktop: false,
-                  laneAppControl: false,
-                  laneBrowserTabs: 0,
-                })}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
-  const renderParentNestedDrawers = (
-    parentId: string,
-    shells: TerminalSessionSummary[],
-    subagents: TerminalSessionSummary[],
-    cardOptions?: RenderCardOptions,
-  ) => (
-    <>
-      {renderNestedSection(parentId, "subagents", subagents, cardOptions)}
-      {renderNestedSection(parentId, "shells", shells, cardOptions)}
-    </>
-  );
-
   const renderCards = (list: TerminalSessionSummary[], options?: RenderCardOptions) => {
     const drawers = options?.nesting ?? workNesting;
     const cardOptions = options?.foreignRow
@@ -2420,7 +2340,26 @@ export const SessionListPane = React.memo(function SessionListPane({
         return (
           <div key={`group-${session.id}`}>
             {card}
-            {renderParentNestedDrawers(session.id, shells, subagents, cardOptions)}
+            <NestedDrawers
+              parentId={session.id}
+              shells={shells}
+              subagents={subagents}
+              isCollapsed={isNestedDrawerCollapsed}
+              onToggle={toggleWorkSectionCollapsed}
+              nowMs={foreignFilingNowMs}
+              renderChild={(child, kind) => renderCardCore(child, {
+                ...cardOptions,
+                compact: true,
+                nestedSubagent: kind === "subagents",
+                showLaneIdentity: false,
+                laneActions: null,
+                machineMarker: null,
+                laneAppleDevice: null,
+                laneMacDesktop: false,
+                laneAppControl: false,
+                laneBrowserTabs: 0,
+              })}
+            />
           </div>
         );
       });

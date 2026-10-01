@@ -37,6 +37,7 @@ export const SETTINGS_TAB_IDS = [
   "notifications",
   "secrets",
   "storage",
+  "archive",
   "stats",
 ] as const;
 
@@ -97,7 +98,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine. */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "agents", "lanes-git", "integrations", "storage"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "agents", "lanes-git", "integrations", "storage", "archive"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -126,6 +127,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
   { id: "integrations", label: "Integrations", description: "GitHub and Linear, as connected on this machine.", group: "machines" },
   { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
+  // No description: the page's own header says what the archive is.
+  { id: "archive", label: "Archive", group: "machines" },
 ] as const;
 
 /**
@@ -1002,6 +1005,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Diagnostics",
   },
 
+  // ── Archive ──────────────────────────────────────────────────────────────
+  {
+    id: "archive.items",
+    label: "Archived lanes, chats, and shells",
+    keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
+    tab: "archive",
+    anchor: "archive",
+    scope: "machine-repo",
+    web: "machine",
+    group: "Archive",
+  },
+
   // ── Stats ────────────────────────────────────────────────────────────────
   {
     id: "stats.usage",
@@ -1030,6 +1045,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "ade-usage": "stats",
   usage: "stats",
   disk: "storage",
+  archived: "archive",
   secret: "secrets",
   // Swept into General before this rewrite; now have real homes again.
   workspace: "general",

@@ -130,8 +130,8 @@ describe("workListModel grouping", () => {
     expect(model.rows.filter((row) => row.kind === "session").every((row) => !row.showLaneIdentity)).toBe(true);
   });
 
-  it("nests same-lane subagent chats under the parent and keeps the lane header for remaining peers", () => {
-    const model = build({
+  it("folds same-lane subagent chats into a collapsed drawer under the parent and keeps the lane header for remaining peers", () => {
+    const input = {
       lanes: [lane("lane-1", "Feature")],
       sessions: [
         session({
@@ -158,11 +158,19 @@ describe("workListModel grouping", () => {
         }),
       ],
       activeSessionId: null,
-    });
+    };
+    const rowIds = (model: ReturnType<typeof build>) =>
+      model.rows.map((row) => (row.kind === "session" ? row.sessionId : row.key));
 
-    expect(model.rows.map((row) => (row.kind === "session" ? row.sessionId : row.key))).toEqual([
+    const collapsed = build(input);
+    expect(rowIds(collapsed)).toEqual(["lane:lane-1", "parent", "drawer:parent", "peer"]);
+    expect(collapsed.rows.find((row) => row.kind === "drawer")).toMatchObject({ count: 1, expanded: false });
+
+    const model = build({ ...input, expandedDrawers: new Set(["parent"]) });
+    expect(rowIds(model)).toEqual([
       "lane:lane-1",
       "parent",
+      "drawer:parent",
       "helper",
       "peer",
     ]);
@@ -187,10 +195,9 @@ describe("workListModel grouping", () => {
       activeSessionId: null,
     });
 
-    expect(model.rows.map((row) => row.kind)).toEqual(["session", "session"]);
+    expect(model.rows.map((row) => row.kind)).toEqual(["session", "drawer"]);
     expect(sessionRows(model).map((row) => [row.sessionId, row.nested, row.showLaneIdentity])).toEqual([
       ["parent", false, true],
-      ["helper", true, false],
     ]);
   });
 

@@ -129,7 +129,7 @@ as a subagent card, but the card closes (and a `subagent` wakes the parent with
 the CLI's last message) only when the CLI process exits. An interactive CLI
 that finishes its task and stays open reports nothing until it is closed.
 Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
-them with `ade chat list`, and read their last message plus terminal tail with
+them with `ade chat list` (archived ones need `--include-archived`), and read their last message plus terminal tail with
 `ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
 to `--mode chat` for a subagent that must report back**: a chat child reports
 after every turn it finishes.
@@ -453,6 +453,24 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `--reasoning-effort`; avoid it for new flows. Common reasoning tiers include
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
+
+## Archived lanes, chats, and shells
+
+Archiving hides an item; ADE never deletes anything on its own. Archived chats
+and shells are left out of `ade chat list`, `ade terminal list`, and `ade search`
+by default. Pass `--include-archived` to see them in a list. A known id still
+works: `ade chat read <id>`, `ade chat show <id>`, `ade terminal read <id>`.
+
+```bash
+ade archive list --text                       # everything archived, newest first
+ade archive list --kind chat --older-than 14 --text
+ade archive summary --text                    # counts per kind, what is 14+ days old
+```
+
+Restoring is for the CTO (`ade archive restore <kind>:<id>`). Deleting is the
+user's alone: agents and automations are refused. When old archived items pile
+up, tell the user and point them to Settings → Archive; do not try to delete
+them yourself.
 
 ## Fallback path
 

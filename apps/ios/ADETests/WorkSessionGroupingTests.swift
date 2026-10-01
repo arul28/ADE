@@ -204,10 +204,10 @@ final class WorkSessionGroupingTests: XCTestCase {
       orderedLanes: [lane],
       now: now
     )
-    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.attention, .failed)
+    XCTAssertEqual(nestedSubagentGroup(failed, parentId: "chat-1")?.status, .failed)
     XCTAssertEqual(
-      nestedSubagentGroup(parked, parentId: "chat-1")?.attention,
-      WorkNestedDrawerAttention.none
+      nestedSubagentGroup(parked, parentId: "chat-1")?.status,
+      WorkNestedDrawerStatus.none
     )
     XCTAssertNotEqual(failed, parked)
   }

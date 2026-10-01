@@ -440,6 +440,15 @@ function createHarness(overrides: {
 
   const sessionStore = new Map<string, any>();
   const sessionService = {
+    agentShells: {
+      start: vi.fn(),
+      stop: vi.fn(),
+      sweep: vi.fn(() => []),
+      sweepQuietly: vi.fn(),
+      markAgentLaunched: vi.fn(),
+      markUserInput: vi.fn(),
+      markRetiredByAde: vi.fn(),
+    },
     create: vi.fn((args: any) => {
       sessionStore.set(args.sessionId, {
         ...args,

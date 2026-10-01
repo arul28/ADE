@@ -69,6 +69,7 @@ import type {
 } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { ArchiveSummary, ArchiveSummaryArgs } from "../../../desktop/src/shared/types/archive";
 import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import {
@@ -428,6 +429,13 @@ export async function getScheduledWorkState(
   });
 }
 
+export async function getArchiveSummary(
+  connection: AdeCodeConnection,
+  args: ArchiveSummaryArgs = {},
+): Promise<ArchiveSummary> {
+  return await connection.action<ArchiveSummary>("archive", "summary", args);
+}
+
 export async function archiveChatSession(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -533,7 +541,8 @@ export async function writeTerminal(
   terminalId: string,
   data: string,
 ): Promise<void> {
-  await connection.action("terminal", "write", { terminalId, data });
+  // Only ADE Code's own keystrokes come through here, so they are the user's.
+  await connection.action("terminal", "write", { terminalId, data, fromUser: true });
 }
 
 export async function resizeTerminal(

@@ -143,6 +143,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["chat.cancelLaunch", 5 * 60_000],
   ["lane.archive", 120_000],
   ["lane.unarchive", 120_000],
+  // Archive restore/delete walk a batch one item at a time, and a lane in the
+  // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
+  ["archive.restore", 10 * 60_000],
+  ["archive.delete", 15 * 60_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +

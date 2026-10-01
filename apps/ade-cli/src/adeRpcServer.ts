@@ -5182,6 +5182,12 @@ async function runTool(args: {
       : safeObject(toolArgs.args);
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
+    // `terminal.write { fromUser }` claims an agent's shell for the person (it is
+    // then never auto-archived). Only a user client may say that.
+    if (domain === "terminal" && action === "write" && "fromUser" in scopedObjectArgs && !isUserClientSession(session)) {
+      const { fromUser: _notTheUser, ...agentWrite } = scopedObjectArgs;
+      scopedObjectArgs = agentWrite;
+    }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */
@@ -5269,11 +5275,15 @@ async function runTool(args: {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
     } else if (!callerIsCto && domain === "terminal") {
+      // Base the scope on `scopedObjectArgs`, not `rawObjectArgs`: the
+      // `terminal.write` `fromUser` strip above already removed a claim a
+      // non-user caller may not make, and re-reading the raw args would put it
+      // back.
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
       );
     } else if (
       !callerIsCto

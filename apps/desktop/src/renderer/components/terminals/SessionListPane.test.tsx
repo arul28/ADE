@@ -513,7 +513,7 @@ describe("SessionListPane", () => {
   // and the canonical `stale` phase tells the story through the status label.
   // Its presentation is asserted in SessionCard.test.tsx, where the label lives.
 
-  it("collapses and expands child shell sections under a chat parent", () => {
+  it("starts a chat's shell drawer collapsed and opens it with an explicit marker", () => {
     const parent = makeSession({
       id: "chat-parent",
       laneId: "lane-known",
@@ -539,22 +539,68 @@ describe("SessionListPane", () => {
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.getByText("Child shell")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat:chat-parent");
+    expect(screen.queryByText("Child shell")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show 1 shell" }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat:chat-parent");
 
     view.unmount();
     renderPane({
       runningFiltered: [parent, child],
       sessionsGroupedByLane,
-      workCollapsedSectionIds: ["chat:chat-parent"],
+      workCollapsedSectionIds: ["drawer-open:chat:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
-    expect(screen.queryByText("Child shell")).toBeNull();
+    expect(screen.getByText("Child shell")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(2);
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("chat:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("drawer-open:chat:chat-parent");
+  });
+
+  it("reveals a collapsed drawer once when the selection lands inside it", () => {
+    const parent = makeSession({
+      id: "chat-parent",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      title: "Parent chat",
+    });
+    const child = makeSession({
+      id: "child-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Child shell",
+      ptyId: "pty-child",
+      chatSessionId: parent.id,
+    });
+    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    const view = renderPane({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    });
+
+    // A deeplink/notification landing on the child opens the drawer holding it.
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith(
+      "drawer-open:chat:chat-parent",
+      { preserveDeeplink: true },
+    );
+
+    // Re-rendering the same selection must not toggle it again.
+    view.rerender(paneElement({
+      runningFiltered: [parent, child],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane,
+      selectedSessionId: child.id,
+      toggleWorkSectionCollapsed,
+    }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(1);
   });
 
   it("nests same-lane subagent chats under the parent in a second drawer", () => {
@@ -588,6 +634,7 @@ describe("SessionListPane", () => {
       runningFiltered: [parent, child, peer],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
       toggleWorkSectionCollapsed,
     });
 
@@ -603,7 +650,7 @@ describe("SessionListPane", () => {
     expect(glyph.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(title.compareDocumentPosition(logo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /1 subagent/i }));
-    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat-subagents:chat-parent");
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat-subagents:chat-parent");
   });
 
   it("keeps a settled subagent nested under an active parent instead of a quiet tail", () => {
@@ -638,7 +685,7 @@ describe("SessionListPane", () => {
       settledFiltered: [child],
       allSessionsUnfiltered: [parent, child, peer],
       sessionsGroupedByLane: new Map([[parent.laneId, [parent, child, peer]]]),
-      workCollapsedSectionIds: ["settled-open:lane-known"],
+      workCollapsedSectionIds: ["settled-open:lane-known", "drawer-open:chat-subagents:chat-parent"],
     });
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -726,6 +773,7 @@ describe("SessionListPane", () => {
         [parent.id, "running"],
         [child.id, "running"],
       ]),
+      workCollapsedSectionIds: ["drawer-open:chat-subagents:chat-parent"],
     }));
 
     expect(screen.getByRole("button", { name: /1 subagent/i })).toBeTruthy();
@@ -1528,7 +1576,7 @@ describe("SessionListPane", () => {
       });
       seedForeignMachine({ sessions: [parent, child] });
 
-      const { container } = renderPane();
+      const { container } = renderPane({ workCollapsedSectionIds: ["drawer-open:chat:foreign-chat-parent"] });
 
       expect(container.querySelector('[data-section-id="target-studio:lane-elsewhere"]')).toBeNull();
       expect(screen.getByText("Foreign parent chat")).toBeTruthy();
@@ -1565,7 +1613,10 @@ describe("SessionListPane", () => {
       renderPane({
         runningFiltered: [],
         sessionsGroupedByLane: new Map(),
-        workCollapsedSectionIds: ["settled-open:target-studio:lane-elsewhere"],
+        workCollapsedSectionIds: [
+          "settled-open:target-studio:lane-elsewhere",
+          "drawer-open:chat-subagents:foreign-chat-parent",
+        ],
         onSelectSession,
       });
 
@@ -2622,7 +2673,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       settledFiltered: [parent],
       allSessionsUnfiltered: [parent, child],
       sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+      workCollapsedSectionIds: [...OPEN_QUIET_SHELVES, "drawer-open:chat:settled-parent-chat"],
     });
 
     const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');

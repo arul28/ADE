@@ -122,6 +122,7 @@ import {
 import {
   approveToolUse,
   archiveChatSession,
+  getArchiveSummary,
   buildPtyContinuationLaunchFields,
   cancelSteerMessage,
   createChatSession,
@@ -406,9 +407,13 @@ import {
   splitByDisplayCells,
   terminalDisplayWidth,
 } from "./displayWidth";
+import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../desktop/src/shared/types/archive";
+import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../desktop/src/shared/archive";
 import {
+  archiveReminderNextAt,
   flushAdeCodeStateWrites,
   loadAdeCodeState,
+  saveArchiveReminderNextAt,
   saveAdeCodeModelMemory,
   saveAdeCodeProjectState,
   scopedAdeCodeModelMemory,
@@ -589,7 +594,7 @@ export type FooterControl = "drawer" | "details" | "agents";
  * `"lanes" | "chats"` MODE: the pane no longer has modes, so "am I looking at a
  * lane or a chat" is now a property of the selected row, not of the pane.
  */
-export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | null;
+export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | "drawer" | null;
 
 /**
  * Per-lane PR rollup, kept for the chat-info pane's PR block. It used to live in
@@ -3948,6 +3953,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // cadence the app already runs.
   const [attentionSnapshot, setAttentionSnapshot] = useState<AttentionSnapshot | null>(null);
   const [workExpandedShelves, setWorkExpandedShelves] = useState<Set<WorkListShelfKind>>(() => new Set());
+  // Subagent drawers start folded (desktop parity); a parent id here is open.
+  const [workExpandedDrawers, setWorkExpandedDrawers] = useState<Set<string>>(() => new Set());
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [drawerLaneId, setDrawerLaneId] = useState<string | null>(null);
@@ -5331,6 +5338,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeSessionId,
     draftSessionIds: workDraftSessionIds,
     expandedShelves: workExpandedShelves,
+    expandedDrawers: workExpandedDrawers,
     unavailableLaneIds,
     hideNewChat: true,
   }), [
@@ -5341,6 +5349,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     tileableDisplaySessions,
     unavailableLaneIds,
     workDraftSessionIds,
+    workExpandedDrawers,
     workExpandedShelves,
     workForeignSessions,
   ]);
@@ -5560,6 +5569,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     })();
   }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  // Opening a nested subagent (a notification, `/resume`, the grid) opens the
+  // drawer it sits in once, so the cursor has a row to land on. Folding it
+  // again sticks until another chat becomes active.
+  const drawerRevealedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId || drawerRevealedForRef.current === activeSessionId) return;
+    const parentId = workListModel.drawerParentBySessionId.get(activeSessionId);
+    if (!parentId) return;
+    drawerRevealedForRef.current = activeSessionId;
+    setWorkExpandedDrawers((prev) => (prev.has(parentId) ? prev : new Set(prev).add(parentId)));
+  }, [activeSessionId, workListModel]);
+  const toggleWorkDrawer = useCallback((parentId: string) => {
+    setWorkExpandedDrawers((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }, []);
   const toggleWorkShelf = useCallback((shelf: WorkListShelfKind) => {
     setWorkExpandedShelves((prev) => {
       const next = new Set(prev);
@@ -5618,6 +5646,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       case "shelf":
+      case "drawer":
         return;
       default: {
         const _exhaustive: never = row;
@@ -7037,6 +7066,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId },
     ]);
   }, []);
+  // The weekly archive reminder (desktop shows it as a banner). ADE deletes
+  // nothing on its own; it asks at most once a week per project when items
+  // have sat archived for two weeks, and points at `ade archive`.
+  useEffect(() => {
+    if (!connection) return;
+    const projectRoot = activeProjectRoot;
+    if (Date.now() < archiveReminderNextAt(loadAdeCodeState(), projectRoot)) return;
+    let cancelled = false;
+    void getArchiveSummary(connection, { olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS })
+      .then((summary) => {
+        if (cancelled || summary.staleTotal === 0) return;
+        addNotice(`${archiveReminderTitle(summary)} Review with \`ade archive list\` or in Settings → Archive on desktop.`);
+        void saveArchiveReminderNextAt(projectRoot, Date.now() + ARCHIVE_REMINDER_INTERVAL_MS);
+      })
+      // An older runtime has no archive domain; stay quiet.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectRoot, addNotice, connection]);
   const openLaneDetailsPane = useCallback((lane: LaneSummary) => {
     selectActiveLaneId(lane.id);
     setDrawerLaneId(lane.id);
@@ -15131,6 +15180,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       toggleWorkShelf(row.shelf);
       return;
     }
+    if (row.kind === "drawer") {
+      toggleWorkDrawer(row.parentId);
+      return;
+    }
     if (
       row.kind === "session"
       && region === "lane-identity"
@@ -15192,6 +15245,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     openNewChatSetup,
     resumeClosedTerminalSession,
     selectWorkRow,
+    toggleWorkDrawer,
     toggleWorkShelf,
   ]);
 

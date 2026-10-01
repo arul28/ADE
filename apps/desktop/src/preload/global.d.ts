@@ -969,6 +969,14 @@ import type {
 } from "../shared/types/chat";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  ArchiveActionArgs,
+  ArchiveActionResult,
+  ArchiveListArgs,
+  ArchiveListResult,
+  ArchiveSummary,
+  ArchiveSummaryArgs,
+} from "../shared/types/archive";
+import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
@@ -1146,6 +1154,17 @@ declare global {
           opts: { preview: StorageCleanupPreview },
           pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
+      };
+      /**
+       * One archive across lanes, chats, and shells. Every call takes an
+       * optional machine pin, like `storage`, so Settings → Archive reaches
+       * the machine it is showing.
+       */
+      archive: {
+        list: (args?: ArchiveListArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveListResult>;
+        summary: (args?: ArchiveSummaryArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveSummary>;
+        restore: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
+        delete: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
       };
       project: {
         openRepo: (args?: { rootPath?: string; trustGitOwnership?: boolean }) => Promise<ProjectInfo | null>;

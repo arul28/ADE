@@ -666,7 +666,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processChatSession = async (sessionId: string): Promise<void> => {
     const session = await resolveSession(sessionId);
-    if (!session) {
+    // Archived sessions are out of search, like archived lanes. Unarchiving
+    // emits a meta change, which re-enqueues the session; its source cursor
+    // went with the docs, so it is indexed again from the start.
+    if (!session || session.archivedAt) {
       removeSessionDocs(sessionId);
       return;
     }
@@ -801,7 +804,10 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const processTerminalSession = async (sessionId: string): Promise<void> => {
     const session = await resolveSession(sessionId);
-    if (!session) {
+    // Archived sessions are out of search, like archived lanes. Unarchiving
+    // emits a meta change, which re-enqueues the session; its source cursor
+    // went with the docs, so it is indexed again from the start.
+    if (!session || session.archivedAt) {
       removeSessionDocs(sessionId);
       return;
     }
@@ -1116,6 +1122,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           if (!liveIds.has(row.session_id)) removeSessionDocs(row.session_id);
         }
         for (const session of sessions) {
+          if (session.archivedAt) {
+            removeSessionDocs(session.id);
+            continue;
+          }
           if (isChatSession(session)) enqueue("chat-session", session.id, 0);
           if (!isChatToolType(session.toolType)) enqueue("terminal-session", session.id, 0);
         }

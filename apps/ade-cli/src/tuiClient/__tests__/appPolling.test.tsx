@@ -44,6 +44,7 @@ vi.mock("../state", async () => {
       lastLaneId: null,
       draftKind: "chat",
       draftKindByProject: {},
+      archiveReminderNextAtByProject: {},
     }),
     saveAdeCodeProjectState: vi.fn(),
   };

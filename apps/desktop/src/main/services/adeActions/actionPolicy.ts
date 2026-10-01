@@ -102,6 +102,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
+  // Restoring brings a lane's worktree and services back up — the CTO's call,
+  // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
+  archive: { only: ["restore"] },
   search: { only: ["rebuildIndex"] },
   project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
@@ -249,6 +252,9 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // ADE never deletes from the archive on its own, and no agent or automation
+  // deletes for the person: a delete can take a lane's uncommitted work.
+  archive: ["delete"],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -917,6 +923,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
+  archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [

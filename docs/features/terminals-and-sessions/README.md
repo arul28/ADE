@@ -186,6 +186,12 @@ and in tests.
   post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
+- `apps/desktop/src/main/services/sessions/agentShellCleanup.ts` — archives the
+  dead shells an agent started under a chat. It reads the machine-local
+  `agent_shell_cleanup` ledger (excluded from CRR: it records this machine's own
+  launches and typing), sweeps joined `terminal_sessions` rows, and archives
+  through `sessionService.archiveSession` only when the row is eligible. See
+  [Dead agent shells](#dead-agent-shells).
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
   table, which is excluded from CRR replication because PIDs are OS-local.
@@ -2881,6 +2887,31 @@ so explicitly rather than asserting a tier ADE never set.
   and legacy `work:grid:v2:*` layouts are intentionally ignored — a new
   tree is seeded from `buildWorkSessionTilingTree` when nothing is
   persisted under the current key.
+
+## Dead agent shells
+
+A shell an agent started under a chat does not linger in the Work sidebar once
+it is dead. `agentShellCleanup` (wired by `ptyService`) tracks the shells this
+machine launched (`markAgentLaunched`), what was typed into them
+(`markUserInput`), and what ADE itself ended (`markRetiredByAde`), then archives
+the eligible ones. A shell is eligible only when an agent started it, it is
+attached to a chat, it has ended (not `running`/`detached`), and nobody typed
+into it. When it goes depends on how it ended: an App Control relaunch archives
+it at once; exit 0 or an ADE stop waits out a 10-minute grace; a crash waits
+until the chat settles, so a failure stays in view.
+
+Typing into a shell the person owns it — `terminal.write { fromUser }` from a
+user client, or a hand resume — and it is never archived. The RPC server strips
+`fromUser` from a non-user caller, so an agent cannot claim its own shell to keep
+it around. The ledger is per machine and never replicates; nothing is ever
+deleted, only hidden.
+
+Chats and shells list with archived rows hidden by default. `ade chat list` and
+`ade terminal list` take `--include-archived`, and `ade archive list` shows every
+archived item across lanes, chats, and shells. A chat's shell and subagent
+drawers start collapsed behind one small mark (count plus failed/needs-you/
+running); a selection that lands inside a collapsed drawer opens it once so the
+selected row is on screen.
 
 ## Cross-links
 

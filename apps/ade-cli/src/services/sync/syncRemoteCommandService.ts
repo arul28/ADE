@@ -331,6 +331,7 @@ import {
   buildLaneEnvTeardown,
   restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import { createArchiveService } from "../../../../desktop/src/main/services/archive/archiveService";
 import { resolveChatCreateModel } from "../../../../desktop/src/main/services/chat/chatCreateModelResolution";
 import {
   parseAgentChatCreateFields,
@@ -1438,6 +1439,7 @@ function parseTerminalListArgs(value: Record<string, unknown>): ChatTerminalList
     chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
     laneId: optionalTerminalString(record, "laneId", 512),
     limit: optionalTerminalNumber(record, "limit", 1, 500),
+    ...(record.includeArchived === true ? { includeArchived: true } : {}),
   };
 }
 
@@ -6372,6 +6374,32 @@ function registerTerminalRemoteCommands({ args, register }: RemoteCommandRegistr
     args.ptyService.activeForChat(parseTerminalActiveForChatArgs(payload)));
 }
 
+/**
+ * One archive across lanes, chats, and shells, for the web client and phone.
+ * Same service the action registry and Electron IPC build; it needs the
+ * project DB, so a host without one simply does not serve `archive.*`.
+ */
+function registerArchiveRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const db = args.db;
+  if (!db) return;
+  const archive = () => createArchiveService({
+    db,
+    laneService: args.laneService,
+    sessionService: args.sessionService,
+    ptyService: args.ptyService,
+    agentChatService: args.agentChatService ?? null,
+    projectConfigService: args.projectConfigService ?? null,
+    laneEnvironmentService: args.laneEnvironmentService ?? null,
+    portAllocationService: args.portAllocationService ?? null,
+    logger: args.logger,
+  });
+  // The archive service parses its own input, the same for every transport.
+  register("archive.list", { viewerAllowed: true }, async (payload) => archive().list(payload));
+  register("archive.summary", { viewerAllowed: true }, async (payload) => archive().summary(payload));
+  register("archive.restore", { viewerAllowed: true, queueable: true }, async (payload) => archive().restore(payload));
+  register("archive.delete", { viewerAllowed: true, queueable: false }, async (payload) => archive().delete(payload));
+}
+
 function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("conflicts.getLaneStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.conflictService, "Conflict service not available.").getLaneStatus(parseConflictLaneArgs(payload, "conflicts.getLaneStatus")));
@@ -7249,6 +7277,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
   registerTerminalRemoteCommands({ args, register });
+  registerArchiveRemoteCommands({ args, register });
   registerConflictRemoteCommands({ args, register });
   registerMiscRemoteCommands({ args, register });
   registerPrAndDeeplinkRemoteCommands({ args, register });

@@ -4,6 +4,7 @@ import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
+import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
@@ -116,6 +117,7 @@ export function createAdeWebAdapter(
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
+    archive: createArchiveNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
     chatLaunch: createChatLaunchNamespace(infra),

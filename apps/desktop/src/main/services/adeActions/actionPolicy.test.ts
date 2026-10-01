@@ -359,6 +359,27 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
+  it("keeps archive deletion user-only and archive restore CTO-only", () => {
+    // Reading the archive is open to agents and automations...
+    for (const action of ["list", "summary"]) {
+      expect(isAllowedAdeAction("archive", action)).toBe(true);
+      expect(isCtoOnlyAdeAction("archive", action)).toBe(false);
+      expect(isAutomationAllowedAdeAction("archive", action)).toBe(true);
+    }
+    // ...restoring a lane brings its worktree and services back, so it is the
+    // CTO's call. No automation restores.
+    expect(isAllowedAdeAction("archive", "restore")).toBe(true);
+    expect(isCtoOnlyAdeAction("archive", "restore")).toBe(true);
+    expect(isUserOnlyAdeAction("archive", "restore")).toBe(false);
+    expect(isAutomationAllowedAdeAction("archive", "restore")).toBe(false);
+    // Deleting is the person's alone: it can take a lane's uncommitted work,
+    // so no agent and no automation may reach it.
+    expect(isAllowedAdeAction("archive", "delete")).toBe(true);
+    expect(isUserOnlyAdeAction("archive", "delete")).toBe(true);
+    expect(isCtoOnlyAdeAction("archive", "delete")).toBe(false);
+    expect(isAutomationAllowedAdeAction("archive", "delete")).toBe(false);
+  });
+
 });
 
 describe("secret-bearing action policy", () => {

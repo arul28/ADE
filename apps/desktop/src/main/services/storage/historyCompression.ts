@@ -121,14 +121,30 @@ export function readHistoryFileSync(filePath: string): Buffer {
 }
 
 /** Prefer the plain append target, then its transparent gzip replacement. */
-export function resolveReadableHistoryPath(filePath: string): string | null {
+/** The two forms a history file may be stored in: plain first, then `.gz`. */
+function historyPathForms(filePath: string): [plain: string, gzip: string] {
   const normalizedPath = path.resolve(filePath);
-  const plainPath = normalizedPath.endsWith(".gz")
-    ? normalizedPath.slice(0, -3)
-    : normalizedPath;
-  if (fs.existsSync(plainPath)) return plainPath;
-  const gzipPath = `${plainPath}.gz`;
-  return fs.existsSync(gzipPath) ? gzipPath : null;
+  const plainPath = normalizedPath.endsWith(".gz") ? normalizedPath.slice(0, -3) : normalizedPath;
+  return [plainPath, `${plainPath}.gz`];
+}
+
+export function resolveReadableHistoryPath(filePath: string): string | null {
+  return historyPathForms(filePath).find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+/**
+ * Bytes on disk of a history file in whichever form it is stored (plain or
+ * `.gz`), without blocking: for listings that size many files at once.
+ */
+export async function readableHistoryBytes(filePath: string): Promise<number | null> {
+  for (const candidate of historyPathForms(filePath)) {
+    try {
+      return (await fs.promises.stat(candidate)).size;
+    } catch {
+      // Not stored in this form; try the next.
+    }
+  }
+  return null;
 }
 
 /** Read an exact bounded raw byte range, tolerating permitted short FileHandle reads. */

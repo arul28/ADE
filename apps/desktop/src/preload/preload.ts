@@ -98,6 +98,14 @@ import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure
 // drift.
 import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
 import type {
+  ArchiveActionArgs,
+  ArchiveActionResult,
+  ArchiveListArgs,
+  ArchiveListResult,
+  ArchiveSummary,
+  ArchiveSummaryArgs,
+} from "../shared/types/archive";
+import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
   StorageCleanupPreview,
@@ -4492,6 +4500,24 @@ const adeBridge = {
     ): Promise<StorageCleanupResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "cleanup", { args: { targets, preview: opts.preview } }, () =>
         ipcRenderer.invoke(IPC.storageCleanup, { targets, preview: opts.preview }),
+      ),
+  },
+  archive: {
+    list: async (args: ArchiveListArgs = {}, pin?: OpenProjectBinding | null): Promise<ArchiveListResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "archive", "list", { args }, () =>
+        ipcRenderer.invoke(IPC.archiveList, args),
+      ),
+    summary: async (args: ArchiveSummaryArgs = {}, pin?: OpenProjectBinding | null): Promise<ArchiveSummary> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "archive", "summary", { args }, () =>
+        ipcRenderer.invoke(IPC.archiveSummary, args),
+      ),
+    restore: async (args: ArchiveActionArgs, pin?: OpenProjectBinding | null): Promise<ArchiveActionResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "archive", "restore", { args }, () =>
+        ipcRenderer.invoke(IPC.archiveRestore, args),
+      ),
+    delete: async (args: ArchiveActionArgs, pin?: OpenProjectBinding | null): Promise<ArchiveActionResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "archive", "delete", { args }, () =>
+        ipcRenderer.invoke(IPC.archiveDelete, args),
       ),
   },
   project: {

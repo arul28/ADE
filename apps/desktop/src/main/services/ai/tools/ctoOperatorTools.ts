@@ -125,7 +125,7 @@ export interface CtoOperatorToolDeps {
     CtoMemoryService,
     "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries" | "setProjectBrief" | "recordThread"
   > | null;
-  listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
+  listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   getChatTranscript: (args: {
     sessionId: string;
@@ -744,13 +744,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
       "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
-      "needs you versus what is deliberately quiet. Pass machine to list another machine's chats (those rows carry no lifecycle).",
+      "needs you versus what is deliberately quiet. Pass machine to list another machine's chats (those rows carry no lifecycle). " +
+      "Archived chats are left out unless includeArchived is true; getChatStatus still reads one by id.",
     inputSchema: z.object({
       laneId: z.string().optional(),
       includeIdentity: z.boolean().optional().default(true),
+      includeArchived: z.boolean().optional().default(false),
       machine: machineArgSchema,
     }),
-    execute: async ({ laneId, includeIdentity, machine }) => {
+    execute: async ({ laneId, includeIdentity, includeArchived, machine }) => {
       try {
         const target = await remoteMachine(machine);
         if (target) {
@@ -763,6 +765,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
               includeIdentity,
               includeAutomation: false,
+              includeArchived,
             },
           });
           const chats = asRemoteChats(raw);
@@ -774,6 +777,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const chats = await deps.listChats(laneId?.trim() || undefined, {
         includeIdentity,
         includeAutomation: false,
+        includeArchived,
       });
       const withLifecycle = chats.map((chat) => {
         const lifecycle = readSessionLifecycle(deps, chat.sessionId);

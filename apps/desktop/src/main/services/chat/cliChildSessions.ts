@@ -123,7 +123,13 @@ export function createCliChildSessionAccess(options: CliChildSessionAccessOption
     };
   };
 
-  const listCliChildSessions = (args?: { laneId?: string | null; parentSessionId?: string | null }): AgentChatCliChildSessionSummary[] => {
+  const listCliChildSessions = (args?: {
+    laneId?: string | null;
+    parentSessionId?: string | null;
+    /** Archived CLI children are hidden from this agent-facing list unless asked for. */
+    includeArchived?: boolean;
+  }): AgentChatCliChildSessionSummary[] => {
+    const includeArchived = args?.includeArchived === true;
     const laneId = typeof args?.laneId === "string" && args.laneId.trim() ? args.laneId.trim() : undefined;
     const parentFilter = typeof args?.parentSessionId === "string" && args.parentSessionId.trim()
       ? args.parentSessionId.trim()
@@ -138,6 +144,7 @@ export function createCliChildSessionAccess(options: CliChildSessionAccessOption
     return enriched.flatMap((row) => {
       const lineage = cliChildLineageFromRow(row);
       if (!lineage || (parentFilter && lineage.parentSessionId !== parentFilter)) return [];
+      if (!includeArchived && row.archivedAt) return [];
       return [{
         sessionId: row.id,
         kind: "cli" as const,
