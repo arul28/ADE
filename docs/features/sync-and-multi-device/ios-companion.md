@@ -542,7 +542,9 @@ apps/ios/
 │   │   │                            # FilesWorkspacePickerDropdown
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # WorkRootComponents (list chrome: one-row
-│   │   │                            #   header, filter panel, sticky lane
+│   │   │                            #   header, filter panel — including the
+│   │   │                            #   Machine chip row and
+│   │   │                            #   WorkMachineFilterOption — sticky lane
 │   │   │                            #   section headers, WorkSessionListRow
 │   │   │                            #   swipe/context-menu shell),
 │   │   │                            # WorkSessionRowCard (the row card itself:
@@ -561,8 +563,10 @@ apps/ios/
 │   │   │                            #   chat-subagents:<parentId>),
 │   │   │                            # WorkSessionGrouping (by-lane/status/time
 │   │   │                            #   groups, quiet-zone shelves,
-│   │   │                            #   WorkViewStateStore; nested drawers
-│   │   │                            #   come from WorkSpawnNesting),
+│   │   │                            #   WorkViewStateStore whose per-project
+│   │   │                            #   record includes the machine filter
+│   │   │                            #   and tolerates records predating it; nested
+│   │   │                            #   drawers come from WorkSpawnNesting),
 │   │   │                            # WorkChatLaunch* (new-lane launches:
 │   │   │                            #   Presentation = hand mirror of
 │   │   │                            #   shared/chatLaunch.ts wording, Views =

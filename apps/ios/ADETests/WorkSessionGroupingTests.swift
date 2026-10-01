@@ -1448,6 +1448,57 @@ final class WorkSessionGroupingTests: XCTestCase {
     XCTAssertEqual(workStatusFilterPartition(phase: .failed), .done)
   }
 
+  // MARK: - Machine filter
+
+  /// View state written before the Machine filter existed carries no
+  /// `machineFilter` key. The custom decoder fills it with "" instead of failing
+  /// the whole record, which would silently reset every other saved filter.
+  func testViewStateDecodesRecordsWrittenBeforeTheMachineFilter() throws {
+    let legacy = Data("""
+    {"searchText":"auth","laneFilter":"lane-2","statusFilter":"running","organization":"byTime","collapsedSectionIds":"lane:lane-2"}
+    """.utf8)
+    let decoded = try JSONDecoder().decode(WorkProjectViewState.self, from: legacy)
+    XCTAssertEqual(decoded.searchText, "auth")
+    XCTAssertEqual(decoded.laneFilter, "lane-2")
+    XCTAssertEqual(decoded.statusFilter, "running")
+    XCTAssertEqual(decoded.organization, "byTime")
+    XCTAssertEqual(decoded.collapsedSectionIds, "lane:lane-2")
+    XCTAssertEqual(decoded.machineFilter, "", "a legacy record defaults to all machines")
+
+    let current = Data("""
+    {"searchText":"","laneFilter":"all","statusFilter":"all","organization":"byLane","collapsedSectionIds":"","machineFilter":"primary\\nstudio"}
+    """.utf8)
+    XCTAssertEqual(try JSONDecoder().decode(WorkProjectViewState.self, from: current).machineFilter, "primary\nstudio")
+  }
+
+  /// The focused machine's rows carry an un-namespaced lane id and resolve to
+  /// `primary`; another machine's rows carry a `fleet|` namespaced lane id and
+  /// resolve to its machine key. Selecting a machine drops the other machine's
+  /// rows, and selecting none keeps every machine.
+  func testMachineFilterSeparatesPrimaryFromNamespacedFleetRows() {
+    let primary = makeSession(id: "s-primary", laneId: "lane-a")
+    let remote = makeSession(
+      id: "s-remote",
+      laneId: workRemoteLaneId(machineKey: "studio", laneId: "lane-a")
+    )
+
+    XCTAssertEqual(workMachineFilterId(laneId: primary.laneId), workPrimaryMachineFilterId)
+    XCTAssertEqual(workMachineFilterId(laneId: remote.laneId), "studio")
+
+    XCTAssertEqual(
+      Set(filteredIdsWithMachine([], [primary, remote])),
+      ["s-primary", "s-remote"],
+      "no selection means every machine"
+    )
+    XCTAssertEqual(filteredIdsWithMachine([workPrimaryMachineFilterId], [primary, remote]), ["s-primary"])
+    XCTAssertEqual(filteredIdsWithMachine(["studio"], [primary, remote]), ["s-remote"])
+    XCTAssertEqual(
+      Set(filteredIdsWithMachine([workPrimaryMachineFilterId, "studio"], [primary, remote])),
+      ["s-primary", "s-remote"],
+      "multi-select ORs the machines"
+    )
+  }
+
   // MARK: - Fixtures
   private func filteredIds(
     _ sessions: [TerminalSessionSummary],
@@ -1462,6 +1513,22 @@ final class WorkSessionGroupingTests: XCTestCase {
       selectedLaneId: "all",
       searchText: "",
       laneWaitingReasonByLaneId: laneWaitingReasons,
+      now: now
+    ).map(\.id)
+  }
+
+  private func filteredIdsWithMachine(
+    _ machineFilter: Set<String>,
+    _ sessions: [TerminalSessionSummary]
+  ) -> [String] {
+    workFilteredSessions(
+      sessions,
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      machineFilter: machineFilter,
+      searchText: "",
       now: now
     ).map(\.id)
   }

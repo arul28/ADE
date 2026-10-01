@@ -1398,6 +1398,27 @@ describe("SessionListPane", () => {
       expect(screen.queryByText("Chat on the other machine")).toBeNull();
     });
 
+    it("keeps a foreign machine's matching rows when a machine chip hides every local row", () => {
+      seedForeignMachine();
+
+      renderPane({
+        // The hook already removed every local row for the chip; the pane's own
+        // buckets are what is left.
+        runningFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workSessionFilters: {
+          status: [], tool: [], hasPr: false, dirtyLane: false, machine: ["target-studio"],
+        },
+        setWorkSessionFilters: vi.fn(),
+      });
+
+      // The local roster is empty under the chip, but the other machine's chat
+      // still matches, so this must NOT read as a filtered-out empty list.
+      expect(screen.queryByText("No sessions match")).toBeNull();
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
+    });
+
     it("files settled foreign chats into the same collapsed quiet tail as local chats", () => {
       const active = makeSession({
         id: "session-foreign-active",

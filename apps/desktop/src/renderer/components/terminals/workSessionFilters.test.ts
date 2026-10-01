@@ -135,6 +135,27 @@ describe("matchesWorkSessionFilters", () => {
     )).toBe(true);
     expect(matchesWorkSessionFilters(makeSession(), filters({ dirtyLane: true }), ctx)).toBe(false);
   });
+
+  it("files a session under its own machine and ORs multiple machine picks", () => {
+    const session = makeSession();
+    // No machine selected means all machines, so every session passes.
+    expect(matchesWorkSessionFilters(session, EMPTY_WORK_SESSION_FILTERS, ctx)).toBe(true);
+    // The session's own machine is selectable by id.
+    expect(matchesWorkSessionFilters(session, filters({ machine: ["this-mac"] }), ctx)).toBe(true);
+    // Another machine's id excludes it.
+    expect(matchesWorkSessionFilters(session, filters({ machine: ["other-mac"] }), ctx)).toBe(false);
+    // Selecting several machines ORs them: the session's machine is one of them.
+    expect(matchesWorkSessionFilters(
+      session, filters({ machine: ["other-mac", "this-mac"] }), ctx,
+    )).toBe(true);
+    // The machine axis ANDs with the others.
+    expect(matchesWorkSessionFilters(
+      session, filters({ machine: ["this-mac"], status: ["running"] }), ctx,
+    )).toBe(true);
+    expect(matchesWorkSessionFilters(
+      session, filters({ machine: ["other-mac"], status: ["running"] }), ctx,
+    )).toBe(false);
+  });
 });
 
 describe("normalizeWorkSessionFilters", () => {
@@ -147,6 +168,13 @@ describe("normalizeWorkSessionFilters", () => {
     })).toEqual({ status: ["running"], tool: ["claude"], hasPr: true, dirtyLane: false, machine: [] });
     expect(normalizeWorkSessionFilters(null)).toEqual(EMPTY_WORK_SESSION_FILTERS);
     expect(normalizeWorkSessionFilters(undefined)).toEqual(EMPTY_WORK_SESSION_FILTERS);
+  });
+
+  it("keeps distinct machine ids and drops empty or non-string entries", () => {
+    expect(normalizeWorkSessionFilters({
+      machine: ["this-mac", "this-mac", "", "  ", 7, "other-mac"],
+    }).machine).toEqual(["this-mac", "other-mac"]);
+    expect(normalizeWorkSessionFilters({ machine: "this-mac" }).machine).toEqual([]);
   });
 });
 

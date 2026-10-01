@@ -199,14 +199,18 @@ autoscroll, while the list uses the resulting order signature only for its
 layout animation rather than remeasuring on every session tick.
 
 The same funnel also owns the persisted session chips. Status (Your move,
-Running, Ended, Settled, Snoozed) and Tool choices are ORed within their own
-axis; the Status, Tool, Has PR, and Dirty-lane axes are ANDed together. The
-status chip uses the same effective filing result as the sidebar, Has PR
-uses the coalesced PR snapshot that powers lane-header badges, and Dirty reads
-the already-loaded lane status. Chips apply before all three organization
-modes. A remote lane has no local PR snapshot, so Has PR fails closed there;
-the filtered empty state names the active chips and provides a clear action
-instead of implying that the sessions disappeared.
+Running, Ended, Settled, Snoozed), Tool, and Machine choices are ORed within
+their own axis; the Status, Tool, Machine, Has PR, and Dirty-lane axes are ANDed
+together. The status chip uses the same effective filing result as the sidebar,
+Has PR uses the coalesced PR snapshot that powers lane-header badges, and Dirty
+reads the already-loaded lane status. Machine is empty (all machines) by
+default; selecting a subset keeps only that machine's rows, and a chip for a
+machine that has since left stays visible so it can be turned back off. Chips
+apply before all three organization modes. A remote lane has no local PR
+snapshot, so Has PR fails closed there; the filtered empty state names the
+active chips and provides a clear action instead of implying that the sessions
+disappeared. Another machine's matching rows count, so a Machine filter that
+hides every local row shows those rows rather than the empty state.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
@@ -271,7 +275,7 @@ Also renders:
   is not in the chat/CLI header. When the list is collapsed, a thin left
   rail in `TerminalsPage` shows the same glyph as **Show sessions**.
 - an expandable filter panel with group selector (Lane / Status / Time), lane
-  sort, status/tool chips, Has PR / Dirty, and `LaneCombobox`
+  sort, status/tool/machine chips, Has PR / Dirty, and `LaneCombobox`
 - the actual list of `SessionCard` rows (memoized)
 - a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
   Work flow uses the host's `close-on-create` behavior: it closes as

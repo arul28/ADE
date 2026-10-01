@@ -1186,12 +1186,17 @@ Renderer surfaces:
   or Manual ordering inside those tiers. A non-primary header can be dragged
   before/after a header in the same tier; the native drag controller supplies a
   drop line plus edge autoscroll, seeds Manual from the on-screen order, and
-  never permits a cross-tier move. The funnel also has Status and Tool
-  multi-select chips (OR within a row), Has PR, and Dirty lane filters (AND
-  across rows). Their shared pure matcher files status through
+  never permits a cross-tier move. The funnel also has Status, Tool, and
+  Machine multi-select chips (OR within a row), plus Has PR and Dirty lane
+  filters (AND across rows). Machine starts with every machine selected; picking
+  any subset narrows the union to those machines and a chip for a machine that
+  has since left stays visible so the filter can be cleared. Their shared pure
+  matcher files status through
   `effectiveSessionFilingBuckets` (falling back to `sessionFilingBucket`); the Has PR result reuses the coalesced PR snapshot
   that serves lane badges, and a filtered empty state identifies and clears the
-  active chips.
+  active chips. Another machine's matching rows still count against that empty
+  state, so a Machine filter that hides every local row shows the foreign rows
+  instead of "No sessions match".
 - `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
   amber tower marker on a lane header, rendered only for lanes that are not on
   the physical Mac you are sitting at, so the common single-machine case pays
@@ -1655,8 +1660,16 @@ Renderer surfaces:
   persisted mutation.
 - `apps/desktop/src/renderer/components/terminals/workSessionFilters.ts` —
   pure Work chip-filter normalization, tool-family projection, active-label
-  formatting, and matching. Status/Tool selections OR within an axis; axes
-  AND together.
+  formatting, and matching. Status, Tool, and Machine selections OR within an
+  axis; axes AND together. Machine matching reads the session's owning
+  `machineId` from the caller's context, so the same predicate serves both the
+  tab's own roster and each foreign machine's rows.
+- `apps/desktop/src/renderer/components/terminals/WorkFilterPanel.tsx` —
+  the Work funnel's panel: Group/Sort segmented controls above a rule, then the
+  Status, Tool, and Machine chip rows (Machine renders only when more than one
+  machine reports this repo), the Lane combobox, Has PR, and Dirty. Filter chips
+  are multi-select with an accent on-state; the panel owns the labels and the
+  Clear control but not the filter state.
 - `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` —
   the lane→PR map shared by the list's PR badges and the Has PR filter. The
   bound machine's half is a coalesced PR read plus a `prs-updated`
