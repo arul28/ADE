@@ -80,16 +80,18 @@ export function AutoUpdateBanner() {
   }, [snapshot.status, updateVersion]);
 
   const handleRestart = useCallback(() => {
-    captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
+    // The same confirmation every other manual install affordance uses, so a
+    // retry after a failed or parked install also names the chats it will
+    // interrupt and offers to resume them.
     setRestarting(true);
-    void window.ade.updateQuitAndInstall()
+    void requestDownloadedUpdateInstall(snapshot, () => setRestarting(true))
       .then((started) => {
         if (!started) setRestarting(false);
       })
       .catch(() => {
         setRestarting(false);
       });
-  }, [currentVersion, updateVersion]);
+  }, [snapshot]);
 
   const handleCancelAutoApply = useCallback(() => {
     captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "deferred");
