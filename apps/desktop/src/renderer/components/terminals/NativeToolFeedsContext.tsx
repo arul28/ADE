@@ -158,8 +158,8 @@ export function NativeToolFeedsProvider({
   const context = useMemo<WorkToolContext>(() => ({
     supportsIosSimulator,
     isWebClient: isWebClientMode(),
-    supportsMacDesktop: macDesktopSupport?.supported ?? null,
-    macDesktopUnsupportedReason: macDesktopSupport?.reason ?? null,
+    supportsMacDesktop: macDesktopSupport ? macDesktopSupport.platform === "darwin" && macDesktopSupport.supported : null,
+    macDesktopUnsupportedReason: macDesktopSupport?.platform === "darwin" ? macDesktopSupport.reason : "This lane’s host isn’t a Mac",
     // The same read answers both seats: a Windows host that can host a screen
     // shows Windows Desktop, a Mac host shows Mac Desktop, and only one is
     // available at a time because one platform answers.

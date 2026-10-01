@@ -296,16 +296,17 @@ export function workToolAvailability(
     const reason = context.windowsDesktopUnsupportedReason?.trim();
     return { available: false, reason: reason || "This lane's host isn't Windows" };
   }
+  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
+    const reason = context.macDesktopUnsupportedReason?.trim();
+    return { available: false, reason: reason || "This lane's host isn't a Mac" };
+  }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
   }
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
-  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
-    const reason = context.macDesktopUnsupportedReason?.trim();
-    return { available: false, reason: reason || "This lane's host isn't a Mac" };
-  }
+
   return AVAILABLE;
 }
 

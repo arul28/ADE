@@ -107,8 +107,9 @@ class Engine {
   void releaseWindow(Lane& lane, HWND hwnd);
   bool captureLane(Lane& lane, Frame& frame, HWND onlyWindow, std::string* error);
   void touch(Lane& lane);
-  std::set<DWORD> ownedProcesses(Lane& lane);
-  void rememberProcess(Lane& lane, DWORD pid);
+  std::set<DWORD> ownedProcesses(Lane& lane, DWORD watchedRoot = 0);
+  std::map<DWORD, FILETIME> ownedProcessIdentities(Lane& lane, DWORD watchedRoot = 0);
+  void rememberProcess(Lane& lane, DWORD pid, DWORD watchedRoot = 0);
 
   // Media.
   void mediaLoop(std::shared_ptr<Lane> lane);

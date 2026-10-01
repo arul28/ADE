@@ -39,7 +39,7 @@ asks with an ask card:
 
 **Forget saved password** removes ADE's credential. A rejected saved password
 is forgotten instead of retried; save your current password again in the pane.
-Saving or forgetting requires a local user action. The CLI equivalents are
+Saving or forgetting requires approval from a trusted ADE client. The CLI equivalents are
 `ade screen setup --allow-prompt --save-password` and
 `ade screen setup --allow-prompt --forget-password`; password text is never a
 CLI argument. Password verification requires the private session to be free.
@@ -75,6 +75,8 @@ Policy lives at the service and action boundaries, never in prompts:
   Mode B by passing `allowPrompt: true` or `sharedDesktopConsent: true`.
 - `mac_desktop.start` refuses `seatMode: "shared"`; only `useSharedDesktop`
   carries consent, and the service refuses a shared create without it.
+- Trusted ADE clients on the Mac, phone, or web can approve setup, takeover,
+  and shared-desktop consent. Session-bound agents cannot approve these actions.
 - Saving a password requires a local native dialog and a successful sign-in;
   otherwise a private screen requires the user's local sign-in. Setup requires
   their local admin prompt.

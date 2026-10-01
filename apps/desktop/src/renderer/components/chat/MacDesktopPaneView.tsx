@@ -192,6 +192,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         laneId={laneId}
         laneName={laneName}
         windows={status.windowsDesktop}
+        runtimePin={runtimePin}
         onChanged={() => void readAgain()}
       />,
     );

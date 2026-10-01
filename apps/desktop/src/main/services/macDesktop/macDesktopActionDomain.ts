@@ -252,8 +252,8 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     /**
      * Windows only: the wizard's one admin step. CTO-only: it raises a Windows
      * admin/Remote Desktop prompt at whoever is at the PC, which a session-bound
-     * agent cannot see. `allowPrompt` is passed by the caller but honored by the
-     * service only for a local user's click.
+     * agent cannot see. A trusted CTO client on any device can approve;
+     * UAC and password entry remain native dialogs on the Windows host.
      */
     setupWindows: (args?: unknown) => gated(() => service.setupWindowsDesktop({
       allowPrompt: optionalBoolean(args, "allowPrompt") ?? false,

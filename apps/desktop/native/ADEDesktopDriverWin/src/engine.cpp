@@ -1,4 +1,4 @@
-#include "engine.h"
+#include "engineLane.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -9,14 +9,8 @@ namespace {
 
 constexpr int kShareGap = 200;       // px between the last monitor and a lane area
 constexpr int64_t kLaunchWatchMs = 20'000;
-constexpr int64_t kIdleCutAfterMs = 1'500;
 
-struct LaunchWatch {
-  DWORD pid = 0;
-  int64_t sinceMs = 0;
-  FILETIME since = {};
-  std::set<HWND> before;
-};
+
 
 const std::set<std::string>& engineOps() {
   static const std::set<std::string> ops = {
@@ -46,87 +40,13 @@ Json frameJson(const RECT& r) {
   return f;
 }
 
-bool pointFrom(const Json& payload, const char* key, POINT& out) {
-  const Json& p = payload[key];
-  if (p.isObject() && p["x"].isNumber() && p["y"].isNumber()) {
-    out.x = static_cast<LONG>(p["x"].asDouble());
-    out.y = static_cast<LONG>(p["y"].asDouble());
-    return true;
-  }
-  if (payload["x"].isNumber() && payload["y"].isNumber()) {
-    out.x = static_cast<LONG>(payload["x"].asDouble());
-    out.y = static_cast<LONG>(payload["y"].asDouble());
-    return true;
-  }
-  return false;
-}
 
-std::vector<std::string> stringList(const Json& value) {
-  std::vector<std::string> out;
-  for (const auto& v : value.items()) {
-    if (v.isString() && !v.asString().empty()) out.push_back(v.asString());
-  }
-  return out;
-}
 
-POINT centerOf(const RECT& r) { return POINT{(r.left + r.right) / 2, (r.top + r.bottom) / 2}; }
 
-bool inRect(const RECT& r, POINT p) { return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom; }
 
-[[noreturn]] void failLocked() {
-  fail(code::kLocked, "This PC is locked, so the private screen cannot take input. The agent waits until it is unlocked.");
-}
 
 }  // namespace
 
-struct Engine::Lane {
-  std::string laneId;
-  std::string name;
-  RECT area = {};
-  int width = 0;
-  int height = 0;
-  int64_t displayId = 0;
-  std::string createdAt;
-  std::string lastActivityAt;
-  int64_t lastActivityMs = 0;
-  int slot = 0;
-  // Shared mode: the windows parked here, what put them here, and where each
-  // one came from so a release puts it back.
-  std::map<HWND, std::string> origin;
-  std::map<HWND, RECT> home;
-  // Apps this lane launched (root pids) and the late-window watches.
-  std::set<DWORD> launchedRoots;
-  std::map<DWORD, FILETIME> launchedTimes;
-  std::vector<LaunchWatch> watches;
-  // Lease (shared mode real input).
-  std::string leaseHolder;
-  int64_t leaseExpiresMs = 0;
-  // Media.
-  std::mutex media;
-  std::unique_ptr<StreamByteServer> server;
-  std::unique_ptr<H264Encoder> encoder;
-  bool streaming = false;
-  int streamFps = 30;
-  bool cursorVisible = false;
-  std::string codec;
-  std::atomic<bool> wantKeyframe{false};
-  std::unique_ptr<Mp4Recorder> recorder;
-  std::wstring recordPath;
-  int recordFps = 30;
-  bool keepIdle = false;
-  HWND recordWindow = nullptr;
-  int64_t recordStartMs = 0;
-  int64_t recordIdleCutMs = 0;
-  int64_t recordLastChangeMs = 0;
-  int64_t recordMediaMs = 0;  // media time written so far
-  int64_t recordLastWallMs = 0;
-  uint64_t recordLastHash = 0;
-  std::string recordError;
-  std::thread mediaThread;
-  std::atomic<bool> mediaRun{false};
-  int64_t lastStreamErrorMs = 0;
-  std::string windowsSignature;
-};
 
 Engine::Engine(Mode mode, EventSink emit) : mode_(mode), emit_(std::move(emit)) {}
 
@@ -197,21 +117,27 @@ std::set<DWORD> Engine::launchedPidTrees() {
   return roots;
 }
 
-void Engine::rememberProcess(Lane& lane, DWORD pid) {
+void Engine::rememberProcess(Lane& lane, DWORD pid, DWORD watchedRoot) {
   FILETIME created = processCreationTime(pid);
   if (!pid || (!created.dwLowDateTime && !created.dwHighDateTime)) return;
   lane.launchedRoots.insert(pid);
   lane.launchedTimes[pid] = created;
+  lane.watchedLaunchRoots[pid] = watchedRoot ? watchedRoot : pid;
 }
 
-std::set<DWORD> Engine::ownedProcesses(Lane& lane) {
-  std::set<DWORD> result;
-  for (auto& tracked : lane.launchedTimes) {
-    FILETIME current = processCreationTime(tracked.first);
-    if (CompareFileTime(&current, &tracked.second) != 0) continue;
-    auto tree = processTree(tracked.first);
+std::map<DWORD, FILETIME> Engine::ownedProcessIdentities(Lane& lane, DWORD watchedRoot) {
+  std::map<DWORD, FILETIME> result;
+  for (const auto& tracked : lane.launchedTimes) {
+    if (watchedRoot && (!lane.watchedLaunchRoots.count(tracked.first) || lane.watchedLaunchRoots.at(tracked.first) != watchedRoot)) continue;
+    auto tree = processTreeIdentities(tracked.first, tracked.second);
     result.insert(tree.begin(), tree.end());
   }
+  return result;
+}
+
+std::set<DWORD> Engine::ownedProcesses(Lane& lane, DWORD watchedRoot) {
+  std::set<DWORD> result;
+  for (const auto& tracked : ownedProcessIdentities(lane, watchedRoot)) result.insert(tracked.first);
   return result;
 }
 
@@ -394,10 +320,12 @@ Json Engine::destroyDisplay(const Json& req) {
   int released = 0;
   if (mode_ == Mode::Shared) {
     // Quit what the lane opened, then give claimed windows back.
-    std::set<DWORD> tree = ownedProcesses(*lane);
+    const auto identities = ownedProcessIdentities(*lane);
+    std::set<DWORD> tree;
+    for (const auto& entry : identities) tree.insert(entry.first);
     for (auto& w : laneWindows(*lane)) {
       if (tree.count(w.pid)) {
-        FILETIME created = processCreationTime(w.pid);
+        FILETIME created = identities.at(w.pid);
         if (!closeWindowGracefully(w.hwnd, 3000) && !terminatePid(w.pid, created)) {
           Json app = Json::object();
           app["pid"] = static_cast<int64_t>(w.pid);
@@ -416,6 +344,16 @@ Json Engine::destroyDisplay(const Json& req) {
       } else {
         releaseWindow(*lane, w.hwnd);
         ++released;
+      }
+    }
+    // Windows are not process ownership: a launched root or background child
+    // can outlive its last window. Preserve identity until all owned PIDs stop.
+    for (const auto& [pid, created] : identities) {
+      FILETIME current = processCreationTime(pid);
+      if ((!current.dwLowDateTime && !current.dwHighDateTime) || CompareFileTime(&current, &created) != 0) continue;
+      if (!terminatePid(pid, created)) {
+        leftOpen.push(Json::Object{{"pid", static_cast<int64_t>(pid)}, {"appName", "Background process"},
+            {"message", "An ADE-launched process could not be stopped."}});
       }
     }
   }
@@ -571,11 +509,33 @@ Json Engine::unpark(const Json& req) {
   }
   WinInfo w;
   describeWindow(hwnd, w);
-  releaseWindow(*lane, hwnd);
-  ids.push(windowIdOf(hwnd));
+  std::set<DWORD> handedOver;
+  Json handedOverPids = Json::array();
+  std::set<DWORD> watchedRoots;
+  for (const auto& [pid, created] : lane->launchedTimes) {
+    FILETIME current = processCreationTime(pid);
+    if (CompareFileTime(&current, &created) != 0) continue;
+    auto tree = processTreeIdentities(pid, created);
+    if (tree.count(w.pid)) {
+      watchedRoots.insert(lane->watchedLaunchRoots.count(pid) ? lane->watchedLaunchRoots.at(pid) : pid);
+      for (const auto& entry : tree) handedOver.insert(entry.first);
+    }
+  }
+  if (!handedOver.empty()) {
+    // A launcher may have exited after creating the GUI process. Keep its
+    // original watch identity while handing over every still-owned group member.
+    for (const auto& [pid, root] : lane->watchedLaunchRoots) if (watchedRoots.count(root)) handedOver.insert(pid);
+    for (DWORD root : watchedRoots) handedOverPids.push(static_cast<int64_t>(root));
+    for (const auto& window : laneWindows(*lane)) if (handedOver.count(window.pid)) {
+      releaseWindow(*lane, window.hwnd); ids.push(windowIdOf(window.hwnd));
+    }
+    for (DWORD pid : handedOver) { lane->launchedRoots.erase(pid); lane->launchedTimes.erase(pid); lane->watchedLaunchRoots.erase(pid); }
+    lane->watches.erase(std::remove_if(lane->watches.begin(), lane->watches.end(), [&](const LaunchWatch& watch) { return handedOver.count(watch.pid) > 0 || watchedRoots.count(watch.pid) > 0; }), lane->watches.end());
+  } else { releaseWindow(*lane, hwnd); ids.push(windowIdOf(hwnd)); }
   out["window"] = windowToJson(w, "", "", 0);
   out["releasedWindowIds"] = ids;
-  out["handedOverPid"] = Json();
+  out["handedOverPids"] = handedOverPids;
+  out["handedOverPid"] = handedOverPids.items().size() ? handedOverPids.items().front() : Json();
   return out;
 }
 
@@ -612,7 +572,7 @@ Json Engine::launch(const Json& req) {
   std::vector<WinInfo> fresh;
   for (int i = 0; i < 40 && fresh.empty(); ++i) {
     Sleep(125);
-    std::set<DWORD> tree = ownedProcesses(*lane);
+    std::set<DWORD> tree = launched.pid ? ownedProcesses(*lane, launched.pid) : std::set<DWORD>{};
     for (auto& w : listAppWindows()) {
       if (before.count(w.hwnd)) continue;
       bool ours = tree.count(w.pid) > 0;
@@ -622,12 +582,12 @@ Json Engine::launch(const Json& req) {
   if (mode_ == Mode::Shared) {
     for (auto& w : fresh) {
       parkWindow(*lane, w.hwnd, "ade_launched");
-      rememberProcess(*lane, w.pid);
+      rememberProcess(*lane, w.pid, launched.pid);
     }
     // Launching takes the foreground on Windows. Give it back.
     if (userForeground && currentForeground() != userForeground) forceForeground(userForeground);
   } else {
-    for (auto& w : fresh) rememberProcess(*lane, w.pid);
+    for (auto& w : fresh) rememberProcess(*lane, w.pid, launched.pid);
   }
   Json windows = Json::array();
   for (auto& w : fresh) {
@@ -647,35 +607,41 @@ Json Engine::launch(const Json& req) {
 
 Json Engine::quitApp(const Json& req) {
   auto lane = requireLane(requireString(req, "laneId"));
-  std::string app = lowerA(req["app"].str());
-  int64_t appPid = req["app"].isNumber() ? req["app"].asInt() : (app.empty() ? 0 : atoll(app.c_str()));
-  std::set<DWORD> tree = ownedProcesses(*lane);
-  Json quit = Json::array();
-  std::set<DWORD> done;
-  for (auto& w : laneWindows(*lane)) {
-    bool launched = tree.count(w.pid) > 0;
-    if (!launched) continue;
-    if (!app.empty()) {
-      bool match = lowerA(narrow(w.appName)) == app || lowerA(narrow(w.exeName)) == app ||
-                   lowerA(narrow(w.exeName)) == app + ".exe" || (appPid && static_cast<int64_t>(w.pid) == appPid);
-      if (!match) continue;
+  const std::string app = lowerA(req["app"].str());
+  const int64_t appPid = req["app"].isNumber() ? req["app"].asInt() : (app.empty() ? 0 : atoll(app.c_str()));
+  const auto owned = ownedProcessIdentities(*lane);
+  std::set<DWORD> selected;
+  for (const auto& [pid, created] : owned) {
+    auto path = processImagePath(pid);
+    const auto slash = path.find_last_of(L"\\/");
+    auto basename = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    const auto name = lowerA(narrow(basename));
+    if (app.empty() || (appPid && pid == appPid) || name == app || name == app + ".exe" || lowerA(narrow(appNameForExe(path))) == app) {
+      for (const auto& child : processTreeIdentities(pid, created)) if (owned.count(child.first)) selected.insert(child.first);
     }
-    if (done.count(w.pid)) continue;
-    FILETIME created = processCreationTime(w.pid);
-    if (!closeWindowGracefully(w.hwnd, 3000)) terminatePid(w.pid, created);
-    done.insert(w.pid);
-    Json q = Json::object();
-    q["pid"] = static_cast<int64_t>(w.pid);
-    q["appName"] = narrow(w.appName);
-    q["bundleId"] = narrow(w.exeName);
-    q["released"] = false;
-    quit.push(q);
-    lane->origin.erase(w.hwnd);
+  }
+  std::map<DWORD, FILETIME> identities;
+  std::map<DWORD, std::pair<std::string, std::string>> names;
+  for (DWORD pid : selected) {
+    identities[pid] = owned.at(pid);
+    auto path = processImagePath(pid);
+    const auto slash = path.find_last_of(L"\\/");
+    names[pid] = {narrow(appNameForExe(path)), narrow(slash == std::wstring::npos ? path : path.substr(slash + 1))};
+  }
+  for (const auto& window : laneWindows(*lane)) if (selected.count(window.pid)) closeWindowGracefully(window.hwnd, 3000);
+  Json quit = Json::array();
+  for (const auto& [pid, created] : identities) {
+    FILETIME current = processCreationTime(pid);
+    if (current.dwLowDateTime || current.dwHighDateTime) {
+      if (CompareFileTime(&current, &created) != 0) continue;
+      if (!terminatePid(pid, created)) fail(code::kDriverUnavailable, "Windows could not stop an ADE-launched process.");
+    }
+    quit.push(Json::Object{{"pid", static_cast<int64_t>(pid)}, {"appName", names.at(pid).first},
+        {"bundleId", names.at(pid).second}, {"released", false}});
+    lane->launchedRoots.erase(pid); lane->launchedTimes.erase(pid); lane->watchedLaunchRoots.erase(pid);
   }
   touch(*lane);
-  Json out = Json::object();
-  out["quit"] = quit;
-  return out;
+  return Json::Object{{"quit", quit}};
 }
 
 Json Engine::present(const Json& req) {
@@ -710,7 +676,14 @@ bool Engine::captureLane(Lane& lane, Frame& frame, HWND onlyWindow, std::string*
   if (mode_ == Mode::Private && !onlyWindow) {
     return captureScreenRect(lane.area, frame, lane.cursorVisible, error);
   }
-  if (onlyWindow) return captureWindow(onlyWindow, frame, error);
+  if (onlyWindow) {
+    const auto windows = laneWindows(lane);
+    if (std::none_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == onlyWindow; })) {
+      if (error) *error = "The requested window does not belong to this lane.";
+      return false;
+    }
+    return captureWindow(onlyWindow, frame, error);
+  }
   // Shared: compose the lane's windows, bottom of the z-order first.
   frame.resize(evenDown(lane.width), evenDown(lane.height));
   for (size_t i = 0; i < frame.bgra.size(); i += 4) {
@@ -843,653 +816,6 @@ Json Engine::observe(const Json& req) {
 }
 
 // ---------------------------------------------------------------------------
-// Input
-// ---------------------------------------------------------------------------
-
-bool Engine::hasTarget(const Json& payload) {
-  if (!payload["handle"].str().empty()) return true;
-  if (!payload["text"].str().empty()) return true;
-  if (payload["target"].isObject()) return hasTarget(payload["target"]);
-  return false;
-}
-
-UiaElement Engine::resolveTarget(const std::string& laneId, const Json& payload) {
-  UiaElement element;
-  if (!payload["handle"].str().empty()) element = uia_.resolveHandle(laneId, payload["handle"].str());
-  else if (!payload["text"].str().empty()) {
-    try { element = uia_.resolveText(laneId, payload["text"].str()); }
-    catch (const DriverError&) {
-      if (!payload["target"].isObject()) throw;
-      return resolveTarget(laneId, payload["target"]);
-    }
-  } else if (payload["target"].isObject()) return resolveTarget(laneId, payload["target"]);
-  else fail(code::kInvalidArgument, "This command needs a handle or a text match. Observe first.");
-  auto lane = requireLane(laneId);
-  const auto windows = laneWindows(*lane);
-  if (std::none_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == element.window; })) {
-    fail(code::kHandleExpired, "The element's window no longer belongs to this lane. Observe again.");
-  }
-  return element;
-}
-
-Json Engine::input(const Json& req) {
-  const std::string laneId = requireString(req, "laneId");
-  const std::string command = requireString(req, "command");
-  const std::string mode = req["mode"].str("accessibility");
-  const Json& payload = req["payload"];
-  auto lane = requireLane(laneId);
-  touch(*lane);
-  Json result;
-  if (command == "wait") {
-    result = waitFor(laneId, payload);
-  } else if (mode == "real") {
-    result = realInput(*lane, command, payload, req);
-  } else {
-    result = accessibilityInput(*lane, command, payload);
-  }
-  touch(*lane);
-  return result;
-}
-
-Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Json& payload) {
-  Json out = Json::object();
-  out["resolvedIndex"] = Json();
-  const bool priv = mode_ == Mode::Private;
-  if (command == "click") {
-    UiaElement e = resolveTarget(lane.laneId, payload);
-    out["resolvedIndex"] = e.index;
-    if (uia_.invoke(e)) return out;
-    POINT c = centerOf(e.frame);
-    int count = static_cast<int>(payload["count"].asInt(1));
-    std::string button = payload["button"].str("left");
-    if (priv) {
-      if (!sendClick(c.x, c.y, button, count)) failLocked();
-    } else {
-      postClick(e.window, c.x, c.y, button, count);
-    }
-    return out;
-  }
-  if (command == "type") {
-    const Json& target = payload["target"].isObject() ? payload["target"] : payload;
-    std::wstring text = widen(payload["text"].isString() && !payload["target"].isObject()
-                                  ? payload["value"].str(payload["text"].str())
-                                  : payload["text"].str());
-    // `type` carries its text in `text`, and an optional target beside it.
-    if (payload["target"].isObject()) text = widen(payload["text"].str());
-    bool clear = payload["clear"].asBool();
-    UiaElement e;
-    bool haveTarget = false;
-    if (payload["target"].isObject() && hasTarget(payload["target"])) {
-      e = resolveTarget(lane.laneId, payload["target"]);
-      haveTarget = true;
-    } else if (!payload["handle"].str().empty()) {
-      e = resolveTarget(lane.laneId, payload);
-      haveTarget = true;
-    } else {
-      // Focus may have moved since observe (for example after closing a dialog).
-      // Never reuse the previous observation's focused element for typing.
-      auto observation = uia_.observe(laneWindows(lane), 400, 1500);
-      uia_.remember(lane.laneId, observation);
-      haveTarget = uia_.newestFocused(lane.laneId, e);
-    }
-    (void)target;
-    if (haveTarget) out["resolvedIndex"] = e.index;
-    if (priv) {
-      auto windows = laneWindows(lane);
-      HWND window = haveTarget ? e.window : currentForeground();
-      if (!window || std::none_of(windows.begin(), windows.end(), [&](const WinInfo& w) { return w.hwnd == window; }))
-        fail(code::kNoWindow, "Focus a window belonging to this lane before typing.");
-      if (!forceForeground(window) || currentForeground() != window)
-        fail(code::kNoWindow, "Windows could not focus this lane's window; no text was sent.");
-      if (haveTarget && !uia_.focus(e)) fail(code::kHandleExpired, "The text target is no longer available. Observe again.");
-      if (clear && !sendKeys("a", {"ctrl"})) failLocked();
-      if (!sendText(text)) failLocked();
-      return out;
-    }
-    if (haveTarget && uia_.appendValue(e, text, clear)) return out;
-    HWND window = haveTarget ? e.window : nullptr;
-    if (!window) {
-      auto windows = laneWindows(lane);
-      if (windows.empty()) fail(code::kNoWindow, "Lane " + lane.laneId + " has no window to type into.");
-      window = windows.front().hwnd;
-    }
-    if (clear) fail(code::kInputLeaseRequired, "Clearing this control requires real input under the input lease.");
-    if (!postText(window, text)) fail(code::kNoWindow, "No focused control in this lane window accepted text.");
-    return out;
-  }
-  if (command == "setValue") {
-    UiaElement e = resolveTarget(lane.laneId, payload);
-    out["resolvedIndex"] = e.index;
-    if (!uia_.setValue(e, widen(payload["value"].str()))) {
-      fail(code::kInvalidArgument, e.role + " refused a value.");
-    }
-    return out;
-  }
-  if (command == "press") {
-    std::string key = payload["key"].str();
-    auto modifiers = stringList(payload["modifiers"]);
-    HWND window = nullptr;
-    if (hasTarget(payload)) {
-      try {
-        UiaElement e = resolveTarget(lane.laneId, payload);
-        out["resolvedIndex"] = e.index;
-        uia_.focus(e);
-        window = e.window;
-      } catch (const DriverError&) {
-      }
-    }
-    auto windows = laneWindows(lane);
-    if (!window && !windows.empty()) window = windows.front().hwnd;
-    if (!window) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to send a key to.");
-    if (priv) {
-      if (!forceForeground(window) || currentForeground() != window) fail(code::kNoWindow, "Windows could not focus the requested window; no key was sent.");
-      if (!sendKeys(key, modifiers)) failLocked();
-      return out;
-    }
-    fail(code::kInputLeaseRequired, "Sending a key on the main desktop needs mode real and an input lease.");
-    return out;
-  }
-  if (command == "scroll") {
-    std::string direction = payload["direction"].str("down");
-    int amount = static_cast<int>(payload["amount"].asInt(3));
-    if (hasTarget(payload)) {
-      UiaElement e = resolveTarget(lane.laneId, payload);
-      out["resolvedIndex"] = e.index;
-      if (uia_.scroll(e, direction, amount)) return out;
-      POINT c = centerOf(e.frame);
-      if (priv) {
-        if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
-      } else {
-        postScroll(e.window, c.x, c.y, direction, amount);
-      }
-      return out;
-    }
-    auto windows = laneWindows(lane);
-    if (windows.empty()) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to scroll.");
-    POINT c = centerOf(windows.front().frame);
-    if (priv) {
-      if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
-    } else {
-      postScroll(windows.front().hwnd, c.x, c.y, direction, amount);
-    }
-    return out;
-  }
-  if (command == "drag") {
-    if (priv) return realInput(lane, command, payload, Json());
-    fail(code::kInputLeaseRequired, "A drag has no UI Automation equivalent; it needs mode \"real\" and an input lease.");
-  }
-  fail(code::kInvalidArgument, "\"" + command + "\" is not an input command this driver knows.");
-}
-
-Json Engine::realInput(Lane& lane, const std::string& command, const Json& payload, const Json& req) {
-  const bool priv = mode_ == Mode::Private;
-  if (!priv) {
-    std::string holder = req["lease"]["holderId"].str();
-    if (lane.leaseHolder.empty() || holder != lane.leaseHolder || nowMs() > lane.leaseExpiresMs) {
-      fail(code::kInputLeaseRequired, "Real input on the main desktop needs the input lease.");
-    }
-  }
-  Json out = Json::object();
-  out["resolvedIndex"] = Json();
-  auto point = [&](const char* key) -> POINT {
-    POINT p;
-    if (!pointFrom(payload, key, p)) {
-      UiaElement e = resolveTarget(lane.laneId, payload);
-      out["resolvedIndex"] = e.index;
-      p = centerOf(e.frame);
-    }
-    p.x = std::max<LONG>(lane.area.left, std::min<LONG>(lane.area.right - 1, p.x));
-    p.y = std::max<LONG>(lane.area.top, std::min<LONG>(lane.area.bottom - 1, p.y));
-    return p;
-  };
-  // The topmost lane window under a point, for posted input on the shared desktop.
-  auto windowAt = [&](POINT p) -> HWND {
-    for (auto& w : laneWindows(lane)) {
-      if (!w.minimized && inRect(w.frame, p)) return w.hwnd;
-    }
-    fail(code::kNoWindow, "There is no lane window at that point.");
-  };
-  bool ok = true;
-  if (command == "move") {
-    POINT p = point("to");
-    if (priv) ok = sendMove(p.x, p.y);
-  } else if (command == "click") {
-    POINT p = point("at");
-    std::string button = payload["button"].str("left");
-    int count = static_cast<int>(payload["count"].asInt(1));
-    ok = priv ? sendClick(p.x, p.y, button, count) : postClick(windowAt(p), p.x, p.y, button, count);
-  } else if (command == "drag") {
-    POINT from = point("from");
-    POINT to = point("to");
-    int duration = static_cast<int>(payload["durationMs"].asInt(300));
-    if (priv) {
-      ok = sendDrag(from.x, from.y, to.x, to.y, duration);
-    } else {
-      HWND w = windowAt(from);
-      POINT c = from;
-      ScreenToClient(w, &c);
-      PostMessageW(w, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(c.x, c.y));
-      for (int i = 1; i <= 12; ++i) {
-        POINT s = {from.x + (to.x - from.x) * i / 12, from.y + (to.y - from.y) * i / 12};
-        ScreenToClient(w, &s);
-        PostMessageW(w, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(s.x, s.y));
-        Sleep(std::max(1, duration / 12));
-      }
-      POINT e = to;
-      ScreenToClient(w, &e);
-      PostMessageW(w, WM_LBUTTONUP, 0, MAKELPARAM(e.x, e.y));
-    }
-  } else if (command == "scroll") {
-    POINT p = point("at");
-    std::string direction = payload["direction"].str("down");
-    int amount = static_cast<int>(payload["amount"].asInt(3));
-    ok = priv ? sendScroll(p.x, p.y, direction, amount) : postScroll(windowAt(p), p.x, p.y, direction, amount);
-  } else if (command == "press" || command == "type") {
-    auto windows = laneWindows(lane);
-    HWND target = windows.empty() ? nullptr : windows.front().hwnd;
-    HWND user = priv ? nullptr : currentForeground();
-    if (!target) fail(code::kNoWindow, "This lane has no window to receive input.");
-    if (!forceForeground(target) || currentForeground() != target) fail(code::kNoWindow, "Windows could not focus this lane window; no input was sent.");
-    if (command == "press") {
-      ok = sendKeys(payload["key"].str(), stringList(payload["modifiers"]));
-    } else {
-      ok = sendText(widen(payload["text"].str()));
-    }
-    if (user && user != target) {
-      Sleep(30);
-      forceForeground(user);
-    }
-  } else if (command == "releaseCursor") {
-    // No cursor hold on Windows: the private screen has its own pointer.
-  } else if (command == "releaseInput") {
-    if (priv) releaseAllButtons();
-  } else {
-    fail(code::kInvalidArgument, "\"" + command + "\" is not a real-input command this driver knows.");
-  }
-  if (!ok) failLocked();
-  return out;
-}
-
-Json Engine::waitFor(const std::string& laneId, const Json& payload) {
-  std::string text = lowerA(payload["text"].str());
-  std::string gone = lowerA(payload["gone"].str());
-  std::string title = lowerA(payload["windowTitle"].str());
-  if (text.empty() && gone.empty() && title.empty()) {
-    fail(code::kInvalidArgument, "wait needs one of \"text\", \"gone\", or \"windowTitle\".");
-  }
-  int64_t timeout = std::max<int64_t>(250, std::min<int64_t>(120'000, payload["timeoutMs"].asInt(10'000)));
-  int64_t deadline = nowMs() + timeout;
-  Json out = Json::object();
-  std::string lastStop;
-  std::vector<std::string> stalled;
-  for (;;) {
-    std::unique_lock<std::recursive_mutex> operation(operationMutex_);
-    if (!running_) fail(code::kCancelled, "The Windows screen stopped while waiting.");
-    auto lane = requireLane(laneId);
-    auto windows = laneWindows(*lane);
-    bool met = false;
-    Json index;
-    if (!title.empty()) {
-      for (auto& w : windows) {
-        if (lowerA(narrow(w.title)).find(title) != std::string::npos) met = true;
-      }
-    } else {
-      std::string needle = text.empty() ? gone : text;
-      UiaObservation obs = uia_.observe(windows, 400, 1500);
-      lastStop = obs.truncatedReason;
-      stalled = obs.stalledApps;
-      bool found = false;
-      for (auto& e : obs.elements) {
-        if (Uia::matches(e, needle)) {
-          found = true;
-          index = e.index;
-          uia_.remember(laneId, obs);
-          break;
-        }
-      }
-      met = text.empty() ? !found : found;
-    }
-    if (met) {
-      out["ok"] = true;
-      out["resolvedIndex"] = index;
-      break;
-    }
-    if (nowMs() >= deadline) {
-      out["ok"] = false;
-      out["resolvedIndex"] = Json();
-      break;
-    }
-    operation.unlock();
-    Sleep(250);
-  }
-  out["truncatedReason"] = lastStop.empty() ? Json() : Json(lastStop);
-  Json s = Json::array();
-  for (auto& a : stalled) s.push(a);
-  out["stalledApps"] = s;
-  return out;
-}
-
-Json Engine::setLease(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  lane->leaseHolder = requireString(req, "holderId");
-  const Json& exp = req["expiresAt"];
-  int64_t ttl = 60'000;
-  if (exp.isNumber()) {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    ULARGE_INTEGER u;
-    u.LowPart = ft.dwLowDateTime;
-    u.HighPart = ft.dwHighDateTime;
-    int64_t epochMs = static_cast<int64_t>((u.QuadPart - 116444736000000000ULL) / 10000);
-    ttl = std::max<int64_t>(0, exp.asInt() - epochMs);
-  }
-  lane->leaseExpiresMs = nowMs() + ttl;
-  Json out = Json::object();
-  out["laneId"] = lane->laneId;
-  out["holderId"] = lane->leaseHolder;
-  out["expiresAt"] = exp;
-  return out;
-}
-
-Json Engine::clearLease(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  lane->leaseHolder.clear();
-  lane->leaseExpiresMs = 0;
-  Json out = Json::object();
-  out["cleared"] = true;
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Media
-// ---------------------------------------------------------------------------
-
-void Engine::ensureMediaThread(const std::shared_ptr<Lane>& lane) {
-  if (lane->mediaRun.exchange(true)) return;
-  if (lane->mediaThread.joinable()) lane->mediaThread.join();
-  lane->mediaThread = std::thread([this, lane] { mediaLoop(lane); });
-}
-
-void Engine::stopMedia(Lane& lane) {
-  {
-    std::lock_guard<std::mutex> lock(lane.media);
-    lane.streaming = false;
-    if (lane.recorder) {
-      std::string err;
-      lane.recorder->finish(&err);
-      lane.recorder.reset();
-    }
-  }
-  lane.mediaRun = false;
-  if (lane.mediaThread.joinable() && lane.mediaThread.get_id() != std::this_thread::get_id()) lane.mediaThread.join();
-  std::lock_guard<std::mutex> lock(lane.media);
-  if (lane.server) lane.server->stop();
-  lane.server.reset();
-  lane.encoder.reset();
-}
-
-void Engine::mediaLoop(std::shared_ptr<Lane> lane) {
-  CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-  const int64_t start = nowMs();
-  std::vector<uint8_t> nv12;
-  while (lane->mediaRun && running_) {
-    int fps;
-    bool streaming, recording, readers;
-    HWND recordWindow;
-    {
-      std::lock_guard<std::mutex> lock(lane->media);
-      streaming = lane->streaming && lane->server && lane->encoder;
-      readers = streaming && lane->server->clientCount() > 0;
-      recording = lane->recorder != nullptr;
-      recordWindow = lane->recordWindow;
-      fps = std::max(streaming ? lane->streamFps : 0, recording ? lane->recordFps : 0);
-    }
-    if (!streaming && !recording) break;
-    int64_t frameStart = nowMs();
-    if (readers || recording) {
-      Frame frame;
-      std::string err;
-      std::unique_lock<std::recursive_mutex> operation(operationMutex_, std::try_to_lock);
-      if (!operation.owns_lock()) { Sleep(10); continue; }
-      bool ok = captureLane(*lane, frame, recording && recordWindow ? recordWindow : nullptr, &err);
-      operation.unlock();
-      if (!ok) {
-        if (nowMs() - lane->lastStreamErrorMs > 5000) {
-          lane->lastStreamErrorMs = nowMs();
-          std::string message = err.find("handle is invalid") != std::string::npos
-                                    ? "This PC is locked, so the private screen shows no picture. It resumes after unlock."
-                                    : "No frame from the Windows screen: " + err;
-          emit_(eventLine("stream-error", Json::Object{{"laneId", lane->laneId}, {"message", message}}));
-        }
-      } else {
-        // Frames must match the encoder's size; a window recording keeps the
-        // window's first size and crops or pads later frames.
-        std::lock_guard<std::mutex> lock(lane->media);
-        if (streaming && readers && !recordWindow && lane->streaming && lane->server && lane->encoder) {
-          Frame sized = frame;
-          if (sized.width != lane->encoder->width() || sized.height != lane->encoder->height()) {
-            Frame canvas;
-            canvas.resize(lane->encoder->width(), lane->encoder->height());
-            blit(frame, canvas, 0, 0);
-            sized = std::move(canvas);
-          }
-          bgraToNv12(sized, nv12);
-          if (lane->wantKeyframe.exchange(false)) lane->encoder->forceKeyframe();
-          std::string encErr;
-          int64_t ts = (nowMs() - start) * 10'000;
-          auto* server = lane->server.get();
-          auto& codec = lane->codec;
-          bool encoded = lane->encoder->encode(nv12, ts, [&](const std::vector<uint8_t>& unit, bool key) {
-            if (key && codec.empty()) {
-              codec = avcCodecString(unit);
-              if (!codec.empty()) server->setConfig(codec);
-            }
-            server->broadcast(2, key, unit);
-          }, &encErr);
-          if (!encoded && nowMs() - lane->lastStreamErrorMs > 5000) {
-            lane->lastStreamErrorMs = nowMs();
-            emit_(eventLine("stream-error", Json::Object{{"laneId", lane->laneId}, {"message", encErr}}));
-          }
-        }
-        if (lane->recorder) {
-          Frame sized = frame;
-          if (sized.width != lane->recorder->width() || sized.height != lane->recorder->height()) {
-            Frame canvas;
-            canvas.resize(lane->recorder->width(), lane->recorder->height());
-            blit(frame, canvas, 0, 0);
-            sized = std::move(canvas);
-          }
-          int64_t now = nowMs();
-          uint64_t hash = frameHash(sized);
-          if (hash != lane->recordLastHash) {
-            lane->recordLastHash = hash;
-            lane->recordLastChangeMs = now;
-          }
-          int64_t step = now - lane->recordLastWallMs;
-          lane->recordLastWallMs = now;
-          bool idle = !lane->keepIdle && now - lane->recordLastChangeMs > kIdleCutAfterMs;
-          if (idle) {
-            lane->recordIdleCutMs += step;
-          } else {
-            bgraToNv12(sized, nv12);
-            std::string recErr;
-            int64_t duration = std::max<int64_t>(1, step) * 10'000;
-            if (!lane->recorder->write(nv12, lane->recordMediaMs * 10'000, duration, &recErr)) {
-              lane->recordError = recErr;
-            }
-            lane->recordMediaMs += std::max<int64_t>(1, step);
-          }
-        }
-      }
-    }
-    int64_t budget = 1000 / std::max(1, fps);
-    int64_t spent = nowMs() - frameStart;
-    if (spent < budget) Sleep(static_cast<DWORD>(budget - spent));
-  }
-  lane->mediaRun = false;
-  CoUninitialize();
-}
-
-Json Engine::startStream(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  int fps = static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(60, req["fps"].asInt(30))));
-  int port = 0;
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    if (!lane->server) {
-      lane->server = std::make_unique<StreamByteServer>();
-      Lane* raw = lane.get();
-      port = lane->server->start([raw] { raw->wantKeyframe = true; });
-      if (!port) {
-        lane->server.reset();
-        fail(code::kDisplayUnavailable, "The stream could not open a loopback port.");
-      }
-      lane->encoder = std::make_unique<H264Encoder>();
-      std::string err;
-      // About 0.08 bit per pixel per frame at the active rate.
-      int kbps = static_cast<int>(std::max<int64_t>(2000, std::min<int64_t>(
-                                                                24000, static_cast<int64_t>(lane->width) * lane->height * 30 / 12500)));
-      if (!lane->encoder->open(lane->width, lane->height, 30, kbps, &err)) {
-        lane->server->stop();
-        lane->server.reset();
-        lane->encoder.reset();
-        fail(code::kDisplayUnavailable, "The H.264 encoder did not start: " + err);
-      }
-      lane->codec.clear();
-    } else {
-      port = lane->server->port();
-    }
-    lane->streaming = true;
-    lane->streamFps = fps;
-  }
-  lane->wantKeyframe = true;
-  ensureMediaThread(lane);
-  touch(*lane);
-  Json out = Json::object();
-  out["port"] = port;
-  out["width"] = evenDown(lane->width);
-  out["height"] = evenDown(lane->height);
-  out["codec"] = lane->codec.empty() ? Json() : Json(lane->codec);
-  return out;
-}
-
-Json Engine::setStreamRate(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  int fps = static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(60, requireInt(req, "fps"))));
-  std::lock_guard<std::mutex> lock(lane->media);
-  lane->streamFps = fps;
-  Json out = Json::object();
-  out["fps"] = fps;
-  return out;
-}
-
-Json Engine::setStreamCursor(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  bool visible = req["visible"].asBool();
-  std::lock_guard<std::mutex> lock(lane->media);
-  lane->cursorVisible = visible;
-  Json out = Json::object();
-  out["visible"] = visible;
-  return out;
-}
-
-Json Engine::stopStream(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  bool stopped = false;
-  bool keepThread;
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    stopped = lane->streaming;
-    lane->streaming = false;
-    keepThread = lane->recorder != nullptr;
-    if (lane->server) lane->server->stop();
-    lane->server.reset();
-    lane->encoder.reset();
-    lane->codec.clear();
-  }
-  if (!keepThread) {
-    lane->mediaRun = false;
-    if (lane->mediaThread.joinable()) lane->mediaThread.join();
-  }
-  Json out = Json::object();
-  out["stopped"] = stopped;
-  return out;
-}
-
-Json Engine::startRecording(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  std::wstring path = widen(requireString(req, "filePath"));
-  int fps = static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(60, req["fps"].asInt(30))));
-  HWND window = req["windowId"].isNumber() ? hwndFromId(req["windowId"].asInt()) : nullptr;
-  int width = lane->width, height = lane->height;
-  if (window) {
-    RECT r;
-    if (!GetWindowRect(window, &r)) fail(code::kWindowNotFound, "That window is not open.");
-    width = r.right - r.left;
-    height = r.bottom - r.top;
-  }
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    if (lane->recorder) fail(code::kInvalidArgument, "Lane " + lane->laneId + " is already recording.");
-    auto recorder = std::make_unique<Mp4Recorder>();
-    std::string err;
-    if (!recorder->open(path, width, height, fps, &err)) fail(code::kInternalError, err);
-    lane->recorder = std::move(recorder);
-    lane->recordPath = path;
-    lane->recordFps = fps;
-    lane->keepIdle = req["keepIdle"].asBool();
-    lane->recordWindow = window;
-    lane->recordStartMs = nowMs();
-    lane->recordIdleCutMs = 0;
-    lane->recordLastChangeMs = nowMs();
-    lane->recordLastWallMs = nowMs();
-    lane->recordMediaMs = 0;
-    lane->recordLastHash = 0;
-    lane->recordError.clear();
-  }
-  ensureMediaThread(lane);
-  touch(*lane);
-  Json out = Json::object();
-  out["startedAt"] = isoNow();
-  return out;
-}
-
-Json Engine::stopRecording(const Json& req) {
-  auto lane = requireLane(requireString(req, "laneId"));
-  std::unique_ptr<Mp4Recorder> recorder;
-  int64_t wall = 0, idleCut = 0, media = 0;
-  std::wstring path;
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    if (!lane->recorder) fail(code::kRecordingNotRunning, "Lane " + lane->laneId + " is not recording.");
-    recorder = std::move(lane->recorder);
-    wall = nowMs() - lane->recordStartMs;
-    idleCut = lane->recordIdleCutMs;
-    media = lane->recordMediaMs;
-    path = lane->recordPath;
-    lane->recordWindow = nullptr;
-  }
-  std::string err;
-  if (!recorder->finish(&err)) fail(code::kInternalError, err);
-  bool streaming;
-  {
-    std::lock_guard<std::mutex> lock(lane->media);
-    streaming = lane->streaming;
-  }
-  if (!streaming) {
-    lane->mediaRun = false;
-    if (lane->mediaThread.joinable()) lane->mediaThread.join();
-  }
-  Json out = Json::object();
-  out["filePath"] = narrow(path);
-  out["durationMs"] = media;
-  out["wallDurationMs"] = wall;
-  out["idleCutMs"] = idleCut;
-  return out;
-}
-
-// ---------------------------------------------------------------------------
 // Watcher: late windows, dead windows, and windows-changed events.
 // ---------------------------------------------------------------------------
 
@@ -1516,7 +842,7 @@ void Engine::watchLoop() {
             it = lane->watches.erase(it);
             continue;
           }
-          std::set<DWORD> tree = ownedProcesses(*lane);
+          std::set<DWORD> tree = it->pid ? ownedProcesses(*lane, it->pid) : std::set<DWORD>{};
           for (auto& w : all) {
             if (it->before.count(w.hwnd) || lane->origin.count(w.hwnd)) continue;
             bool owned = false;
@@ -1525,7 +851,7 @@ void Engine::watchLoop() {
             if (tree.count(w.pid)) {
               HWND user = currentForeground();
               parkWindow(*lane, w.hwnd, "ade_launched");
-              rememberProcess(*lane, w.pid);
+              rememberProcess(*lane, w.pid, it->pid);
               if (user && currentForeground() != user) forceForeground(user);
             }
           }

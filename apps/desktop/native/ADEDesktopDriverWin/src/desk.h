@@ -7,6 +7,7 @@
 
 #include "common.h"
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@ std::wstring appNameForExe(const std::wstring& exePath);
 DWORD parentProcessId(DWORD pid);
 // The pid and every descendant alive now.
 std::set<DWORD> processTree(DWORD root);
+std::map<DWORD, FILETIME> processTreeIdentities(DWORD root, const FILETIME& expectedRoot);
 FILETIME processCreationTime(DWORD pid);
 
 struct LaunchResult {

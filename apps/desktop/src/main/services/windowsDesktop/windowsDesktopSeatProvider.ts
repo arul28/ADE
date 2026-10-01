@@ -8,10 +8,10 @@
  * `seatMode` + consent fields on `display.create`.
  *
  * The private create is the one call that can take a long time: the helper
- * raises the interactive Windows sign-in prompt (no saved password in v1,
+ * raises the interactive Windows sign-in prompt (a native saved-password flow,
  * decided 2026-09-30) and the call resolves only when that prompt is answered
  * or refused. `PRIVATE_SIGN_IN_TIMEOUT_MS` is the ceiling the task fixed at
- * 120 seconds, so a helper that never answers cannot wedge `start` forever.
+ * 160 seconds, so a helper that never answers cannot wedge `start` forever.
  */
 
 import {

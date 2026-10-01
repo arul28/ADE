@@ -209,7 +209,10 @@ export function createSeatProvider(
         ? reply.releasedWindowIds.filter((id): id is number => typeof id === "number")
         : [args.windowId];
       const handedOverPid = typeof reply.handedOverPid === "number" ? reply.handedOverPid : null;
-      return { releasedWindowIds, handedOverPid };
+      const handedOverPids = Array.isArray(reply.handedOverPids)
+        ? reply.handedOverPids.filter((pid): pid is number => typeof pid === "number")
+        : undefined;
+      return { releasedWindowIds, handedOverPid, ...(handedOverPids ? { handedOverPids } : {}) };
     },
 
     launch: (args) => request(MAC_DESKTOP_DRIVER_OPS.launch, {

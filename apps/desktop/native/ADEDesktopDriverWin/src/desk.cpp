@@ -187,33 +187,44 @@ DWORD parentProcessId(DWORD pid) {
   return parent;
 }
 
-std::set<DWORD> processTree(DWORD root) {
-  std::set<DWORD> tree;
-  if (!root) return tree;
-  tree.insert(root);
+std::map<DWORD, FILETIME> processTreeIdentities(DWORD root, const FILETIME& expectedRoot) {
+  std::map<DWORD, FILETIME> tree;
+  FILETIME current = processCreationTime(root);
+  if (!root || (!expectedRoot.dwLowDateTime && !expectedRoot.dwHighDateTime) ||
+      CompareFileTime(&current, &expectedRoot) != 0) return tree;
+  tree[root] = expectedRoot;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE) return tree;
-  std::vector<std::pair<DWORD, DWORD>> pairs;
+  struct Entry { DWORD pid; DWORD parent; FILETIME created; };
+  std::vector<Entry> entries;
   PROCESSENTRY32W pe = {sizeof(pe)};
   for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
-    pairs.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID);
+    FILETIME created = processCreationTime(pe.th32ProcessID);
+    // Reject a recycled snapshot PID whose current parent is different.
+    if (parentProcessId(pe.th32ProcessID) == pe.th32ParentProcessID)
+      entries.push_back({pe.th32ProcessID, pe.th32ParentProcessID, created});
   }
   CloseHandle(snap);
-  // Parent pids are reused on Windows; a child must also be younger than its
-  // parent to count, or a recycled pid would adopt unrelated processes.
   bool grew = true;
   while (grew) {
     grew = false;
-    for (auto& [pid, parent] : pairs) {
-      if (tree.count(pid) || !tree.count(parent)) continue;
-      FILETIME c = processCreationTime(pid);
-      FILETIME p = processCreationTime(parent);
-      if (CompareFileTime(&c, &p) < 0) continue;
-      tree.insert(pid);
+    for (const auto& entry : entries) {
+      if (tree.count(entry.pid) || !tree.count(entry.parent)) continue;
+      if ((!entry.created.dwLowDateTime && !entry.created.dwHighDateTime) ||
+          CompareFileTime(&entry.created, &tree.at(entry.parent)) < 0) continue;
+      tree[entry.pid] = entry.created;
       grew = true;
     }
   }
+  current = processCreationTime(root);
+  if (CompareFileTime(&current, &expectedRoot) != 0) tree.clear();
   return tree;
+}
+
+std::set<DWORD> processTree(DWORD root) {
+  std::set<DWORD> result;
+  for (const auto& entry : processTreeIdentities(root, processCreationTime(root))) result.insert(entry.first);
+  return result;
 }
 
 FILETIME processCreationTime(DWORD pid) {

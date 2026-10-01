@@ -4,8 +4,7 @@
 // The Windows SDK ships no header for the Remote Desktop control and the
 // Build Tools ship no ATL, so the control is hosted with a minimal OLE site
 // written here and driven through late-bound IDispatch by property name. The
-// call order is the one the spike proved (docs/plans/windows-desktop.md,
-// "Spike results"): `ConnectToChildSession` first, then `Server =
+// call order is the one the Windows spike proved: `ConnectToChildSession` first, then `Server =
 // "localhost"`, then CredSSP on. Server first, or no CredSSP, fails with
 // E_INVALIDARG.
 //

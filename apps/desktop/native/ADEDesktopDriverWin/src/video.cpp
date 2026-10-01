@@ -287,6 +287,22 @@ bool H264Encoder::drain(const std::function<void(const std::vector<uint8_t>&, bo
 // ---------------------------------------------------------------------------
 
 namespace {
+// Non-blocking writes have one record-wide deadline. A stalled local reader
+// is disconnected rather than retaining the media mutex and blocking Stop.
+bool sendRecord(SOCKET socket, const std::vector<uint8_t>& bytes, int64_t deadline) {
+  size_t offset = 0;
+  while (offset < bytes.size() && nowMs() < deadline) {
+    int sent = send(socket, reinterpret_cast<const char*>(bytes.data() + offset), static_cast<int>(bytes.size() - offset), 0);
+    if (sent > 0) { offset += sent; continue; }
+    if (sent == 0 || WSAGetLastError() != WSAEWOULDBLOCK) return false;
+    fd_set writable; FD_ZERO(&writable); FD_SET(socket, &writable);
+    auto remaining = std::max<int64_t>(0, deadline - nowMs());
+    timeval timeout{0, static_cast<long>(std::min<int64_t>(remaining, 25) * 1000)};
+    if (select(0, nullptr, &writable, nullptr, &timeout) == SOCKET_ERROR) return false;
+  }
+  return offset == bytes.size();
+}
+
 bool ensureWinsock() {
   static std::once_flag once;
   static bool ok = false;
@@ -350,15 +366,18 @@ void StreamByteServer::acceptLoop() {
     }
     int one = 1;
     setsockopt(c, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
-    std::vector<uint8_t> config;
+    u_long nonblocking = 1;
+    if (ioctlsocket(c, FIONBIO, &nonblocking) != 0) { closesocket(c); continue; }
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (!running_ || clients_.size() >= 8 ||
+          (!configRecord_.empty() && !sendRecord(c, configRecord_, nowMs() + 100))) {
+        closesocket(c); continue;
+      }
+      // Publish only after the complete config record. All record writers use
+      // this same lock, so no frame can precede or interleave with config.
       clients_.push_back(static_cast<uintptr_t>(c));
-      config = configRecord_;
     }
-    // A reader that attaches mid-stream needs the codec string before it can
-    // configure its decoder; the forced keyframe carries the parameter sets.
-    if (!config.empty()) send(c, reinterpret_cast<const char*>(config.data()), static_cast<int>(config.size()), 0);
     if (onClientAttached_) onClientAttached_();
   }
 }
@@ -373,39 +392,24 @@ void StreamByteServer::stop() {
 }
 
 void StreamByteServer::setConfig(const std::string& codec) {
-  std::vector<uint8_t> rec = record(1, false, reinterpret_cast<const uint8_t*>(codec.data()), codec.size());
-  std::vector<uintptr_t> targets;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (rec == configRecord_) return;
-    configRecord_ = rec;
-    targets = clients_;
+  auto rec = record(1, false, reinterpret_cast<const uint8_t*>(codec.data()), codec.size());
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (rec == configRecord_) return;
+  configRecord_ = rec;
+  for (auto it = clients_.begin(); it != clients_.end();) {
+    if (!sendRecord(static_cast<SOCKET>(*it), rec, nowMs() + 250)) {
+      closesocket(static_cast<SOCKET>(*it)); it = clients_.erase(it);
+    } else ++it;
   }
-  for (auto c : targets) send(static_cast<SOCKET>(c), reinterpret_cast<const char*>(rec.data()), static_cast<int>(rec.size()), 0);
 }
 
 void StreamByteServer::broadcast(uint8_t type, bool keyframe, const std::vector<uint8_t>& payload) {
-  std::vector<uint8_t> rec = record(type, keyframe, payload.data(), payload.size());
+  auto rec = record(type, keyframe, payload.data(), payload.size());
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto it = clients_.begin(); it != clients_.end();) {
-    const char* p = reinterpret_cast<const char*>(rec.data());
-    int left = static_cast<int>(rec.size());
-    bool ok = true;
-    while (left > 0) {
-      int n = send(static_cast<SOCKET>(*it), p, left, 0);
-      if (n <= 0) {
-        ok = false;
-        break;
-      }
-      p += n;
-      left -= n;
-    }
-    if (!ok) {
-      closesocket(static_cast<SOCKET>(*it));
-      it = clients_.erase(it);
-    } else {
-      ++it;
-    }
+    if (!sendRecord(static_cast<SOCKET>(*it), rec, nowMs() + 250)) {
+      closesocket(static_cast<SOCKET>(*it)); it = clients_.erase(it);
+    } else ++it;
   }
 }
 

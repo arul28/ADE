@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { Desktop, Lock, Monitor, Warning } from "@phosphor-icons/react";
 
 import { confirmDialog } from "../ui/dialog";
@@ -30,10 +31,12 @@ export function WindowsDesktopStateCard({
   laneName,
   windows,
   onChanged,
+  runtimePin,
 }: {
   laneId: string;
   laneName: string | null | undefined;
   windows: WindowsDesktopStatus;
+  runtimePin?: OpenProjectBinding | null;
   /** Re-read the status after an action. */
   onChanged: () => void;
 }) {
@@ -101,7 +104,7 @@ export function WindowsDesktopStateCard({
               data-testid="windows-desktop-consent-accept"
               className={WORK_TOOL_PRIMARY_BUTTON}
               disabled={busy}
-              onClick={() => void run(() => api.useSharedDesktop({ laneId }))}
+              onClick={() => void run(() => api.useSharedDesktop({ laneId }, runtimePin))}
             >
               <Monitor size={14} />
               Use main desktop
@@ -165,7 +168,7 @@ export function WindowsDesktopStateCard({
                   confirmLabel: "Take over",
                 });
                 if (!confirmed) return;
-                await run(() => api.takeoverWindows({ laneId }));
+                await run(() => api.takeoverWindows({ laneId }, runtimePin));
               })()}
             >
               Take over
@@ -200,7 +203,7 @@ export function WindowsDesktopStateCard({
               data-testid="windows-desktop-setup-run"
               className={WORK_TOOL_PRIMARY_BUTTON}
               disabled={busy}
-              onClick={() => void run(() => api.setupWindows({ allowPrompt: true }))}
+              onClick={() => void run(() => api.setupWindows({ allowPrompt: true }, runtimePin))}
             >
               Set up
             </button>
@@ -257,7 +260,7 @@ export function WindowsDesktopStateCard({
             data-testid="windows-desktop-start"
             className={WORK_TOOL_PRIMARY_BUTTON}
             disabled={busy}
-            onClick={() => void run(() => api.start({ laneId, seatMode: "private" }))}
+            onClick={() => void run(() => api.start({ laneId, seatMode: "private" }, runtimePin))}
           >
             <Monitor size={14} />
             Start private screen
@@ -266,7 +269,7 @@ export function WindowsDesktopStateCard({
             type="button"
             className={MAC_DESKTOP_SECONDARY_BUTTON}
             disabled={busy}
-            onClick={() => void run(() => api.setupWindows({ allowPrompt: true, ...(windows.passwordSaved ? { forgetPassword: true } : { savePassword: true }) }))}
+            onClick={() => void run(() => api.setupWindows({ allowPrompt: true, ...(windows.passwordSaved ? { forgetPassword: true } : { savePassword: true }) }, runtimePin))}
           >
             {windows.passwordSaved ? "Forget saved password" : "Save Windows password"}
           </button>

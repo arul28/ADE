@@ -934,13 +934,12 @@ function pruneWindowsRunValues(
       message: `Unable to list the ADE per-user startup entries: ${serviceManagerResultText(query) || "reg query failed."}`,
     };
   }
-  const prefix = windowsRunValuePrefix(args.serviceName);
   const removed: string[] = [];
   for (const value of parseWindowsRunKeyValues(query.stdout)) {
     if (args.keepValueName && value.name === args.keepValueName) continue;
-    const matchesChannel = value.name.startsWith(prefix);
-    const matchesLauncher = windowsRunCommandNamesLauncher(value.command, args.launcherPath);
-    if (!matchesChannel && !matchesLauncher) continue;
+    // Channel labels are not ownership: distinct custom services share one.
+    // Domain/SSH duplicate hashes still name the same canonical launcher.
+    if (!windowsRunCommandNamesLauncher(value.command, args.launcherPath)) continue;
     const remove = run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(value.name), {
       encoding: "utf8",
       windowsHide: true,
@@ -996,8 +995,22 @@ function stopWindowsSupervisorsByCommandLine(
     "    try { $process = [System.Diagnostics.Process]::GetProcessById([int]$row.ProcessId); $handle = $process.Handle } catch [ArgumentException] { continue }",
     "    if ($process.HasExited) { continue }",
     "    if ([Math]::Abs(($process.StartTime.ToUniversalTime() - $row.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { throw 'Supervisor identity changed during repair.' }",
-    "    $process.Kill()",
-    "    if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
+    "    $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()",
+    "    try {",
+    "      foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
+    "        $childOwner = Invoke-CimMethod -InputObject $childRow -MethodName GetOwnerSid",
+    "        if ($childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
+    "        $child = $null",
+    "        try {",
+    "          $child = [System.Diagnostics.Process]::GetProcessById([int]$childRow.ProcessId); $childHandle = $child.Handle",
+    "          if ($child.HasExited -or $child.StartTime.ToUniversalTime() -lt $process.StartTime.ToUniversalTime() -or [Math]::Abs(($child.StartTime.ToUniversalTime() - $childRow.CreationDate.ToUniversalTime()).TotalMilliseconds) -gt 1000) { $child.Dispose(); $child = $null; continue }",
+    "          $children.Add($child); $child = $null",
+    "        } catch [ArgumentException] { } finally { if ($null -ne $child) { $child.Dispose() } }",
+    "      }",
+    "      $process.Kill()",
+    "      if (-not $process.WaitForExit(5000)) { throw 'Existing ADE supervisor did not stop.' }",
+    "      foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(5000)) { throw 'Existing ADE brain did not stop.' } } }",
+    "    } finally { foreach ($child in $children) { $child.Dispose() } }",
     "    $removed++",
     "  } finally { if ($null -ne $process) { $process.Dispose() } }",
     "}",

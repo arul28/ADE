@@ -119,7 +119,8 @@ Windows failures you will see and what they mean:
 | `WINDOWS_DESKTOP_LOCKED` | The PC is locked. Wait; unlock resumes it. |
 | `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` | ADE is not running on this PC's desktop (e.g. over SSH), so the private seat is unavailable. |
 
-A local user can choose **Save Windows password** in the pane after setup. The
+The user can approve setup, takeover, and shared-desktop use from a trusted ADE
+client on any device. They can choose **Save Windows password** after setup. The
 native Windows dialog verifies sign-in and stores it in Windows Credential
 Manager on that PC. Never ask for the password in chat or put it in a command.
 A rejected saved password is forgotten; ask the user to save the new one.

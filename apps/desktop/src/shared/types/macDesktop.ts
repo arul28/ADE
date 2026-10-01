@@ -1214,7 +1214,7 @@ export type WindowsDesktopStatus = {
   locked: boolean;
   childSessionsEnabled: boolean;
   remoteDesktopAllowed: boolean;
-  /** Always false in v1: no saved password. Kept so the field has one home. */
+  /** A credential saved by the local user in Windows Credential Manager. */
   passwordSaved: boolean;
   /** The physical console's session id, or null when it cannot be read. */
   consoleSessionId: number | null;
@@ -1259,9 +1259,9 @@ export type WindowsDesktopPrivateUnavailableReason =
 /** The setup step an agent cannot run: it needs the user's admin prompt. */
 export type WindowsDesktopSetupArgs = {
   /**
-   * Passed true only when a local user clicked the wizard's first step. The
-   * helper refuses to raise the Windows admin/Remote Desktop changes otherwise,
-   * exactly as `requestPermission` refuses an agent's prompt.
+   * Passed true after approval from a trusted CTO client on any device.
+   * The helper refuses Windows admin/Remote Desktop changes otherwise;
+   * native UAC and password entry still occur on the Windows host.
    */
   allowPrompt: boolean;
   /** Opens a native password dialog and verifies a private sign-in before saving. */
@@ -1359,7 +1359,7 @@ export type DesktopSeatProvider = {
    * quits on stop. With `laneId`, the driver refuses a window another lane
    * holds.
    */
-  unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
+  unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null; handedOverPids?: number[] }>;
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
   /** `app.quit`: apps the lane opened, released ones included. */
   quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;

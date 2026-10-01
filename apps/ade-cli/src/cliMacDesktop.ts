@@ -320,6 +320,10 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     if (seatMode != null && seatMode !== "private" && seatMode !== "shared") {
       throw new CliUsageError("mac-desktop start: --seat-mode must be private or shared.");
     }
+    if (seatMode === "shared") {
+      if (!readFlag(args, ["--consent"])) throw new CliUsageError("Using the main desktop requires --consent from the user.");
+      return desktopAction("mac-desktop start", "useSharedDesktop", laneClaim(), "mac-desktop-status");
+    }
     return desktopAction("mac-desktop start", "start", {
       ...laneClaim(),
       resolution: readValue(args, ["--resolution", "--size"]),

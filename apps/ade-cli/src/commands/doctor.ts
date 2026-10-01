@@ -779,7 +779,11 @@ function windowsDesktopRows(
       ? "one supervisor and one startup entry"
       : `${probe.supervisorCount ?? "?"} supervisor${probe.supervisorCount === 1 ? "" : "s"}`
         + ` · ${probe.runValueCount ?? "?"} startup ${probe.runValueCount === 1 ? "entry" : "entries"}`
-        + " · Run `ade brain restart` to remove the duplicate.",
+        + (probe.supervisorCount == null || probe.runValueCount == null
+          ? " · Supervisor or startup entry could not be checked."
+          : probe.supervisorCount > 1 || probe.runValueCount > 1
+            ? " · Run `ade brain restart` to remove the duplicate."
+            : " · Run `ade brain restart` to restore the missing supervisor or startup entry."),
   });
   return rows;
 }

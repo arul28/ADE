@@ -8,6 +8,10 @@ if (process.platform !== "win32") {
   console.log("[windows-desktop-driver] Skipping outside Windows.");
   process.exit(0);
 }
+if (process.env.ADE_SKIP_CAPTURE_HELPER_BUILD === "1") {
+  console.log("[windows-desktop-driver] Skipping local native helper build (ADE_SKIP_CAPTURE_HELPER_BUILD=1).");
+  process.exit(0);
+}
 // UI Automation and Media Foundation require MSVC and the Windows SDK.
 // Import the installed Build Tools environment when npm runs from an ordinary
 // shell (including the release runner), rather than requiring a manual prompt.

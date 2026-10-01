@@ -212,12 +212,20 @@ describe("Windows seat through the shared desktop service", () => {
   });
 
   it.each([
-    [true, false], [false, true], [false, false],
-  ])("requires local consent for a shared start (local=%s consent=%s)", async (local, consent) => {
+    [true, false], [false, true], [false, false], [true, true],
+  ])("requires explicit consent from either client location (local=%s consent=%s)", async (local, consent) => {
     const { service } = windowsService(readyHost, local);
     try {
-      await expect(service.start({ laneId: "windows-lane", seatMode: "shared", sharedDesktopConsent: consent })).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
-      expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      const start = service.start({ laneId: "windows-lane", seatMode: "shared", sharedDesktopConsent: consent });
+      if (consent) {
+        await expect(start).resolves.toMatchObject({ display: { laneId: "windows-lane" } });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display?.laneId).toBe("windows-lane");
+        await service.stop({ laneId: "windows-lane" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      } else {
+        await expect(start).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      }
     } finally { service.dispose(); }
   });
 });

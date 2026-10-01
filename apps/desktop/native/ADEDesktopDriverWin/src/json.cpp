@@ -237,7 +237,7 @@ void Json::dumpTo(std::string& out) const {
         break;
       }
       char buf[40];
-      std::snprintf(buf, sizeof(buf), "%.6g", d_);
+      std::snprintf(buf, sizeof(buf), "%.17g", d_);
       out += buf;
       break;
     }

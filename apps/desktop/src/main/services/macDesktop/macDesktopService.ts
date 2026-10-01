@@ -1020,11 +1020,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
             break;
         }
       } else {
-        // Mode B needs the user's yes, and a user at this host. The
-        // `useSharedDesktop` action is CTO-only; this is the service-side half
-        // so a direct caller cannot skip the action layer.
-        const hostIsLocal = deps.hostIsLocal ? deps.hostIsLocal() : true;
-        if (args.sharedDesktopConsent !== true || !hostIsLocal) {
+        // Trusted CTO clients may approve from any device. The dedicated
+        // action supplies consent; session-bound agents cannot call it.
+        if (args.sharedDesktopConsent !== true) {
           throw new MacDesktopError(
             WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
             "Using your main Windows desktop needs the user's consent first.",
@@ -1256,12 +1254,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     /**
      * Windows only: the wizard's first step.
      *
-     * The caller's `allowPrompt` is necessary but not sufficient: the service
-     * also requires the requesting desktop to be on this host (the same gate
-     * `requestPermission` uses), and the `mac_desktop.setupWindows` action is
-     * CTO-only, so a session-bound agent cannot self-authorize an admin prompt
-     * by passing `allowPrompt: true`. The native guard checks only the boolean,
-     * so this is the boundary that makes the boolean trustworthy.
+     * Trusted CTO clients may approve from any device. The action is CTO-only,
+     * so session-bound agents cannot self-authorize a prompt. UAC and password
+     * entry still happen in native dialogs on the Windows host.
      */
     async setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult> {
       assertSupported();
@@ -1271,8 +1266,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           "Windows Desktop setup is only available on a Windows runtime host.",
         );
       }
-      const hostIsLocal = deps.hostIsLocal ? deps.hostIsLocal() : true;
-      const allowPrompt = args.allowPrompt === true && hostIsLocal;
+      const allowPrompt = args.allowPrompt === true;
       const provider = await driverLifecycle.ensureProvider();
       if (!provider.setupWindows) {
         throw new MacDesktopError(
@@ -1295,8 +1289,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
      * lane holds it. Signs the old holder out (a clean slate) and starts a
      * fresh private seat for this lane.
      *
-     * Not an agent's move: the `mac_desktop.takeoverWindows` action is CTO-only,
-     * and the service refuses when the requesting desktop is not on this host.
+     * The CTO-only action accepts approval from a trusted client on any device;
+     * session-bound agents cannot take another lane's screen.
      */
     async takeoverWindowsDesktop(args: WindowsDesktopTakeoverArgs): Promise<MacDesktopStatus> {
       assertSupported();
@@ -1304,12 +1298,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         throw new MacDesktopError(
           "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
           "Windows Desktop takeover is only available on a Windows runtime host.",
-        );
-      }
-      if (deps.hostIsLocal && !deps.hostIsLocal()) {
-        throw new MacDesktopError(
-          WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
-          "Taking the private Windows screen needs the user at this PC.",
         );
       }
       const laneId = args.laneId.trim();
@@ -1320,6 +1308,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // Clean slate: the old holder's display is destroyed before the new one
         // is created, so nothing of the previous lane carries over.
         await runLifecycle(holder, "stop", () => destroyDisplay(holder, "stopped"));
+        if (lastWindowsDesktopStatus?.heldByLaneId === holder) {
+          lastWindowsDesktopStatus = {
+            ...lastWindowsDesktopStatus,
+            heldByLaneId: null, heldByLaneName: null, childSessionId: null,
+            state: lastWindowsDesktopStatus.locked ? "locked" : "ready",
+            privateAvailable: !lastWindowsDesktopStatus.locked,
+            privateUnavailableReason: lastWindowsDesktopStatus.locked ? "locked" : null,
+          };
+        }
       }
       return await api.start({ laneId, seatMode: "private", chatSessionId: args.chatSessionId ?? null });
     },

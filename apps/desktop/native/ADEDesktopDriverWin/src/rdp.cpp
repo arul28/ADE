@@ -28,7 +28,7 @@ IMsTscNonScriptable : public IUnknown {
 
 namespace {
 
-// MsRdpClient10NotSafeForScripting, the client the spike used.
+// MsRdpClient9NotSafeForScripting, the client the spike used.
 const CLSID kRdpClsid = {0x8B918B82, 0x7985, 0x4C24, {0x89, 0xDF, 0xC3, 0x3A, 0xD2, 0xBB, 0xFB, 0xCD}};
 
 HRESULT dispId(IDispatch* d, const wchar_t* name, DISPID* id) {
@@ -46,6 +46,7 @@ HRESULT dispPut(IDispatch* d, const wchar_t* name, VARIANT value) {
 }
 
 HRESULT dispGet(IDispatch* d, const wchar_t* name, VARIANT* out) {
+  VariantInit(out);
   DISPID id;
   HRESULT hr = dispId(d, name, &id);
   if (FAILED(hr)) return hr;

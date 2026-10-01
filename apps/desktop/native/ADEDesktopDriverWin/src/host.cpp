@@ -14,6 +14,8 @@
 #include <future>
 #include <condition_variable>
 #include <deque>
+#include <map>
+#include <optional>
 
 namespace ade {
 namespace {
@@ -94,7 +96,8 @@ class Host {
   }
   Json status() {
     std::lock_guard<std::mutex> lock(statusMutex_);
-    Json result = cachedStatus_;
+    Json result = Json::parse(cachedStatus_.dump());
+    if (!result["holderLaneId"].str().empty() && (childDisconnected_ || rdp_.state() != RdpSession::State::SignedIn)) result["state"] = "unavailable";
     const bool locked = consoleLocked();
     result["locked"] = locked;
     result["childSessionsEnabled"] = childSessionsEnabled();
@@ -112,6 +115,10 @@ class Host {
     result["displays"] = cachedLanes_;
     return result;
   }
+  void replyBusy(const Json& req) {
+    output_.write(errorReply(req["id"].str(), {code::kDriverUnavailable, "Windows Desktop is busy; retry the request.", Json()}));
+  }
+
   void replyStatus(const Json& req) {
     output_.write(okReply(req["id"].str(), req["op"].str() == "ping" ? ping() : status()));
   }
@@ -171,7 +178,7 @@ class Host {
       if (op == "display.destroy") {
         Json result;
         try { result = childRequest(req, 5'000); }
-        catch (const std::exception&) {
+        catch (...) {
           // A dead child cannot answer, but successful session sign-out still
           // fulfils Stop and does not strand an artificial service display.
           result = Json::Object{{"destroyed", true}, {"releasedWindows", 0}, {"quitApps", Json::array()}, {"appsLeftOpen", Json::array()}};
@@ -205,7 +212,9 @@ class Host {
 
   void stop() {
     std::lock_guard<std::mutex> lock(requestMutex_);
-    try { stopPrivate(); } catch (const std::exception& e) { logLine(e.what()); }
+    try { stopPrivate(); }
+    catch (const DriverError& e) { logLine(e.message); }
+    catch (const std::exception& e) { logLine(e.what()); }
     shared_.shutdown();
   }
   void updateAwake() {
@@ -218,7 +227,7 @@ class Host {
       output_.write(eventLine("windows-state-changed", Json::Object{{"locked", locked}}));
     }
   }
-  void cancel() { stopping_ = true; shared_.cancelRequests(); }
+  void cancel() { stopping_ = true; childReplyReady_.notify_all(); shared_.cancelRequests(); }
 
  private:
   void setup() {
@@ -366,6 +375,7 @@ class Host {
       holder_ = requireString(req, "laneId");
       holderName_ = req["name"].str();
       privateActive_ = true;
+      startChildReader();
       DeleteFileW(launchFile_.c_str());
       ui([&] { ShowWindow(window_, SW_HIDE); });
     } catch (...) {
@@ -383,18 +393,45 @@ class Host {
     return isoFromFileTime(expiry);
   }
 
+  void startChildReader() {
+    childDisconnected_ = false;
+    childReadRun_ = true;
+    childReader_ = std::thread([this] {
+      try {
+      while (childReadRun_ && !stopping_) {
+        std::string line; bool disconnected = false;
+        if (!readChildLine(line, 250, &disconnected)) {
+          if (!disconnected) continue;
+          break;
+        }
+        try {
+          auto reply = Json::parse(line);
+          if (reply.has("event")) { output_.write(reply); continue; }
+          std::lock_guard<std::mutex> lock(childReplyMutex_);
+          auto pending = childReplies_.find(reply["id"].str());
+          if (pending != childReplies_.end()) { pending->second = std::move(reply); childReplyReady_.notify_all(); }
+        } catch (const std::exception&) { logLine("invalid private screen reply"); break; }
+      }
+      } catch (const DriverError& e) { logLine(e.message); }
+      catch (const std::exception& e) { logLine(e.what()); }
+      childDisconnected_ = true;
+      childReplyReady_.notify_all();
+    });
+  }
+
   Json childRequest(const Json& req, int64_t timeout = 130'000) {
-    if (!childOutput_ || !childOutput_->write(req)) fail(code::kDriverUnavailable, "The private screen disconnected.");
-    std::string line;
-    auto deadline = nowMs() + timeout;
-    while (readChildLine(line, std::max<int64_t>(0, deadline - nowMs()))) {
-      Json reply = Json::parse(line);
-      if (reply.has("event")) { output_.write(reply); continue; }
-      if (reply["id"].str() != req["id"].str()) continue;
-      if (!reply["ok"].asBool()) throw DriverError{reply["error"]["code"].str(code::kInternalError), reply["error"]["message"].str(), reply["error"]};
-      return reply["result"];
-    }
-    fail(code::kDriverUnavailable, "The private screen disconnected.");
+    const auto id = requireString(req, "id");
+    std::unique_lock<std::mutex> lock(childReplyMutex_);
+    childReplies_[id] = std::nullopt;
+    struct Pending { std::map<std::string, std::optional<Json>>& replies; std::string id; ~Pending() { replies.erase(id); } } pending{childReplies_, id};
+    if (childDisconnected_ || !childOutput_ || !childOutput_->write(req)) fail(code::kDriverUnavailable, "The private screen disconnected.");
+    bool answered = childReplyReady_.wait_for(lock, std::chrono::milliseconds(timeout), [&] {
+      return stopping_ || childDisconnected_ || childReplies_[id].has_value();
+    });
+    if (!answered || !childReplies_[id]) fail(code::kDriverUnavailable, "The private screen disconnected or did not answer.");
+    const Json reply = *childReplies_[id];
+    if (!reply["ok"].asBool()) throw DriverError{reply["error"]["code"].str(code::kInternalError), reply["error"]["message"].str(), reply["error"]};
+    return reply["result"];
   }
 
   void connectPipe(HANDLE pipe, int64_t deadline) {
@@ -407,7 +444,7 @@ class Host {
     fail(code::kDriverUnavailable, "The private screen driver did not connect.");
   }
 
-  bool readChildLine(std::string& line, int64_t timeout) {
+  bool readChildLine(std::string& line, int64_t timeout, bool* disconnected = nullptr) {
     auto deadline = nowMs() + timeout;
     while (!stopping_ && nowMs() < deadline) {
       auto newline = childBuffer_.find('\n');
@@ -415,10 +452,10 @@ class Host {
         line = childBuffer_.substr(0, newline); childBuffer_.erase(0, newline + 1); return true;
       }
       DWORD available = 0;
-      if (!PeekNamedPipe(fromChild_, nullptr, 0, nullptr, &available, nullptr)) return false;
+      if (!PeekNamedPipe(fromChild_, nullptr, 0, nullptr, &available, nullptr)) { if (disconnected) *disconnected = true; return false; }
       if (!available) { Sleep(10); continue; }
       char bytes[8192]; DWORD read = 0;
-      if (!ReadFile(fromChild_, bytes, std::min<DWORD>(available, sizeof(bytes)), &read, nullptr)) return false;
+      if (!ReadFile(fromChild_, bytes, std::min<DWORD>(available, sizeof(bytes)), &read, nullptr)) { if (disconnected) *disconnected = true; return false; }
       childBuffer_.append(bytes, read);
       if (childBuffer_.size() > 8 * 1024 * 1024) fail(code::kProtocolError, "Private screen reply exceeded the wire limit.");
     }
@@ -428,6 +465,8 @@ class Host {
   void stopPrivate() {
     if (!launchFile_.empty()) DeleteFileW(launchFile_.c_str());
     if (childOutput_) childOutput_->write(Json::Object{{"id", "shutdown"}, {"op", "child.quit"}});
+    childReadRun_ = false;
+    if (childReader_.joinable()) childReader_.join();
     childOutput_.reset(); childBuffer_.clear();
     if (toChild_ != INVALID_HANDLE_VALUE) { CloseHandle(toChild_); toChild_ = INVALID_HANDLE_VALUE; }
     if (fromChild_ != INVALID_HANDLE_VALUE) { CloseHandle(fromChild_); fromChild_ = INVALID_HANDLE_VALUE; }
@@ -453,6 +492,11 @@ class Host {
   HANDLE toChild_ = INVALID_HANDLE_VALUE, fromChild_ = INVALID_HANDLE_VALUE;
   std::unique_ptr<LineWriter> childOutput_;
   std::string childBuffer_;
+  std::thread childReader_;
+  std::atomic<bool> childReadRun_{false}, childDisconnected_{false};
+  std::mutex childReplyMutex_;
+  std::condition_variable childReplyReady_;
+  std::map<std::string, std::optional<Json>> childReplies_;
   std::atomic<int64_t> activeUntil_{0};
   std::atomic<bool> stopping_{false};
   std::atomic<bool> executing_{false}, recording_{false}, privateActive_{false};
@@ -493,7 +537,7 @@ int runHost(const std::wstring& home) {
         if (!req["id"].str().empty()) {
           if (req["op"].str() == "windows.status" || req["op"].str() == "ping") { host.replyStatus(req); continue; }
           std::lock_guard<std::mutex> lock(queueMutex);
-          if (requests.size() >= 128) break;
+          if (requests.size() >= 128) { host.replyBusy(req); continue; }
           requests.push_back(req); queued.notify_one();
         }
       } catch (const std::exception&) { logLine("invalid screen host request"); }
