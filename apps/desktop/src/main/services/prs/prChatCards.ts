@@ -558,7 +558,11 @@ export async function emitPrCardsForChange(args: {
   const merged = change.previousState !== "merged" && pr.state === "merged";
   const stackSiblings = args.relatedPrs ? selectStackSiblings(args.relatedPrs, pr) : [];
   const stackLayers = stackSiblings.length > 0 ? stackSiblings : [pr];
-  const stackLanded = merged && pr.stack != null && isGithubStackFullyLanded(stackLayers);
+  // `relatedPrs` is the LOCAL PR catalog, so an untracked stack member is simply
+  // absent and a lone merged PR would read as a fully-landed stack. Trust the
+  // episode only when the local inventory covers GitHub's reported stack size.
+  const stackInventoryComplete = pr.stack != null && stackLayers.length === pr.stack.size;
+  const stackLanded = merged && stackInventoryComplete && isGithubStackFullyLanded(stackLayers);
 
   if (
     !checksChanged
@@ -602,7 +606,18 @@ export async function emitPrCardsForChange(args: {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
   }
   await resolveById(stackLinkedIds);
-  const stackSessions = selectPrCardSessions([...listedById.values()], [...stackLinkedIds]);
+  // When no chat has an explicit stack edge, `selectPrCardSessions` falls back
+  // to the most recent eligible lane chat — but a chat that explicitly unlinked
+  // every member must not receive the stack-land card either.
+  const stackDismissedIds = new Set<string>();
+  for (const layer of stackLayers) {
+    for (const dismissed of layer.dismissedChatSessionIds ?? []) {
+      const trimmed = String(dismissed ?? "").trim();
+      if (trimmed) stackDismissedIds.add(trimmed);
+    }
+  }
+  const stackSessions = selectPrCardSessions([...listedById.values()], [...stackLinkedIds])
+    .filter((session) => stackLinkedIds.has(session.sessionId) || !stackDismissedIds.has(session.sessionId));
   if (ordinarySessions.length === 0 && !(stackLanded && stackSessions.length > 0)) return 0;
 
   const cards: AdeCardPayload[] = [];

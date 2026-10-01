@@ -1837,8 +1837,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
     $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
-    $ ade prs link-chat --pr <pr> --session <id>    Link a pull request to a chat
-    $ ade prs unlink-chat --pr <pr> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+    $ ade prs link-chat --pr <ade-pr-id> --session <id>    Link a pull request to a chat
+    $ ade prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+                                                      --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers

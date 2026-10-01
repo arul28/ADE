@@ -707,6 +707,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   // GitHub stack siblings this chat could add: offer to link the whole stack.
   // Only read when the selected PR is stacked and the chat has an identity.
   useEffect(() => {
+    setStackLinkError(null);
     if (!sessionId || !pr?.stack || typeof window.ade.prs.getStackLinkOffer !== "function") {
       setStackOffer(null);
       return;

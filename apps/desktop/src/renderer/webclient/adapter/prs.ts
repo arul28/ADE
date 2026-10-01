@@ -344,17 +344,18 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
           allowCrossLane: true,
         }, { ok: false }, false);
         if (!result.ok) {
-          let remaining = 0;
           for (const prId of [...linkedIds].reverse()) {
-            const unlinked = await call<{ ok: boolean }>("prs.unlinkChatSession", {
+            // `dismiss: false`: these were linked by this attempt, and the offer
+            // only lists siblings this chat had not unlinked, so nothing needs
+            // its tombstone restored. Match the server's failure shape.
+            await call<{ ok: boolean }>("prs.unlinkChatSession", {
               prId,
               sessionId: offer.sessionId,
               dismiss: false,
             }, { ok: false }, false);
-            if (!unlinked.ok) remaining += 1;
           }
           invalidatePrsReads();
-          return { ok: false, linked: remaining };
+          return { ok: false, linked: 0 };
         }
         linkedIds.push(sibling.prId);
       }

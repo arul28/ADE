@@ -2451,12 +2451,12 @@ final class DatabaseService {
       ? """
              ip.workflow_display_state,
              ip.cleanup_state,
-             ip.linked_group_id
+             ip.linked_group_id,
       """
       : """
              null as workflow_display_state,
              null as cleanup_state,
-             null as linked_group_id
+             null as linked_group_id,
       """
 
     // A correlated scalar subquery rather than a join: `pr_group_members` above
@@ -2479,10 +2479,10 @@ final class DatabaseService {
              (select group_concat(pcs.session_id, char(10))
                 from pull_request_chat_session_dismissals pcs
                where pcs.project_id = pr.project_id
-                 and pcs.pr_id = pr.id),
+                 and pcs.pr_id = pr.id)
       """
       : """
-             null as dismissed_chat_session_ids,
+             null as dismissed_chat_session_ids
       """
 
     let prGroupJoins = hasPrGroupContext

@@ -7697,7 +7697,11 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
+    // A PR created from a lane links its own lane's chat by default; the
+    // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
+    // internal parent-chat stack attach, not an arbitrary agent-supplied
+    // session id on create.
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
     if (args.source === "agent") {
       chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
       attachNewStackLayerToParentChats({ prId, laneId: lane.id });
@@ -12496,6 +12500,13 @@ export function createPrService({
     },
 
     unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string }>(
+        "select id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      // Refuse a bogus prId up front: otherwise the unlink would still persist a
+      // dismissal tombstone for a non-existent row.
+      if (!pr) return { ok: false };
       const ok = unlinkPrFromChatSession(args);
       if (ok) emitPrsUpdated();
       return { ok };

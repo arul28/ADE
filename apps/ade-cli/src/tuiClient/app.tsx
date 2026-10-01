@@ -11899,7 +11899,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const listedPrs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", {});
       const prSessionId = activeSession?.sessionId ?? activeSessionId ?? null;
       const scopedPrs = selectPrsForChat(
-        listedPrs as unknown as PrSummary[],
+        (Array.isArray(listedPrs) ? listedPrs : []) as unknown as PrSummary[],
         prSessionId,
         { currentBranch: activeLane?.branchRef ?? null },
       );

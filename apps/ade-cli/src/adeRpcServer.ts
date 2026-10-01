@@ -7121,8 +7121,11 @@ async function runTool(args: {
     if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
     if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
-    const sessionId = asOptionalTrimmedString(toolArgs.sessionId)
-      ?? asOptionalTrimmedString(session.identity.chatSessionId);
+    // The authenticated chat identity is authoritative: an agent must not be
+    // able to forge `sessionId` and link this PR to an unrelated chat. Only
+    // fall back to the tool argument when the caller has no chat identity.
+    const sessionId = asOptionalTrimmedString(session.identity.chatSessionId)
+      ?? asOptionalTrimmedString(toolArgs.sessionId);
     const pr = await prSvc.createFromLane({
       laneId,
       title,
