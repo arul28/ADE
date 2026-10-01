@@ -15666,11 +15666,10 @@ export function AgentChatPane({
       {steeringPendingInput ? (
         <div
           data-testid="codex-steering-question"
-          className={cn(
-            layoutVariant === "grid-tile"
-              ? "mx-auto w-full max-w-[var(--chat-column,52rem)]"
-              : "mx-3 max-w-[var(--chat-column,52rem)]",
-          )}
+          /* Same column the composer below uses. `mx-3` without `mx-auto`
+             left-pinned this card while the still-open composer stayed
+             centered, so the non-blocking steering card read as off-axis. */
+          className="mx-auto w-full max-w-[var(--chat-column,52rem)]"
         >
           <AskQuestionComposer
             key={steeringPendingInput.itemId}
