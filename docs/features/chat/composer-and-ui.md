@@ -1238,7 +1238,9 @@ chat pane mount, which happens either way.
   pending request above" hint, and Enter is a no-op (Escape cancels
   the request). Codex `item/tool/requestUserInput` with `isBlocking:
   false` is the exception: it is live steering, not a gate. The card
-  sits above the still-open composer (`data-testid="codex-steering-question"`),
+  sits above the still-open composer (`data-testid="codex-steering-question"`)
+  in the same centered `--chat-column` wrapper the composer uses, so the
+  two line up column-for-column,
   the session row stays Working with a `?` pip, and `sendMessage` is
   allowed. Missing `isBlocking` still blocks (`unwrap_or(true)` in Codex
   0.156.0). The same gate runs server-side: `agentChatService`
