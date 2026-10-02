@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildCommitGraphLayout, columnCenterX, rowCenterY } from "./commitGraphLayout";
+import {
+  assignCommitOwners,
+  branchTipKeep,
+  buildCommitGraphLayout,
+  columnCenterX,
+  contractCommitGraph,
+  rowCenterY,
+} from "./commitGraphLayout";
 import type { GitCommitSummary } from "../../../shared/types";
 
 function commit(
@@ -86,5 +93,142 @@ describe("buildCommitGraphLayout", () => {
     expect(layout.shaToRow.get("c2")).toBe(0);
     expect(rowCenterY(0)).toBeGreaterThan(0);
     expect(columnCenterX(0)).toBeGreaterThan(0);
+  });
+});
+
+describe("contractCommitGraph", () => {
+  // Newest first: d(merge of c,e) <- c <- b <- a(root); e <- b
+  const history = [
+    commit("d", ["c", "e"]),
+    commit("e", ["b"]),
+    commit("c", ["b"]),
+    commit("b", ["a"]),
+    commit("a", []),
+  ];
+
+  it("rewrites edges to the nearest kept ancestor and counts what they skip", () => {
+    const linear = [commit("w", ["x"]), commit("x", ["y"]), commit("y", ["z"]), commit("z", [])];
+    const out = contractCommitGraph(linear, (c) => c.sha === "w" || c.sha === "z");
+    expect(out.map((row) => [row.commit.sha, row.parents, row.folded])).toEqual([
+      ["w", ["z"], [2]],
+      ["z", [], []],
+    ]);
+  });
+
+  it("fans a hidden merge out to every kept ancestor", () => {
+    const out = contractCommitGraph(history, (c) => c.sha === "e" || c.sha === "c" || c.sha === "a" || c.sha === "x");
+    // d is hidden: nothing points at it. c and e both reach a through hidden b.
+    expect(out.map((row) => [row.commit.sha, row.parents])).toEqual([
+      ["e", ["a"]],
+      ["c", ["a"]],
+      ["a", []],
+    ]);
+  });
+
+  it("keeps parents outside the loaded window so the edge stays open", () => {
+    const page = [commit("p", ["q"]), commit("q", ["beyond"])];
+    const out = contractCommitGraph(page, (c) => c.sha === "p");
+    expect(out[0]?.parents).toEqual(["beyond"]);
+    const layout = buildCommitGraphLayout(out);
+    expect(layout.edges[0]?.open).toBe(true);
+  });
+
+  it.each([
+    ["everything kept", () => true, ["d", "e", "c", "b", "a"]],
+    ["branch tips only", null, ["d", "b", "a"]],
+  ])("%s", (_label, keep, expected) => {
+    const predicate = keep ?? branchTipKeep(history, new Set(["d"]), new Set());
+    expect(contractCommitGraph(history, predicate).map((row) => row.commit.sha)).toEqual(expected);
+  });
+});
+
+describe("buildCommitGraphLayout lane invariants", () => {
+  // A busy history: three branches off a trunk, one merged back, one open.
+  const busy = [
+    commit("m2", ["t3", "f2"]),
+    commit("g2", ["g1"]),
+    commit("t3", ["t2"]),
+    commit("f2", ["f1"]),
+    commit("g1", ["t1"]),
+    commit("t2", ["t1"]),
+    commit("f1", ["t1"]),
+    commit("t1", ["t0"]),
+    commit("t0", ["older"]),
+  ];
+
+  it("never runs an edge through another commit's node", () => {
+    const layout = buildCommitGraphLayout(busy);
+    const nodeAt = new Map(layout.nodes.map((n) => [`${n.rowIndex}:${n.column}`, n.sha]));
+    for (const edge of layout.edges) {
+      for (let row = edge.fromRow + 1; row < edge.toRow; row += 1) {
+        expect(nodeAt.get(`${row}:${edge.laneCol}`), `${edge.id} crosses row ${row}`).toBeUndefined();
+      }
+      if (!edge.open) expect(edge.toRow).toBeGreaterThan(edge.fromRow);
+    }
+  });
+
+  it("keeps the trunk in one column and frees branch columns when they join", () => {
+    // Two late tips below the fork reuse the columns the joined branches freed.
+    const withLateTips = [
+      ...busy.slice(0, 8),
+      commit("h1", ["t-1"]),
+      commit("h2", ["t-1"]),
+      commit("t0", ["t-1"]),
+      commit("t-1", []),
+    ];
+    const layout = buildCommitGraphLayout(withLateTips);
+    const trunk = ["m2", "t3", "t2", "t1", "t0", "t-1"];
+    expect(layout.nodes.filter((n) => trunk.includes(n.sha)).map((n) => n.column)).toEqual(trunk.map(() => 0));
+    expect(layout.columnCount).toBe(3);
+    expect(layout.edges.filter((e) => trunk.includes(e.fromSha)).every((e) => e.laneCol === 0 || e.kind === "merge")).toBe(true);
+  });
+
+  it("puts a commit in the column its children wait in", () => {
+    const layout = buildCommitGraphLayout(busy);
+    for (const edge of layout.edges.filter((e) => !e.open)) {
+      const parent = layout.nodes[edge.toRow]!;
+      expect(parent.sha).toBe(edge.toSha);
+      expect(edge.toCol).toBe(parent.column);
+    }
+    expect(layout.edges.find((e) => e.toSha === "older")?.open).toBe(true);
+  });
+});
+
+describe("assignCommitOwners", () => {
+  // main: t2 <- t1 <- t0. lane A: a2 <- a1 <- t1. lane B stacked on A: b1 <- a2.
+  const commits = [
+    commit("b1", ["a2"]),
+    commit("a2", ["a1"]),
+    commit("t2", ["t1"]),
+    commit("a1", ["t1"]),
+    commit("t1", ["t0"]),
+    commit("t0", []),
+  ];
+
+  it("gives base history to the base and each lane its own run", () => {
+    const owners = assignCommitOwners({
+      commitsNewestFirst: commits,
+      base: { key: "main", sha: "t2" },
+      // B is listed first: it must still stop where A's tip begins.
+      tips: [{ key: "B", sha: "b1" }, { key: "A", sha: "a2" }],
+    });
+    expect(Object.fromEntries(owners)).toEqual({
+      b1: "B",
+      a2: "A",
+      a1: "A",
+      t2: "main",
+      t1: "main",
+      t0: "main",
+    });
+  });
+
+  it("does not let a lane with nothing ahead claim base history", () => {
+    const owners = assignCommitOwners({
+      commitsNewestFirst: commits,
+      base: { key: "main", sha: "t2" },
+      tips: [{ key: "idle", sha: "t2" }],
+    });
+    expect(owners.get("t2")).toBe("main");
+    expect(owners.has("a1")).toBe(false);
   });
 });
