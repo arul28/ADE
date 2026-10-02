@@ -258,9 +258,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       setSurface("commits");
     }
 
+    // A URL lane that is still waiting on data (its machine has not reported,
+    // or the lane list has not loaded) is left unconsumed so this effect can
+    // hydrate it when that data arrives.
+    const laneHydrationPending =
+      machinePending || (laneFromUrl != null && !laneIsKnown && lanes.length === 0);
+
     if (cleanedUrl) {
       lastWrittenUrlRef.current = cleanedParams.toString();
       setSearchParams(cleanedParams, { replace: true });
+    } else if (!laneHydrationPending) {
+      // Record that this URL was consumed, so a later store change (a lane
+      // pick) flows store→URL instead of this effect re-hydrating the stale
+      // URL and reverting the pick.
+      lastWrittenUrlRef.current = paramsKey;
     }
 
     queueMicrotask(() => {
