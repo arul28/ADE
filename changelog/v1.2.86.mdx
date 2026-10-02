@@ -1,0 +1,35 @@
+---
+title: "v1.2.86"
+description: "Release notes for ADE v1.2.86 - October 2, 2026"
+---
+
+ADE 1.2.86 merges GitHub Stacks from ADE, links a stack to one Work card, adds thread comments on agent replies, resumes interrupted agents after an update, and gives a new theme system.
+
+## PRs
+
+- Merge a GitHub Stack from ADE with the async merge API (#1428).
+- Link a GitHub stack to a Work chat and merge it as one Work card (#1419).
+
+## Chat
+
+- Comment on a part of an agent reply, and use a better **Add to chat** (#1422).
+- A stalled turn shows a banner, and a preset's harness applies when you create a chat (#1420).
+- Claude Agent SDK 0.3.287, with human-origin interrupts (#1423).
+- OpenCode chats get the browser token and track background shells. Tool failures show honestly (#1416, #1421).
+- The Codex steering question card aligns with the composer column (#1417).
+- Thread commit chips and links to other machines open correctly (#1426).
+- Collapsed subagent rows keep the full label strip (#1427).
+
+## Work and lanes
+
+- ADE resumes interrupted agents after an update install (#1418).
+- A failed lane setup shows actions on every machine (#1424).
+- Lane deletes on Windows are fast and recoverable (#1425).
+
+## Appearance
+
+- New theme families, VS Code theme import, theme-driven code colours, and appearance per computer (#1414).
+
+## Sync
+
+- A stale viewer draft no longer blocks a project or drops every client (#1413).
