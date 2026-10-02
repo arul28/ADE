@@ -398,6 +398,20 @@ function StageLine({
   );
 }
 
+/** The full error a failed or warned stage shows under its row (live card and payload fallback). */
+function StageErrorCallout({ error, className }: { error: string; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
+        className,
+      )}
+    >
+      {error}
+    </p>
+  );
+}
+
 const StageRow = React.memo(function StageRow({
   stage,
   kind,
@@ -426,14 +440,10 @@ const StageRow = React.memo(function StageRow({
         trailing={<StageDuration stage={stage} className="min-w-[3rem] shrink-0 text-right text-fg/35" />}
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
-        <p
-          className={cn(
-            "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
-            compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]",
-          )}
-        >
-          {stage.error}
-        </p>
+        <StageErrorCallout
+          error={stage.error}
+          className={compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]"}
+        />
       ) : null}
       {stage.id === "environment" && showSteps && stage.steps?.length ? (
         <EnvironmentSteps steps={stage.steps} compact={compact} />
@@ -892,8 +902,9 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   // A failed launch this window never started — a chat opened on another
   // device. The payload card can only show a truncated row and no actions;
   // ask the chat's own machine for the launch so the live, actionable card
-  // takes over. Only failures: a running card already streams through sync.
-  const payloadFailed = (card.rows ?? []).some((row) => row.icon === "fail" || row.tone === "warning");
+  // takes over. Only a failed stage: a running card already streams through
+  // sync, and a warning (a completed launch) has no Retry to offer.
+  const payloadFailed = (card.rows ?? []).some((row) => row.icon === "fail");
   useEffect(() => {
     if (storeSnapshot || !launchId || !payloadFailed) return;
     hydrateChatLaunchFromHost(launchId, binding);
@@ -945,11 +956,7 @@ function LaneSetupCardFromPayload({
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
             <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />
-            {error ? (
-              <p className="mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-[10.5px] leading-snug text-amber-200/85">
-                {error}
-              </p>
-            ) : null}
+            {error ? <StageErrorCallout error={error} className="text-[10.5px]" /> : null}
           </li>
         );
       })}
