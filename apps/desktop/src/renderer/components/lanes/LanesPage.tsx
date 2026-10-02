@@ -104,6 +104,7 @@ import type {
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { historyCommitsPath } from "../history/historyUrlHydration";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -2474,6 +2475,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={selectDetailLane}
           onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
+          onOpenHistory={(id) => navigate(historyCommitsPath(id))}
         />
       ) : null}
       {laneContextMenu && contextMenuForeignRow?.pin ? (
@@ -2489,6 +2491,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={(realLaneId) => selectDetailLane(foreignLaneKey(contextMenuForeignRow.machineId, realLaneId))}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(contextMenuForeignRow.machineId)}
           onStartChatInLane={(realLaneId) => startChatInLane(realLaneId, { machineId: contextMenuForeignRow.machineId })}
+          onOpenHistory={(realLaneId) => navigate(historyCommitsPath(realLaneId, contextMenuForeignRow.machineId))}
           runtimePin={contextMenuForeignRow.pin}
         />
       ) : null}

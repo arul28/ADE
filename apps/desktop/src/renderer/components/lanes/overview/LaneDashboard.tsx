@@ -36,6 +36,7 @@ import {
 } from "./laneOverviewModel";
 import { Banner } from "../../ui/notice";
 import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
+import { historyCommitsPath } from "../../history/historyUrlHydration";
 import {
   laneHistorySessionsFrom,
   useLaneCommits,
@@ -390,12 +391,7 @@ export function LaneDashboard({
             revealUnavailableReason={machine ? `On ${machine.machineName}` : null}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
-            onOpenHistory={() => {
-              // History resolves a lane on another machine by machine + lane id.
-              const params = new URLSearchParams({ surface: "commits", laneId });
-              if (machine?.machineId) params.set("machineId", machine.machineId);
-              navigate(`/history?${params.toString()}`);
-            }}
+            onOpenHistory={() => navigate(historyCommitsPath(laneId, machine?.machineId))}
             onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             onSelectLane={onSelectLane}

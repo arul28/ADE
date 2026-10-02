@@ -1,5 +1,12 @@
 export type HistorySurface = "activity" | "commits";
 
+/** History's commit graph on a lane; `machineId` names a lane on another machine. */
+export function historyCommitsPath(laneId: string, machineId?: string | null): string {
+  const params = new URLSearchParams({ surface: "commits", laneId });
+  if (machineId) params.set("machineId", machineId);
+  return `/history?${params.toString()}`;
+}
+
 export function shouldHydrateCommitShaFromUrl(args: {
   commitSha: string | null;
   requestedSurface: HistorySurface | null;
