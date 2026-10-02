@@ -23,6 +23,7 @@ import {
   COMMIT_ROW_HEIGHT,
   computeDividerAfterRow,
   contractCommitGraph,
+  laneForkWaitsForStatus,
   toGraphCommits,
   type CommitGraphLayout,
   type GraphCommit,
@@ -344,7 +345,7 @@ export function CommitHistoryView({
   // Without the base tip loaded, the fork point comes from `ahead`, which is
   // not measured yet. A stale count would put the divider (and the lane's
   // colour) on the wrong rows, so both wait for the measured value.
-  const forkWaitsForStatus = statusStale && !baseTipLoaded && focusLane != null && focusLane.laneType !== "primary";
+  const forkWaitsForStatus = laneForkWaitsForStatus({ statusStale, baseTipLoaded, laneType: focusLane?.laneType });
   const owners = useMemo(() => {
     if (commits.length === 0) return new Map<string, string>();
     const baseKey = baseOwnerKey ?? `base:${baseName}`;

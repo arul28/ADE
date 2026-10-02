@@ -498,7 +498,22 @@ Status is cached for 10 s (`LANE_LIST_CACHE_TTL_MS`). The base ref used
 for ahead/behind is chosen by `shouldLaneTrackParent`: a child tracks its
 parent only when the parent is a non-primary lane; otherwise the child
 compares against its own `baseRef`. This avoids the degenerate case where
-a lane parented to primary would always show zero behind.
+a lane parented to primary would always show zero behind. A base that exists
+only as a remote-tracking branch (a clone that never checked out `main`) does
+not resolve by its short name, so the count retries once against
+`refs/remotes/origin/<base>` instead of reporting `0/0`.
+
+The renderer never treats those numbers as current on faith. The project store
+records when it last measured a lane's git status, and re-reads it when it is
+older than 30 s — after a status-less list read (which carries the previous
+numbers forward), when a project surface becomes active, and when History opens
+or its commit list reloads. Until that read lands (or if it fails) the store
+marks the status stale: the History drift pill, the Lanes overview status line,
+the sidebar rebase count, and the Work git card render it quietly rather than
+as current, and the History divider waits for a measured `ahead`. A lane whose
+worktree is missing on this machine has no measured status, so its History
+drift pill is not shown at all. A lane read through another machine's pin keeps
+that machine's own numbers and is never marked stale by this one.
 
 `LaneSummary` adds:
 

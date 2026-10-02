@@ -121,6 +121,14 @@ row. Base commits merged into the lane can sit above the divider; they keep
 the base's grey. The divider is a gap in the graph layout
 (`buildCommitGraphLayout(rows, { gapAfterRow })`), so lines run through it.
 
+A `0/0` that is not this machine's measurement (a missing worktree, or a read
+that has not landed) is never taken for "even with the base": while the lane's
+status is stale and the base tip is not among the loaded rows, the divider and
+the lane's colour band wait for a measured `ahead` rather than placing
+themselves from an old count. The rail's drift pill shows the numbers at half
+opacity with a "Last known" tooltip, and an unmeasured `0/0` holds its place
+empty instead of reading as even.
+
 The lane picker in the rail shows the lane glyph in the lane's colour and
 the lane name. The branch is in its tooltip and in the menu.
 

@@ -78,7 +78,7 @@ function makeLinearIssue() {
   };
 }
 
-async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string }) {
+async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string; parentBaseRef?: string }) {
   const now = "2026-03-11T12:00:00.000Z";
   db.run(
     "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
@@ -100,7 +100,7 @@ async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot:
         attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    ["lane-parent", args.projectId, "Parent", null, "worktree", "main", "feature/parent", path.join(args.repoRoot, "parent"), null, 0, "lane-main", null, null, null, "active", now, null],
+    ["lane-parent", args.projectId, "Parent", null, "worktree", args.parentBaseRef ?? "main", "feature/parent", path.join(args.repoRoot, "parent"), null, 0, "lane-main", null, null, null, "active", now, null],
   );
   db.run(
     `
@@ -249,12 +249,15 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
-  it("counts ahead/behind against origin/<base> when the base branch exists only remotely", async () => {
+  it.each([
+    ["a normal branch name", "main"],
+    ["a branch name that looks like a commit id", "deadbeef"],
+  ])("counts ahead/behind against origin/<base> when the base exists only remotely (%s)", async (_label, baseName) => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-remote-only-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
-      await seedProjectAndStack(db, { projectId: "proj-remote-only-base", repoRoot });
-      // Git as it behaves in a clone that never checked out `main`: the short
+      await seedProjectAndStack(db, { projectId: "proj-remote-only-base", repoRoot, parentBaseRef: baseName });
+      // Git as it behaves in a clone that never checked out the base: the short
       // name does not resolve (git's lookup skips refs/remotes/origin/<name>),
       // the remote-tracking ref does.
       vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
@@ -265,7 +268,7 @@ describe("laneService createFromUnstaged", () => {
         if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/parent\n", stderr: "" } as any;
         if (args[0] === "rev-list" && args[1] === "--left-right") {
           const range = args[3] ?? "";
-          if (range === "refs/remotes/origin/main...feature/parent") return { exitCode: 0, stdout: "5\t2\n", stderr: "" } as any;
+          if (range === `refs/remotes/origin/${baseName}...feature/parent`) return { exitCode: 0, stdout: "5\t2\n", stderr: "" } as any;
           return { exitCode: 128, stdout: "", stderr: `fatal: ambiguous argument '${range}': unknown revision` } as any;
         }
         return { exitCode: 1, stdout: "", stderr: "" } as any;
@@ -275,7 +278,7 @@ describe("laneService createFromUnstaged", () => {
         db,
         projectRoot: repoRoot,
         projectId: "proj-remote-only-base",
-        defaultBaseRef: "main",
+        defaultBaseRef: baseName,
         worktreesDir: path.join(repoRoot, "worktrees"),
       });
 

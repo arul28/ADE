@@ -908,6 +908,106 @@ describe("appStore", () => {
       }
     });
 
+    it("collapses a burst of lane-status requests into one measured read", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/burst", displayName: "Burst", baseRef: "main" } as any;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-b", name: "B", status: args.includeStatus ? { ahead: 1, behind: 0 } : { ahead: 0, behind: 0 } },
+        ]);
+        const store = createProjectAppStore(project);
+        // Several surfaces ask at once (tab activation, History open, a reload).
+        store.getState().requestLaneStatusRead();
+        store.getState().requestLaneStatusRead();
+        store.getState().requestLaneStatusRead();
+        void store.getState().refreshLanes({ includeStatus: false });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        const measured = (window.ade.lanes.list as any).mock.calls
+          .filter(([args]: [{ includeStatus?: boolean }]) => args?.includeStatus === true);
+        expect(measured).toHaveLength(1);
+        expect(store.getState().laneStatusStale).toBe(false);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not drop a forced status read behind a pending looser timer", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/forced", displayName: "Forced", baseRef: "main" } as any;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-f", name: "F", status: args.includeStatus ? { ahead: 5, behind: 0 } : { ahead: 0, behind: 0 } },
+        ]);
+        const measured = () => (window.ade.lanes.list as any).mock.calls
+          .filter(([args]: [{ includeStatus?: boolean }]) => args?.includeStatus === true).length;
+        const store = createProjectAppStore(project);
+
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        // Age the status out, then arm the default (30 s) timer.
+        await vi.advanceTimersByTimeAsync(31_000);
+        store.getState().requestLaneStatusRead();
+
+        // Another surface's full read lands before that timer fires and makes
+        // the status fresh again — but it predates the branch move.
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        const before = measured();
+
+        // History's commit-list reload asks for an immediate read.
+        store.getState().requestLaneStatusRead({ maxAgeMs: 0 });
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(measured()).toBeGreaterThan(before);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("measures a lane this store has never seen instead of trusting the brain's 0/0", async () => {
+      vi.useFakeTimers();
+      const realTimers = { setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      window.clearTimeout = globalThis.clearTimeout as typeof window.clearTimeout;
+      try {
+        const project = { rootPath: "/p/unknown", displayName: "Unknown", baseRef: "main" } as any;
+        // `lane-a` is measured first; `lane-b` first appears in a status-less
+        // read and carries only the brain's 0/0 placeholder.
+        let includeB = false;
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
+          { id: "lane-a", name: "A", status: args.includeStatus ? { ahead: 3, behind: 9 } : { ahead: 0, behind: 0 } },
+          ...(includeB ? [{ id: "lane-b", name: "B", status: args.includeStatus ? { ahead: 2, behind: 4 } : { ahead: 0, behind: 0 } }] : []),
+        ]);
+        const store = createProjectAppStore(project);
+
+        // Measure the store, so the freshness window is not what forces the read.
+        await store.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+        expect(store.getState().laneStatusStale).toBe(false);
+
+        // A status-less read now returns the measured lane plus a brand-new one.
+        includeB = true;
+        await store.getState().refreshLanes({ includeStatus: false });
+        expect(store.getState().laneStatusStale).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(store.getState().lanes.find((lane) => lane.id === "lane-b")?.status).toEqual({ ahead: 2, behind: 4 });
+        expect(store.getState().laneStatusStale).toBe(false);
+      } finally {
+        window.setTimeout = realTimers.setTimeout;
+        window.clearTimeout = realTimers.clearTimeout;
+        vi.useRealTimers();
+      }
+    });
+
     it("refreshLanes can update lane git status without snapshot decorations", async () => {
       const lanes = [{ id: "lane-status", name: "Lane status", status: { dirty: true } }] as any[];
       (window.ade.lanes.list as any).mockResolvedValueOnce(lanes);

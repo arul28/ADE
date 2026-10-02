@@ -1,4 +1,4 @@
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, LaneSummary } from "../../../shared/types";
 
 /** Graph row height in px (matches CommitHistoryView). */
 export const COMMIT_ROW_HEIGHT = 30;
@@ -272,6 +272,26 @@ export function buildCommitGraphLayout(
     gap,
     ...geometry,
   };
+}
+
+/**
+ * Whether the History graph must hold the focused lane's band and base divider
+ * until its git status is measured.
+ *
+ * The fork point comes from `ahead` first-parent steps below the lane head, so
+ * an unmeasured `ahead` would place the divider (and the lane's colour) on the
+ * wrong rows. `laneType` is null when no lane is focused. The Primary lane has
+ * no band, and a loaded base tip is a commit, not a count, so neither waits.
+ */
+export function laneForkWaitsForStatus(args: {
+  statusStale: boolean;
+  baseTipLoaded: boolean;
+  laneType: LaneSummary["laneType"] | null | undefined;
+}): boolean {
+  return args.statusStale
+    && !args.baseTipLoaded
+    && args.laneType != null
+    && args.laneType !== "primary";
 }
 
 /**
