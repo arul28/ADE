@@ -41,13 +41,42 @@ import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./ChipHoverCard";
 import { chipPreviewUrl, useChipPreview } from "./chipPreviewStore";
+import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatWorkspacePathOpener, type ChatWorkspacePathOpener } from "./chatWorkspacePaths";
+import { rootAppStoreApi } from "../../state/appStore";
+import { machineEntryForBinding } from "../../state/crossMachineLanes";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 
+/**
+ * The machine that holds the chat's lane, or null when the chat runs on the
+ * tab's own machine. Read on click, so a transcript of pills holds no extra
+ * store subscription.
+ */
+function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | null {
+  return machineEntryForBinding(rootAppStoreApi.getState(), scope.pin)?.machineId ?? null;
+}
+
 /** Where a click on this chip should land, or null when it is not actionable. */
-function openChip(chip: Chip): void {
+function openChip(
+  chip: Chip,
+  scope: Pick<ChatRuntimeScope, "laneId" | "pin">,
+  openWorkspacePath: ChatWorkspacePathOpener | null,
+): void {
   const source = chip.source;
   if (source.origin === "deeplink") {
+    // A bare SHA in a reply names no lane. It is a commit of the lane this chat
+    // works in, on the machine this chat runs on. Without that, the click has
+    // nothing to open and shows the "lives on another machine" modal.
+    if (source.target.kind === "commit" && !source.target.laneId && scope.laneId) {
+      navigateToAppTarget({
+        kind: "commit",
+        sha: source.target.sha,
+        laneId: scope.laneId,
+        machineId: chatMachineId(scope),
+      });
+      return;
+    }
     // `#1407` in an agent's reply names a PR with no repo. A deeplink must name
     // the repo to parse, so that one opens through the in-app PR route, which
     // resolves the number against this project's PRs.
@@ -68,6 +97,13 @@ function openChip(chip: Chip): void {
     // `isActionable` already refuses the click; this is the second half of that
     // contract so no future caller can route one here by accident.
     if (chip.kind === "folder") return;
+    // Inside a chat, a path is relative to the chat's lane on the chat's
+    // machine. The chat's opener resolves both; the bare route below would
+    // open the path under the tab's project root instead.
+    if (openWorkspacePath) {
+      openWorkspacePath(source.path);
+      return;
+    }
     navigateToAppTarget({ kind: "file", path: source.path, line: null, laneId: null });
     return;
   }
@@ -78,7 +114,8 @@ function openChip(chip: Chip): void {
     return;
   }
   if (source.mentionKind === "lane") {
-    openAdeDeeplink(buildDeeplink({ kind: "lane", laneId: source.id }));
+    // A lane mention resolves against the chat's machine, so it opens there.
+    navigateToAppTarget({ kind: "lane", laneId: source.id, machineId: chatMachineId(scope) });
   }
   // A terminal mention has no deeplink target; it stays a label.
 }
@@ -262,6 +299,8 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const preview = useChipPreview(previewUrl);
 
   const scoped = useChipScopeSources();
+  const chatScope = useChatRuntimeScope();
+  const openWorkspacePath = useChatWorkspacePathOpener();
   const facts = useChipFacts(chip, scoped);
   const label = facts.label ?? chipDisplayLabel(preview?.title ? { ...chip, title: preview.title } : chip);
   const actionable = isActionable(chip);
@@ -281,12 +320,12 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
         title={hoverCard.visible ? undefined : tokenTitle}
         role={actionable ? "button" : undefined}
         tabIndex={actionable ? 0 : undefined}
-        onClick={actionable ? () => openChip(chip) : undefined}
+        onClick={actionable ? () => openChip(chip, chatScope, openWorkspacePath) : undefined}
         onKeyDown={actionable
           ? (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            openChip(chip);
+            openChip(chip, chatScope, openWorkspacePath);
           }
           : undefined}
         {...hoverCard.triggerProps}

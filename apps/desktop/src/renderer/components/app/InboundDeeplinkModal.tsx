@@ -280,7 +280,8 @@ export function InboundDeeplinkModal({
     const repoLabel = envelope?.repoOwner && envelope.repoName ? `${envelope.repoOwner}/${envelope.repoName}` : null;
     const headline = repoLabel
       ? `This ${currentTarget.entity} lives in ${repoLabel} on another machine.`
-      : `This ${currentTarget.entity} lives on another machine.`;
+      // No repo and no connected machine holds it: do not claim where it lives.
+      : `ADE cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
     const hasRepo = Boolean(envelope?.repoOwner && envelope.repoName);
     const actions: React.ReactNode[] = [];
     if (hasRepo && envelope?.branch) {
