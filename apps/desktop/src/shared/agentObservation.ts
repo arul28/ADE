@@ -612,7 +612,7 @@ function(inputArg) {
     let textBest = null;
     const roots = includesBest
       ? [{ node: includesBest.entry.node, ctx: includesBest.entry.ctx }]
-      : contexts;
+      : contexts.map((ctx) => ({ node: ctx.root, ctx }));
     for (const root of roots) {
       const scoped = root.node instanceof Document
         ? root.node.querySelectorAll("body *")
