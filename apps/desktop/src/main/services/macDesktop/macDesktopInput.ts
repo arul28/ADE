@@ -14,6 +14,7 @@
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { macDesktopNextStep } from "./macDesktopNextStep";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
@@ -441,13 +442,22 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       ?? (resolvedIndex != null
         ? resolvedAgainst?.elements.find((element) => element.index === resolvedIndex) ?? null
         : null);
+    const compared = macDesktopActionEffect(resolvedAgainst, observation);
+    const next = macDesktopNextStep({
+      action: args.action,
+      mode: args.mode,
+      effect: compared,
+      resolved,
+      before: resolvedAgainst,
+      lease: leases.checkRealInput({ laneId, holderId }),
+    });
     return {
       ok: true,
       action: args.action,
       mode: args.mode,
       resolved,
       observation,
-      effect: macDesktopActionEffect(resolvedAgainst, observation),
+      effect: next ? { ...compared, next } : compared,
       trace: {
         id: `${observation.id}:${args.action}`,
         sessionId: args.chatSessionId?.trim() || null,
