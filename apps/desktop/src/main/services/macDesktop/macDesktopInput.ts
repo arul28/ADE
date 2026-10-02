@@ -267,6 +267,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   };
 
   /**
+   * A click's button and count, so the next-step advice reproduces the click.
+   * Empty for every other action, whose payload carries neither field.
+   */
+  const clickShape = (payload: Record<string, unknown>): { button?: string; count?: number } => ({
+    ...(typeof payload.button === "string" ? { button: payload.button } : {}),
+    ...(typeof payload.count === "number" ? { count: payload.count } : {}),
+  });
+
+  /**
    * Notes one action on the lane's running recording, in the display's own
    * frame: element frames and points are global screen points, the recording
    * is the lane's display. A lane that is not recording notes nothing.
@@ -416,6 +425,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         message: failure.message,
         resolved: args.resolved,
         before: resolvedAgainst,
+        ...clickShape(args.payload),
         lease: leases.checkRealInput({ laneId, holderId }),
       });
       if (!refused) throw failure;
@@ -462,6 +472,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       effect: compared,
       resolved,
       before: resolvedAgainst,
+      ...clickShape(args.payload),
       lease: leases.checkRealInput({ laneId, holderId }),
     });
     return {

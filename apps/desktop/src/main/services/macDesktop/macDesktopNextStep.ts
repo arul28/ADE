@@ -48,6 +48,10 @@ export type MacDesktopNextStepInput = {
   resolved: MacDesktopElement | null;
   /** The tree the target was resolved against. */
   before: MacDesktopObservation | null;
+  /** A click's button, so the advice reproduces a right click as a right click. */
+  button?: string | null;
+  /** A click's repeat count. */
+  count?: number | null;
   /** Whether this caller may post real input right now. */
   lease: MacDesktopLeaseDecision;
 };
@@ -87,7 +91,9 @@ function browserPageStep(
   return {
     method: "browser",
     reason: "this is a web page in a browser; the ADE browser acts on the DOM and confirms each step, unless the task needs this browser",
-    command: "ade browser open <url> --text",
+    // No command: ADE does not know the page's URL here, and a placeholder is
+    // not a command the agent can run as is.
+    command: null,
   };
 }
 
@@ -112,10 +118,10 @@ function accessibilityMissReason(
 }
 
 function realInputStep(
-  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "lease">,
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "lease">,
   why: string,
 ): ComputerUseActionNextStep {
-  const { lease, resolved } = args;
+  const { lease } = args;
   if (!lease.ok) {
     if (lease.code === "MAC_DESKTOP_INPUT_LEASE_REQUIRED") {
       return {
@@ -131,14 +137,28 @@ function realInputStep(
       command: null,
     };
   }
-  const command = args.action === "click" && resolved
-    ? `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)} --real --text`
-    : null;
   return {
     method: "real_input",
     reason: `${why}; this chat holds real input, so repeat the command with --real`,
-    command,
+    command: realClickCommand(args),
   };
+}
+
+/**
+ * The real-input command for a click, at the element's centre in global screen
+ * points. Only built when every part of the click can be reproduced: a triple
+ * click has no flag, so it gets no command rather than one that clicks once.
+ */
+function realClickCommand(
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count">,
+): string | null {
+  const { resolved } = args;
+  if (args.action !== "click" || !resolved) return null;
+  const count = args.count ?? 1;
+  if (count > 2) return null;
+  const button = args.button === "right" ? " --right" : "";
+  const repeat = count === 2 ? " --double" : "";
+  return `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}${button}${repeat} --real --text`;
 }
 
 /**
@@ -173,9 +193,10 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
 
   const why = accessibilityMissReason(args.action, resolved, webContent);
   if (!why) {
+    const prefix = resolved?.actions?.includes("AXPress") ? "the element accepts AXPress, so the" : "the";
     return {
       method: "observe",
-      reason: `${resolved?.actions?.includes("AXPress") ? "the element accepts AXPress, so the" : "the"} action probably applied with no visible change, or the app is slow; wait for the label you expect before you retry`,
+      reason: `${prefix} action probably applied with no visible change, or the app is slow; wait for the label you expect before you retry`,
       command: null,
     };
   }
@@ -196,6 +217,8 @@ export function macDesktopRefusedNextStep(args: {
   resolved: MacDesktopElement | null;
   /** The tree the target was resolved against. */
   before: MacDesktopObservation | null;
+  button?: string | null;
+  count?: number | null;
   lease: MacDesktopLeaseDecision;
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
