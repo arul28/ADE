@@ -92,6 +92,8 @@ export function NestedDrawers({
     <>
       {drawers.map(({ kind, children, sectionId, collapsed }) => {
         const label = kindLabel(kind, children.length);
+        const status = nestedDrawerStatus(children, nowMs);
+        const statusLabel = status ? NESTED_DRAWER_STATUS_PRESENTATION[status].label : "";
         return (
           // `data-indented` for the card's bleed rule, same as a lane group body:
           // these rows hang off their own rail, so a left bleed would cross it.
@@ -109,7 +111,7 @@ export function NestedDrawers({
                 QUIET_LABEL_CLASS,
               )}
               aria-expanded={!collapsed}
-              aria-label={collapsed ? `Show ${label}` : `Hide ${label}`}
+              aria-label={`${collapsed ? `Show ${label}` : `Hide ${label}`}${statusLabel ? `, ${statusLabel}` : ""}`}
               title={collapsed ? `Show ${label}` : `Hide ${label}`}
             >
               {collapsed ? (
@@ -119,7 +121,7 @@ export function NestedDrawers({
               )}
               <KindIcon kind={kind} />
               <span className="truncate">{label}</span>
-              <StatusMark status={nestedDrawerStatus(children, nowMs)} />
+              <StatusMark status={status} />
             </button>
             {collapsed ? null : (
               <div className="mt-1 flex flex-col gap-1">
