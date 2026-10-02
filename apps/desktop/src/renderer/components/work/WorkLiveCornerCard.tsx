@@ -810,7 +810,9 @@ export function WorkLiveCornerCard({
   }, [baseCardSize.width, browserViewRoot, previewTabId, visible]);
 
   // Switching source tools must not leave the previous tool's last frame or
-  // aspect on screen under the new tool's name.
+  // aspect on screen under the new tool's name. A new tab for the same tool
+  // (`previewTabId`) is the same problem: the caption and frames of the old tab
+  // would otherwise linger under the new one.
   useEffect(() => {
     paintToolRef.current = visible ? tool : null;
     liveFrameRef.current = null;
@@ -818,9 +820,10 @@ export function WorkLiveCornerCard({
     setSourceAspect(null);
     setScrubBuffer([]);
     setScrubFrameId(null);
+    setLastTrace(null);
     if (imageRef.current) imageRef.current.src = BLANK_FRAME;
     if (scrubImageRef.current) scrubImageRef.current.src = BLANK_FRAME;
-  }, [tool, visible]);
+  }, [previewTabId, tool, visible]);
 
   // One low-frequency tick so "· 2s" ages while you look at it. Only while the
   // card is actually on screen.

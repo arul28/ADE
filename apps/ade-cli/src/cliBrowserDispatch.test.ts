@@ -186,6 +186,10 @@ describe("browser screenshot --out", () => {
     for (const argv of [
       ["browser", "screenshot", "--tab", "t1", "--out", ""],
       ["browser", "screenshot", "--tab", "t1", "--output", "   "],
+      // `readValue` accepts a flag-shaped operand, so `--out --tab t1` used to
+      // set the output path to "--tab" and drop the tab from the capture.
+      ["browser", "screenshot", "--tab", "t1", "--out", "--tab"],
+      ["browser", "screenshot", "--out", "--tab", "t1"],
     ]) {
       expect(() => screenshotPlan(argv), argv.join(" ")).toThrow(/--out needs a file path/);
     }

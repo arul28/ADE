@@ -6047,6 +6047,29 @@ describe("ADE CLI", () => {
       expect(result.exitCode).toBe(0);
       expect(result.output).toContain(outPath);
       expect(fs.readFileSync(outPath)).toEqual(image);
+
+      // Text mode without --out saves a private temp file instead of writing to
+      // the caller's cwd.
+      const textResult = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "screenshot", "--tab", "t1", "--text"]),
+      );
+      expect(textResult.exitCode).toBe(0);
+      const savedMatch = /saved\s+(\S+)/.exec(textResult.output);
+      expect(savedMatch).toBeTruthy();
+      const tempPath = savedMatch![1]!;
+      try {
+        expect(fs.readFileSync(tempPath)).toEqual(image);
+      } finally {
+        fs.rmSync(path.dirname(tempPath), { recursive: true, force: true });
+      }
     } finally {
       stopDesktop?.();
       stopRuntime?.();

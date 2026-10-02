@@ -251,6 +251,9 @@ function removeFolder(folder) {
  * Only `npm run dev:clean-data --include-unmarked` asks for this.
  */
 export function removeUnmarkedIfIdle(folder) {
+  // The folder may have been stamped by a launcher that started after the list
+  // was read. If it now has a marker it is not ours to remove.
+  if (readMarker(folder)) return false;
   if (userDataInUse(folder)) return false;
   return removeFolder(folder);
 }

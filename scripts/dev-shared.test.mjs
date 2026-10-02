@@ -12,6 +12,7 @@ import {
   prepareLaneUserData,
   pruneStaleDevUserData,
   removeIfStillStale,
+  removeUnmarkedIfIdle,
   userDataInUse,
 } from "./dev-user-data.mjs";
 import {
@@ -476,4 +477,24 @@ test("per-lane dev user data: a half-deleted folder is never listed or pruned", 
 
   assert.deepEqual(listDevUserDataFolders({ appDataPath }), []);
   assert.equal(fs.existsSync(folder), true);
+});
+
+test("per-lane dev user data: an unmarked folder stamped before deletion is kept", () => {
+  const appDataPath = tempDir("ade-dev-user-data-unmarked-");
+  const idle = path.join(appDataPath, "ade-desktop-dev-idle-2222bbbb");
+  fs.mkdirSync(idle, { recursive: true });
+  // Unmarked and idle: the removal is the whole point of --include-unmarked.
+  assert.equal(removeUnmarkedIfIdle(idle), true);
+  assert.equal(fs.existsSync(idle), false);
+
+  // A launcher stamps the folder after the list was read. The marker now makes
+  // it not ours to remove, even though it carried none when listed.
+  const stamped = path.join(appDataPath, "ade-desktop-dev-handmade-1111aaaa");
+  fs.mkdirSync(stamped, { recursive: true });
+  writeMarker(stamped, {
+    worktreePath: laneWorktree("/p/ADE", "handmade-1111aaaa"),
+    lastUsedAt: new Date().toISOString(),
+  });
+  assert.equal(removeUnmarkedIfIdle(stamped), false);
+  assert.equal(fs.existsSync(stamped), true);
 });

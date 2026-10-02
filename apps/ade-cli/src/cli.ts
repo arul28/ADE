@@ -14660,7 +14660,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   if (isBrowserSubcommand(sub, "screenshot")) {
     const outPath = readValue(args, ["--out", "--output", "--path"]);
-    if (outPath != null && !outPath.trim()) {
+    // `readValue` accepts a flag-shaped next token, so `--out --tab t1` used to
+    // set outPath to "--tab" and drop `t1` from the tab target. A real path
+    // never starts with "-".
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
       throw new CliUsageError("browser screenshot --out needs a file path.");
     }
     const screenshotArgs = collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args));
@@ -26859,24 +26862,39 @@ function formatAppControlRecording(value: unknown): string {
 }
 
 const TEMP_SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TEMP_SCREENSHOT_DIR_PREFIX = "ade-browser-screenshot-";
 
 /**
- * A fresh path for a screenshot saved without `--out`, in one folder whose
- * files older than a day are removed here, so repeated captures do not pile up.
+ * A private directory for one screenshot saved without `--out`. A shared,
+ * predictable folder under `os.tmpdir()` exposes the bytes to another local
+ * user on a multi-user host, so each capture gets its own `mkdtemp` folder
+ * (mode 0700). Folders older than a day are removed here, so repeated captures
+ * do not pile up; only folders owned by this user are touched.
  */
 function nextTempScreenshotPath(): string {
-  const dir = path.join(os.tmpdir(), "ade-browser-screenshots");
-  fs.mkdirSync(dir, { recursive: true });
+  const root = os.tmpdir();
   const cutoff = Date.now() - TEMP_SCREENSHOT_MAX_AGE_MS;
-  for (const name of fs.readdirSync(dir)) {
-    const file = path.join(dir, name);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    // No temp root to clean: `mkdtempSync` below surfaces the real failure.
+  }
+  for (const name of names) {
+    if (!name.startsWith(TEMP_SCREENSHOT_DIR_PREFIX)) continue;
+    const stale = path.join(root, name);
     try {
-      if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+      const stat = fs.lstatSync(stale);
+      const mine = typeof process.getuid !== "function" || stat.uid === process.getuid();
+      if (!stat.isDirectory() || !mine) continue;
+      if (stat.mtimeMs < cutoff) fs.rmSync(stale, { recursive: true, force: true });
     } catch {
       // Another capture removed it first.
     }
   }
-  return path.join(dir, `screenshot-${Date.now()}-${process.pid}.png`);
+  const dir = fs.mkdtempSync(path.join(root, TEMP_SCREENSHOT_DIR_PREFIX));
+  fs.chmodSync(dir, 0o700);
+  return path.join(dir, "screenshot.png");
 }
 
 /**
@@ -26892,11 +26910,22 @@ function saveScreenshotResult(
   const shot = isRecord(unwrapped) ? unwrapped : {};
   const dataUrl = asString(shot.dataUrl);
   const match = dataUrl ? /^data:image\/[a-z+]+;base64,(.*)$/s.exec(dataUrl) : null;
-  if (!match) throw new Error("The browser returned no screenshot image.");
+  if (!match) {
+    // The desktop can also answer `{ ok: false, reason }`; a plain Error would
+    // reach the fallback and print a stack trace instead of one clear line.
+    const reason = asString(shot.reason);
+    throw new CliToolError(
+      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      undefined,
+    );
+  }
   const bytes = Buffer.from(match[1]!, "base64");
   const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
-  fs.writeFileSync(savedPath, bytes);
+  // A temp screenshot stays private: exclusive create, owner-only. An explicit
+  // `--out` is the caller's own path and keeps the default mode.
+  if (outPath) fs.writeFileSync(savedPath, bytes);
+  else fs.writeFileSync(savedPath, bytes, { flag: "wx", mode: 0o600 });
   return {
     savedPath,
     width: typeof shot.width === "number" ? shot.width : null,

@@ -1943,7 +1943,9 @@ export function createAppControlLaneController(context: AppControlLaneController
         if (!target) continue;
         const resolvedTarget = path.resolve(cwd, target);
         const laneRoot = path.resolve(projectRoot);
-        if (resolvedTarget !== laneRoot && !resolvedTarget.startsWith(`${laneRoot}${path.sep}`)) {
+        // Same case-aware check as `ensureCwdInsideRoot`: a lane cwd on a
+        // case-insensitive platform must not be refused over folded case.
+        if (!isPathInside(resolvedTarget, laneRoot)) {
           throw new Error(
             `App Control launch must run inside the current lane. The command tried to \`cd\` to ${resolvedTarget}, which is outside ${laneRoot}. Run the app from this lane instead.`,
           );
