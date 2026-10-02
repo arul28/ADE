@@ -7,6 +7,7 @@ import {
   DotsThree,
   FileCode,
   FolderOpen,
+  GitCommit,
   NotePencil,
 } from "@phosphor-icons/react";
 import type { GitUpstreamSyncStatus, LaneSummary } from "../../../../shared/types";
@@ -74,6 +75,7 @@ export function LaneIdentity({
   revealUnavailableReason = null,
   onStartChat,
   onOpenFiles,
+  onOpenHistory,
   onReveal,
   onOpenMenu,
   onSelectLane,
@@ -94,6 +96,8 @@ export function LaneIdentity({
   revealUnavailableReason?: string | null;
   onStartChat: (() => void) | null;
   onOpenFiles: () => void;
+  /** History's commit graph, focused on this lane. */
+  onOpenHistory?: () => void;
   onReveal: () => void;
   onOpenMenu: (anchor: DOMRect) => void;
   onSelectLane: (laneId: string) => void;
@@ -124,6 +128,11 @@ export function LaneIdentity({
             <WorkToolChromeButton label="Open in Files" onClick={onOpenFiles} testId="lane-open-files">
               <FileCode size={16} />
             </WorkToolChromeButton>
+            {onOpenHistory ? (
+              <WorkToolChromeButton label="Commit history" onClick={onOpenHistory} testId="lane-open-history">
+                <GitCommit size={16} />
+              </WorkToolChromeButton>
+            ) : null}
             {canReveal ? (
               <WorkToolChromeButton label={revealLabel} onClick={onReveal} testId="lane-reveal">
                 <FolderOpen size={16} />

@@ -22,6 +22,7 @@ export function LaneSidebarContextMenu({
   selectLane,
   onAppearanceChanged,
   onStartChatInLane,
+  onOpenHistory,
   runtimePin = null,
 }: {
   menu: { laneId: string; x: number; y: number };
@@ -34,6 +35,7 @@ export function LaneSidebarContextMenu({
   selectLane: (laneId: string) => void;
   onAppearanceChanged: () => void | Promise<void>;
   onStartChatInLane: (laneId: string) => void;
+  onOpenHistory?: (laneId: string) => void;
   /**
    * The lane's machine when it is not the tab's. `menu.laneId` and `lanesById`
    * are then that machine's own ids, and every write the menu makes is pinned
@@ -66,6 +68,7 @@ export function LaneSidebarContextMenu({
     onBatchManage,
     onAppearanceChanged,
     onStartChatInLane,
+    ...(onOpenHistory ? { onOpenHistory } : {}),
     omitTabActions: true,
     ...(openIn ? { openIn } : {}),
   };

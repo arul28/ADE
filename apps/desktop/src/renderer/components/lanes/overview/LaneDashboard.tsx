@@ -36,6 +36,7 @@ import {
 } from "./laneOverviewModel";
 import { Banner } from "../../ui/notice";
 import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
+import { historyCommitsPath } from "../../history/historyUrlHydration";
 import {
   laneHistorySessionsFrom,
   useLaneCommits,
@@ -63,6 +64,8 @@ const EMPTY_SECTION_IDS: string[] = [];
  */
 export type LaneDashboardMachine = {
   pin: OpenProjectBinding;
+  /** Names the machine in links to other tabs (History) that resolve lanes per machine. */
+  machineId?: string;
   machineName: string;
   /** That machine's lanes, as reported by the cross-machine union. */
   lanes: LaneSummary[];
@@ -388,6 +391,7 @@ export function LaneDashboard({
             revealUnavailableReason={machine ? `On ${machine.machineName}` : null}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
+            onOpenHistory={() => navigate(historyCommitsPath(laneId, machine?.machineId))}
             onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             onSelectLane={onSelectLane}

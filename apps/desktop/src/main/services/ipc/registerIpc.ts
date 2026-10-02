@@ -307,6 +307,7 @@ import type {
   GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   BranchPullRequest,
@@ -10786,7 +10787,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
+  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
   });
