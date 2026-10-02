@@ -1239,7 +1239,9 @@ still-live button invites a second spend.
   closing the query or killing background work.
   A person's **Interrupt & send** also carries `origin: { kind: "human" }`
   (Agent SDK 0.3.287+; the composer and paired-device `chat.steer` set
-  `AgentChatSteerArgs.sentByUser`, agent and CLI senders do not). With it,
+  `AgentChatSteerArgs.sentByUser`, agent and CLI senders do not; the `ade code`
+  TUI interrupts through `chat.messageSession`, which agents share, so its
+  interrupts stay unmarked). With it,
   Claude Code moves a running Bash command to the background and lets a
   running WebFetch/WebSearch keep going instead of cancelling it. The
   detached call's `tool_use_result` is `{ detachedToolCall: true }`; its row

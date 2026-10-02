@@ -20420,6 +20420,7 @@ export function createAgentChatService(args: {
       return;
     }
     for (const message of messages) {
+      if (!runtime.detachedToolCalls.size) break;
       if (message.type !== "user") continue;
       const notification = parseClaudeToolCallNotification(asRecord(message.message)?.content);
       if (!notification) continue;
