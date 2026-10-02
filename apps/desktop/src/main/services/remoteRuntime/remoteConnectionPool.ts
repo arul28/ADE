@@ -154,6 +154,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A GitHub Stack merge polls GitHub, then cleans up each merged PR.
+  ["pr.land", 120_000],
   ["chat.preflightCrossMachineDestination", 60_000],
   ["chat.acceptCrossMachineHandoff", 180_000],
   // The remote daemon answers Refresh by running the same isolated ledger

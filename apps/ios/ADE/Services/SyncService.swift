@@ -15930,7 +15930,9 @@ final class SyncService: ObservableObject {
       return LandResult(
         prId: prId,
         success: false,
-        error: "The merge is queued. ADE sends it when the computer is back online.",
+        // Queued after a send failure or a timeout: the computer may already be
+        // merging, so say only what the phone knows.
+        error: "Still waiting for the computer. The merge result shows when it answers.",
         mergeStatus: "pending"
       )
     }

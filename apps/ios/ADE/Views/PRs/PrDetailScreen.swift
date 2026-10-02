@@ -837,23 +837,25 @@ struct PrDetailView: View {
 
   @ViewBuilder
   private func nextStepPrimary(_ step: PrNextStep) -> some View {
-    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed, isCurrentPrDraft {
-      Button("Stack on GitHub") { openGitHub(urlString: currentPr.githubUrl) }
+    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
+      if isCurrentPrDraft {
+        Button("Stack on GitHub") { openGitHub(urlString: currentPr.githubUrl) }
+          .buttonStyle(.glassProminent)
+          .tint(ADEColor.accent)
+          .disabled(currentPr.githubUrl.isEmpty)
+      } else {
+        // GitHub merges a stack as one unit, so the method choice and the
+        // confirm live in one dialog that names how many PRs merge.
+        Button {
+          ADEHaptics.light()
+          stackMergeConfirmationPresented = true
+        } label: {
+          Text(stackMergeCount > 1 ? "Merge \(stackMergeCount) PRs" : "Merge").font(.subheadline.weight(.semibold))
+        }
         .buttonStyle(.glassProminent)
-        .tint(ADEColor.accent)
-        .disabled(currentPr.githubUrl.isEmpty)
-    } else if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
-      // GitHub merges a stack as one unit, so the method choice and the
-      // confirm live in one dialog that names how many PRs merge.
-      Button {
-        ADEHaptics.light()
-        stackMergeConfirmationPresented = true
-      } label: {
-        Text(stackMergeCount > 1 ? "Merge \(stackMergeCount) PRs" : "Merge").font(.subheadline.weight(.semibold))
+        .tint(ADEColor.success)
+        .disabled(isDetailBusy)
       }
-      .buttonStyle(.glassProminent)
-      .tint(ADEColor.success)
-      .disabled(isDetailBusy)
     } else if let primary = step.primary, nextStepAvailable(primary) {
       if primary == .merge {
         // A merge always names its method: one tap opens the choice, a second
@@ -1299,15 +1301,23 @@ struct PrDetailView: View {
     let isStack = nativeStackMembership != nil
     let label = bypassRules ? "Merging (admin bypass)" : isStack ? "Merging the stack" : "Merging pull request"
     let outcome = PrLandOutcomeBox()
+    let githubUrl = currentPr.githubUrl
     runPrAction(label, success: nil, action: {
-      outcome.result = try await syncService.mergePullRequest(
-        prId: effectivePrId,
-        method: mergeMethod.rawValue,
-        bypassRules: bypassRules,
-        commitTitle: commitTitle,
-        commitBody: commitBody,
-        expectedHeadSha: expectedHeadSha
-      )
+      do {
+        outcome.result = try await syncService.mergePullRequest(
+          prId: effectivePrId,
+          method: mergeMethod.rawValue,
+          bypassRules: bypassRules,
+          commitTitle: commitTitle,
+          commitBody: commitBody,
+          expectedHeadSha: expectedHeadSha
+        )
+      } catch let error where isStack && error.localizedDescription.contains("merge the stack on GitHub") {
+        // A computer on an older ADE cannot merge a stack; it says to use
+        // GitHub. Open the PR there, as this screen did before.
+        openGitHub(urlString: githubUrl)
+        throw error
+      }
     }, successText: { outcome.successText })
   }
 

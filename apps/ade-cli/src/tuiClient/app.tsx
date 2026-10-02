@@ -12077,11 +12077,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(bypassRules ? { bypassRules: true } : {}),
             ...(deleteRemoteBranch ? { deleteRemoteBranch: true } : {}),
           });
-          addNotice(
-            `Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}${deleteRemoteBranch ? ", branch deleted" : ""}).`,
-            "success",
-          );
-          setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          // The host answers a refused merge in the result, not as an error. A
+          // GitHub Stack merge that GitHub queued or still runs is not a failure.
+          const result = (landed ?? {}) as { success?: boolean; mergeStatus?: string | null; error?: string | null };
+          const inFlight = result.mergeStatus === "pending" || result.mergeStatus === "enqueued";
+          if (result.success === false && !inFlight) {
+            addNotice(result.error ?? `GitHub did not merge ${prRef}.`, "error");
+          } else if (inFlight) {
+            addNotice(result.error ?? `GitHub is merging ${prRef}.`, "info");
+          } else {
+            addNotice(
+              `Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}${deleteRemoteBranch ? ", branch deleted" : ""}).`,
+              "success",
+            );
+          }
+          setRightPane({ kind: "details", title: result.success === false && !inFlight ? "PR not landed" : "PR landed", body: renderObject(landed, 24) });
           await refreshState();
         } catch (err) {
           addNotice(err instanceof Error ? err.message : String(err), "error");

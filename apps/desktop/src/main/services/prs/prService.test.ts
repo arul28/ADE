@@ -6273,7 +6273,7 @@ describe("prService.land", () => {
     {
       name: "the head moved since the card opened",
       replies: [{ status: 400, body: { status: "failed", details: { message: "Pull request head branch was modified." } } }],
-      expected: { success: false, error: "PR head changed since you opened the merge card. Refresh and retry." },
+      expected: { success: false, error: "PR head changed since you opened the merge dialog — refresh and retry." },
       puts: 1,
     },
     {

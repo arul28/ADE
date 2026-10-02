@@ -1,11 +1,12 @@
 import React from "react";
 import {
-  CheckCircle, XCircle,
+  XCircle,
   CircleNotch,
   X,
   CaretDown, CaretRight,
   TreeStructure,
 } from "@phosphor-icons/react";
+import { Banner, type BannerModel } from "../../ui/notice";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
@@ -643,6 +644,16 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  // A stack merge that answered "still merging" finishes in the background.
+  // When the PR shows as merged, the banner says so instead of spinning on.
+  React.useEffect(() => {
+    if (pr.state !== "merged") return;
+    setActionResult((current) => (
+      current && !current.success && (current.mergeStatus === "pending" || current.mergeStatus === "enqueued")
+        ? { ...current, success: true, mergeStatus: "merged", error: null }
+        : current
+    ));
+  }, [pr.state]);
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
@@ -1502,41 +1513,13 @@ export function PrDetailPane({
           <button type="button" onClick={() => setActionError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, padding: 4 }}><X size={14} /></button>
         </div>
       )}
-      {actionResult && (() => {
-        // A stack merge that GitHub queued or is still running is not a failure.
-        const inFlight = !actionResult.success
-          && (actionResult.mergeStatus === "pending" || actionResult.mergeStatus === "enqueued");
-        const tone = actionResult.success ? "var(--color-success)" : inFlight ? "var(--color-accent)" : "var(--color-error)";
-        const color = actionResult.success ? COLORS.success : inFlight ? COLORS.accent : COLORS.danger;
-        const stackCount = actionResult.stackPrNumbers?.length ?? 0;
-        const text = actionResult.success
-          ? stackCount > 1
-            ? `Merged ${stackCount} stacked PRs (${actionResult.stackPrNumbers!.map((n) => `#${n}`).join(", ")})`
-            : `Merged PR #${actionResult.prNumber}`
-          : inFlight
-            ? actionResult.error ?? "GitHub is merging the stack."
-            : `Failed: ${actionResult.error ?? "unknown"}`;
-        return (
-          <div style={{
-            padding: "10px 20px",
-            background: `color-mix(in srgb, ${tone} 5%, transparent)`,
-            borderBottom: `1px solid color-mix(in srgb, ${tone} 20%, transparent)`,
-            fontFamily: SANS_FONT, fontSize: 12,
-            color,
-            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {actionResult.success
-                ? <CheckCircle size={14} weight="fill" />
-                : inFlight
-                  ? <CircleNotch size={14} className="animate-spin" />
-                  : <XCircle size={14} weight="fill" />}
-              <span>{text}</span>
-            </div>
-            <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
-          </div>
-        );
-      })()}
+      {actionResult ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 20px 0", flexShrink: 0 }}
+          model={mergeResultBannerModel(actionResult, () => setActionResult(null))}
+        />
+      ) : null}
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
@@ -1821,4 +1804,27 @@ function FilesTab({
       )}
     </div>
   );
+}
+
+/** The banner for a merge result. A stack merge GitHub queued or still runs is not a failure. */
+function mergeResultBannerModel(result: LandResult, onDismiss: () => void): BannerModel {
+  const inFlight = !result.success && (result.mergeStatus === "pending" || result.mergeStatus === "enqueued");
+  const stack = result.stackPrNumbers ?? [];
+  let title: string;
+  if (result.success) {
+    title = stack.length > 1
+      ? `Merged ${stack.length} stacked PRs (${stack.map((n) => `#${n}`).join(", ")})`
+      : `Merged PR #${result.prNumber}`;
+  } else if (inFlight) {
+    title = result.error ?? "GitHub is merging the stack.";
+  } else {
+    title = `Failed: ${result.error ?? "unknown"}`;
+  }
+  return {
+    id: "pr-merge-result",
+    tone: result.success ? "success" : inFlight ? "accent" : "error",
+    busy: inFlight,
+    title,
+    dismiss: { onDismiss, label: "Dismiss merge result" },
+  };
 }

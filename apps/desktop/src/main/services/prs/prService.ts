@@ -177,7 +177,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
-import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -188,6 +188,7 @@ import {
   rowMergedBy,
 } from "./prRowMetadata";
 import { createGithubStackStore } from "./githubStackStore";
+import { createGithubStackMerge } from "./githubStackMerge";
 import { createPrChatLinkStore } from "./prChatLinkStore";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
@@ -987,14 +988,6 @@ function toPrState(args: { state: string; draft: boolean; mergedAt: string | nul
   if (state === "open" && args.draft) return "draft";
   if (state === "open") return "open";
   return "closed";
-}
-
-function toChecksStatus(state: string | null | undefined): PrChecksStatus {
-  const value = (state ?? "").toLowerCase();
-  if (value === "success") return "passing";
-  if (value === "failure" || value === "error") return "failing";
-  if (value === "pending") return "pending";
-  return "none";
 }
 
 /** Row storage for `checksMissingRequired` is JSON; tolerate anything else. */
@@ -8277,28 +8270,14 @@ export function createPrService({
     return { success: true, mergeCommitSha: null };
   };
 
-  /**
-   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
-   * how the PR shipped, then run the local bookkeeping.
-   *
-   * An unmapped PR has no row to record against and nothing local to clean up,
-   * so it only drops the read memos and invalidates the snapshot cache — that is
-   * what makes the next list read show it as merged.
-   */
-  /**
-   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
-   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
-   * someone else's repository, and deleting it here would delete an unrelated
-   * same-named branch out of the base repo.
-   */
-  const deleteMergedHeadBranchByCoords = async (
-    repo: GitHubRepoRef,
-    prNumber: number,
-  ): Promise<boolean> => {
-    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return false;
+  /** A fetched PR's head branch when it lives in `repo` itself; null for a fork. */
+  const sameRepoHeadBranch = (pull: any, repo: GitHubRepoRef): string | null => {
+    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return null;
     const headBranch = branchNameFromRef(asString(pull?.head?.ref));
-    if (!headBranch || headBranch === "HEAD") return false;
+    return headBranch && headBranch !== "HEAD" ? headBranch : null;
+  };
+
+  const deleteRemoteHeadBranch = async (repo: GitHubRepoRef, prNumber: number, headBranch: string): Promise<boolean> => {
     try {
       await githubService.apiRequest({
         method: "DELETE",
@@ -8315,6 +8294,29 @@ export function createPrService({
     }
   };
 
+  /**
+   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
+   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
+   * someone else's repository, and deleting it here would delete an unrelated
+   * same-named branch out of the base repo.
+   */
+  const deleteMergedHeadBranchByCoords = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<boolean> => {
+    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+    const headBranch = sameRepoHeadBranch(pull, repo);
+    return headBranch ? await deleteRemoteHeadBranch(repo, prNumber, headBranch) : false;
+  };
+
+  /**
+   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
+   * how the PR shipped, then run the local bookkeeping.
+   *
+   * An unmapped PR has no row to record against and nothing local to clean up,
+   * so it only drops the read memos and invalidates the snapshot cache — that is
+   * what makes the next list read show it as merged.
+   */
   const finishSuccessfulMerge = async (
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     args: LandPrArgs,
@@ -8359,248 +8361,25 @@ export function createPrService({
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
 
-  type AsyncMergeResult = {
-    status: "pending" | "merged" | "enqueued" | "failed";
-    uuid: string | null;
-    sha: string | null;
-    message: string | null;
-  };
-
-  const parseAsyncMergeResult = (raw: unknown): AsyncMergeResult => {
-    const body = isRecord(raw) ? raw : {};
-    const details = isRecord(body.details) ? body.details : {};
-    const status = asString(body.status).trim().toLowerCase();
-    return {
-      status: status === "merged" || status === "enqueued" || status === "failed" ? status : "pending",
-      uuid: asString(details.uuid).trim() || null,
-      sha: asString(details.sha).trim() || null,
-      message: asString(details.message).trim() || null,
-    };
-  };
-
-  /**
-   * Clean up after a GitHub Stack merge. This is lighter than
-   * `runPostMergeCleanup`: GitHub rebases and retargets the rest of the stack
-   * itself, so ADE must not auto-rebase child lanes on top of that.
-   */
-  const finishGithubStackMerge = async (
-    repo: GitHubRepoRef,
-    stackNumber: number,
-    prNumbers: number[],
-    args: LandPrArgs,
-  ): Promise<{ branchDeleted: boolean; laneArchived: boolean }> => {
-    const mergedByLogin = await resolveViewerLoginForMerge();
-    let branchDeleted = false;
-    let laneArchived = false;
-    // Top of the stack first, so a lower branch is never deleted while a PR
-    // above it may still use it as its base.
-    for (const prNumber of [...prNumbers].reverse()) {
-      forgetActivityInputs(repo, prNumber);
-      const row = getRowForRepoPr(repo.owner, repo.name, prNumber);
-      if (row) recordMergeOutcome(row.id, { method: args.method, mergedByLogin });
-      if (args.deleteRemoteBranch) {
-        // GitHub retargets the PR above in the background. Until it has, that
-        // PR still has this branch as its base, and deleting it closes that PR.
-        const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-        const headBranch = pull && rawPullHasSameRepoHead(pull, repo) ? branchNameFromRef(asString(pull?.head?.ref)) : "";
-        if (headBranch && headBranch !== "HEAD") {
-          const dependents = await githubService.apiRequest<unknown[]>({
-            method: "GET",
-            path: `/repos/${repo.owner}/${repo.name}/pulls`,
-            query: { state: "open", base: headBranch, per_page: 1 },
-          }).then(({ data }) => (Array.isArray(data) ? data.length : 1)).catch(() => 1);
-          if (dependents > 0) {
-            logger.warn("prs.stack_merge_branch_kept", { repo: `${repo.owner}/${repo.name}`, prNumber, headBranch });
-          } else if (await deleteMergedHeadBranchByCoords(repo, prNumber)) {
-            branchDeleted = true;
-          }
-        }
-      }
-      if (args.archiveLane && row) {
-        try {
-          await laneService.archive({ laneId: row.lane_id });
-          laneArchived = true;
-        } catch (error) {
-          logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(error) });
-        }
-      }
-      if (row) {
-        markHotRefresh([row.id]);
-        await refreshOne(row.id).catch(() => {});
-      }
-    }
-    invalidateGithubSnapshotCache();
-    await githubStackStore.reconcile(repo, stackNumber).catch((error) => {
-      logger.warn("prs.stack_reconcile_after_merge_failed", { stackNumber, error: getErrorMessage(error) });
-    });
-    return { branchDeleted, laneArchived };
-  };
-
-  /** How long `land` waits for a stack merge before it answers "still merging". */
-  const STACK_MERGE_FOREGROUND_WAIT_MS = 45_000;
-  /** How long ADE keeps polling in the background after that. */
-  const STACK_MERGE_BACKGROUND_WAIT_MS = 15 * 60_000;
-  const STACK_MERGE_POLL_INTERVAL_MS = 2_000;
-
-  /**
-   * Merge a PR that is in a GitHub Stack. GitHub supports this only through the
-   * async merge API: it merges every open PR from the stack base up to this one,
-   * all or none, or adds them to the merge queue. Rules run during the merge,
-   * so a rule failure comes back from the poll, not from the first call.
-   */
-  const landGithubStack = async (
-    target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
-    args: LandPrArgs,
-    stackNumber: number,
-    operationId: string,
-  ): Promise<LandResult> => {
-    const { repo, prNumber } = target;
-    const base: LandResult = {
-      prId: args.prId,
-      prNumber,
-      success: false,
-      mergeCommitSha: null,
-      branchDeleted: false,
-      laneArchived: false,
-      error: null,
-    };
-    const finishOperation = (status: "succeeded" | "failed", metadataPatch: Record<string, unknown>) => {
-      try {
-        operationService.finish({ operationId, status, metadataPatch });
-      } catch { /* already finished -- ignore */ }
-    };
-
-    // The stack decides which PRs this merge covers: every open PR at or below
-    // this one. Read it fresh, because a lower layer may have merged already.
-    let stackPrNumbers: number[] = [prNumber];
-    try {
-      const stack = await githubStackStore.reconcile(repo, stackNumber);
-      const self = stack.entries.find((entry) => entry.githubPrNumber === prNumber);
-      if (self) {
-        stackPrNumbers = stack.entries
-          .filter((entry) => entry.position <= self.position && entry.state === "open" && !entry.mergedAt)
-          .sort((a, b) => a.position - b.position)
-          .map((entry) => entry.githubPrNumber);
-        if (!stackPrNumbers.includes(prNumber)) stackPrNumbers.push(prNumber);
-      }
-    } catch (error) {
-      logger.warn("prs.stack_reconcile_before_merge_failed", { stackNumber, error: getErrorMessage(error) });
-    }
-
-    const body: Record<string, unknown> = { merge_method: args.method, merge_action: "default" };
-    if (args.expectedHeadSha?.trim()) body.sha = args.expectedHeadSha.trim();
-    if (args.bypassRules) body.bypass_rules = true;
-
-    let result: AsyncMergeResult;
-    try {
-      const response = await githubService.apiRequest<unknown>({
-        method: "PUT",
-        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/merge-async`,
-        body,
-      });
-      result = parseAsyncMergeResult(response.data);
-    } catch (error) {
-      const rawMsg = getErrorMessage(error);
-      const failure = error as { status?: unknown; responseBody?: unknown };
-      // 409: a merge of this PR is already running. GitHub sends that merge's
-      // id, so follow it instead of starting a second one.
-      const running = failure.status === 409 ? parseAsyncMergeResult(failure.responseBody) : null;
-      if (running?.uuid) {
-        result = running;
-      } else {
-        const userMsg = rawMsg.includes("Resource not accessible")
-          ? "GitHub auth lacks permission to merge PRs. Enable Contents: write and Pull requests: write."
-          : /head branch was modified/i.test(rawMsg)
-            ? "PR head changed since you opened the merge card. Refresh and retry."
-            : rawMsg;
-        finishOperation("failed", { error: rawMsg, stackNumber });
-        return { ...base, error: userMsg, stackPrNumbers };
-      }
-    }
-
-    const poll = async (deadline: number): Promise<AsyncMergeResult> => {
-      let current = result;
-      while (current.status === "pending" && current.uuid && Date.now() < deadline) {
-        await delay(STACK_MERGE_POLL_INTERVAL_MS);
-        try {
-          const { data } = await githubService.apiRequest<unknown>({
-            method: "GET",
-            path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/merge-async/${encodeURIComponent(current.uuid)}`,
-          });
-          current = { ...parseAsyncMergeResult(data), uuid: current.uuid };
-        } catch (error) {
-          // A 404 means GitHub dropped the result. Stop polling; the PR state is
-          // the truth from here.
-          if ((error as { status?: unknown }).status === 404) break;
-        }
-      }
-      if (current.status === "pending") {
-        // Out of time, or GitHub dropped the result. The PR itself still says
-        // whether the merge happened.
-        const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-        if (asString(pull?.merged_at)) {
-          return { ...current, status: "merged", sha: asString(pull?.merge_commit_sha) || null };
-        }
-      }
-      return current;
-    };
-
-    const settle = async (final: AsyncMergeResult): Promise<LandResult> => {
-      if (final.status === "merged") {
-        const cleanup = await finishGithubStackMerge(repo, stackNumber, stackPrNumbers, args);
-        finishOperation("succeeded", {
-          mergeStatus: "merged",
-          mergeCommitSha: final.sha,
-          stackNumber,
-          stackPrNumbers,
-          asyncMergeUuid: final.uuid,
-          ...cleanup,
-        });
-        return { ...base, success: true, mergeCommitSha: final.sha, mergeStatus: "merged", stackPrNumbers, ...cleanup };
-      }
-      if (final.status === "failed") {
-        const message = final.message ?? "GitHub could not merge the stack.";
-        finishOperation("failed", { error: message, stackNumber, stackPrNumbers, asyncMergeUuid: final.uuid });
-        return { ...base, error: message, stackPrNumbers };
-      }
-      if (final.status === "enqueued") {
-        finishOperation("succeeded", { mergeStatus: "enqueued", stackNumber, stackPrNumbers, asyncMergeUuid: final.uuid });
-        for (const number of stackPrNumbers) {
-          const row = getRowForRepoPr(repo.owner, repo.name, number);
-          if (row) markHotRefresh([row.id]);
-        }
-        return {
-          ...base,
-          mergeStatus: "enqueued",
-          stackPrNumbers,
-          error: `GitHub added Stack #${stackNumber} to the merge queue.`,
-        };
-      }
-      return {
-        ...base,
-        mergeStatus: "pending",
-        stackPrNumbers,
-        error: `GitHub is still merging Stack #${stackNumber}. The PRs update when it finishes.`,
-      };
-    };
-
-    result = await poll(Date.now() + STACK_MERGE_FOREGROUND_WAIT_MS);
-    if (result.status !== "pending") return await settle(result);
-
-    // Still running. Answer now, and keep polling so the cleanup still runs.
-    // If the app quits first, the operation stays open and the PR poller shows
-    // the merged state; only the optional lane and branch cleanup is lost.
-    void poll(Date.now() + STACK_MERGE_BACKGROUND_WAIT_MS)
-      .then(async (final) => {
-        result = final;
-        if (final.status !== "pending") await settle(final);
-        else finishOperation("succeeded", { mergeStatus: "pending", stackNumber, stackPrNumbers, asyncMergeUuid: final.uuid });
-      })
-      .catch((error) => {
-        logger.warn("prs.stack_merge_background_poll_failed", { stackNumber, error: getErrorMessage(error) });
-      });
-    return await settle(result);
-  };
+  const githubStackMerge = createGithubStackMerge({
+    githubService,
+    // Declared further down; read at call time.
+    githubStackStore: { reconcile: (repo, stackNumber) => githubStackStore.reconcile(repo, stackNumber) },
+    operationService,
+    laneService,
+    logger,
+    fetchPr,
+    sameRepoHeadBranch,
+    deleteRemoteHeadBranch,
+    getRowForRepoPr,
+    recordMergeOutcome: (prId, outcome) => recordMergeOutcome(prId, outcome),
+    resolveViewerLoginForMerge: () => resolveViewerLoginForMerge(),
+    forgetActivityInputs,
+    markHotRefresh: (prIds) => markHotRefresh(prIds),
+    refreshOne,
+    invalidateGithubSnapshotCache,
+    delay,
+  });
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
     // A merge is a GitHub API call. It never needed a local row, so this
@@ -8638,27 +8417,10 @@ export function createPrService({
     };
     const githubStackNumber = githubStackStore.knownStackNumberForPr(repo, prNumber);
     if (githubStackNumber) {
-      return await landGithubStack(target, args, githubStackNumber, op.operationId);
+      return await githubStackMerge.land(target, args, githubStackNumber, op.operationId);
     }
 
-    const formatMergeError = (rawMsg: string): string => {
-      if (rawMsg.includes("Resource not accessible by personal access token")) {
-        return "GitHub auth lacks permission to merge PRs. For gh auth or classic PATs, enable the repo scope. For fine-grained PATs, enable Contents: write and Pull requests: write.";
-      }
-      if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
-        return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
-      }
-      // A 409 from the merge API with an explicit `sha` we supplied means the
-      // head advanced since the merge dialog was opened (`Head branch was
-      // modified`). Distinguish it from a generic conflict.
-      if (args.expectedHeadSha && (rawMsg.includes("409") || /head branch was modified/i.test(rawMsg))) {
-        return "PR head changed since you opened the merge dialog — refresh and retry.";
-      }
-      if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
-        return "PR has merge conflicts. Rebase or resolve conflicts before merging.";
-      }
-      return rawMsg;
-    };
+    const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
 
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });

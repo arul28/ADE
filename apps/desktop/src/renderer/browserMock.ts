@@ -3582,6 +3582,21 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+/** A PR's stack membership, the way the host's githubStackStore builds it. */
+function mockStackMembership(stack: any, entry: any): any {
+  const isOpen = (candidate: any) => candidate.state === "open" && !candidate.mergedAt;
+  return {
+    id: stack.id,
+    number: stack.number,
+    size: stack.entries.length,
+    position: entry.position,
+    baseBranch: stack.baseBranch,
+    openThroughHere: isOpen(entry)
+      ? stack.entries.filter((candidate: any) => candidate.position <= entry.position && isOpen(candidate)).length
+      : 0,
+  };
+}
+
 // A demo GitHub Stack: #151 sits on #142, so previews can show the stack UI.
 {
   const stackPrs = [142, 151];
@@ -3609,15 +3624,9 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
         headSha: `mock-sha-${pull.githubPrNumber}`,
       })),
     }];
+    const stack = BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks[0];
     pulls.forEach((pull: any, index: number) => {
-      pull.stack = {
-        id: "mock-stack-7",
-        number: 7,
-        size: pulls.length,
-        position: index + 1,
-        baseBranch: "main",
-        openThroughHere: index + 1,
-      };
+      pull.stack = mockStackMembership(stack, stack.entries[index]);
     });
   }
 }
@@ -7696,7 +7705,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         // A stacked PR merges with every open PR below it, as the host's async stack merge does.
         const stackPrNumbers = stack
           ? (MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries ?? [])
-              .filter((entry: any) => entry.position <= stack.position)
+              .filter((entry: any) => entry.position <= stack.position && entry.state === "open" && !entry.mergedAt)
               .map((entry: any) => entry.githubPrNumber)
           : null;
         // Record the merge, so the next list read shows it as the host would.
@@ -7820,14 +7829,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             (item: any) => item.githubPrNumber === entry.githubPrNumber,
           );
           if (!pull) continue;
-          pull.stack = {
-            id: stack.id,
-            number: stack.number,
-            size: stack.entries.length,
-            position: entry.position,
-            baseBranch: stack.baseBranch,
-            openThroughHere: entry.position,
-          };
+          pull.stack = mockStackMembership(stack, entry);
         }
         return stack;
       },

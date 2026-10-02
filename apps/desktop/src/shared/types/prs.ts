@@ -614,9 +614,9 @@ export type LandResult = {
    * `enqueued` and `pending` come back with `success: false` and a message in
    * `error`, so an older client never reads them as merged.
    */
-  mergeStatus?: "merged" | "enqueued" | "pending" | null;
+  mergeStatus?: "merged" | "enqueued" | "pending";
   /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
-  stackPrNumbers?: number[] | null;
+  stackPrNumbers?: number[];
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";
