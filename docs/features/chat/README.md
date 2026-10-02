@@ -1988,7 +1988,12 @@ variant `lane_setup` and cardId `lane-setup:<launchId>` into its transcript
 stand-in; each row's `key` is its stage id and the template name rides in the
 `Template` metric) — first right after the opening `user_message` lands, then
 merged in place as the remaining stages settle — so the setup record stays in the thread after reload
-and on every device, including the `ade code` TUI's generic card rows.
+and on every device, including the `ade code` TUI's generic card rows. A
+device that did not start the launch holds only this card; when the card is
+failed, the desktop fetches the launch from the chat's own machine
+(`chat.getLaunch` on the chat's binding) so the live, actionable card — full
+error, Retry / Delete / Start anyway — replaces the payload instead of a
+truncated row with no actions.
 
 **Durability.** Launch records persist under `.ade/cache/chat-launches/`. A
 brain restart turns a running launch into a `failed` one ("interrupted when ADE

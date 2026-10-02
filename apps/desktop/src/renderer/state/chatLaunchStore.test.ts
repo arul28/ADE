@@ -11,6 +11,7 @@ import {
   getChatLaunchEntry,
   getChatLaunchOriginClientId,
   hydrateChatLaunches,
+  hydrateChatLaunchFromHost,
   insertOptimisticChatLaunch,
   markChatLaunchStartFailed,
   resetChatLaunchStartFailure,
@@ -341,5 +342,52 @@ describe("chat launch render isolation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("hydrateChatLaunchFromHost", () => {
+  afterEach(() => {
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  it("fetches a failed launch from the chat's machine and installs it as host-seen", async () => {
+    const failed = optimistic("launch-remote", {
+      phase: "failed",
+      error: "Claude Code is detected, but ADE chat could not authenticate it.",
+      stages: [
+        { id: "fetch", status: "done", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "checkout", status: "done", startedAt: null, endedAt: null, percent: null, detail: null, error: null },
+        { id: "agent", status: "failed", startedAt: null, endedAt: null, percent: null, detail: null, error: "not signed in" },
+      ],
+    });
+    const get = vi.fn(async () => failed);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-remote", BINDING_B);
+    });
+
+    expect(get).toHaveBeenCalledWith({ launchId: "launch-remote" }, BINDING_B);
+    const entry = getChatLaunchEntry("launch-remote");
+    // Host-seen and bound to the machine that answered, so Retry targets it
+    // and the live card replaces the transcript payload.
+    expect(entry?.hostSeen).toBe(true);
+    expect(entry?.binding).toEqual(BINDING_B);
+    expect(entry?.snapshot.phase).toBe("failed");
+  });
+
+  it("asks an unknown launch once, then waits out the cooldown instead of polling", async () => {
+    const get = vi.fn(async () => null);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-missing", BINDING_B);
+    });
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-missing", BINDING_B);
+    });
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(getChatLaunchEntry("launch-missing")).toBeNull();
   });
 });

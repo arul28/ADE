@@ -51,7 +51,8 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
-import { getChatLaunchEntry, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import { extractError } from "../../../lib/format";
 import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { showToast } from "../../app/toast/toastStore";
@@ -877,6 +878,7 @@ function CollapsedSummary({
 export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   const launchId = laneSetupLaunchIdFromCardId(card.cardId);
   const storeSnapshot = useChatLaunchSnapshot(launchId);
+  const { binding } = useChatRuntimeScope();
   const [expanded, setExpanded] = useState(false);
   // The host writes the finished card into the transcript. When the store
   // still holds a running snapshot, a live update was lost: trust the
@@ -887,6 +889,15 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   useEffect(() => {
     if (storeBehindTranscript) refreshChatLaunch(launchId);
   }, [storeBehindTranscript, launchId]);
+  // A failed launch this window never started — a chat opened on another
+  // device. The payload card can only show a truncated row and no actions;
+  // ask the chat's own machine for the launch so the live, actionable card
+  // takes over. Only failures: a running card already streams through sync.
+  const payloadFailed = (card.rows ?? []).some((row) => row.icon === "fail" || row.tone === "warning");
+  useEffect(() => {
+    if (storeSnapshot || !launchId || !payloadFailed) return;
+    hydrateChatLaunchFromHost(launchId, binding);
+  }, [binding, launchId, payloadFailed, storeSnapshot]);
   const live = storeBehindTranscript ? null : storeSnapshot;
 
   if (live && (isChatLaunchPending(live) || live.phase === "running")) {
@@ -927,9 +938,18 @@ function LaneSetupCardFromPayload({
         const status = stageStatusFromCardRow(row);
         const id = stageIdForCardRow(row);
         const icon = id ? launchStageIcon(id, { kind, templateName }) : Wrench;
+        // The host folds a stage's error into the row detail. Show it in full
+        // under the row, the way the live card does, instead of truncating the
+        // only explanation to one line.
+        const error = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
-            <StageLine icon={icon} status={status} label={row.text} detail={row.detail ?? null} compact />
+            <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />
+            {error ? (
+              <p className="mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-[10.5px] leading-snug text-amber-200/85">
+                {error}
+              </p>
+            ) : null}
           </li>
         );
       })}

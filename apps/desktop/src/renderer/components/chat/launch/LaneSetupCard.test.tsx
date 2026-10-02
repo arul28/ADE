@@ -264,6 +264,16 @@ describe("LaneSetupTranscriptCard", () => {
     expect(screen.getByText("Lane setup failed")).toBeTruthy();
   });
 
+  it("asks the chat's machine for a failed launch it does not hold", async () => {
+    const get = vi.fn(async () => null);
+    chatLaunchApi.get = get;
+    const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
+    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
+    // Without a provider the scope is the bound machine (no pin), so the
+    // request carries no binding — it still must go out.
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ launchId: "launch-1" }, undefined));
+  });
+
   it("reads payload rows by stage key, with warnings and the template from the Template metric", () => {
     const done = snapshot({
       phase: "completed",
