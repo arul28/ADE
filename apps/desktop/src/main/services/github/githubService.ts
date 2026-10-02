@@ -241,6 +241,9 @@ class GithubCredentialAttemptError extends Error {
     message: string,
     readonly authFailure: GitHubAuthFailure,
     readonly rateLimit: GitHubRateLimitState | null,
+    /** The HTTP status and parsed body of a REST failure, when there was one. */
+    readonly status: number | null = null,
+    readonly responseBody: unknown = null,
   ) {
     super(message);
     this.name = "GithubCredentialAttemptError";
@@ -1594,6 +1597,8 @@ export function createGithubService({
           message + detail,
           failure.authFailure,
           failure.rateLimit,
+          response.status,
+          data,
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {

@@ -8501,25 +8501,21 @@ export function createPrService({
       result = parseAsyncMergeResult(response.data);
     } catch (error) {
       const rawMsg = getErrorMessage(error);
-      // 409: a merge of this PR is already running. GitHub sends its id in the
-      // body, but the request helper keeps only the message, so report it as
-      // running and let the PR refresh show the end state.
-      if (/merge request already exists/i.test(rawMsg)) {
-        finishOperation("succeeded", { mergeStatus: "pending", stackNumber, stackPrNumbers });
-        return {
-          ...base,
-          mergeStatus: "pending",
-          stackPrNumbers,
-          error: `GitHub is already merging Stack #${stackNumber}. The PRs update when it finishes.`,
-        };
+      const failure = error as { status?: unknown; responseBody?: unknown };
+      // 409: a merge of this PR is already running. GitHub sends that merge's
+      // id, so follow it instead of starting a second one.
+      const running = failure.status === 409 ? parseAsyncMergeResult(failure.responseBody) : null;
+      if (running?.uuid) {
+        result = running;
+      } else {
+        const userMsg = rawMsg.includes("Resource not accessible")
+          ? "GitHub auth lacks permission to merge PRs. Enable Contents: write and Pull requests: write."
+          : /head branch was modified/i.test(rawMsg)
+            ? "PR head changed since you opened the merge card. Refresh and retry."
+            : rawMsg;
+        finishOperation("failed", { error: rawMsg, stackNumber });
+        return { ...base, error: userMsg, stackPrNumbers };
       }
-      const userMsg = rawMsg.includes("Resource not accessible")
-        ? "GitHub auth lacks permission to merge PRs. Enable Contents: write and Pull requests: write."
-        : /head branch was modified/i.test(rawMsg)
-          ? "PR head changed since you opened the merge card. Refresh and retry."
-          : rawMsg;
-      finishOperation("failed", { error: rawMsg, stackNumber });
-      return { ...base, error: userMsg, stackPrNumbers };
     }
 
     const poll = async (deadline: number): Promise<AsyncMergeResult> => {
@@ -8535,7 +8531,15 @@ export function createPrService({
         } catch (error) {
           // A 404 means GitHub dropped the result. Stop polling; the PR state is
           // the truth from here.
-          if (/404|not found/i.test(getErrorMessage(error))) break;
+          if ((error as { status?: unknown }).status === 404) break;
+        }
+      }
+      if (current.status === "pending") {
+        // Out of time, or GitHub dropped the result. The PR itself still says
+        // whether the merge happened.
+        const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+        if (asString(pull?.merged_at)) {
+          return { ...current, status: "merged", sha: asString(pull?.merge_commit_sha) || null };
         }
       }
       return current;

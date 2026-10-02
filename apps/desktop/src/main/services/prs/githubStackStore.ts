@@ -178,6 +178,7 @@ export function createGithubStackStore(args: {
     const memberships = new Map<string, GitHubPrStackMembership>();
     for (const stack of list(repo)) {
       const size = stack.entries.length;
+      const isOpen = (entry: (typeof stack.entries)[number]) => entry.state === "open" && !entry.mergedAt;
       for (const entry of stack.entries) {
         memberships.set(
           repoPrKey(stack.repoOwner, stack.repoName, entry.githubPrNumber),
@@ -187,6 +188,9 @@ export function createGithubStackStore(args: {
             size,
             position: entry.position,
             baseBranch: stack.baseBranch,
+            openThroughHere: isOpen(entry)
+              ? stack.entries.filter((other) => other.position <= entry.position && isOpen(other)).length
+              : 0,
           },
         );
       }

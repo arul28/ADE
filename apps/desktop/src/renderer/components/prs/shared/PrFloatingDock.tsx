@@ -467,10 +467,18 @@ function PrStackMergeCard({
 }) {
   const [method, setMethod] = React.useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
   const [armed, setArmed] = React.useState(false);
-  React.useEffect(() => setArmed(false), [pr.id, status?.headSha]);
+  const [bypass, setBypass] = React.useState(false);
+  React.useEffect(() => {
+    setArmed(false);
+    setBypass(false);
+  }, [pr.id, status?.headSha]);
   const canMerge = pr.state === "open";
   const disabled = actionBusy || Boolean(mergeBlockedReason);
-  const scope = stack.position > 1 ? `PRs 1–${stack.position} of this stack` : "this PR";
+  // Older hosts do not send `openThroughHere`; the position is the upper bound.
+  const count = stack.openThroughHere || stack.position;
+  const scope = count > 1 ? `the ${count} open PRs up to #${pr.githubPrNumber}` : "this PR";
+  // GitHub bypasses rules only for a merge of the bottom open PR.
+  const canBypass = count === 1;
 
   const merge = () => {
     if (!armed) {
@@ -479,7 +487,7 @@ function PrStackMergeCard({
     }
     setArmed(false);
     writeLastMergeMethod(method);
-    onMerge({ method, bypassRules: false, expectedHeadSha: status?.headSha ?? undefined });
+    onMerge({ method, bypassRules: canBypass && bypass, expectedHeadSha: status?.headSha ?? undefined });
   };
 
   return (
@@ -519,6 +527,17 @@ function PrStackMergeCard({
               </button>
             ))}
           </div>
+          {canBypass ? (
+            <label className="mb-2 flex items-center gap-2 text-[11.5px]" style={{ color: bypass ? COLORS.danger : COLORS.textMuted, fontFamily: SANS_FONT, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={bypass}
+                onChange={(event) => { setBypass(event.target.checked); setArmed(false); }}
+                data-testid="pr-stack-merge-bypass"
+              />
+              Bypass branch rules (needs bypass permission)
+            </label>
+          ) : null}
           <button
             type="button"
             onClick={merge}
@@ -530,7 +549,7 @@ function PrStackMergeCard({
             style={{ color: "#fff", background: MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
           >
             {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
-            {armed ? `Confirm: merge ${scope}` : stack.position > 1 ? `Merge stack up to #${pr.githubPrNumber}` : "Merge"}
+            {armed ? `Confirm: merge ${scope}` : count > 1 ? `Merge ${count} PRs` : bypass ? "Bypass & merge" : "Merge"}
           </button>
         </>
       ) : null}

@@ -414,16 +414,30 @@ describe("PrDetailTimelineRails — Overview layout", () => {
     expect(rows[1]!.getAttribute("data-bot")).toBe("true");
   });
 
-  it("replaces ADE merge controls with GitHub guidance for a stacked PR", () => {
+  it.each([
+    { name: "a PR with open PRs below it", openThroughHere: 2, bypass: false, label: /Merge 2 PRs/ },
+    { name: "the bottom open PR, with bypass", openThroughHere: 1, bypass: true, label: /Bypass & merge/ },
+  ])("merges a stacked PR as one stack merge after a confirm click: $name", ({ openThroughHere, bypass, label }) => {
+    const onMerge = vi.fn();
     renderRails({
       pr: {
         ...layoutPr,
-        stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main" },
+        stack: { id: "stack-18", number: 18, size: 3, position: 2, baseBranch: "main", openThroughHere },
       } as PrWithConflicts,
+      status: { headSha: "abc123" } as PrStatus,
+      onMerge,
     });
     expect(screen.getByText("GitHub Stack 2 of 3")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Review and merge on GitHub/ })).toBeTruthy();
     expect(screen.queryByTestId("pr-merge-anyway")).toBeNull();
+    const bypassBox = screen.queryByTestId("pr-stack-merge-bypass");
+    // GitHub bypasses rules only from the bottom open PR of a stack.
+    expect(Boolean(bypassBox)).toBe(openThroughHere === 1);
+    if (bypass) fireEvent.click(bypassBox!);
+
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    expect(onMerge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Confirm: merge/ }));
+    expect(onMerge).toHaveBeenCalledWith("squash", expect.objectContaining({ bypassRules: bypass, expectedHeadSha: "abc123" }));
   });
 });
 

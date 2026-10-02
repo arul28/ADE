@@ -302,6 +302,12 @@ export type GitHubPrStackMembership = {
   /** One-based position, where 1 is closest to the stack base. */
   position: number;
   baseBranch: string;
+  /**
+   * How many open PRs a merge of this PR covers: this one and every open PR
+   * below it. 1 means it is the bottom open PR, the only one GitHub lets a
+   * merge bypass rules from. 0 when this PR is not open.
+   */
+  openThroughHere?: number;
 };
 
 export type GitHubPrStackEntry = {

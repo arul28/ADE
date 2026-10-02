@@ -315,6 +315,7 @@ interface BuildServiceOpts {
   projectConfigService?: any;
   aiIntegrationService?: any;
   onHotRefreshChanged?: () => void;
+  operationService?: any;
   /**
    * What `git for-each-ref refs/remotes/` reports. Branch names mean "these are
    * pushed"; `"unavailable"` makes the probe fail. Default is an empty listing,
@@ -368,7 +369,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     projectId: "proj-1",
     projectRoot: "/tmp/test-project",
     laneService,
-    operationService: makeOperationService(),
+    operationService: opts.operationService ?? makeOperationService(),
     githubService,
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
@@ -673,6 +674,8 @@ describe("prService.getForLane", () => {
       size: 2,
       position: 2,
       baseBranch: "main",
+      // #91 merges together with the open #90 below it.
+      openThroughHere: 2,
     };
     expect(service.getForLane(lane.id)?.stack).toEqual(expectedStack);
     expect(service.listAll()[0]?.stack).toEqual(expectedStack);
@@ -6184,27 +6187,143 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
-  it("directs GitHub stack merges to GitHub before starting a merge request", async () => {
+  /**
+   * A stacked PR (#91, position 2 over open #90 in Stack #19) merges through
+   * the async merge API. `replies` scripts the PUT, then each poll in order.
+   */
+  const buildStackLand = (replies: Array<{ status?: number; body: unknown }>) => {
     const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
     const db = makeMockDb();
     installPullRequestRowStore(db, [row]);
     const getPullRequestRow = db.get.getMockImplementation();
     db.get.mockImplementation((sql: string, params: unknown[] = []) => {
-      if (String(sql).includes("from github_pr_stack_entries")) {
-        return { github_stack_number: 19 };
-      }
+      if (String(sql).includes("from github_pr_stack_entries")) return { github_stack_number: 19 };
       return getPullRequestRow?.(sql, params) ?? null;
     });
-    const githubService = makeGithubService();
-    const { service } = buildService({ db, githubService });
+    const stackPayload = {
+      id: 1019, number: 19, node_id: "PRS_19", base: { ref: "main" }, open: true, created_at: "2026-10-01T00:00:00Z",
+      pull_requests: [
+        { number: 89, state: "closed", draft: false, merged_at: "2026-09-30T00:00:00Z", head: { ref: "s-0", sha: "s0" } },
+        { number: 90, state: "open", draft: false, merged_at: null, head: { ref: "s-1", sha: "s1" } },
+        { number: 91, state: "open", draft: false, merged_at: null, head: { ref: "s-2", sha: "s2" } },
+        { number: 92, state: "open", draft: false, merged_at: null, head: { ref: "s-3", sha: "s3" } },
+      ],
+    };
+    const queue = [...replies];
+    const asyncCalls: Array<{ method: string; path: string; body?: any }> = [];
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string; body?: unknown }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks/19`) return { data: stackPayload };
+        if (args.path.includes("/merge-async")) {
+          asyncCalls.push(args as any);
+          const reply = queue.length > 1 ? queue.shift()! : queue[0]!;
+          if (reply.status && reply.status >= 400) {
+            throw Object.assign(new Error((reply.body as any)?.details?.message ?? "failed"), {
+              status: reply.status,
+              responseBody: reply.body,
+            });
+          }
+          return { data: reply.body };
+        }
+        if (args.method === "GET" && /\/pulls\/\d+$/.test(args.path)) return { data: { state: "open", merged_at: null } };
+        return { data: {} };
+      }),
+    });
+    const operationService = makeOperationService();
+    const { service } = buildService({ db, githubService, operationService });
+    return { service, asyncCalls, operationService };
+  };
 
-    const result = await service.land({ prId: "pr-stacked", method: "squash" });
+  const pending = (uuid = "u-1") => ({ status: "pending", details: { message: "Merge request is in progress.", uuid } });
+  const merged = { status: "merged", details: { message: "Pull request was merged.", sha: "merge-sha" } };
 
-    expect(result).toEqual(expect.objectContaining({
-      success: false,
-      error: "PR #91 is in GitHub Stack #19. Review and merge the stack on GitHub.",
+  /** Run `land`, stepping the 2 s poll timer until it answers. */
+  const landWithTimers = async <T,>(run: () => Promise<T>, maxMs = 60_000): Promise<T> => {
+    let settled = false;
+    const promise = run().finally(() => { settled = true; });
+    for (let elapsed = 0; !settled && elapsed <= maxMs; elapsed += 2_000) {
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    return await promise;
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    {
+      name: "accepted, then merged",
+      replies: [{ status: 202, body: pending() }, { body: pending() }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
+      name: "already running (409) follows the running merge",
+      replies: [{ status: 409, body: { status: "pending", details: { message: "A merge request already exists for this pull request.", uuid: "u-running" } } }, { body: merged }],
+      expected: { success: true, mergeStatus: "merged", mergeCommitSha: "merge-sha", error: null },
+      puts: 1,
+    },
+    {
+      name: "a rule fails during the merge",
+      replies: [{ status: 202, body: pending() }, { body: { status: "failed", details: { message: "Required status check \"ci\" is expected." } } }],
+      expected: { success: false, mergeCommitSha: null, error: "Required status check \"ci\" is expected." },
+      puts: 1,
+    },
+    {
+      name: "the head moved since the card opened",
+      replies: [{ status: 400, body: { status: "failed", details: { message: "Pull request head branch was modified." } } }],
+      expected: { success: false, error: "PR head changed since you opened the merge card. Refresh and retry." },
+      puts: 1,
+    },
+    {
+      name: "GitHub queued the stack",
+      replies: [{ status: 202, body: pending() }, { body: { status: "enqueued", details: { message: "Enqueued.", uuid: "u-1" } } }],
+      expected: { success: false, mergeStatus: "enqueued", error: "GitHub added Stack #19 to the merge queue." },
+      puts: 1,
+    },
+  ])("merges a stacked PR with the async merge API: $name", async ({ replies, expected, puts }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { service, asyncCalls } = buildStackLand(replies);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "rebase", expectedHeadSha: "s2" }));
+
+    expect(result).toEqual(expect.objectContaining({ ...expected, stackPrNumbers: [90, 91] }));
+    const putCalls = asyncCalls.filter((call) => call.method === "PUT");
+    expect(putCalls).toHaveLength(puts);
+    expect(putCalls[0]).toEqual(expect.objectContaining({
+      path: `/repos/${REPO.owner}/${REPO.name}/pulls/91/merge-async`,
+      body: expect.objectContaining({ merge_method: "rebase", merge_action: "default", sha: "s2" }),
     }));
-    expect(githubService.apiRequest).not.toHaveBeenCalled();
+    // A 409 polls the merge GitHub already runs, not a new one.
+    if (replies[0]!.status === 409) {
+      expect(asyncCalls.some((call) => call.method === "GET" && call.path.endsWith("/merge-async/u-running"))).toBe(true);
+    }
+  });
+
+  it("answers 'still merging' after the wait, then finishes the merge in the background", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Pending for about 2 minutes of polls, then merged.
+    const replies = [{ status: 202, body: pending() }, ...Array.from({ length: 60 }, () => ({ body: pending() })), { body: merged }];
+    const { service, operationService } = buildStackLand(replies);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toEqual(expect.objectContaining({ success: false, mergeStatus: "pending" }));
+    expect(result.error).toMatch(/still merging/);
+    expect(operationService.finish).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({
+      status: "succeeded",
+      metadataPatch: expect.objectContaining({ mergeStatus: "merged", mergeCommitSha: "merge-sha", stackPrNumbers: [90, 91] }),
+    }));
+  });
+
+  it("refuses auto-merge for a stacked PR", async () => {
+    const { service } = buildStackLand([{ body: merged }]);
+    await expect(service.setAutoMerge({ prId: "pr-stacked", enabled: true, method: "squash" }))
+      .rejects.toThrow(/does not support auto-merge for stacked PRs/);
   });
 
   it("does not send a merge request for draft PRs", async () => {
