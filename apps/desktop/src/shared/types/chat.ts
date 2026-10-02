@@ -4468,6 +4468,14 @@ export type AgentChatSteerArgs = {
    * thread), so read `activeTurnInterruptContinues` for the labelling fact.
    */
   dispatchMode?: AgentChatDispatchSteerMode;
+  /**
+   * A person typed this message in a composer (desktop, or a paired phone over
+   * sync). Claude only: a person's interrupt keeps a slow WebFetch or
+   * WebSearch running and moves a running Bash command to the background,
+   * instead of cancelling the fetch or waiting for the command. Agent and CLI
+   * senders leave it unset.
+   */
+  sentByUser?: boolean;
 };
 
 export type AgentChatSteerResult = {

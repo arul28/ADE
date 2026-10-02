@@ -679,7 +679,7 @@ function claudeArgsCarrySessionId(args: readonly string[]): boolean {
  *
  * A fork (`--resume <id> --fork-session`) is the exception: it also starts a
  * new conversation, and Claude Code accepts `--session-id` to name it. The
- * 2.1.284 binary rejects the combination only without the fork flag: "Error:
+ * 2.1.287 binary rejects the combination only without the fork flag: "Error:
  * --session-id can only be used with --continue or --resume if --fork-session
  * is also specified."
  */
@@ -2149,7 +2149,7 @@ const CLAUDE_SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 /**
  * Claude same-folder copy with the new conversation's id chosen up front:
  * `claude … --resume <source> --fork-session --session-id <new>`. Claude Code
- * 2.1.284 accepts `--session-id` beside `--resume` only together with
+ * 2.1.287 accepts `--session-id` beside `--resume` only together with
  * `--fork-session` (see {@link claudeArgsResumeExistingSession}), so ADE knows
  * the copy's id before the process starts instead of discovering it later.
  *

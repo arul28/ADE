@@ -1479,10 +1479,10 @@ function activeTurnSendCopy(
   if (mode === "queue") {
     return { label: "Send after turn", description: "When this turn finishes." };
   }
-  return {
-    label: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
-    description: `Stop and redirect ${capability.agentLabel} now.`,
-  };
+  // Cursor's interrupt cancels the run; Claude's keeps slow tools running.
+  return capability.interruptContinues
+    ? { label: "Interrupt & continue", description: `Stop and redirect ${capability.agentLabel} now.` }
+    : { label: "Interrupt & send", description: `Redirect ${capability.agentLabel} now.` };
 }
 
 function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isClaudeHousekeepingTask,
   parseClaudeResourceLinks,
+  parseClaudeToolCallNotification,
   readClaudeSpawnDepth,
   resourceLinkCopyPaths,
 } from "./claudeAgentSdkFields";
@@ -47,5 +48,37 @@ describe("claude Agent SDK field readers", () => {
       { name: "README" },
       { path: "apps/desktop/src/foo.ts" },
     ])).toEqual(["apps/desktop/src/foo.ts"]);
+  });
+
+  const notification = (taskType: string, status: string, result: string) => [
+    "<task-notification>",
+    "<tool-use-id>toolu_1</tool-use-id>",
+    `<task-type>${taskType}</task-type>`,
+    `<status>${status}</status>`,
+    "<summary>The WebFetch call finished; its result follows.</summary>",
+    `<result>\n${result}\n</result>`,
+    "</task-notification>",
+  ].join("\n");
+
+  it.each([
+    {
+      name: "a fetched page that quotes the closing tag keeps its whole body",
+      content: notification("tool_call", "completed", "page says </result> mid-text"),
+      expected: { toolUseId: "toolu_1", status: "completed", result: "page says </result> mid-text" },
+    },
+    {
+      name: "text blocks are read like a string",
+      content: [{ type: "text", text: notification("tool_call", "failed", "HTTP 503") }],
+      expected: { toolUseId: "toolu_1", status: "failed", result: "HTTP 503" },
+    },
+    {
+      name: "a stopped call reads as interrupted",
+      content: notification("tool_call", "stopped", ""),
+      expected: { toolUseId: "toolu_1", status: "interrupted", result: "" },
+    },
+    { name: "a shell task's notification is not a tool call's", content: notification("local_bash", "completed", "ok"), expected: null },
+    { name: "a plain prompt is not a notification", content: "<tool-use-id>toolu_1</tool-use-id>", expected: null },
+  ])("reads a detached tool call's <task-notification>: $name", ({ content, expected }) => {
+    expect(parseClaudeToolCallNotification(content)).toEqual(expected);
   });
 });

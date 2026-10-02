@@ -169,7 +169,7 @@ export type HarnessSubagentAgentType = { key: HarnessPresetAgentKey; label: stri
  *
  * Every entry here was read off the harness or its pinned SDK, never guessed:
  * - claude — `AgentDefinition.effort` and `.model` in `@anthropic-ai/claude-agent-sdk`
- *   0.3.284 (`sdk.d.ts`), plus `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)`.
+ *   0.3.287 (`sdk.d.ts`), plus `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)`.
  * - codex — the `agents` table of codex-cli 0.155.1's own config schema
  *   (`default_subagent_model`, `default_subagent_reasoning_effort`) and
  *   `AgentRoleToml { description, config_file, nickname_candidates }`.

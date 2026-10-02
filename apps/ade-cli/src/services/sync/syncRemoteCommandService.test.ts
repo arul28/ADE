@@ -1457,10 +1457,12 @@ describe("createSyncRemoteCommandService", () => {
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
     }))).resolves.toEqual({ ok: true, steerId: "steer-1", queued: false });
+    // A paired controller sends what its user typed.
     expect(steerUserMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "Redirect the active turn.",
       dispatchMode: "interrupt",
+      sentByUser: true,
     });
 
     await expect(service.execute(makePayload("chat.cancelSteer", {

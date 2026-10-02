@@ -7,6 +7,7 @@ import {
   createClaudeStreamFixture,
   createMemoryTurnUsageLedger,
   createService,
+  getSessionMessages,
   makeDefaultClaudeSession,
   path,
   query,
@@ -2344,6 +2345,109 @@ describe("createAgentChatService", () => {
         synthetic: true,
         source: "claude_turn_finalization",
         finalTurnStatus: "completed",
+      });
+    });
+
+    describe("a WebFetch that steps aside for a person's interrupt", () => {
+      const lateResult = "Origin is 203.0.113.7.";
+      const notificationRow = {
+        type: "user",
+        uuid: "notification-1",
+        session_id: "sdk-session-detached",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            "<task-notification>",
+            "<tool-use-id>fetch-1</tool-use-id>",
+            "<task-type>tool_call</task-type>",
+            "<status>completed</status>",
+            "<summary>The WebFetch call finished; its result follows.</summary>",
+            `<result>\n${lateResult}\n</result>`,
+            "</task-notification>",
+          ].join("\n"),
+        },
+      };
+
+      // Turn 1 calls WebFetch and gets Claude Code's placeholder in place of its
+      // result; turn 2 ("Anything else?") only reports a result.
+      const startDetachedFetch = async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        let releaseSecondTurn: () => void = () => {};
+        const secondTurnSent = new Promise<void>((resolve) => { releaseSecondTurn = resolve; });
+        const send = vi.fn(async (message: unknown) => {
+          if (claudeInputText(message).includes("Anything else?")) releaseSecondTurn();
+        });
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-session-detached", slash_commands: [] };
+            return;
+          }
+          yield {
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", id: "fetch-1", name: "WebFetch", input: { url: "https://example.com/slow" } },
+            },
+          };
+          yield {
+            type: "user",
+            parent_tool_use_id: null,
+            message: { role: "user", content: [{ type: "tool_result", tool_use_id: "fetch-1", content: "[Still running.]" }] },
+            tool_use_result: { detachedToolCall: true },
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          await secondTurnSent;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-detached",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        } as any);
+        const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await service.runSessionTurn({ sessionId: session.id, text: "Fetch the slow page." });
+        const fetchCall = events.find((event) => event.event.type === "tool_call" && event.event.itemId === "fetch-1");
+        const fetchTurnId = fetchCall?.event.type === "tool_call" ? fetchCall.event.turnId : undefined;
+        expect(fetchTurnId).toBeTruthy();
+        const fetchResults = () => events.flatMap((event) => (
+          event.event.type === "tool_result" && event.event.itemId === "fetch-1" ? [event.event] : []
+        ));
+        return { service, session, fetchTurnId, fetchResults };
+      };
+
+      it("keeps the row running past its turn and settles it with the late result under the turn that called it", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+        expect(fetchResults()).toEqual([]);
+
+        vi.mocked(getSessionMessages).mockResolvedValue([notificationRow] as any);
+        await service.runSessionTurn({ sessionId: session.id, text: "Anything else?" });
+
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", result: lateResult, turnId: fetchTurnId, status: "completed" }),
+        ]);
+      });
+
+      // Claude Code drops a detached call on any interrupt, so nothing else
+      // would ever settle the row.
+      it("closes the row as interrupted on Stop", async () => {
+        const { service, session, fetchTurnId, fetchResults } = await startDetachedFetch();
+
+        await service.interrupt({ sessionId: session.id });
+        expect(fetchResults()).toEqual([
+          expect.objectContaining({ tool: "WebFetch", turnId: fetchTurnId, status: "interrupted" }),
+        ]);
       });
     });
 

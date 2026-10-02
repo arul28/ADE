@@ -12881,6 +12881,7 @@ export function AgentChatPane({
             && supportsActiveTurnDispatchMode(selectedSession?.provider, activeTurnDispatchMode)
             ? { dispatchMode: activeTurnDispatchMode }
             : {}),
+          sentByUser: true,
         }, chatRuntimePinRef.current);
       };
 

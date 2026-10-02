@@ -684,7 +684,7 @@ describe("AgentChatComposer", () => {
     const menu = screen.getByRole("menu", { name: "Send options" });
     expect(menu.textContent).toContain("After the current tool step.");
     expect(menu.textContent).toContain("When this turn finishes.");
-    expect(menu.textContent).toContain("Stop and redirect Claude now.");
+    expect(menu.textContent).toContain("Redirect Claude now.");
   });
 
   const CURSOR_STEER_OVERRIDES = {
