@@ -480,6 +480,42 @@ export function formatWorkingDuration(elapsedMs: number): string {
   return `${Math.floor(totalHours / 24)}d`;
 }
 
+/**
+ * How long a LIVE turn may produce no output before ADE calls it stalled.
+ *
+ * A provider that accepts a request and then stops answering looks identical to
+ * a slow one: no error, no result, no event — only silence, and it can stay that
+ * way forever. This is the bar at which a surface stops presenting the turn as
+ * working and offers a way out. It is a presentation bar, not a kill switch:
+ * nothing here stops the turn, because time-based aborts false-positived on
+ * genuinely long tool calls (a foreground command emits nothing for minutes).
+ */
+export const TURN_STALL_AFTER_MS = 5 * 60 * 1000;
+
+/**
+ * How long a live turn has been silent, or null when it is not past the bar.
+ *
+ * The caller supplies a session whose turn is LIVE — this reads the timestamps
+ * and answers the silence question, nothing more. `lastActivityAt` moves on real
+ * output only, so it is the honest clock; `currentTurnStartedAt` is the fallback
+ * for a turn that has produced nothing at all yet.
+ */
+export function turnStallSilenceMs(
+  session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
+  nowMs: number = Date.now(),
+): number | null {
+  const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
+  const turnMs = session.currentTurnStartedAt ? Date.parse(session.currentTurnStartedAt) : Number.NaN;
+  const anchorMs = Number.isFinite(activityMs)
+    ? activityMs
+    : Number.isFinite(turnMs)
+      ? turnMs
+      : Number.NaN;
+  if (!Number.isFinite(anchorMs)) return null;
+  const silentForMs = nowMs - anchorMs;
+  return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;
+}
+
 export function formatFutureDuration(timestampMs: number, nowMs: number): string {
   if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return "";
   const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));

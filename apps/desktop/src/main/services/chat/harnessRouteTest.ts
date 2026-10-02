@@ -4,9 +4,12 @@
  *
  * It resolves the source exactly as a launch does (`resolveRouteSource`), so a
  * Test and a launch can never disagree about which key, endpoint or sign-in is
- * in play. A "does not support this protocol" answer is recorded as a definite
- * no, so the next launch routes around it; every other failure (auth, balance,
- * rate limit, network) leaves the protocol question unanswered.
+ * in play. Two answers are recorded as a definite no so the next launch routes
+ * around them: "does not support this protocol", and a request that never
+ * answers at all (a hang is as unusable as a refusal, and the lamer failure to
+ * leave standing). Every other failure (auth, balance, rate limit, plain
+ * network error) leaves the protocol question unanswered, because a wrong key
+ * or an empty balance says nothing about whether the protocol works.
  */
 
 import { randomUUID } from "node:crypto";
@@ -60,7 +63,7 @@ async function pingProtocol(args: {
   sessionHeader: string | null;
   fetchImpl: Fetch;
   timeoutMs: number;
-}): Promise<{ ok: boolean; error?: string; latencyMs: number }> {
+}): Promise<{ ok: boolean; error?: string; timedOut: boolean; latencyMs: number }> {
   const { protocol, baseUrl, token, model } = args;
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -105,12 +108,14 @@ async function pingProtocol(args: {
     });
     const latencyMs = Date.now() - started;
     const text = await response.text().catch(() => "");
-    if (response.ok) return { ok: true, latencyMs };
-    return { ok: false, error: summarizeError(text, response.status), latencyMs };
+    if (response.ok) return { ok: true, timedOut: false, latencyMs };
+    return { ok: false, timedOut: false, error: summarizeError(text, response.status), latencyMs };
   } catch (error) {
+    const timedOut = controller.signal.aborted;
     return {
       ok: false,
-      error: controller.signal.aborted ? "The endpoint did not answer in time." : (error instanceof Error ? error.message : String(error)),
+      timedOut,
+      error: timedOut ? "The endpoint did not answer in time." : (error instanceof Error ? error.message : String(error)),
       latencyMs: Date.now() - started,
     };
   } finally {
@@ -202,7 +207,13 @@ export async function testHarnessRoute(
       };
     }
     lastError = result.error ?? lastError;
-    if (result.error && PROTOCOL_UNSUPPORTED.test(result.error)) {
+    // A protocol that accepts the request and then never answers is as unusable
+    // as one that refuses it, and it is the worse failure to leave standing: a
+    // launch routed onto it hangs with no error at all. Record it as a definite
+    // no and keep trying the rest, so a Test routes around a wedged protocol —
+    // for example OpenCode Go's Anthropic route hanging on a model its OpenAI
+    // route still serves. A later Test re-confirms a recovered protocol.
+    if (result.timedOut || (result.error && PROTOCOL_UNSUPPORTED.test(result.error))) {
       recordRouteProbe(adeHome, sourceKey, model, protocol, false);
       continue;
     }
