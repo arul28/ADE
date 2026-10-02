@@ -28,6 +28,29 @@ export function normalizeBranchName(ref: string | null | undefined): string {
   return String(ref ?? "").trim().replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
 }
 
+/**
+ * True for the Primary lane while its checkout is on its base branch: then it
+ * is the base line, drawn neutral. On a feature branch, Primary's own commits
+ * are lane work like any other lane's.
+ */
+export function isBaseLinePrimary(lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef"> | null | undefined): boolean {
+  if (lane?.laneType !== "primary") return false;
+  const branch = normalizeBranchName(lane.branchRef);
+  const base = normalizeBranchName(lane.baseRef);
+  return !branch || !base || branch === base || base.endsWith(`/${branch}`);
+}
+
+/**
+ * A lane's PRs that are for the branch it is on now. The Primary lane keeps
+ * the PRs of branches it was on before; those are not its commits' PRs.
+ */
+export function prsForLaneBranch(prs: readonly PrSummary[], lane: Pick<LaneSummary, "branchRef">): PrSummary[] {
+  const branch = normalizeBranchName(lane.branchRef);
+  if (!branch) return [];
+  // A PR whose head branch is not known is kept: nothing says it is stale.
+  return prs.filter((pr) => !pr.headBranch || normalizeBranchName(pr.headBranch) === branch);
+}
+
 function remoteLocalName(remoteBranch: string): string {
   const slash = remoteBranch.indexOf("/");
   return slash >= 0 ? remoteBranch.slice(slash + 1) : remoteBranch;
