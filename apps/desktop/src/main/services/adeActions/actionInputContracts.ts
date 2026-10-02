@@ -412,6 +412,26 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
+    listThreadComments: {
+      description: "List a chat's pending thread comments (the user's unsent notes on parts of agent replies). User clients only.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.listThreadComments --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    createThreadComment: {
+      description: "Pin a pending comment to part of an agent reply. It goes with the user's next send. User clients only.",
+      input: "object { sessionId: string, messageKey: string, messageExcerpt: string, anchor: { kind: \"text\", quote, prefix, suffix } | { kind: \"table_row\", tableIndex, rowIndex, headers, cells }, body: string }",
+      example: "ade actions run chat.createThreadComment --input-json '{\"sessionId\":\"chat-123\",\"messageKey\":\"message:m1\",\"messageExcerpt\":\"Here is the plan\",\"anchor\":{\"kind\":\"text\",\"quote\":\"step two\",\"prefix\":\"\",\"suffix\":\"\"},\"body\":\"skip this\"}'",
+    },
+    updateThreadComment: {
+      description: "Edit a pending thread comment, or hold it back from the next send. User clients only.",
+      input: "object { sessionId: string, commentId: string, body?: string, includeInNextSend?: boolean }",
+      example: "ade actions run chat.updateThreadComment --input-json '{\"sessionId\":\"chat-123\",\"commentId\":\"c-1\",\"includeInNextSend\":false}'",
+    },
+    deleteThreadComment: {
+      description: "Delete a pending thread comment. User clients only.",
+      input: "object { sessionId: string, commentId: string }",
+      example: "ade actions run chat.deleteThreadComment --input-json '{\"sessionId\":\"chat-123\",\"commentId\":\"c-1\"}'",
+    },
     messageSession: {
       description: "Deliver a message to a chat using ADE-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
       input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata? }",

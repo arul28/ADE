@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
@@ -158,9 +157,11 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import type { ChatThreadComment } from "../../../shared/threadComments";
+import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
+import { countCommentsForNextSend } from "./threadCommentsStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
-import type { ZLayer } from "../ui/zLayers";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
 import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
@@ -209,6 +210,8 @@ export type ComposerDraftEditIntent = {
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
+
+const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -934,9 +937,10 @@ function ComposerIdleSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div data-composer-idle-send-control className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+      <div data-composer-idle-send-control data-send-control="" className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
         <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
           <button
+            data-send-part=""
             type="button"
             disabled={!sendEnabled}
             onClick={onSend}
@@ -959,6 +963,7 @@ function ComposerIdleSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
@@ -983,7 +988,7 @@ function ComposerIdleSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -1026,7 +1031,7 @@ function ComposerIdleSendButton({
                 </button>
               ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1156,7 +1161,7 @@ function ComposerOverflowMenu({
       </SmartTooltip>
       {open && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1200,7 +1205,7 @@ function ComposerOverflowMenu({
                   </button>
                 ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1522,14 +1527,6 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
   });
 }
 
-/**
- * Portal a composer menu into a viewport overlay layer. The layer is the
- * viewport, so the menu's `absolute` left/top are viewport coordinates, the
- * same numbers `fixedMenuAboveAnchorStyle` computes for a fixed element.
- */
-function ComposerMenuLayer({ layer, children }: { layer: ZLayer; children: React.ReactNode }) {
-  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
-}
 
 function ActiveTurnSendButton({
   enabled,
@@ -1564,7 +1561,7 @@ function ActiveTurnSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div className="inline-flex items-center overflow-hidden rounded-full">
+      <div data-send-control="" className="inline-flex items-center overflow-hidden rounded-full">
         <SmartTooltip
           forceEnabled
           content={{
@@ -1574,6 +1571,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             type="button"
             disabled={!enabled}
             onClick={onSend}
@@ -1596,6 +1594,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             aria-haspopup="menu"
@@ -1617,7 +1616,7 @@ function ActiveTurnSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-send-menu
               role="menu"
@@ -1670,7 +1669,7 @@ function ActiveTurnSendButton({
                 </div>
               ) : null}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1739,7 +1738,7 @@ function ActiveTurnStopButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-stop-menu
               role="menu"
@@ -1779,7 +1778,7 @@ function ActiveTurnStopButton({
                 );
               })}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1793,6 +1792,11 @@ export function AgentChatComposer({
   composerMaxHeightPx = null,
   isActive = false,
   shouldAutofocus = isActive,
+  caretToEndRequest = 0,
+  threadComments = EMPTY_THREAD_COMMENTS,
+  threadCommentsSessionId = null,
+  threadCommentsPin = null,
+  onJumpToThreadComment,
   sdkSlashCommands = [],
   modelId,
   activeHarnessPresetId = null,
@@ -1949,6 +1953,17 @@ export function AgentChatComposer({
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
   shouldAutofocus?: boolean;
+  /**
+   * Bumped when something outside the composer adds to the draft for the user
+   * to keep typing after (an "Add to chat" quote). Each new value focuses the
+   * editor with the caret at the very end, after the added chip.
+   */
+  caretToEndRequest?: number;
+  /** The chat's pending thread comments; the ones marked for send go with the next message. */
+  threadComments?: readonly ChatThreadComment[];
+  threadCommentsSessionId?: string | null;
+  threadCommentsPin?: OpenProjectBinding | null;
+  onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   /**
@@ -3387,6 +3402,41 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
+  // Applied on the first commit where the editor that will hold the text
+  // exists: a quote promotes the plain textarea to the rich editor one render
+  // later, and focusing the textarea in between would put the caret in an
+  // element that is about to unmount.
+  const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
+  useEffect(() => {
+    if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
+    if (hasChatOutputContext(draft) && !useRichComposer) return;
+    appliedCaretToEndRequestRef.current = caretToEndRequest;
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      let tail = editor.lastChild;
+      if (!(tail instanceof Text) || !/[ \u00a0]$/.test(tail.textContent ?? "")) {
+        tail = document.createTextNode(" ");
+        editor.appendChild(tail);
+        // Keep the draft equal to the editor, or the next render would
+        // treat the space as an outside edit and reset the editor.
+        syncRichDraft();
+      }
+      const range = document.createRange();
+      range.setStart(tail, (tail.textContent ?? "").length);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
   const getRichCursorTextOffset = useCallback((): number => {
     const editor = richEditorRef.current;
     const selection = window.getSelection();
@@ -5601,8 +5651,23 @@ export function AgentChatComposer({
    * File attachments stay separate because local file-only sends are opt-in and
    * Cursor Cloud validates its own file-delivery path.
    */
+  const threadCommentSendCount = threadCommentsSessionId ? countCommentsForNextSend(threadComments) : 0;
+  /** Send, merged with the pending-comments pill when the chat has comments. */
+  const withThreadComments = (sendControl: React.ReactNode) => (
+    parallelChatMode ? sendControl : (
+      <ComposerThreadCommentsButton
+        sessionId={threadCommentsSessionId}
+        pin={threadCommentsPin}
+        comments={threadComments}
+        onJumpToComment={onJumpToThreadComment}
+      >
+        {sendControl}
+      </ComposerThreadCommentsButton>
+    )
+  );
   const hasComposerContextContent =
     draft.trim().length > 0
+    || threadCommentSendCount > 0
     || hasIosElementContext
     || hasAppControlContext
     || hasBuiltInBrowserContext
@@ -5812,7 +5877,7 @@ export function AgentChatComposer({
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
   const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
-    <ComposerMenuLayer layer="contextMenu">
+    <ViewportOverlayPortal layer="contextMenu">
       <div
         className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
         data-issue-context-menu="true"
@@ -5875,7 +5940,7 @@ export function AgentChatComposer({
           ) : null}
         </div>
       </div>
-    </ComposerMenuLayer>
+    </ViewportOverlayPortal>
   ) : null;
 
   const selectedLinearContextIssue = (
@@ -6899,7 +6964,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {!composerInputLocked ? (
+                {!composerInputLocked ? withThreadComments(
                   activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
@@ -6918,6 +6983,8 @@ export function AgentChatComposer({
                     // queue affordance; it still explains itself on hover.
                     <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         disabled={!activeSteerEnabled}
                         className={cn(
@@ -6932,7 +6999,7 @@ export function AgentChatComposer({
                         <ArrowUp size={14} weight="bold" />
                       </button>
                     </SmartTooltip>
-                  )
+                  ),
                 ) : null}
                 <ActiveTurnStopButton
                   mode={activeTurnStopMode}
@@ -6967,9 +7034,11 @@ export function AgentChatComposer({
 
                 // Without a background option this is a plain circular Send.
                 if (!backgroundAvailable) {
-                  return (
+                  return withThreadComments(
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         className={cn(
                           "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
@@ -6983,11 +7052,11 @@ export function AgentChatComposer({
                       >
                         {sendIcon}
                       </button>
-                    </SmartTooltip>
+                    </SmartTooltip>,
                   );
                 }
 
-                return (
+                return withThreadComments(
                   <ComposerIdleSendButton
                     label={label}
                     description={description}
@@ -6999,7 +7068,7 @@ export function AgentChatComposer({
                     backgroundBusy={backgroundLaunchBusy}
                     onSend={submitComposerDraft}
                     onSendInBackground={onSubmitInBackground!}
-                  />
+                  />,
                 );
               })()
             )}

@@ -4751,6 +4751,53 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("strips a user's pending comments from an agent's chat sends and denies the comment actions", async () => {
+    // An agent runs at cto role here, so the cto-only action rule cannot be
+    // what denies it: the thread-comment gate has to.
+    const agentFixture = createRuntime();
+    const agentHandler = createAdeRpcRequestHandler({ runtime: agentFixture.runtime, serverVersion: "test" });
+    await initialize(agentHandler, { callerId: "agent-1", role: "cto", chatSessionId: "chat-1" });
+
+    for (const action of ["sendMessage", "steer", "messageSession"] as const) {
+      await callTool(agentHandler, "run_ade_action", {
+        domain: "chat",
+        action,
+        args: { sessionId: "chat-1", text: "hello", includeThreadComments: true },
+      });
+    }
+    expect(agentFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+    expect(agentFixture.runtime.agentChatService.steer).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+    expect(agentFixture.runtime.agentChatService.messageSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ includeThreadComments: true }),
+    );
+
+    for (const action of ["listThreadComments", "createThreadComment", "updateThreadComment", "deleteThreadComment"]) {
+      const denied = await callTool(agentHandler, "run_ade_action", {
+        domain: "chat",
+        action,
+        args: { sessionId: "chat-1" },
+      });
+      expect(denied.isError).toBe(true);
+    }
+
+    // A user's desktop client keeps the flag: the comments are the person's to send.
+    const userFixture = createRuntime();
+    const userHandler = createAdeRpcRequestHandler({ runtime: userFixture.runtime, serverVersion: "test" });
+    await initialize(userHandler, { callerId: "ade-desktop:test", role: "cto" }, { clientName: "ade-desktop" });
+    await callTool(userHandler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-1", text: "hello", includeThreadComments: true },
+    });
+    expect(userFixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ includeThreadComments: true }),
+    );
+  });
+
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
     const fixture = createRuntime();
     const getChatEventHistory = vi.fn(async (sessionId: string) => ({

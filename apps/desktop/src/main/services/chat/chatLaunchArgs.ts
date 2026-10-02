@@ -134,13 +134,17 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
   const messageFields = parseAgentChatMessageFields(value);
   const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
-  if (text === null || (!text && !messageFields.attachments?.length)) {
+  // A send that carries the chat's pending thread comments may have no text of
+  // its own: the host builds the message from the comments.
+  const includeThreadComments = value.includeThreadComments === true;
+  if (text === null || (!text && !messageFields.attachments?.length && !includeThreadComments)) {
     throw new Error("chat.send requires text.");
   }
   return {
     sessionId: requireString(value.sessionId, "chat.send requires sessionId."),
     text,
     ...messageFields,
+    ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }
 

@@ -189,6 +189,76 @@ describe("createAgentChatService", () => {
       });
       service.forceDisposeAll();
     });
+
+    const exhaustedDiskMonitor = {
+      canPerform: vi.fn(() => ({
+        allowed: false as const,
+        state: "exhausted" as const,
+        code: "disk_full" as const,
+        message: "Your computer is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
+      })),
+    };
+
+    async function createPendingComment(service: ReturnType<typeof createService>["service"], sessionId: string) {
+      return service.createThreadComment({
+        sessionId,
+        messageKey: "message:1",
+        messageExcerpt: "an earlier reply",
+        anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+        body: "my note",
+      });
+    }
+
+    it("keeps pending comments when the send is a provider slash command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      // The provider must still see the leading `/`, so the comments ride the
+      // user's next real send instead of this command.
+      await service.sendMessage({ sessionId: session.id, text: "/compact", includeThreadComments: true }).catch(() => undefined);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      service.forceDisposeAll();
+    });
+
+    it("keeps pending comments when the disk gate refuses a send that has text", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: exhaustedDiskMonitor,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({ sessionId: session.id, text: "Keep going.", includeThreadComments: true });
+
+      // The send's own disk gate reports the refusal; the comments are not spent.
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && typeof entry.event.detail === "object"
+        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("throws rather than silently dropping a comments-only send under disk pressure", async () => {
+      const { service } = createService({ diskPressureMonitor: exhaustedDiskMonitor });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await createPendingComment(service, session.id);
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        includeThreadComments: true,
+      })).rejects.toThrow(/almost out of storage/i);
+
+      expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+      service.forceDisposeAll();
+    });
   });
 
   it("reports a persisted terminal turn through the content-free settlement hook", async () => {

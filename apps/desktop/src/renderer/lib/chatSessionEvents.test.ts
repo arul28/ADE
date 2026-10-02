@@ -95,6 +95,17 @@ describe("shouldRefreshSessionListForChatEvent", () => {
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "text", text: "hello" }))).toBe(false);
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "tool_call", tool: "functions.exec", args: {}, itemId: "tool-1" }))).toBe(false);
   });
+
+  it("does not treat a pending-comment change as chat activity", () => {
+    // Editing a comment must not reorder the chat list.
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "session_meta_updated", threadComments: [] }))).toBe(false);
+    // A meta update that also carries a real change still refreshes.
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({
+      type: "session_meta_updated",
+      threadComments: [],
+      title: "Renamed",
+    }))).toBe(true);
+  });
 });
 
 describe("getChatSessionLocalTouchTimestampForEvent", () => {
@@ -109,6 +120,13 @@ describe("getChatSessionLocalTouchTimestampForEvent", () => {
 
   it("ignores high-frequency transcript events", () => {
     expect(getChatSessionLocalTouchTimestampForEvent(makeEnvelope({ type: "text", text: "streaming..." }))).toBeNull();
+  });
+
+  it("does not move a session's recency for a comments-only update", () => {
+    expect(getChatSessionLocalTouchTimestampForEvent(makeEnvelope({
+      type: "session_meta_updated",
+      threadComments: [],
+    }))).toBeNull();
   });
 });
 

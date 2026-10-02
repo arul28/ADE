@@ -45,6 +45,14 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import {
+  formatThreadReviewBlock,
+  normalizeThreadCommentAnchor,
+  prependThreadReview,
+  type ChatThreadComment,
+  type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
 import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
@@ -78,6 +86,7 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSendArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
@@ -1980,7 +1989,24 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId)];
+  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+}
+
+// Live chat events in the preview: messages sent here and thread-comment
+// changes reach the pane through the same `onEvent` path the host uses.
+const browserMockChatListeners = new Set<(envelope: any) => void>();
+const browserMockSentEvents = new Map<string, any[]>();
+const browserMockThreadComments = new Map<string, ChatThreadComment[]>();
+
+function emitBrowserMockChatEvent(sessionId: string, event: Record<string, unknown>, persist = false): void {
+  const envelope = { sessionId, timestamp: new Date().toISOString(), event };
+  if (persist) browserMockSentEvents.set(sessionId, [...(browserMockSentEvents.get(sessionId) ?? []), envelope]);
+  for (const listener of browserMockChatListeners) listener(envelope);
+}
+
+function setBrowserMockThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
+  browserMockThreadComments.set(sessionId, comments);
+  emitBrowserMockChatEvent(sessionId, { type: "session_meta_updated", threadComments: comments });
 }
 
 function latestMockDoneEvent(events: any[]): any | null {
@@ -6025,6 +6051,45 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         get: resolvedArg(null),
         set: resolvedArg(undefined),
       },
+      threadComments: {
+        list: async (args: { sessionId: string }) => browserMockThreadComments.get(args.sessionId) ?? [],
+        create: async (args: ChatThreadCommentCreateArgs) => {
+          const anchor = normalizeThreadCommentAnchor(args.anchor);
+          if (!anchor || !args.body.trim()) throw new Error("A comment needs text and an anchor.");
+          const at = new Date().toISOString();
+          const comment: ChatThreadComment = {
+            id: globalThis.crypto.randomUUID(),
+            sessionId: args.sessionId,
+            messageKey: args.messageKey,
+            messageExcerpt: args.messageExcerpt,
+            anchor,
+            body: args.body.trim(),
+            includeInNextSend: true,
+            createdAt: at,
+            updatedAt: at,
+          };
+          setBrowserMockThreadComments(args.sessionId, [...(browserMockThreadComments.get(args.sessionId) ?? []), comment]);
+          return comment;
+        },
+        update: async (args: ChatThreadCommentUpdateArgs) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const previous = current.find((comment) => comment.id === args.commentId);
+          if (!previous) throw new Error("That comment no longer exists.");
+          const next: ChatThreadComment = {
+            ...previous,
+            ...(typeof args.body === "string" ? { body: args.body.trim() } : {}),
+            ...(typeof args.includeInNextSend === "boolean" ? { includeInNextSend: args.includeInNextSend } : {}),
+            updatedAt: new Date().toISOString(),
+          };
+          setBrowserMockThreadComments(args.sessionId, current.map((comment) => (comment.id === next.id ? next : comment)));
+          return next;
+        },
+        delete: async (args: { sessionId: string; commentId: string }) => {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => comment.id !== args.commentId));
+          return { deleted: current.some((comment) => comment.id === args.commentId) };
+        },
+      },
       promptStashes: {
         list: async (_pin?: OpenProjectBinding | null) => browserMockPromptStashes.map((entry) => ({
           ...entry,
@@ -6094,7 +6159,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
-      send: resolvedArg(undefined),
+      send: async (args: AgentChatSendArgs) => {
+        let text = args.text;
+        if (args.includeThreadComments) {
+          const current = browserMockThreadComments.get(args.sessionId) ?? [];
+          const block = formatThreadReviewBlock(current.filter((comment) => comment.includeInNextSend));
+          text = prependThreadReview(text, block);
+          setBrowserMockThreadComments(args.sessionId, current.filter((comment) => !comment.includeInNextSend));
+        }
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text,
+          ...(args.displayText !== undefined ? { displayText: args.displayText } : {}),
+        }, true);
+      },
       steer: async () => ({
         steerId: globalThis.crypto.randomUUID(),
         queued: true,
@@ -6176,7 +6254,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         nextWakeAt: null,
       }),
       warmupModel: resolvedArg(undefined),
-      onEvent: noop,
+      onEvent: (listener: (envelope: any) => void) => {
+        browserMockChatListeners.add(listener);
+        return () => {
+          browserMockChatListeners.delete(listener);
+        };
+      },
       slashCommands: resolvedArg([]),
       listClaudePlugins: resolvedArg([]),
       listCodexPlugins: resolvedArg([]),

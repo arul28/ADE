@@ -3021,6 +3021,79 @@ func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
   }
 }
 
+/// What a thread comment points at. Mirrors `ChatThreadCommentAnchor` in
+/// `apps/desktop/src/shared/threadComments.ts`. An unknown `kind` fails to
+/// decode, and the list decoder skips that one comment.
+enum ChatThreadCommentAnchor: Equatable {
+  case text(quote: String, prefix: String, suffix: String)
+  case tableRow(tableIndex: Int, rowIndex: Int, headers: [String], cells: [String])
+}
+
+extension ChatThreadCommentAnchor: Decodable {
+  private enum CodingKeys: String, CodingKey {
+    case kind, quote, prefix, suffix, tableIndex, rowIndex, headers, cells
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let kind = try container.decode(String.self, forKey: .kind)
+    switch kind {
+    case "text":
+      self = .text(
+        quote: try container.decodeIfPresent(String.self, forKey: .quote) ?? "",
+        prefix: try container.decodeIfPresent(String.self, forKey: .prefix) ?? "",
+        suffix: try container.decodeIfPresent(String.self, forKey: .suffix) ?? ""
+      )
+    case "table_row":
+      self = .tableRow(
+        tableIndex: try container.decodeIfPresent(Int.self, forKey: .tableIndex) ?? 0,
+        rowIndex: try container.decodeIfPresent(Int.self, forKey: .rowIndex) ?? 0,
+        headers: try container.decodeIfPresent([String].self, forKey: .headers) ?? [],
+        cells: try container.decodeIfPresent([String].self, forKey: .cells) ?? []
+      )
+    default:
+      throw DecodingError.dataCorruptedError(
+        forKey: .kind,
+        in: container,
+        debugDescription: "Unknown thread comment anchor kind \(kind)"
+      )
+    }
+  }
+
+  /// The words the comment quotes. A table row reads "Header: cell | …",
+  /// the same as `threadCommentQuoteText` on the host.
+  var quoteText: String {
+    switch self {
+    case .text(let quote, _, _):
+      return quote
+    case .tableRow(_, _, let headers, let cells):
+      return cells.enumerated().map { index, cell in
+        let header = index < headers.count
+          ? headers[index].trimmingCharacters(in: .whitespacesAndNewlines)
+          : ""
+        return header.isEmpty ? cell : "\(header): \(cell)"
+      }
+      .joined(separator: " | ")
+    }
+  }
+}
+
+/// A note the user pinned to part of an agent reply, pending until a send
+/// carries it. The phone lists, edits, holds and deletes these; it does not
+/// create them.
+struct ChatThreadComment: Decodable, Equatable, Identifiable {
+  var id: String
+  var sessionId: String
+  var messageKey: String
+  var messageExcerpt: String
+  var anchor: ChatThreadCommentAnchor
+  var body: String
+  /// False = held: stays in the thread and does not go with the next send.
+  var includeInNextSend: Bool
+  var createdAt: String
+  var updatedAt: String
+}
+
 struct PromptStashEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
@@ -3506,7 +3579,7 @@ extension AgentChatEvent {
       let displayText = try container.decodeIfPresent(String.self, forKey: .displayText)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       self = .userMessage(
-        text: displayText.flatMap { $0.isEmpty ? nil : $0 } ?? text,
+        text: workUserMessageShownText(text: text, displayText: displayText),
         attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
         turnId: eventTurnId,
         steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
@@ -4208,6 +4281,9 @@ struct AgentChatSteerRequest: Codable, Equatable {
   /// same round-trip instead of staging the message, so nothing reaches the
   /// staged strip. Omitted (nil) for a plain staged steer.
   var dispatchMode: String? = nil
+  /// True only when the user sends from a composer that shows pending thread
+  /// comments: the host then adds them to this message. Nil = key omitted.
+  var includeThreadComments: Bool? = nil
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {

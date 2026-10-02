@@ -447,7 +447,11 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              if workUserTextLooksLikeMarkdown(message.markdown) {
+              if segment == nil, let parts = workUserMessageParts(bubbleText) {
+                // Sent thread comments draw as a card, and desktop quotes as
+                // quotes, instead of their raw `<ade-…>` tags.
+                WorkUserMessageStructuredBody(parts: parts)
+              } else if workUserTextLooksLikeMarkdown(message.markdown) {
                 // A handoff brief or pasted spec: render it, don't print raw
                 // `###` and `**`. Chat lines keep their exact text.
                 WorkMarkdownRenderer(markdown: bubbleText)
@@ -534,7 +538,8 @@ struct WorkChatMessageBubble: View, Equatable {
 
   private var userMessageAccessibilityLabel: String {
     var parts = ["Your message."]
-    let preview = workChatAccessibilityPreview(message.markdown)
+    // Comment cards and quotes read as words, not as their raw tags.
+    let preview = workChatAccessibilityPreview(workUserMessageAccessibilityText(message.markdown) ?? message.markdown)
     if !preview.isEmpty {
       parts.append(preview)
     }

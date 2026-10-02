@@ -2,6 +2,7 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -175,6 +176,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
+      // Thread comments are the user's unsent review of an agent's reply. An
+      // agent that could write or delete them could edit what the user is
+      // about to tell it.
+      ...THREAD_COMMENT_ACTION_NAMES,
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -671,6 +676,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listPromptStashes",
     "createPromptStash",
     "deletePromptStash",
+    ...THREAD_COMMENT_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",

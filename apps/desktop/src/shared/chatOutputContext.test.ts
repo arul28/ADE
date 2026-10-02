@@ -52,6 +52,6 @@ describe("chatOutputContext", () => {
       { kind: "context", quote: "selected line", block },
       { kind: "text", text: " thanks" },
     ]);
-    expect(CHAT_OUTPUT_CONTEXT_CHIP_LABEL).toBe("Chat context");
+    expect(CHAT_OUTPUT_CONTEXT_CHIP_LABEL).toBe("Quote");
   });
 });

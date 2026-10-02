@@ -571,6 +571,18 @@ struct WorkSessionDestinationView: View {
     isLive && hostReachable
   }
 
+  /// This chat's pending thread comments, or none when the host predates them.
+  var sendableThreadComments: [ChatThreadComment] {
+    guard syncService.supportsThreadComments(sessionId: sessionId) else { return [] }
+    return syncService.threadComments(sessionId: sessionId)
+  }
+
+  /// Re-lists comments when the chat opens and whenever it comes back online,
+  /// so changes made on the desktop while the phone was away show up.
+  var threadCommentsRefreshKey: String {
+    "\(sessionId)|\(isLiveAndReachable)|\(syncService.supportsThreadComments(sessionId: sessionId))"
+  }
+
   var canComposeChatMessages: Bool {
     session != nil || initialSession != nil
   }
@@ -1086,6 +1098,11 @@ struct WorkSessionDestinationView: View {
       .task(id: pollingKey) {
         await pollIfNeeded()
       }
+      .task(id: threadCommentsRefreshKey) {
+        guard isLiveAndReachable, syncService.supportsThreadComments(sessionId: sessionId) else { return }
+        // Best effort: the live `session_meta_updated` path keeps it current.
+        try? await syncService.refreshThreadComments(sessionId: sessionId)
+      }
       .task(id: cursorCloudMirrorWatchKey) {
         let watchId = sessionId
         let agentId = composerChatSummary?.cursorCloudAgentId?
@@ -1377,6 +1394,29 @@ struct WorkSessionDestinationView: View {
       continueUsageLimitOnAlternateAction = nil
     }
     let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
+    // An older brain advertises no comment commands and the chip never appears.
+    let threadCommentsAvailable = syncService.supportsThreadComments(sessionId: session.id)
+    let threadCommentsForView = sendableThreadComments
+    let updateThreadCommentAction: (@MainActor (String, String?, Bool?) async throws -> Void)?
+    let deleteThreadCommentAction: (@MainActor (String) async throws -> Void)?
+    if threadCommentsAvailable {
+      let commentSessionId = session.id
+      let service = syncService
+      updateThreadCommentAction = { commentId, body, includeInNextSend in
+        try await service.updateThreadComment(
+          sessionId: commentSessionId,
+          commentId: commentId,
+          body: body,
+          includeInNextSend: includeInNextSend
+        )
+      }
+      deleteThreadCommentAction = { commentId in
+        try await service.deleteThreadComment(sessionId: commentSessionId, commentId: commentId)
+      }
+    } else {
+      updateThreadCommentAction = nil
+      deleteThreadCommentAction = nil
+    }
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
       "chat.restoreCancelledQueue",
@@ -1529,7 +1569,10 @@ struct WorkSessionDestinationView: View {
         thread.retry()
       },
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
-      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil
+      onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
+      threadComments: threadCommentsForView,
+      onUpdateThreadComment: updateThreadCommentAction,
+      onDeleteThreadComment: deleteThreadCommentAction
     )
   }
 

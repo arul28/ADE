@@ -1,4 +1,5 @@
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -228,6 +229,20 @@ type SessionState = {
     windowMs: number;
   };
 };
+
+/**
+ * Thread comments are the user's unsent review of an agent's reply. Only a
+ * user client may read or change them, or send them (`includeThreadComments`);
+ * an agent that could would be editing what the user is about to tell it.
+ */
+const THREAD_COMMENT_ACTIONS: ReadonlySet<string> = new Set(THREAD_COMMENT_ACTION_NAMES);
+const THREAD_COMMENT_SEND_ACTIONS = new Set(["sendMessage", "steer", "messageSession"]);
+
+function withoutIncludeThreadComments(args: Record<string, unknown>): Record<string, unknown> {
+  if (!("includeThreadComments" in args)) return args;
+  const { includeThreadComments: _notTheUser, ...rest } = args;
+  return rest;
+}
 
 /**
  * Whether the caller is a person's client rather than an agent.
@@ -5178,9 +5193,18 @@ async function runTool(args: {
         `Action 'chat.${action}' requires object arguments; pass them with --input-json.`,
       );
     }
-    const rawObjectArgs = stampedChatAction
+    const agentCaller = !isUserClientSession(session);
+    if (domain === "chat" && agentCaller && THREAD_COMMENT_ACTIONS.has(action)) {
+      scopeAccessDenied(`chat.${action} is limited to user clients`, `run_ade_action:chat.${action}`);
+    }
+    // Stripped here, at the source, because the chat scoping below rebuilds
+    // its arguments from these raw ones.
+    const baseObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
+    const rawObjectArgs = domain === "chat" && agentCaller && THREAD_COMMENT_SEND_ACTIONS.has(action)
+      ? withoutIncludeThreadComments(baseObjectArgs)
+      : baseObjectArgs;
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     // `terminal.write { fromUser }` claims an agent's shell for the person (it is

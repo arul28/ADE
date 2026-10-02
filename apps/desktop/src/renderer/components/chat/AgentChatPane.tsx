@@ -142,6 +142,13 @@ import {
   type ComposerMachineChipAction,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
+import {
+  countCommentsForNextSend,
+  requestThreadCommentFocus,
+  setThreadComments,
+  useThreadComments,
+} from "./threadCommentsStore";
+import { parseThreadReviewBlock, threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
 import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -2397,7 +2404,12 @@ configureChatSessionRetention({
 
 function userMessageVisibleText(event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>): string {
   const displayText = event.displayText?.trim();
-  return displayText?.length ? displayText : event.text.trim();
+  if (displayText?.length) return displayText;
+  // A send that carried thread comments: the user saw what they typed, or,
+  // with nothing typed, the comment count the optimistic bubble shows.
+  const review = parseThreadReviewBlock(event.text);
+  if (review) return review.rest.trim() || threadReviewCountLabel(review.comments.length);
+  return event.text.trim();
 }
 
 function attachmentMatchKey(attachment: AgentChatFileRef): string {
@@ -4622,6 +4634,20 @@ export function AgentChatPane({
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  // Pending thread comments for the open chat. Null while the chat has no
+  // readable session (a launch still starting, a draft) or the composer and
+  // transcript disagree on which chat is open.
+  const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning ? composerSessionId : null;
+  const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
+  const threadCommentSendCount = countCommentsForNextSend(threadComments);
+  const threadCommentSendCountRef = useRef(threadCommentSendCount);
+  threadCommentSendCountRef.current = threadCommentSendCount;
+  const threadCommentsSessionIdRef = useRef(threadCommentsSessionId);
+  threadCommentsSessionIdRef.current = threadCommentsSessionId;
+  const threadCommentsProp = useMemo(
+    () => (threadCommentsSessionId ? { sessionId: threadCommentsSessionId, pin: chatRuntimePin, comments: threadComments } : null),
+    [chatRuntimePin, threadComments, threadCommentsSessionId],
+  );
   // Provided for the WHOLE pane, not just the transcript: the proposed-plan
   // card and question-option previews render agent markdown from the composer
   // subtree, and without an opener their file paths fall back to inert text.
@@ -4855,6 +4881,7 @@ export function AgentChatPane({
       ? current
       : { ...current, [token]: label });
   }, []);
+  const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
   const insertComposerDraft = useCallback((value: string) => {
     const previousText = draft;
     const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
@@ -4871,6 +4898,9 @@ export function AgentChatPane({
       selectionEnd: previousText.length,
     });
     clearPromptSuggestionForSession(selectedSessionId);
+    // Put the user in the composer, after what was just added, so they can
+    // type their reply to it without clicking there first.
+    setComposerCaretToEndRequest((current) => current + 1);
   }, [clearPromptSuggestionForSession, draft, draftLaunchJobsScopeKey, selectedSessionId, updateComposerDraft]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
@@ -8687,6 +8717,7 @@ export function AgentChatPane({
       // chat event since it doesn't represent transcript content.
       if (envelope.event.type === "session_meta_updated") {
         const meta = envelope.event;
+        if (Array.isArray(meta.threadComments)) setThreadComments(envelope.sessionId, meta.threadComments);
         if (meta.historyInvalidated === true && envelope.sessionId === selectedSessionIdRef.current) {
           void loadHistory(envelope.sessionId, { force: true });
         }
@@ -12602,8 +12633,16 @@ export function AgentChatPane({
     const visualContext = composeVisualContext(iosContextSnapshot, appControlContextSnapshot, builtInBrowserContextSnapshot);
     const visualContextPrefix = visualContext.prefix;
     const composedWithVisualContext = applyVisualContext(text, visualContext);
+    // Pending thread comments ride this send: the host adds them to the
+    // message. They can go on their own, with nothing typed.
+    const threadCommentCountForSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
+      ? threadCommentSendCountRef.current
+      : 0;
+    // A slash command must reach the provider as typed, so comments wait.
+    const includeThreadComments = threadCommentCountForSend > 0 && !isWorkCliLaunchDraft && !isProviderSlashCommandInput(text);
     if (
       (!text.length
+        && !includeThreadComments
         && !visualContextPrefix.length
         && !contextAttachmentsSnapshot.length
         && !(isWorkCliLaunchDraft && attachments.length)
@@ -12744,6 +12783,8 @@ export function AgentChatPane({
         optimisticDisplayText = hasPastedPrompt ? "Pasted text prompt" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
       } else if (contextAttachmentsSnapshot.length) {
         optimisticDisplayText = "Attached issue context";
+      } else if (!text.length && includeThreadComments) {
+        optimisticDisplayText = threadReviewCountLabel(threadCommentCountForSend);
       } else {
         optimisticDisplayText = text;
       }
@@ -12776,7 +12817,10 @@ export function AgentChatPane({
       const finalDisplayText = composedWithVisualContext.displayText
         ?? (attachmentsSnapshot.length
           ? (hasPastedPrompt ? "" : DEFAULT_PARALLEL_ATTACHMENT_REQUEST)
-          : "Attached issue context");
+          : contextAttachmentsSnapshot.length || !includeThreadComments
+            ? "Attached issue context"
+            : "");
+      const threadCommentSendFields = includeThreadComments ? { includeThreadComments: true as const } : {};
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -12870,6 +12914,7 @@ export function AgentChatPane({
           sessionId,
           text: finalText,
           displayText: finalDisplayText,
+          ...threadCommentSendFields,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
           // Only send a dispatch mode the session's own backend accepts (see
@@ -12893,7 +12938,8 @@ export function AgentChatPane({
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
-            displayText: finalDisplayText || "Selected visual app context",
+            displayText: finalDisplayText || (includeThreadComments ? "" : "Selected visual app context"),
+            ...threadCommentSendFields,
             attachments: selectedAttachments,
             contextAttachments: selectedContextAttachments,
             reasoningEffort,
@@ -15088,6 +15134,11 @@ export function AgentChatPane({
 
   const composerElement = (
       <AgentChatComposer
+            caretToEndRequest={composerCaretToEndRequest}
+            threadComments={threadComments}
+            threadCommentsSessionId={threadCommentsSessionId}
+            threadCommentsPin={chatRuntimePin}
+            onJumpToThreadComment={requestThreadCommentFocus}
             surfaceMode={surfaceMode}
             fixedModelLabel={selectedSession?.devinCloud ? devinCloudVersionLabel(selectedSession.devinCloud.version) : null}
             // The CTO identity surface is steer-only: the composer reads this
@@ -16082,6 +16133,7 @@ export function AgentChatPane({
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
+                        threadComments={subagentView ? null : threadCommentsProp}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
                         chatSources={subagentView ? null : selectedChatSources}
                         showStreamingIndicator={subagentView

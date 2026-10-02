@@ -3369,6 +3369,52 @@ button, [role="button"] {
   }
 }
 
+/* Send, merged with the pending-comments pill (ComposerThreadCommentsButton).
+   Every Send variant marks its round wrapper `data-send-control` and its
+   buttons `data-send-part`, so one rule set covers all of them: square the
+   left edge where the comments half meets Send, and take the accent fill. */
+.ade-send-cluster[data-carrying-comments="true"] [data-send-control],
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part] {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled) {
+  background-color: var(--chat-accent, #8b5cf6);
+  border-color: rgb(0 0 0 / 0.15);
+  color: #fff;
+}
+
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+/* Thread comments: painted by the CSS Custom Highlight API (ThreadCommentLayer),
+   so the reply's DOM is never changed. Pending = goes with the next send;
+   held = kept but not sent; active = the one being read or edited. */
+::highlight(ade-thread-comment) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 22%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 75%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-held) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 9%, transparent);
+  text-decoration: underline dashed;
+  text-decoration-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+::highlight(ade-thread-comment-active) {
+  background-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 38%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--chat-accent, #8b5cf6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
 .ade-liquid-glass-menu {
   border-radius: var(--radius-xl);
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));

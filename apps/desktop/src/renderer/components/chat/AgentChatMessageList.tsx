@@ -77,11 +77,16 @@ import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../sh
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
+import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
 import {
-  CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
-  splitChatOutputContextSegments,
-} from "../../../shared/chatOutputContext";
+  ChatContextSegments,
+  ThreadReviewSentCard,
+  UserTypedText,
+  userTextLooksLikeMarkdown,
+} from "./chatUserMessageCards";
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { ThreadCommentLayer } from "./ThreadCommentLayer";
+import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
   useWorkspacePathOpener,
@@ -726,21 +731,6 @@ export function deriveAssistantTurnCopyMap(
   return result;
 }
 
-const MARKDOWN_HEADING_LINE = /^#{1,6}\s+\S/m;
-const MARKDOWN_FENCE_LINE = /^\s*(```|~~~)/m;
-const MARKDOWN_LIST_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\S/gm;
-
-/**
- * True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
- * spec), not a chat line that happens to contain an asterisk. Such a message
- * renders as formatted markdown; everything else keeps its exact text.
- */
-export function userTextLooksLikeMarkdown(text: string): boolean {
-  if (text.length < 80) return false;
-  if (MARKDOWN_HEADING_LINE.test(text) || MARKDOWN_FENCE_LINE.test(text)) return true;
-  return (text.match(MARKDOWN_LIST_LINE)?.length ?? 0) >= 3;
-}
-
 function basenamePathLabel(value: string): string {
   const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
@@ -1032,18 +1022,6 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
     break;
   }
   return { chips, rest: text.slice(i) };
-}
-
-function ChatOutputContextChip({ quote }: { quote: string }) {
-  return (
-    <span
-      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-violet-50/90 align-baseline"
-      title={quote}
-      data-testid="user-message-chat-context-chip"
-    >
-      {CHAT_OUTPUT_CONTEXT_CHIP_LABEL}
-    </span>
-  );
 }
 
 function UserMessageSendConfirmations({
@@ -2678,6 +2656,18 @@ function renderEvent(
                 </div>
               );
             }
+            // A send that carried thread comments: the review card, then what
+            // the user typed (if anything) under it.
+            const review = parseThreadReviewBlock(event.text);
+            if (review) {
+              const typed = displayText || review.rest.trim();
+              return (
+                <div className="flex min-w-0 flex-col gap-2">
+                  <ThreadReviewSentCard comments={review.comments} />
+                  {typed ? <UserTypedText text={typed} onOpenWorkspacePath={options?.onOpenWorkspacePath} /> : null}
+                </div>
+              );
+            }
             // `text` is what the provider received (mention blocks expanded);
             // `displayText` is what the user typed. Show only what they typed.
             if (displayText && displayText !== event.text.trim()) {
@@ -2712,13 +2702,7 @@ function renderEvent(
                     ))}
                   </span>
                 ) : null}
-                {hasOutputContext
-                  ? contextSegments.map((segment, idx) => (
-                    segment.kind === "text"
-                      ? <React.Fragment key={`chat-context-text-${idx}`}>{segment.text}</React.Fragment>
-                      : <ChatOutputContextChip key={`chat-context-chip-${idx}`} quote={segment.quote} />
-                  ))
-                  : parsed.rest}
+                {hasOutputContext ? <ChatContextSegments segments={contextSegments} /> : parsed.rest}
               </div>
             );
             // Prompts render in full, however long. The hidden-prompt brief
@@ -2777,6 +2761,9 @@ function renderEvent(
             // its script — the moment the user scrolled to it during a later
             // turn. `turnActive` is already scoped to the row's turn id.
             sceneLive={Boolean(options?.turnActive)}
+            commentKey={options?.turnActive || options?.pacedTextReveal === true
+              ? undefined
+              : envelope.sceneScopeKey ?? envelope.key}
           />
           {/* Hover actions sit in their own line under the prose, never on it:
               pinned over the text's top-right corner they covered the end of a
@@ -5377,7 +5364,17 @@ function AgentChatMessageListMain({
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onOpenTurnSources,
+  threadComments = null,
 }: SpawnedChatProviderProps & {
+  /**
+   * The chat's pending thread comments, and where to write them. Null turns
+   * comments off (subagent views, drafts, read-only surfaces).
+   */
+  threadComments?: {
+    sessionId: string;
+    pin: OpenProjectBinding | null | undefined;
+    comments: readonly ChatThreadComment[];
+  } | null;
   events: AgentChatEventEnvelope[];
   /** Sources derived once by the owning pane and shared with its drawer. */
   chatSources?: ChatSources | null;
@@ -7872,7 +7869,7 @@ function AgentChatMessageListMain({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
       >
-        <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
+        <div ref={contentWrapperRef} className="relative mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
           {hasOlderHistory ? (
             /* Older history backfills silently: the IntersectionObserver on this
                sentinel (and the underfill effect) page it in without ever asking
@@ -7946,7 +7943,21 @@ function AgentChatMessageListMain({
           <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
         </button>
       ) : null}
-      <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+      {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
+      {threadComments ? (
+        <ThreadCommentLayer
+          rootRef={listRootRef}
+          contentRef={contentWrapperRef}
+          scrollRef={scrollRef}
+          sessionId={threadComments.sessionId}
+          pin={threadComments.pin}
+          comments={threadComments.comments}
+          layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
+          onAddToChat={onInsertDraft}
+        />
+      ) : (
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+      )}
     </div>
     </ProofCitationProvider>
     </ChatWorkspacePathProvider>

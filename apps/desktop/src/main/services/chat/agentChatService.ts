@@ -234,6 +234,16 @@ import {
   normalizeSessionContextHealth,
 } from "./sessionTurnHealth";
 import type { Logger } from "../logging/logger";
+import { createThreadCommentService, isThreadCommentSessionId, type ThreadCommentService } from "./threadCommentService";
+import {
+  prependThreadReview,
+  splitLeadingThreadReview,
+  type ChatThreadComment,
+  type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentDeleteArgs,
+  type ChatThreadCommentListArgs,
+  type ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
 import {
   localBrowserActorCapabilityIssuer,
@@ -19283,6 +19293,35 @@ export function createAgentChatService(args: {
       }
     }
   };
+
+  const threadComments = createThreadCommentService({
+    chatSessionsDir,
+    logger,
+    onChanged: (sessionId, comments) => {
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", threadComments: comments });
+    },
+  });
+
+  const assertThreadCommentSession = (sessionId: unknown): string => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    const existing = isThreadCommentSessionId(id) ? sessionService.get(id) : null;
+    if (!existing || !isChatToolType(existing.toolType)) {
+      throw new Error("That chat does not exist on this machine.");
+    }
+    return id;
+  };
+
+  const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
+    threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const createThreadComment = (args: ChatThreadCommentCreateArgs): ChatThreadComment =>
+    threadComments.create({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const updateThreadComment = (args: ChatThreadCommentUpdateArgs): ChatThreadComment =>
+    threadComments.update({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const deleteThreadComment = (args: ChatThreadCommentDeleteArgs): { deleted: boolean } =>
+    threadComments.delete({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
 
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.lastActivityTimestamp = Date.now();
@@ -43799,8 +43838,10 @@ export function createAgentChatService(args: {
       pastedText.push(content.toString("utf8"));
     }
 
-    const supplementalText = args.text.trim();
-    const text = [...pastedText, ...(supplementalText ? [supplementalText] : [])]
+    // A review block stays at the very start, where its readers expect it.
+    const { block: reviewBlock, rest: typedText } = splitLeadingThreadReview(args.text);
+    const supplementalText = typedText.trim();
+    const text = [...(reviewBlock ? [reviewBlock] : []), ...pastedText, ...(supplementalText ? [supplementalText] : [])]
       .filter((part) => part.length > 0)
       .join("\n\n");
     return {
@@ -49738,6 +49779,94 @@ export function createAgentChatService(args: {
     return runtime.busy;
   };
 
+  type SendMessageOptions = {
+    awaitDispatch?: boolean;
+    awaitBackendDispatch?: boolean;
+    onBackendDispatched?: () => void;
+    preparedMessage?: PreparedSendMessage;
+    automaticRecovery?: boolean;
+    routeActiveToSteer?: boolean;
+    rerunToken?: symbol;
+  };
+
+  type ThreadReviewIntake<T> = {
+    args: Omit<T, "includeThreadComments">;
+    block: string | null;
+    restore: () => void;
+  };
+
+  /**
+   * Adds the chat's pending thread comments to a user send, as one review
+   * block ahead of what the user typed, and takes them off the pending list.
+   * `displayText` keeps what the user typed, so the transcript and the phone
+   * show their words; the renderer reads the block from `text` for its card.
+   * The flag is cleared on the result, so a send that reroutes into a steer
+   * cannot take the comments twice.
+   *
+   * The comments stay pending when the send cannot carry them: a slash
+   * command (the provider must still see the leading `/`), or a send with
+   * text the disk gate will refuse. A comments-only send under disk pressure
+   * throws the disk message instead, since nothing else would report it.
+   */
+  const takeThreadReviewForSend = <T extends { sessionId: string; text: string; displayText?: string; includeThreadComments?: boolean }>(
+    args: T,
+  ): ThreadReviewIntake<T> => {
+    const { includeThreadComments, ...rest } = args;
+    const untouched: ThreadReviewIntake<T> = { args: rest, block: null, restore: () => {} };
+    if (!includeThreadComments) return untouched;
+    const typed = args.text.trim();
+    // Same rule as the composer, so the pill never promises comments the host keeps.
+    if (typed && isProviderSlashCommandInput(typed)) return untouched;
+    const diskDecision = diskPressureMonitor?.canPerform("chat_turn");
+    if (diskDecision && !diskDecision.allowed) {
+      // With text, the send's own disk gate reports the refusal. Comments
+      // alone would reach that gate as an empty send and vanish silently.
+      if (!typed) throw new Error(diskDecision.message);
+      return untouched;
+    }
+    // A storage failure fails the send: the user asked for the comments to go
+    // with it, and a message without them would read as an unrelated reply.
+    let taken: ReturnType<ThreadCommentService["takeForSend"]>;
+    try {
+      taken = threadComments.takeForSend(args.sessionId);
+    } catch (error) {
+      logger.warn("agent_chat.thread_comments_take_failed", {
+        sessionId: args.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error("ADE could not read this chat's comments, so nothing was sent. Try again.");
+    }
+    if (!taken.block) return untouched;
+    return {
+      args: {
+        ...rest,
+        text: prependThreadReview(args.text, taken.block),
+        displayText: args.displayText ?? args.text,
+      },
+      block: taken.block,
+      restore: taken.restore,
+    };
+  };
+
+  const isDroppedSteer = (result: void | AgentChatSteerResult): boolean =>
+    result?.queued === false && result.reason === "queue_full";
+
+  /**
+   * Reviews that rode a steer which is still queued, by steer id. Cancelling
+   * that steer puts its comments back; editing it keeps the review block in
+   * front of the new text. A delivered steer's entry is never used again (a
+   * cancel finds nothing to remove), so the map only needs a size bound.
+   */
+  const queuedSteerReviews = new Map<string, { block: string; restore: () => void }>();
+  const rememberQueuedSteerReview = (steerId: string, block: string, restore: () => void): void => {
+    queuedSteerReviews.set(steerId, { block, restore });
+    while (queuedSteerReviews.size > 64) {
+      const oldest = queuedSteerReviews.keys().next().value;
+      if (oldest === undefined) break;
+      queuedSteerReviews.delete(oldest);
+    }
+  };
+
   async function sendMessage(
     args: AgentChatSendArgs,
     options: {
@@ -49764,16 +49893,25 @@ export function createAgentChatService(args: {
     },
   ): Promise<void>;
   async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: SendMessageOptions,
+  ): Promise<void | AgentChatSteerResult> {
+    const reviewed = takeThreadReviewForSend(args);
+    try {
+      const result = await sendMessageWithoutReview(reviewed.args, options);
+      // Rerouted into a steer the queue refused: nothing was delivered.
+      if (isDroppedSteer(result)) reviewed.restore();
+      else if (reviewed.block && result && result.queued) rememberQueuedSteerReview(result.steerId, reviewed.block, reviewed.restore);
+      return result;
+    } catch (error) {
+      reviewed.restore();
+      throw error;
+    }
+  }
+
+  async function sendMessageWithoutReview(
     rawArgs: AgentChatSendArgs,
-    options?: {
-      awaitDispatch?: boolean;
-      awaitBackendDispatch?: boolean;
-      onBackendDispatched?: () => void;
-      preparedMessage?: PreparedSendMessage;
-      automaticRecovery?: boolean;
-      routeActiveToSteer?: boolean;
-      rerunToken?: symbol;
-    },
+    options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
@@ -50021,6 +50159,26 @@ export function createAgentChatService(args: {
   };
 
   const steerWithOptions = async (
+    steerArgs: AgentChatSteerArgs,
+    options?: {
+      allowPendingInput?: boolean;
+      onAcceptedDispatch?: () => void;
+    },
+  ): Promise<AgentChatSteerResult> => {
+    const reviewed = takeThreadReviewForSend(steerArgs);
+    try {
+      const result = await steerWithOptionsWithoutReview(reviewed.args, options);
+      // A dropped steer delivered nothing; the comments go back.
+      if (isDroppedSteer(result)) reviewed.restore();
+      else if (reviewed.block && result.queued) rememberQueuedSteerReview(result.steerId, reviewed.block, reviewed.restore);
+      return result;
+    } catch (error) {
+      reviewed.restore();
+      throw error;
+    }
+  };
+
+  const steerWithOptionsWithoutReview = async (
     steerArgs: AgentChatSteerArgs,
     options?: {
       allowPendingInput?: boolean;
@@ -50802,7 +50960,8 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
-      || (args.contextAttachments?.length ?? 0) > 0;
+      || (args.contextAttachments?.length ?? 0) > 0
+      || (args.includeThreadComments === true && threadComments.hasCommentsForSend(args.sessionId));
     const waitsForProviderDispatch =
       (
         managed.session.provider === "opencode"
@@ -51209,8 +51368,19 @@ export function createAgentChatService(args: {
     }
   };
 
-  const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
+  const cancelSteer = async (args: AgentChatCancelSteerArgs): Promise<void> => {
+    const removed = await cancelSteerWithoutReview(args);
+    const review = queuedSteerReviews.get(args.steerId);
+    queuedSteerReviews.delete(args.steerId);
+    // Only a steer a queue still held never reached the agent; its comments
+    // are pending again. One already delivered keeps them spent.
+    if (removed) review?.restore();
+  };
+
+  /** Cancels a queued steer; resolves true when a queue really held it. */
+  const cancelSteerWithoutReview = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<boolean> => {
     const managed = ensureManagedSession(sessionId);
+    let removed = false;
     const runtime = managed.runtime;
     // The row taken off a local queue, so a carried steer whose old inline
     // offer is still awaiting settles instead of reading "Steering..." forever.
@@ -51222,6 +51392,7 @@ export function createAgentChatService(args: {
       if (submissionId && threadId) {
         try {
           await runtime.request("thread/queue/delete", { threadId, id: submissionId });
+          removed = true;
         } catch (error) {
           // The submission is still on the app-server queue and will run when
           // the turn ends. Clearing the chip here would report a cancellation
@@ -51242,11 +51413,9 @@ export function createAgentChatService(args: {
       // than leaving a control that does nothing every time it is pressed.
       runtime.queuedSubmissionBySteerId.delete(steerId);
     } else if (!runtime) {
-      if (requireQueued) {
-        const persistedSteers = readPersistedState(managed.session.id)?.pendingSteers ?? [];
-        const stillPersisted = persistedSteers.some((steer) => steer.steerId === steerId);
-        if (!stillPersisted) throw new Error("This message is no longer queued.");
-      }
+      const persistedSteers = readPersistedState(managed.session.id)?.pendingSteers ?? [];
+      removed = persistedSteers.some((steer) => steer.steerId === steerId);
+      if (requireQueued && !removed) throw new Error("This message is no longer queued.");
       // A torn-down session holds no local queue, so the staged chip is the
       // only thing left to cancel. The shared finalizer also drops the steer
       // from persisted state before a future runtime can hydrate it.
@@ -51268,6 +51437,7 @@ export function createAgentChatService(args: {
           );
         }
         [removedSteer] = runtime.pendingSteers.splice(idx, 1);
+        removed = true;
       }
     } else {
       const queue = runtime.pendingSteers;
@@ -51283,6 +51453,7 @@ export function createAgentChatService(args: {
       const idx = queue.findIndex((s) => s.steerId === steerId);
       if (idx !== -1) {
         [removedSteer] = queue.splice(idx, 1);
+        removed = true;
         if (runtime.kind === "claude" && removedSteer) runtime.knownQueuedMessages.delete(removedSteer.uuid);
       } else if (requireQueued) {
         throw new Error("This message is no longer queued.");
@@ -51296,9 +51467,25 @@ export function createAgentChatService(args: {
       tombstonePersistedSteer: runtime == null && !managed.runtimeInvalidated,
       removedSteer,
     });
+    return removed;
   };
 
-  const editSteer = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
+  const editSteer = async (args: AgentChatEditSteerArgs): Promise<void> => {
+    // The editor holds only what the user typed; keep the review block the
+    // steer carries in front of the new text.
+    const review = queuedSteerReviews.get(args.steerId);
+    if (!review) return editSteerWithoutReview(args);
+    if (args.text.trim()) {
+      return editSteerWithoutReview({ ...args, text: prependThreadReview(splitLeadingThreadReview(args.text).rest, review.block) });
+    }
+    // An empty edit removes the steer (it throws if the steer already left the
+    // queue), so its comments are pending again. Restore runs at most once.
+    await editSteerWithoutReview(args);
+    queuedSteerReviews.delete(args.steerId);
+    review.restore();
+  };
+
+  const editSteerWithoutReview = async ({ sessionId, steerId, text }: AgentChatEditSteerArgs): Promise<void> => {
     const trimmed = text.trim();
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
@@ -56793,6 +56980,8 @@ export function createAgentChatService(args: {
       });
     }
 
+    threadComments.forgetSession(trimmedSessionId);
+
     await scheduledWorkReady;
     if (scheduledWorkScheduler) {
       const providerSchedules = scheduledWorkScheduler.list(trimmedSessionId).filter((schedule) =>
@@ -60993,6 +61182,10 @@ export function createAgentChatService(args: {
     markCrossMachineHandoff,
     emitAdeCard,
     sendMessage,
+    listThreadComments,
+    createThreadComment,
+    updateThreadComment,
+    deleteThreadComment,
     listMentionSuggestions,
     messageSession,
     createScheduledWork,

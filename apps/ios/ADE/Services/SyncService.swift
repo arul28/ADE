@@ -4151,6 +4151,14 @@ final class SyncService: ObservableObject {
   /// authoritative and this bounded cache keeps the list useful offline.
   @Published private(set) var personalChatSessions: [AgentChatSessionSummary] = []
   @Published private(set) var personalChatsRevision = 0
+  /// Pending thread comments per chat session. Filled by
+  /// `chat.listThreadComments` when a chat opens and replaced whole by each
+  /// `session_meta_updated.threadComments` the host emits after a change.
+  /// Written only by `SyncService+ThreadComments.swift`.
+  @Published var threadCommentsBySession: [String: [ChatThreadComment]] = [:]
+  /// Bumped on every change, so a list request that started before a live
+  /// update cannot overwrite it with older data.
+  var threadCommentsWriteVersion: [String: Int] = [:]
   /// Chat launches (instant new-lane chats) this device knows about: host
   /// snapshots plus the per-launch local state (retry request, in-flight start,
   /// deferred messages). Its own observable so a transcript card re-renders on
@@ -12572,7 +12580,7 @@ final class SyncService: ObservableObject {
 
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
-  private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+  func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
     // A chat on another machine carries a machine marker in its project id.
     // `sendCommand` strips it and forwards to that machine; it never reaches
     // a host (see `syncFleetRoute`).
@@ -12590,7 +12598,7 @@ final class SyncService: ObservableObject {
     return (projectId, projectRootPath)
   }
 
-  private func chatActionName(_ projectAction: String, sessionId: String) -> String {
+  func chatActionName(_ projectAction: String, sessionId: String) -> String {
     guard isPersonalChatScope(sessionId: sessionId), projectAction.hasPrefix("chat.") else {
       return projectAction
     }
@@ -14366,7 +14374,8 @@ final class SyncService: ObservableObject {
     text: String,
     attachments: [AgentChatFileRef]? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    includeThreadComments: Bool = false
   ) async throws -> SyncChatMessageDelivery {
     // Auto-route to the session's foreign project (cross-project "quick look")
     // unless the caller already named a target explicitly (e.g. the hub
@@ -14375,6 +14384,11 @@ final class SyncService: ObservableObject {
     var args: [String: Any] = ["sessionId": sessionId, "text": text]
     if let attachments, !attachments.isEmpty {
       args["attachments"] = chatAttachmentArgs(attachments)
+    }
+    // Only a composer send that shows pending comments sets this; the key is
+    // left out otherwise so older hosts see the payload they always did.
+    if includeThreadComments {
+      args["includeThreadComments"] = true
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -14390,6 +14404,9 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
   }
 
@@ -14587,7 +14604,8 @@ final class SyncService: ObservableObject {
     sessionId: String,
     text: String,
     attachments: [AgentChatFileRef]? = nil,
-    dispatchMode: String? = nil
+    dispatchMode: String? = nil,
+    includeThreadComments: Bool = false
   ) async throws -> SyncChatMessageDelivery {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendChatCommand(
@@ -14596,11 +14614,15 @@ final class SyncService: ObservableObject {
         sessionId: sessionId,
         text: text,
         attachments: attachments,
-        dispatchMode: dispatchMode
+        dispatchMode: dispatchMode,
+        includeThreadComments: includeThreadComments ? true : nil
       ),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
   }
 
@@ -22819,6 +22841,11 @@ extension SyncService {
       return trimmed.isEmpty ? nil : trimmed
     }()
     let adoptedManuallyNamed = eventDict?["manuallyNamed"] as? Bool
+    // The full pending-comment list rides this event after every change.
+    // Absent = the patch is about something else; empty = cleared.
+    if let rawComments = eventDict?["threadComments"] as? [Any] {
+      setThreadComments(decodeThreadComments(rawComments), sessionId: envelope.sessionId)
+    }
     if adoptedTitle != nil || adoptedManuallyNamed != nil {
       try? database.updateSessionMeta(
         sessionId: envelope.sessionId,

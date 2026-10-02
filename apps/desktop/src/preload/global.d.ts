@@ -1,5 +1,12 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
+import type {
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStopArgs,
@@ -2355,6 +2362,12 @@ declare global {
             args: PromptStashDeleteArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<boolean>;
+        };
+        threadComments: {
+          list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
+          create: (args: ChatThreadCommentCreateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
+          update: (args: ChatThreadCommentUpdateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
+          delete: (args: ChatThreadCommentDeleteArgs, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
         };
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
