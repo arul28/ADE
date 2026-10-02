@@ -1,4 +1,4 @@
-import { githubApiFailure } from "../github/githubService";
+import { githubApiFailure } from "../github/githubApiFailure";
 import { asString, getErrorMessage, isRecord } from "../shared/utils";
 import type { GitHubRepoRef } from "../../../shared/types/git";
 import type { GitHubPrStack, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";

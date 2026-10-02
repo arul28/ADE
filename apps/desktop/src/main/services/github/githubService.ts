@@ -251,17 +251,6 @@ class GithubCredentialAttemptError extends Error {
 }
 
 /**
- * The HTTP status and parsed body of a failed GitHub REST call, or null.
- * Reads the fields `GithubCredentialAttemptError` carries by shape, so an
- * error that crossed a process or test boundary still matches.
- */
-export function githubApiFailure(error: unknown): { status: number; body: unknown } | null {
-  if (!(error instanceof Error)) return null;
-  const { status, responseBody } = error as Error & { status?: unknown; responseBody?: unknown };
-  return typeof status === "number" ? { status, body: responseBody ?? null } : null;
-}
-
-/**
  * Read the gh CLI's stored oauth token directly from its hosts.yml. gh keeps
  * file-based tokens here (keychain-stored ones won't appear — those need the
  * gh binary). This is the only auth path that works reliably in headless
