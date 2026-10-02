@@ -540,7 +540,7 @@ describe("SessionListPane", () => {
     });
 
     expect(screen.queryByText("Child shell")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show 1 shell" }));
+    fireEvent.click(screen.getByRole("button", { name: /Show 1 shell/i }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("drawer-open:chat:chat-parent");
 
     view.unmount();
