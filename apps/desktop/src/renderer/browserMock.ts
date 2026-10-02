@@ -7699,6 +7699,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               .filter((entry: any) => entry.position <= stack.position)
               .map((entry: any) => entry.githubPrNumber)
           : null;
+        // Record the merge, so the next list read shows it as the host would.
+        const mergedAt = new Date().toISOString();
+        for (const number of stackPrNumbers ?? (pr ? [pr.githubPrNumber] : [])) {
+          for (const item of [...ALL_PRS, ...MOCK_GITHUB_SNAPSHOT.repoPullRequests]) {
+            if (item.githubPrNumber !== number) continue;
+            Object.assign(item, { state: "merged", mergedAt });
+            if (item.id && MOCK_STATUS_BY_PR[item.id]) MOCK_STATUS_BY_PR[item.id].state = "merged";
+          }
+          const entry = stack
+            ? MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries
+                ?.find((candidate: any) => candidate.githubPrNumber === number)
+            : null;
+          if (entry) Object.assign(entry, { state: "closed", mergedAt });
+        }
         return {
           prId: args?.prId ?? "",
           prNumber: pr?.githubPrNumber ?? 142,
@@ -7747,7 +7761,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
           ]),
         ),
-      listWithConflicts: resolved(ALL_PRS),
+      // Fresh copies, so a refresh after a mock merge re-renders the rows.
+      listWithConflicts: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
         let snapshots = ADE_DB_PR_SNAPSHOTS;
         const prId = args?.prId?.trim();

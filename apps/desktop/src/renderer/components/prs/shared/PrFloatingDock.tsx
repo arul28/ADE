@@ -470,7 +470,15 @@ function PrStackMergeCard({
   React.useEffect(() => {
     setArmed(false);
     setBypass(false);
-  }, [pr.id, status?.headSha]);
+  }, [pr.id]);
+  // A new head disarms the confirm. The first status load (no head yet, then
+  // a head) is not a new head.
+  const lastHeadRef = React.useRef<string | null>(status?.headSha ?? null);
+  React.useEffect(() => {
+    const head = status?.headSha ?? null;
+    if (head && lastHeadRef.current && head !== lastHeadRef.current) setArmed(false);
+    if (head) lastHeadRef.current = head;
+  }, [status?.headSha]);
   const canMerge = pr.state === "open";
   const disabled = actionBusy || Boolean(mergeBlockedReason);
   // Older hosts do not send `openThroughHere`; the position is the upper bound.
@@ -494,12 +502,22 @@ function PrStackMergeCard({
       <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
       <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
         <Stack size={16} weight="fill" />
-        <span className="text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
+        <span className="min-w-0 flex-1 text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
           GitHub Stack {stack.position} of {stack.size}
         </span>
+        <button
+          type="button"
+          onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] hover:bg-white/[0.07]"
+          style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+        >
+          GitHub <ArrowSquareOut size={12} />
+        </button>
       </div>
       <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-        {pr.state === "draft"
+        {pr.state === "merged"
+          ? `Merged as part of GitHub Stack #${stack.number}.`
+          : pr.state === "draft"
           ? "This PR is a draft. Mark it ready for review before you merge the stack."
           : !canMerge
           ? "GitHub manages this stack's rebases, reviews, and merge order."
@@ -507,6 +525,7 @@ function PrStackMergeCard({
             ? `GitHub merges ${scope} together, or none of them. It checks the branch rules during the merge.`
             : "This is the bottom open PR of the stack. GitHub checks the branch rules during the merge."}
       </p>
+      {pr.state === "merged" ? <div className="mb-3"><PrShippedSummary pr={pr} /></div> : null}
       {canMerge ? (
         <>
           <div className="mb-2 flex gap-1" role="radiogroup" aria-label="Merge method">
@@ -541,6 +560,9 @@ function PrStackMergeCard({
               Bypass branch rules (needs bypass permission)
             </label>
           ) : null}
+          {/* Pinned to the card's bottom edge, so a short pane that scrolls
+              the card still shows the merge button. */}
+          <div className="ade-pr-dock-card-actions">
           <button
             type="button"
             onClick={merge}
@@ -549,21 +571,14 @@ function PrStackMergeCard({
             data-testid="pr-stack-merge"
             data-armed={armed || undefined}
             className="mb-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-60"
-            style={{ color: "#fff", background: MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+            style={{ color: "#fff", background: canBypass && bypass ? COLORS.danger : MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
           >
             {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
             {armed ? `Confirm: merge ${scope}` : count > 1 ? `Merge ${count} PRs` : bypass ? "Bypass & merge" : "Merge"}
           </button>
+          </div>
         </>
       ) : null}
-      <button
-        type="button"
-        onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
-        className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-white/[0.08]"
-        style={{ color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-fg) 6%, transparent)", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
-      >
-        <ArrowSquareOut size={13} /> Open on GitHub
-      </button>
       {mergeBlockedReason ? (
         <div className="mt-2 text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>{mergeBlockedReason}</div>
       ) : null}
