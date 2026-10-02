@@ -415,6 +415,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         mode: args.mode,
         message: failure.message,
         resolved: args.resolved,
+        before: resolvedAgainst,
         lease: leases.checkRealInput({ laneId, holderId }),
       });
       if (!refused) throw failure;

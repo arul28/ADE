@@ -462,6 +462,18 @@ final class AccessibilityDriver {
     // Actions
     // -----------------------------------------------------------------------
 
+    /// The first non-empty of title, label and value, for messages. An empty
+    /// title is common (web text keeps its words in the value), and quoting
+    /// it as `""` named nothing.
+    static func displayName(of record: ObservedElement) -> String {
+        for candidate in [record.title, record.label, record.value] {
+            if let text = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                return text.count > 60 ? String(text.prefix(59)) + "…" : text
+            }
+        }
+        return "untitled"
+    }
+
     /// A press, with a per-role fallback.
     ///
     /// Not every clickable thing answers `AXPress`: a menu bar item wants
@@ -475,7 +487,10 @@ final class AccessibilityDriver {
         case kAXTextFieldRole, kAXTextAreaRole:
             preferred = ["AXPress", "AXConfirm"]
         default:
-            preferred = ["AXPress", "AXConfirm", "AXShowMenu", "AXOpen"]
+            // No `AXShowMenu` here: on text, images and web content it opens
+            // the context menu, which a left click never does. Controls whose
+            // press IS a menu (menu bar items, menu and pop-up buttons) keep it.
+            preferred = ["AXPress", "AXConfirm", "AXOpen"]
         }
         // A timed-out perform was delivered: see `AXCallResult.wasDelivered`.
         // Trying the next action after one would press the element twice.
@@ -489,13 +504,15 @@ final class AccessibilityDriver {
             let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             if AXCallResult.wasDelivered(rawError: focused.rawValue) { return }
         }
-        // Last resort: whatever the element says it can do, in its own order.
-        for action in record.actions where action != "AXShowAlternateUI" && action != "AXShowDefaultUI" {
+        // Last resort: whatever the element says it can do, in its own order,
+        // except the actions a left click never performs.
+        let neverOnClick: Set<String> = ["AXShowAlternateUI", "AXShowDefaultUI", "AXShowMenu", "AXCancel", "AXDecrement", "AXIncrement", "AXScrollToVisible"]
+        for action in record.actions where !neverOnClick.contains(action) {
             if Self.perform(element, action) { return }
         }
         throw DriverError(
             code: DriverErrorCode.invalidArgument,
-            message: "\(record.role) \"\(record.title ?? record.label ?? "untitled")\" answered no press action."
+            message: "\(record.role) \"\(Self.displayName(of: record))\" answered no press action."
         )
     }
 

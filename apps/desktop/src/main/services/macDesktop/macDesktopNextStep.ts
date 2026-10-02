@@ -76,6 +76,21 @@ function bundleIdOf(element: MacDesktopElement, before: MacDesktopObservation | 
   return window?.bundleId ?? null;
 }
 
+/** A web page inside a real browser: the ADE browser drives it better. */
+function browserPageStep(
+  element: MacDesktopElement | null,
+  before: MacDesktopObservation | null,
+): ComputerUseActionNextStep | null {
+  if (!element || !isWebContent(element, before)) return null;
+  const bundleId = bundleIdOf(element, before);
+  if (!bundleId || !WEB_BROWSER_BUNDLE_IDS.has(bundleId)) return null;
+  return {
+    method: "browser",
+    reason: "this is a web page in a browser; the ADE browser acts on the DOM and confirms each step, unless the task needs this browser",
+    command: "ade browser open <url> --text",
+  };
+}
+
 /** Why accessibility input probably did not apply, or null when it probably did. */
 function accessibilityMissReason(
   action: string,
@@ -145,14 +160,8 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
   }
 
   const webContent = resolved ? isWebContent(resolved, before) : false;
-  const bundleId = resolved ? bundleIdOf(resolved, before) : null;
-  if (webContent && bundleId && WEB_BROWSER_BUNDLE_IDS.has(bundleId)) {
-    return {
-      method: "browser",
-      reason: "this is a web page in a browser; the ADE browser acts on the DOM and confirms each step, unless the task needs this browser",
-      command: "ade browser open <url> --text",
-    };
-  }
+  const browserStep = browserPageStep(resolved, before);
+  if (browserStep) return browserStep;
 
   if (args.mode === "real") {
     return {
@@ -185,9 +194,11 @@ export function macDesktopRefusedNextStep(args: {
   mode: MacDesktopInputMode;
   message: string;
   resolved: MacDesktopElement | null;
+  /** The tree the target was resolved against. */
+  before: MacDesktopObservation | null;
   lease: MacDesktopLeaseDecision;
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
   if (!/answered no press action/i.test(args.message)) return null;
-  return realInputStep(args, "the element has no press action");
+  return browserPageStep(args.resolved, args.before) ?? realInputStep(args, "the element has no press action");
 }
