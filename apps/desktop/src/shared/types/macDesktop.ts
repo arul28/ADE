@@ -1216,6 +1216,12 @@ export type WindowsDesktopStatus = {
   remoteDesktopAllowed: boolean;
   /** A credential saved by the local user in Windows Credential Manager. */
   passwordSaved: boolean;
+  /**
+   * Windows' own sign-in window is open on the PC and waits for the person to
+   * type the password. Absent from an older driver; the `signing_in` state is
+   * the fallback there.
+   */
+  signInWaiting?: boolean;
   /** The physical console's session id, or null when it cannot be read. */
   consoleSessionId: number | null;
   /** The session the driver host runs in, or null when no host is running. */

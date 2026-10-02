@@ -131,6 +131,19 @@ export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
 
 export { DEMO_RECORDING_STOP_TIMEOUT_MS };
 
+/**
+ * Windows Desktop actions that wait on a person at the Windows PC: the UAC
+ * prompt of setup, the Windows password dialog, and Windows' own sign-in
+ * window of a private screen (the driver allows that 160 s). On the 30 s
+ * default the pane reported "Remote ADE service timed out" while Windows was
+ * still waiting for the password, and the start looked frozen.
+ */
+export const WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS = 180_000;
+/** The remote transport outlives the brain's own budget for the same action. */
+export const WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS = 195_000;
+/** The renderer's timer outlives the transport, so the real reason wins. */
+export const WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS = 210_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
@@ -179,6 +192,11 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
   // See DEMO_RECORDING_STOP_TIMEOUT_MS.
   ["mac_desktop.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  // See WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+  ["mac_desktop.start", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.setupWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.takeoverWindows", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],

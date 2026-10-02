@@ -12,6 +12,7 @@ import {
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
   IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS,
+  WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -82,6 +83,14 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   // page's Refresh needs the same budget whichever runtime answers it.
   usage: {
     refreshHistory: IPC.usageRefreshHistory,
+  },
+  // Windows Desktop actions that wait on a person at the Windows PC; see
+  // WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+  mac_desktop: {
+    start: IPC.macDesktopStart,
+    setupWindows: IPC.macDesktopSetupWindows,
+    takeoverWindows: IPC.macDesktopTakeoverWindows,
+    useSharedDesktop: IPC.macDesktopUseSharedDesktop,
   },
 };
 
@@ -199,6 +208,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorDeviceDelete:
     case IPC.iosSimulatorDeviceDetach:
       return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
+    // UAC, the Windows password dialog, or Windows' sign-in window may be
+    // waiting on a person; see WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.
+    case IPC.macDesktopStart:
+    case IPC.macDesktopSetupWindows:
+    case IPC.macDesktopTakeoverWindows:
+    case IPC.macDesktopUseSharedDesktop:
+      return WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
     // Streams up to 50 MB to a paired host over HTTP. The upload client's own

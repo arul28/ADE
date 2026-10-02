@@ -1,6 +1,7 @@
 import {
   Desktop,
   FolderOpen,
+  WindowsLogo,
   GitBranch,
   GithubLogo,
   Globe,
@@ -139,7 +140,7 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   {
     id: "windows-desktop",
     label: "Windows Desktop",
-    icon: Monitor,
+    icon: WindowsLogo,
     color: "#38bdf8",
     // Only ever seen while the host's capability answer is in flight or
     // unreachable: on a Windows host the card's line is the lane's own screen
@@ -308,6 +309,27 @@ export function workToolAvailability(
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
 
   return AVAILABLE;
+}
+
+/**
+ * True when the lane's host can never run this tool: Mac Desktop and Apple
+ * Development on a Windows host, Windows Desktop on a Mac. Such a card is not
+ * shown at all, because a disabled card for something this machine can never
+ * do is noise. Only an answered `false` hides a tool; an unanswered
+ * capability keeps it, so nothing disappears and comes back a beat later.
+ * Cloud lanes are not host mismatches: their card stays and says why.
+ */
+export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
+  if (context.cloudLane) return false;
+  if (id === "windows-desktop") return context.supportsWindowsDesktop === false;
+  if (id === "mac-desktop") return context.supportsMacDesktop === false;
+  if (id === "ios") return !context.isWebClient && context.supportsIosSimulator === false;
+  return false;
+}
+
+/** The tool cards this host can show, in catalogue order. */
+export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WORK_TOOL_DEFINITIONS {
+  return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context));
 }
 
 export function isAvailableWorkSidebarTab(

@@ -22,7 +22,7 @@
  */
 
 /** `MAC_DESKTOP_NO_DISPLAY: `, and the driver's lowercase `window_not_ready: `. */
-const CODE_PREFIX = /^(?:MAC_DESKTOP_[A-Z0-9_]+|[a-z][a-z0-9_]*(?:_[a-z0-9_]+)+):\s*/;
+const CODE_PREFIX = /^(?:(?:MAC|WINDOWS)_DESKTOP_[A-Z0-9_]+|[a-z][a-z0-9_]*(?:_[a-z0-9_]+)+):\s*/;
 
 /** Electron's IPC wrapper, however many `Error:` hops it stacked up. */
 const IPC_WRAPPER = /^Error invoking remote method '[^']*':\s*/;

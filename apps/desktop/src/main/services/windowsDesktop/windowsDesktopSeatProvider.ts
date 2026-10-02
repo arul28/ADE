@@ -130,6 +130,7 @@ export function asWindowsDesktopStatus(raw: unknown): WindowsDesktopStatus {
     childSessionsEnabled: asBoolean(record.childSessionsEnabled),
     remoteDesktopAllowed: asBoolean(record.remoteDesktopAllowed),
     passwordSaved: asBoolean(record.passwordSaved),
+    ...(typeof record.signInWaiting === "boolean" ? { signInWaiting: record.signInWaiting } : {}),
     consoleSessionId: asNullableNumber(record.consoleSessionId),
     driverSessionId: asNullableNumber(record.sessionId ?? record.driverSessionId),
     hostIsConsoleSession: onConsole,

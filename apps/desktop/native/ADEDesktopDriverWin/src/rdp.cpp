@@ -55,6 +55,31 @@ HRESULT dispGet(IDispatch* d, const wchar_t* name, VARIANT* out) {
   return d->Invoke(id, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &none, out, nullptr, nullptr);
 }
 
+// Non-scriptable properties cannot use the control's IDispatch. Its own
+// type library supplies the verified vtable layout to ITypeInfo::Invoke.
+HRESULT nativePromptPolicy(IOleObject* control, bool allow) {
+  const IID iid = {0x4f6996d5, 0xd7b1, 0x412c, {0xb0, 0xff, 0x06, 0x37, 0x18, 0x56, 0x69, 0x07}};
+  IUnknown* native = nullptr;
+  IProvideClassInfo* provider = nullptr;
+  ITypeInfo* classInfo = nullptr; ITypeInfo* info = nullptr;
+  ITypeLib* library = nullptr; UINT index = 0;
+  HRESULT hr = control->QueryInterface(iid, reinterpret_cast<void**>(&native));
+  if (SUCCEEDED(hr)) hr = control->QueryInterface(IID_IProvideClassInfo, reinterpret_cast<void**>(&provider));
+  if (SUCCEEDED(hr)) hr = provider->GetClassInfo(&classInfo);
+  if (SUCCEEDED(hr)) hr = classInfo->GetContainingTypeLib(&library, &index);
+  if (SUCCEEDED(hr)) hr = library->GetTypeInfoOfGuid(iid, &info);
+  LPOLESTR name = const_cast<LPOLESTR>(L"AllowPromptingForCredentials"); DISPID id;
+  if (SUCCEEDED(hr)) hr = info->GetIDsOfNames(&name, 1, &id);
+  if (SUCCEEDED(hr)) {
+    VARIANT value; VariantInit(&value); value.vt = VT_BOOL; value.boolVal = allow ? VARIANT_TRUE : VARIANT_FALSE;
+    DISPID put = DISPID_PROPERTYPUT; DISPPARAMS params{&value, &put, 1, 1};
+    hr = info->Invoke(native, id, DISPATCH_PROPERTYPUT, &params, nullptr, nullptr, nullptr);
+  }
+  if (info) info->Release(); if (library) library->Release();
+  if (classInfo) classInfo->Release(); if (provider) provider->Release(); if (native) native->Release();
+  return hr;
+}
+
 HRESULT dispCall(IDispatch* d, const wchar_t* name) {
   DISPID id;
   HRESULT hr = dispId(d, name, &id);
@@ -396,6 +421,11 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
   }
   VariantClear(&adv);
 
+  hr = nativePromptPolicy(impl_->ole, credential == nullptr);
+  if (FAILED(hr)) {
+    if (error) *error = "Windows could not configure the sign-in prompt.";
+    end(); return false;
+  }
   if (credential) {
     std::wstring username = credential->username, domain;
     auto slash = username.find(L'\\');
@@ -504,7 +534,7 @@ void RdpSession::onLoginComplete() {
 
 void RdpSession::onDisconnected(int reason) {
   std::lock_guard<std::mutex> lock(mutex_);
-  reason_ = reason;
+  if (reason_ != 2055) reason_ = reason;
   state_ = state_ == State::Connecting ? State::Failed : State::Ended;
   changed_.notify_all();
 }

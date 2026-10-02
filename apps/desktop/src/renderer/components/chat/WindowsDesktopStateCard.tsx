@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { Desktop, Lock, Monitor, Warning } from "@phosphor-icons/react";
+import { Lock, WindowsLogo, Warning } from "@phosphor-icons/react";
 
+import { macDesktopErrorText } from "./macDesktopErrorText";
 import { confirmDialog } from "../ui/dialog";
 import {
   WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE,
@@ -32,21 +33,23 @@ export function WindowsDesktopStateCard({
   windows,
   onChanged,
   runtimePin,
+  starting = false,
 }: {
   laneId: string;
   laneName: string | null | undefined;
   windows: WindowsDesktopStatus;
   runtimePin?: OpenProjectBinding | null;
+  starting?: boolean;
   /** Re-read the status after an action. */
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"setup" | "save" | "forget" | "start" | "takeover" | "shared" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showingConsent, setShowingConsent] = useState(false);
 
-  const run = async (action: () => Promise<unknown>): Promise<void> => {
+  const run = async (operation: NonNullable<typeof busy>, action: () => Promise<unknown>): Promise<void> => {
     if (busy) return;
-    setBusy(true);
+    setBusy(operation);
     setError(null);
     try {
       await action();
@@ -54,15 +57,30 @@ export function WindowsDesktopStateCard({
     } catch (caught) {
       // Surface the refusal. A status re-read alone cannot show it when the
       // host state did not change, so the card keeps the sentence itself.
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(macDesktopErrorText(caught instanceof Error ? caught.message : String(caught), { laneId, laneName }) ?? "Try again.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
   const api = window.ade.macDesktop;
   const holderName = windows.heldByLaneName?.trim() || "Another lane";
   const heldByOther = Boolean(windows.heldByLaneId && windows.heldByLaneId !== laneId);
+
+  const signInWaiting = windows.signInWaiting === true;
+  if (busy || starting || windows.state === "signing_in" || signInWaiting) {
+    const needsPassword = busy === "save" || signInWaiting ||
+      (!windows.passwordSaved && (starting || busy === "start" || windows.state === "signing_in"));
+    return (
+      <MacDesktopStateCard
+        testId="windows-desktop-waiting"
+        tone="busy"
+        icon={WindowsLogo}
+        title={busy === "setup" ? "Approve setup on the Windows PC" : needsPassword ? "Waiting for you on the Windows PC" : busy === "forget" ? "Forgetting saved password…" : busy === "shared" ? "Opening your main desktop…" : "Starting your private screen…"}
+        detail={busy === "setup" ? "Choose Yes in the Windows admin prompt. You only need to do this once." : needsPassword ? "Enter your Windows password in the sign-in window on that PC, not your PIN. Close the window to cancel." : busy === "forget" ? "Removing the password saved for ADE." : "Keep this tab open. Your screen will appear when it is ready."}
+      />
+    );
+  }
 
   if (error) {
     return (
@@ -103,17 +121,17 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-consent-accept"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              disabled={busy}
-              onClick={() => void run(() => api.useSharedDesktop({ laneId }, runtimePin))}
+              disabled={busy !== null}
+              onClick={() => void run("shared", () => api.useSharedDesktop({ laneId }, runtimePin))}
             >
-              <Monitor size={14} />
+              <WindowsLogo size={14} />
               Use main desktop
             </button>
             <button
               type="button"
               data-testid="windows-desktop-consent-decline"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
-              disabled={busy}
+              disabled={busy !== null}
               onClick={() => setShowingConsent(false)}
             >
               No
@@ -151,7 +169,7 @@ export function WindowsDesktopStateCard({
       <MacDesktopStateCard
         testId="windows-desktop-held"
         tone="idle"
-        icon={Monitor}
+        icon={WindowsLogo}
         title={`${holderName} is using the private screen`}
         detail="Take over starts a clean screen for this lane."
         actions={(
@@ -160,7 +178,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-take-over"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              disabled={busy}
+              disabled={busy !== null}
               onClick={() => void (async () => {
                 const confirmed = await confirmDialog({
                   title: `Take the private screen from ${holderName}?`,
@@ -168,7 +186,7 @@ export function WindowsDesktopStateCard({
                   confirmLabel: "Take over",
                 });
                 if (!confirmed) return;
-                await run(() => api.takeoverWindows({ laneId }, runtimePin));
+                await run("takeover", () => api.takeoverWindows({ laneId }, runtimePin));
               })()}
             >
               Take over
@@ -177,7 +195,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-held-shared"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
-              disabled={busy}
+              disabled={busy !== null}
               onClick={() => setShowingConsent(true)}
             >
               Use main desktop
@@ -193,25 +211,25 @@ export function WindowsDesktopStateCard({
       <MacDesktopStateCard
         testId="windows-desktop-setup"
         tone="idle"
-        icon={Desktop}
-        title="Set up private screens"
-        detail="One admin prompt enables private sessions and Remote Desktop. ADE connects to it on this PC."
+        icon={WindowsLogo}
+        title="Give your agents a private Windows screen"
+        detail="One-time setup: approve Windows setup, then save your Windows password. Your agents get a separate screen. You can also let them use your main desktop."
         actions={(
           <>
             <button
               type="button"
               data-testid="windows-desktop-setup-run"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              disabled={busy}
-              onClick={() => void run(() => api.setupWindows({ allowPrompt: true }, runtimePin))}
+              disabled={busy !== null}
+              onClick={() => void run("setup", () => api.setupWindows({ allowPrompt: true }, runtimePin))}
             >
-              Set up
+              Set up private screens
             </button>
             <button
               type="button"
               data-testid="windows-desktop-setup-shared"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
-              disabled={busy}
+              disabled={busy !== null}
               onClick={() => setShowingConsent(true)}
             >
               Use main desktop
@@ -235,7 +253,7 @@ export function WindowsDesktopStateCard({
             type="button"
             data-testid="windows-desktop-unavailable-shared"
             className={MAC_DESKTOP_SECONDARY_BUTTON}
-            disabled={busy}
+            disabled={busy !== null}
             onClick={() => setShowingConsent(true)}
           >
             Use main desktop
@@ -250,34 +268,34 @@ export function WindowsDesktopStateCard({
     <MacDesktopStateCard
       testId="windows-desktop-off"
       tone="idle"
-      icon={Monitor}
-      title={laneName ? `Windows Desktop · ${laneName}` : "Windows Desktop is off"}
-      detail={windows.passwordSaved ? "A private Windows screen for this lane’s apps. Your saved password is kept on this PC." : "Save your Windows password once to start private screens without returning to this PC for each sign-in."}
+      icon={WindowsLogo}
+      title={windows.passwordSaved ? "Your private screen is ready" : "Next: save your Windows password"}
+      detail={windows.passwordSaved ? "Your agents can use a separate Windows screen. Your password stays saved on that PC." : "Enter it once on the Windows PC so ADE can sign in to private screens for you. Use your password, not your PIN."}
       actions={(
         <>
-          <button
+          {windows.passwordSaved ? <button
             type="button"
             data-testid="windows-desktop-start"
             className={WORK_TOOL_PRIMARY_BUTTON}
-            disabled={busy}
-            onClick={() => void run(() => api.start({ laneId, seatMode: "private" }, runtimePin))}
+            disabled={busy !== null}
+            onClick={() => void run("start", () => api.start({ laneId, seatMode: "private" }, runtimePin))}
           >
-            <Monitor size={14} />
+            <WindowsLogo size={14} />
             Start private screen
-          </button>
+          </button> : null}
           <button
             type="button"
-            className={MAC_DESKTOP_SECONDARY_BUTTON}
-            disabled={busy}
-            onClick={() => void run(() => api.setupWindows({ allowPrompt: true, ...(windows.passwordSaved ? { forgetPassword: true } : { savePassword: true }) }, runtimePin))}
+            className={windows.passwordSaved ? MAC_DESKTOP_SECONDARY_BUTTON : WORK_TOOL_PRIMARY_BUTTON}
+            disabled={busy !== null}
+            onClick={() => void run(windows.passwordSaved ? "forget" : "save", () => api.setupWindows({ allowPrompt: true, ...(windows.passwordSaved ? { forgetPassword: true } : { savePassword: true }) }, runtimePin))}
           >
-            {windows.passwordSaved ? "Forget saved password" : "Save Windows password"}
+            {windows.passwordSaved ? "Forget saved password" : "Enter Windows password"}
           </button>
           <button
             type="button"
             data-testid="windows-desktop-shared"
             className={MAC_DESKTOP_SECONDARY_BUTTON}
-            disabled={busy}
+            disabled={busy !== null}
             onClick={() => setShowingConsent(true)}
           >
             Use main desktop

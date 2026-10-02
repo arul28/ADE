@@ -3,6 +3,8 @@
 #define SECURITY_WIN32
 #include <security.h>
 #include <secext.h>
+#include <lm.h>
+#pragma comment(lib, "netapi32.lib")
 
 namespace ade {
 std::wstring credentialTarget(const std::wstring& home) {
@@ -56,12 +58,39 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   wchar_t username[CREDUI_MAX_USERNAME_LENGTH + 1] = {};
   ULONG size = ARRAYSIZE(username);
   if (!GetUserNameExW(NameSamCompatible, username, &size)) username[0] = 0;
+  // Level 24 resolves the Windows account's connected Internet identity; do
+  // not infer a Microsoft account from a shortened SAM name or registry cache.
+  wchar_t localName[UNLEN + 1] = {};
+  DWORD localSize = ARRAYSIZE(localName);
+  LPBYTE account = nullptr;
+  if (GetUserNameW(localName, &localSize) && NetUserGetInfo(nullptr, localName, 24, &account) == NERR_Success) {
+    auto* identity = reinterpret_cast<USER_INFO_24*>(account);
+    HANDLE token = nullptr;
+    DWORD bytes = 0;
+    std::vector<BYTE> user;
+    bool sameUser = false;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+      GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+      user.resize(bytes);
+      sameUser = GetTokenInformation(token, TokenUser, user.data(), bytes, &bytes) &&
+          identity->usri24_user_sid && EqualSid(identity->usri24_user_sid,
+              reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
+      CloseHandle(token);
+    }
+    if (sameUser && identity->usri24_internet_identity && identity->usri24_internet_provider_name &&
+        _wcsicmp(identity->usri24_internet_provider_name, L"MicrosoftAccount") == 0 &&
+        identity->usri24_internet_principal_name && *identity->usri24_internet_principal_name) {
+      auto principal = std::wstring(L"MicrosoftAccount\\") + identity->usri24_internet_principal_name;
+      if (principal.size() < ARRAYSIZE(username)) wcscpy_s(username, principal.c_str());
+    }
+    NetApiBufferFree(account);
+  }
   auto credential = std::make_unique<WindowsCredential>();
   credential->password.resize(CREDUI_MAX_PASSWORD_LENGTH + 1);
   CREDUI_INFOW info = {sizeof(info)};
   info.hwndParent = owner;
   info.pszCaptionText = L"Save your Windows password for ADE";
-  info.pszMessageText = L"ADE tests this password before saving it in Windows Credential Manager on this PC. Use your Windows password, not your PIN. For a Microsoft account, use MicrosoftAccount\\email as the user name.";
+  info.pszMessageText = L"Enter your Windows password, not your PIN. ADE checks it before saving it on this PC.";
   BOOL save = FALSE;
   PromptWait wait{owner, nowMs() + 120'000, &stopping};
   promptWait = &wait;

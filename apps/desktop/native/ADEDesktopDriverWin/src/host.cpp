@@ -98,6 +98,16 @@ class Host {
     std::lock_guard<std::mutex> lock(statusMutex_);
     Json result = Json::parse(cachedStatus_.dump());
     if (!result["holderLaneId"].str().empty() && (childDisconnected_ || rdp_.state() != RdpSession::State::SignedIn)) result["state"] = "unavailable";
+    result["signInWaiting"] = signInWaiting_.load();
+    const auto rdpState = rdp_.state();
+    if (rdpState == RdpSession::State::Connecting || signInWaiting_) result["state"] = "signing_in";
+    else if (result["state"].str() == "signing_in") {
+      // The completion event can reach the reader before the worker refreshes
+      // its snapshot. Never carry a completed prompt's cached waiting state.
+      result["state"] = !result["holderLaneId"].str().empty()
+          ? (rdpState == RdpSession::State::SignedIn ? "held" : "unavailable")
+          : result["seatMode"].str() == "shared" ? "shared" : "ready";
+    }
     const bool locked = consoleLocked();
     result["locked"] = locked;
     result["childSessionsEnabled"] = childSessionsEnabled();
@@ -117,6 +127,18 @@ class Host {
   }
   void replyBusy(const Json& req) {
     output_.write(errorReply(req["id"].str(), {code::kDriverUnavailable, "Windows Desktop is busy; retry the request.", Json()}));
+  }
+
+  bool rejectSetupWhileBusy(const Json& req) {
+    if (req["op"].str() != "windows.setup" || !executing_) return false;
+    output_.write(errorReply(req["id"].str(), {code::kSignInFailed,
+        signInWaiting_ ? "Finish or close the Windows sign-in window, then try setup again."
+                       : "Windows Desktop is busy. Finish the current operation, then try setup again.", Json()}));
+    return true;
+  }
+  void setSignInWaiting(bool waiting) {
+    signInWaiting_ = waiting;
+    output_.write(Json::Object{{"event", "windows-state-changed"}, {"signInWaiting", waiting}});
   }
 
   void replyStatus(const Json& req) {
@@ -255,10 +277,15 @@ class Host {
   void savePassword() {
     if (consoleLocked()) fail(code::kLocked, "Unlock this PC before saving the Windows password.");
     if (!holder_.empty() || childSessionId()) fail(code::kHeld, "Stop the private Windows screen before changing its saved password.");
+    if (rdp_.state() == RdpSession::State::Connecting || signInWaiting_)
+      fail(code::kSignInFailed, "Finish or close the Windows sign-in window before saving your password.");
+    setSignInWaiting(true);
+    struct Waiting { Host& host; ~Waiting() { host.setSignInWaiting(false); } } waiting{*this};
     auto credential = promptCredential(window_, stopping_);
+    setSignInWaiting(false);
     bool connected = false; std::string error;
     try {
-      ui([&] { connected = rdp_.begin(window_, 1280, 800, &error, credential.get()); });
+      ui([&] { ShowWindow(window_, SW_HIDE); connected = rdp_.begin(window_, 1280, 800, &error, credential.get()); });
       refreshStatus();
       if (!connected) fail(code::kSignInFailed, error);
       auto deadline = nowMs() + 30'000;
@@ -272,6 +299,7 @@ class Host {
       stopPrivate();
       saveCredential(credentialTarget(home_), *credential);
     } catch (...) {
+      setSignInWaiting(false);
       if (!childId_) childId_ = childSessionId();
       stopPrivate();
       throw;
@@ -338,11 +366,24 @@ class Host {
       std::string error;
       int width = static_cast<int>(std::clamp<int64_t>(req["width"].asInt(2560), 640, 3840));
       int height = static_cast<int>(std::clamp<int64_t>(req["height"].asInt(1440), 480, 2160));
+      setSignInWaiting(!credential);
       ui([&] {
         SetWindowPos(window_, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER);
+        SetWindowTextW(window_, L"Sign in to your ADE private screen");
         ShowWindow(window_, credential ? SW_HIDE : SW_SHOWNORMAL);
+        if (!credential) {
+          const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+          const DWORD ownThread = GetCurrentThreadId();
+          const bool attached = foregroundThread && foregroundThread != ownThread &&
+              AttachThreadInput(ownThread, foregroundThread, TRUE);
+          BringWindowToTop(window_);
+          SetForegroundWindow(window_);
+          if (attached) AttachThreadInput(ownThread, foregroundThread, FALSE);
+          FLASHWINFO flash{sizeof(flash), window_, FLASHW_TRAY, 3, 0}; FlashWindowEx(&flash);
+        }
         connected = rdp_.begin(window_, width, height, &error, credential.get());
       });
+      setSignInWaiting(!credential && connected);
       refreshStatus();
       if (!connected) fail(code::kSignInFailed, error);
       auto settled = rdp_.state();
@@ -350,6 +391,7 @@ class Host {
       while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
         settled = rdp_.waitSettled(100);
       }
+      setSignInWaiting(false);
       childId_ = childSessionId();
       if (settled != RdpSession::State::SignedIn || !childId_) {
         if (credential && rdp_.disconnectReason() == 2055) {
@@ -379,6 +421,7 @@ class Host {
       DeleteFileW(launchFile_.c_str());
       ui([&] { ShowWindow(window_, SW_HIDE); });
     } catch (...) {
+      setSignInWaiting(false);
       if (!childId_) childId_ = childSessionId();
       stopPrivate();
       throw;
@@ -498,7 +541,7 @@ class Host {
   std::condition_variable childReplyReady_;
   std::map<std::string, std::optional<Json>> childReplies_;
   std::atomic<int64_t> activeUntil_{0};
-  std::atomic<bool> stopping_{false};
+  std::atomic<bool> stopping_{false}, signInWaiting_{false};
   std::atomic<bool> executing_{false}, recording_{false}, privateActive_{false};
   bool lastLocked_ = false;
 };
@@ -518,7 +561,7 @@ int runHost(const std::wstring& home) {
   if (FAILED(OleInitialize(nullptr))) return 3;
   WNDCLASSW wc = {}; wc.lpfnWndProc = hostProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ADEWindowsScreenHost";
   RegisterClassW(&wc);
-  HWND window = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"ADE private Windows screen — sign in",
+  HWND window = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"ADE private Windows screen — sign in",
       WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
   if (!window) { OleUninitialize(); return 4; }
   Host host(window, home);
@@ -536,6 +579,7 @@ int runHost(const std::wstring& home) {
         if (req["type"].str() == "quit") break;
         if (!req["id"].str().empty()) {
           if (req["op"].str() == "windows.status" || req["op"].str() == "ping") { host.replyStatus(req); continue; }
+          if (host.rejectSetupWhileBusy(req)) continue;
           std::lock_guard<std::mutex> lock(queueMutex);
           if (requests.size() >= 128) { host.replyBusy(req); continue; }
           requests.push_back(req); queued.notify_one();
