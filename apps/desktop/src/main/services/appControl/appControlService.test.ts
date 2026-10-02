@@ -498,7 +498,7 @@ describe("appControlService", () => {
     ]);
   });
 
-  it("normalizes screenshot-space input with independent screencast x/y scales", async () => {
+  it("normalizes screenshot-space input by the viewport device scale, not the downscaled screencast frame", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
 
@@ -510,6 +510,9 @@ describe("appControlService", () => {
     await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
+    // A live frame downscaled by the screencast cap, whose scale (2/4) is not the
+    // observation screenshot's. Screenshot-space input must use the app's device
+    // pixel ratio (2), not this frame.
     socket!.emitMessage({
       method: "Page.screencastFrame",
       params: {
@@ -518,6 +521,7 @@ describe("appControlService", () => {
         metadata: { deviceWidth: 0.5, deviceHeight: 0.25, pageScaleFactor: 2 },
       },
     });
+    mockState.runtimeValues.push({ devicePixelRatio: 2 });
     socket!.sent.length = 0;
 
     await service.click({ laneId: "lane-1", x: 20, y: 40 });
@@ -526,8 +530,8 @@ describe("appControlService", () => {
       .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
       .filter((message) => message.method === "Input.dispatchMouseEvent");
     expect(mouseEvents.map((event) => ({ x: event.params?.x, y: event.params?.y }))).toEqual([
-      { x: 10, y: 10 },
-      { x: 10, y: 10 },
+      { x: 10, y: 20 },
+      { x: 10, y: 20 },
     ]);
   });
 

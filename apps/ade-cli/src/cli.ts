@@ -2590,6 +2590,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control observe --no-dom --text      Screenshot only, no element list
     $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
     $ ade app-control click --text-match "Save"    Click by visible label
+    $ ade app-control right-click --text-match "Row"  Right-click by label (same as click --button right)
     $ ade app-control click 120 420 --coords viewport
     $ ade app-control hover --test-id row-3
     $ ade app-control fill --selector "#name" --value "Ada"
@@ -12933,7 +12934,9 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "click" || sub === "tap") {
+  if (sub === "click" || sub === "tap" || sub === "right-click" || sub === "context-click") {
+    const rightClick = sub === "right-click" || sub === "context-click";
+    const verb = rightClick ? "right-click" : "click";
     const targetArgs = readBrowserClickTargetArgs(args);
     const actionArgs = readAppControlAgentActionArgs(args);
     const hasTarget = Object.keys(targetArgs).length > 0;
@@ -12941,12 +12944,12 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
     if (!hasTarget && (x == null || y == null)) {
       throw new CliUsageError(
-        "app-control click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.",
+        `app-control ${verb} requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.`,
       );
     }
     return {
       kind: "execute",
-      label: "App Control click",
+      label: `App Control ${verb}`,
       steps: [
         appControlStep("result", "agentClick",
           collectGenericObjectArgs(args, {
@@ -12956,8 +12959,8 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
             ...(y == null ? {} : { y }),
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
-            button: readValue(args, ["--button"]),
-            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+            button: rightClick ? "right" : readValue(args, ["--button"]),
+            clickCount: rightClick ? 1 : readNumberOption(args, ["--click-count", "--count"]),
           }),
         ),
       ],

@@ -2707,17 +2707,21 @@ export function createAppControlLaneController(context: AppControlLaneController
         y: Math.max(0, round(point.y)),
       };
     }
+    // Screenshot-space input is in the pixels of the observation screenshot
+    // (`Page.captureScreenshot`), which is full-fidelity at the device scale
+    // factor. The live screencast frame is a different image: `Page.startScreencast`
+    // downscales it to `maxWidth`/`maxHeight`, so its scale is smaller than the
+    // screenshot's whenever the window is larger than that cap. Dividing
+    // screenshot coordinates by the screencast's scale landed every point low
+    // and to the right. Use the explicit `--scale` when given, else the app's
+    // own device pixel ratio — the scale the screenshot was taken at.
     const explicitScale = typeof point.scale === "number" && Number.isFinite(point.scale) && point.scale > 0
       ? point.scale
       : null;
-    const fallbackScale = explicitScale ?? await getViewportScale(client);
-    const scaleX = explicitScale
-      ?? (lastScreencastFrame?.scaleX && lastScreencastFrame.scaleX > 0 ? lastScreencastFrame.scaleX : fallbackScale);
-    const scaleY = explicitScale
-      ?? (lastScreencastFrame?.scaleY && lastScreencastFrame.scaleY > 0 ? lastScreencastFrame.scaleY : scaleX);
+    const scale = explicitScale ?? await getViewportScale(client);
     return {
-      x: Math.max(0, round(point.x / scaleX)),
-      y: Math.max(0, round(point.y / scaleY)),
+      x: Math.max(0, round(point.x / scale)),
+      y: Math.max(0, round(point.y / scale)),
     };
   };
 
