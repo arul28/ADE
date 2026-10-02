@@ -52,9 +52,22 @@ function installGitStub(args: {
   dirty?: boolean;
   statusOutputs?: string[];
   onRemove?: () => Promise<void> | void;
+  /**
+   * Fires at the first worktree-mutating call of a run. Platforms that can
+   * rename a worktree aside reach `worktree prune` without ever calling
+   * `worktree remove`, so a pause point for "a delete is mid-worktree-step"
+   * has to accept either.
+   */
+  onWorktreeMutation?: () => Promise<void> | void;
   onAdd?: (target: string) => Promise<void> | void;
 } = {}) {
   let statusCall = 0;
+  let mutationSignalled = false;
+  const signalWorktreeMutation = async () => {
+    if (mutationSignalled) return;
+    mutationSignalled = true;
+    await args.onWorktreeMutation?.();
+  };
   vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
     if (command[0] === "rev-parse" && command.includes("--show-toplevel")) {
       if (!options?.cwd || !fs.existsSync(options.cwd)) return gitResult(1, "", "missing");
@@ -71,11 +84,15 @@ function installGitStub(args: {
     if (command[0] === "ls-remote") return gitResult(0, "abc\trefs/heads/feature/storage\n");
     if (command[0] === "merge-base") return gitResult(0);
     if (command[0] === "worktree" && command[1] === "remove") {
+      await signalWorktreeMutation();
       await args.onRemove?.();
       fs.rmSync(command.at(-1)!, { recursive: true, force: true });
       return gitResult(0);
     }
-    if (command[0] === "worktree" && command[1] === "prune") return gitResult(0);
+    if (command[0] === "worktree" && command[1] === "prune") {
+      await signalWorktreeMutation();
+      return gitResult(0);
+    }
     if (command[0] === "show-ref") return gitResult(0);
     if (command[0] === "rev-list" && command[1] === "--left-right") return gitResult(0, "0\t0\n");
     if (command[0] === "rev-parse" && command.includes("@{upstream}")) return gitResult(1);
@@ -595,7 +612,10 @@ describe("lane storage lifecycle", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let removeStarted!: () => void;
     const started = new Promise<void>((resolve) => { removeStarted = resolve; });
-    installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+    // The pause point is the first worktree-mutating call, not `worktree remove`
+    // specifically: on Windows the lane delete can rename the checkout aside and
+    // reach `worktree prune` without ever calling `worktree remove`.
+    installGitStub({ onWorktreeMutation: async () => { removeStarted(); await gate; } });
 
     const deletion = service.delete({ laneId: "12345678-lane", deleteBranch: false });
     await started;
@@ -624,6 +644,32 @@ describe("lane storage lifecycle", () => {
 
     expect(db.get("select lane_id from local_lane_storage_state where lane_id = ?", ["12345678-lane"])).toBeNull();
     expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
+    db.close();
+  });
+
+  it("removes a managed lane's worktree, renaming the checkout aside on Windows", async () => {
+    // This file runs natively on the Windows CI job, and it is the only place
+    // the managed-worktree delete path is exercised there. On Windows the lane
+    // delete renames the checkout aside and prunes instead of walking every
+    // file; both platforms must still end with the lane row and the folder
+    // gone from its path.
+    const { db, service, worktreePath } = await fixture();
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(worktreePath, "work.txt"), "lane work\n", "utf8");
+    installGitStub();
+
+    await service.delete({ laneId: "12345678-lane", deleteBranch: false });
+
+    expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
+    expect(fs.existsSync(worktreePath)).toBe(false);
+    const gitCalls = vi.mocked(runGit).mock.calls.map(([command]) => command.slice(0, 2).join(" "));
+    if (process.platform === "win32") {
+      expect(gitCalls).toContain("worktree prune");
+      expect(gitCalls).not.toContain("worktree remove");
+    } else {
+      expect(gitCalls).toContain("worktree remove");
+      expect(gitCalls).not.toContain("worktree prune");
+    }
     db.close();
   });
 });

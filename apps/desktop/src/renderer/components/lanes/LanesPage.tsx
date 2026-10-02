@@ -9,6 +9,7 @@ import {
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { isTypingTarget } from "../../lib/typingTarget";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { COLORS, primaryButton } from "./laneDesignTokens";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
@@ -1431,7 +1432,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           if (result.status === "fulfilled") return;
           const lane = result.lane;
           blockedLaneIds.add(lane.id);
-          errors.push(`${lane.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+          errors.push(`${lane.name}: ${stripElectronErrorWrapper(result.reason instanceof Error ? result.reason.message : String(result.reason))}`);
           setDeleteProgressByLaneId((prev) => {
             const next = { ...prev };
             delete next[lane.id];
@@ -2147,7 +2148,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .catch((error) => {
         showToast({
           title: `Could not delete ${target.lane.name}`,
-          message: error instanceof Error ? error.message : String(error),
+          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
           tone: "error",
           durationMs: 0,
         });

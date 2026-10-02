@@ -2525,6 +2525,8 @@ describe("laneService delete outside .ade/worktrees", () => {
     /** Where the lane's worktree lives; defaults to an external directory. */
     makeWorktreePath?: (repoRoot: string) => string;
     createDirectory?: boolean;
+    /** Captures the service's operational lines; the rename-aside sweep only reports through them. */
+    logger?: ReturnType<typeof createLogger>;
   }) {
     const repoRoot = makeTempRepoRoot(opts.prefix);
     const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
@@ -2549,6 +2551,7 @@ describe("laneService delete outside .ade/worktrees", () => {
       projectId: opts.projectId,
       defaultBaseRef: "main",
       worktreesDir,
+      logger: opts.logger ?? createLogger(),
       onDeleteEvent: (event) => events.push(event),
     });
     return { db, service, repoRoot, worktreesDir, worktreePath, events };
@@ -2774,6 +2777,247 @@ describe("laneService delete outside .ade/worktrees", () => {
     } finally {
       db.close();
       fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  /** A single registered checkout, in `git worktree list --porcelain` spelling. */
+  function registeredWorktree(worktreePath: string): string {
+    return [
+      `worktree ${worktreePath}`,
+      "HEAD 1111111",
+      "branch refs/heads/feature/external",
+      "",
+    ].join("\n");
+  }
+
+  /**
+   * `git worktree list` reports the checkout while it is on disk and drops it
+   * the moment it is renamed aside — the probe that decides whether a rename
+   * really unregistered the worktree, and whether a prune really landed.
+   */
+  function stubWorktreeListWhilePresent(worktreePath: string): void {
+    vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+      if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+        return (fs.existsSync(worktreePath) ? registeredWorktree(worktreePath) : "") as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+  }
+
+  /**
+   * A worktree in its own temp parent, so the delete's sweep of that parent
+   * cannot walk the shared temp directory. Returns the parent for assertions.
+   */
+  async function setupInOwnParent(opts: {
+    projectId: string;
+    prefix: string;
+    logger?: ReturnType<typeof createLogger>;
+  }) {
+    const parentDir = makeTempRepoRoot(`${opts.prefix}parent-`);
+    const worktreePath = path.join(parentDir, "external");
+    const rest = await setup({
+      projectId: opts.projectId,
+      prefix: `${opts.prefix}repo-`,
+      makeWorktreePath: () => worktreePath,
+      logger: opts.logger,
+    });
+    return { ...rest, parentDir, worktreePath };
+  }
+
+  it("renames a Windows worktree aside and lets git prune it, instead of git removing it file by file", async () => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-aside",
+      prefix: "ade-lane-rename-aside-",
+    });
+    // Forged only once the fixture exists: a throw while building it must not
+    // leave `process.platform` rewritten for every test after this one.
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      stubGitForDelete({ worktreePath });
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "));
+      expect(gitCalls).toContain("worktree prune");
+      expect(gitCalls).not.toContain("worktree remove");
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("puts the folder back when git still lists the worktree after the rename", async () => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-rollback",
+      prefix: "ade-lane-rename-rollback-",
+    });
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({
+        worktreePath,
+        removeExitCode: 1,
+        removeStderr: "error: failed to delete 'external': Invalid argument",
+      });
+      // A locked worktree, or a prune that did not take: git keeps listing it,
+      // so the rename must not stand — the folder is not ADE's to rename away.
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+          return registeredWorktree(worktreePath) as any;
+        }
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /failed to delete/i,
+      );
+
+      // The rename really happened first: the prune only runs on that path.
+      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "))).toContain(
+        "worktree prune",
+      );
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(fs.readdirSync(parentDir).filter((name) => name.includes(".ade-deleting-"))).toEqual([]);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a renamed-aside folder alone while git still has its admin directory", async () => {
+    const originalPlatform = process.platform;
+    const lines: Array<{ event: string; meta?: Record<string, unknown> }> = [];
+    const logger = {
+      ...createLogger(),
+      info: (event: string, meta?: Record<string, unknown>) => lines.push({ event, meta }),
+      warn: (event: string, meta?: Record<string, unknown>) => lines.push({ event, meta }),
+    };
+    const { db, service, repoRoot, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: "proj-rename-sweep-guard",
+      prefix: "ade-lane-rename-sweep-guard-",
+      logger,
+    });
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      // What an earlier ADE run left when the move back failed: git's admin
+      // directory is still on disk, so this checkout is a lane, not trash.
+      const guarded = path.join(parentDir, ".kept.ade-deleting-deadbeef");
+      const adminDir = path.join(repoRoot, ".git", "worktrees", "kept");
+      fs.mkdirSync(adminDir, { recursive: true });
+      fs.mkdirSync(guarded, { recursive: true });
+      fs.writeFileSync(path.join(guarded, ".git"), `gitdir: ${adminDir}\n`, "utf8");
+      fs.writeFileSync(path.join(guarded, "work.txt"), "still mine\n", "utf8");
+      // A real leftover from the same run: no `.git` at all, so it is swept.
+      // Deliberately slow to delete, so its removal receipt is a completion
+      // signal for the whole sweep: anything else the sweep queued, it queued
+      // long before this one finished.
+      const swept = path.join(parentDir, ".gone.ade-deleting-feedface");
+      fs.mkdirSync(swept, { recursive: true });
+      for (let i = 0; i < 500; i += 1) {
+        fs.writeFileSync(path.join(swept, `f${i}.txt`), "x", "utf8");
+      }
+
+      stubGitForDelete({ worktreePath });
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      // The sweep is done once it has acknowledged removing the unguarded leftover.
+      await vi.waitFor(
+        () =>
+          expect(
+            lines.some(
+              (line) => line.event === "lane.delete.background_remove_done" && line.meta?.path === swept,
+            ),
+          ).toBe(true),
+        { timeout: 15_000 },
+      );
+      expect(fs.existsSync(path.join(guarded, "work.txt"))).toBe(true);
+      expect(lines.some((line) => line.meta?.path === guarded)).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["darwin", "linux"] as const)("still runs git worktree remove on %s", async (platformName) => {
+    const originalPlatform = process.platform;
+    const { db, service, parentDir, worktreePath } = await setupInOwnParent({
+      projectId: `proj-rename-off-${platformName}`,
+      prefix: `ade-lane-rename-off-${platformName}-`,
+    });
+    Object.defineProperty(process, "platform", { value: platformName, configurable: true });
+    try {
+      stubGitForDelete({ worktreePath });
+      // A rename-aside would make the probe after the rename come back empty —
+      // which is exactly what this platform must not do, so `git worktree
+      // remove` stays the only exit.
+      stubWorktreeListWhilePresent(worktreePath);
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(
+        vi.mocked(runGit).mock.calls.some(([gitArgs]) => gitArgs[0] === "worktree" && gitArgs[1] === "remove"),
+      ).toBe(true);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(fs.readdirSync(parentDir)).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes the delete when git unregisters an external worktree but leaves files behind", async () => {
+    const { db, service, parentDir, worktreePath, events } = await setupInOwnParent({
+      projectId: "proj-delete-partial",
+      prefix: "ade-lane-delete-partial-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      // The pre-check sees a real worktree root; git then unregisters it and
+      // deletes `.git` before failing on a file Windows holds open, so the
+      // post-check must see a folder that is no longer a worktree.
+      let removeAttempted = false;
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute" && gitArgs[2] === "--show-toplevel") {
+          return removeAttempted
+            ? { exitCode: 128, stdout: "", stderr: "not a git repository" }
+            : { exitCode: 0, stdout: `${opts?.cwd ?? worktreePath}\n`, stderr: "" };
+        }
+        if (gitArgs[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+          removeAttempted = true;
+          return { exitCode: 1, stdout: "", stderr: "error: failed to delete 'external': Invalid argument" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      vi.mocked(runGitOrThrow).mockImplementation(async () => "" as any);
+
+      const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(result.leftoverWorktree).toMatchObject({
+        path: worktreePath,
+        canDelete: true,
+        laneName: "External",
+      });
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      expect(events.at(-1).progress.overallStatus).toBe("completed");
+    } finally {
+      db.close();
+      fs.rmSync(parentDir, { recursive: true, force: true });
     }
   });
 });

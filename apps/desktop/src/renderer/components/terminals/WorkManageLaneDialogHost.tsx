@@ -5,6 +5,7 @@ import type {
   LaneSummary,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
@@ -148,7 +149,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       if (runtimePin) {
         showToast({
           title: `Could not delete ${lane.name}`,
-          message: error instanceof Error ? error.message : String(error),
+          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
           tone: "error",
           durationMs: 0,
         });
@@ -162,7 +163,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       });
       showToast({
         title: `Could not delete ${lane.name}`,
-        message: error instanceof Error ? error.message : String(error),
+        message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
         tone: "error",
         durationMs: 0,
       });
