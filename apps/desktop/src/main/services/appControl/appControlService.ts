@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isPathInside } from "../shared/pathCompare";
 import { appControlProofCaption } from "../../../shared/proofProvenance";
 import { MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE } from "../../../shared/types/macDesktop";
 import type {
@@ -264,8 +265,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       : null;
     if (!worktree?.trim()) return null;
     const resolved = path.resolve(worktree.trim());
-    const root = path.resolve(projectRoot);
-    return resolved === root || resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+    return isPathInside(resolved, projectRoot) ? resolved : null;
   };
 
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {

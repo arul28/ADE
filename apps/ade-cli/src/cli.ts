@@ -2778,7 +2778,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Capture and context:
     $ ade --socket browser screenshot --tab <tab-id> --text
-    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves to a temp file)
+    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode
@@ -14660,6 +14660,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   if (isBrowserSubcommand(sub, "screenshot")) {
     const outPath = readValue(args, ["--out", "--output", "--path"]);
+    if (outPath != null && !outPath.trim()) {
+      throw new CliUsageError("browser screenshot --out needs a file path.");
+    }
     const screenshotArgs = collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args));
     // Every option this branch knows is read by now. A leftover flag used to be
     // dropped without a word, so `--out x.png` exited 0 and wrote nothing.
@@ -26855,6 +26858,27 @@ function formatAppControlRecording(value: unknown): string {
   ]);
 }
 
+const TEMP_SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A fresh path for a screenshot saved without `--out`, in one folder whose
+ * files older than a day are removed here, so repeated captures do not pile up.
+ */
+function nextTempScreenshotPath(): string {
+  const dir = path.join(os.tmpdir(), "ade-browser-screenshots");
+  fs.mkdirSync(dir, { recursive: true });
+  const cutoff = Date.now() - TEMP_SCREENSHOT_MAX_AGE_MS;
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+    } catch {
+      // Another capture removed it first.
+    }
+  }
+  return path.join(dir, `screenshot-${Date.now()}-${process.pid}.png`);
+}
+
 /**
  * Write a `browser screenshot` result's PNG on the caller's machine. The
  * desktop that captured it may be another machine, so the CLI writes the file,
@@ -26864,21 +26888,19 @@ function saveScreenshotResult(
   result: unknown,
   outPath: string | null,
 ): { savedPath: string; width: number | null; height: number | null; bytes: number } {
-  const shot = unwrapActionEnvelope(result);
-  const dataUrl = isRecord(shot) ? asString(shot.dataUrl) : null;
+  const unwrapped = unwrapActionEnvelope(result);
+  const shot = isRecord(unwrapped) ? unwrapped : {};
+  const dataUrl = asString(shot.dataUrl);
   const match = dataUrl ? /^data:image\/[a-z+]+;base64,(.*)$/s.exec(dataUrl) : null;
   if (!match) throw new Error("The browser returned no screenshot image.");
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(
-    outPath ?? path.join(os.tmpdir(), `ade-browser-screenshot-${Date.now()}.png`),
-  );
+  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   fs.writeFileSync(savedPath, bytes);
-  const shotRecord = shot as Record<string, unknown>;
   return {
     savedPath,
-    width: typeof shotRecord.width === "number" ? shotRecord.width : null,
-    height: typeof shotRecord.height === "number" ? shotRecord.height : null,
+    width: typeof shot.width === "number" ? shot.width : null,
+    height: typeof shot.height === "number" ? shot.height : null,
     bytes: bytes.length,
   };
 }

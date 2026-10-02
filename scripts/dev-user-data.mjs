@@ -9,15 +9,21 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isPidAlive } from "./dev-shared.mjs";
 
+// Twin: the dev folder name in apps/desktop/src/main/desktopUserDataPath.ts.
 export const BASE_DEV_USER_DATA_NAME = "ade-desktop-dev";
 export const DEV_USER_DATA_MARKER = ".ade-dev-lane.json";
 /** A marked folder unused this long is stale even when its worktree remains. */
-export const DEV_USER_DATA_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+export const DEV_USER_DATA_IDLE_DAYS = 30;
+const DEV_USER_DATA_IDLE_MS = DEV_USER_DATA_IDLE_DAYS * 24 * 60 * 60 * 1000;
 /** Machine-local files a new lane folder copies from the shared one, once. */
 const SEEDED_FILES = ["ade-state.json"];
 
-/** Electron's `appData` folder, the parent of every `ade-desktop-*` folder. */
+/**
+ * Electron's `appData` folder, the parent of every `ade-desktop-*` folder.
+ * Twin: `resolveElectronAppDataPath` in apps/desktop/src/main/desktopUserDataPath.ts.
+ */
 export function electronAppDataPath({ platform = process.platform, env = process.env, homeDir = os.homedir() } = {}) {
   if (platform === "darwin") return path.join(homeDir, "Library", "Application Support");
   if (platform === "win32") return env.APPDATA || path.win32.join(homeDir, "AppData", "Roaming");
@@ -33,7 +39,10 @@ export function laneSlugForWorktree(worktreeRoot) {
   const index = parts.lastIndexOf("worktrees");
   if (index < 1 || parts[index - 1] !== ".ade" || index !== parts.length - 2) return null;
   const slug = parts[index + 1].toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug ? slug.slice(0, 80) : null;
+  if (!slug) return null;
+  // ADE names worktrees `<name>-<first 8 of lane id>`, and long prompt-derived
+  // names exist. Keep the tail when trimming, so two lanes never share a folder.
+  return slug.length > 80 ? `${slug.slice(0, 71)}-${slug.slice(-8)}` : slug;
 }
 
 /** The user-data folder `dev:desktop` uses for a worktree, or null for the shared one. */
@@ -86,16 +95,6 @@ export function prepareLaneUserData(worktreeRoot, { appDataPath = electronAppDat
   return folder;
 }
 
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-
 /**
  * Whether an Electron app holds this folder's single-instance lock right now.
  * POSIX: `SingletonLock` is a symlink to `<host>-<pid>`. Windows: `lockfile`
@@ -121,12 +120,12 @@ export function userDataInUse(folder, platform = process.platform) {
   }
   const pid = Number.parseInt(target.slice(target.lastIndexOf("-") + 1), 10);
   if (!Number.isFinite(pid) || pid <= 0) return true;
-  return pidAlive(pid);
+  return isPidAlive(pid);
 }
 
 /** An app holds the folder, or the launcher that marked it is still running. */
 function folderBusy(folder, marker) {
-  return userDataInUse(folder) || pidAlive(marker?.launcherPid);
+  return userDataInUse(folder) || isPidAlive(marker?.launcherPid);
 }
 
 /**
@@ -138,7 +137,7 @@ function staleReason(folder, now) {
   if (!marker || folderBusy(folder, marker)) return null;
   if (!fs.existsSync(marker.worktreePath)) return "worktree removed";
   const lastUsedMs = Date.parse(marker.lastUsedAt ?? "") || 0;
-  return now - lastUsedMs > DEV_USER_DATA_IDLE_MS ? "unused for 30+ days" : null;
+  return now - lastUsedMs > DEV_USER_DATA_IDLE_MS ? `unused for ${DEV_USER_DATA_IDLE_DAYS}+ days` : null;
 }
 
 function folderSizeBytes(folder) {
@@ -171,7 +170,7 @@ function folderSizeBytes(folder) {
  * Every `ade-desktop-dev-*` folder and why it is (or is not) stale.
  *
  * `stale` is set only for folders this launcher marked: the worktree is gone,
- * or the folder went unused for 30 days. An unmarked folder (made by hand with
+ * or the folder went unused for DEV_USER_DATA_IDLE_DAYS. An unmarked folder (made by hand with
  * ADE_DESKTOP_USER_DATA_PATH) is reported with its age and never called stale.
  */
 export function listDevUserDataFolders({ appDataPath = electronAppDataPath(), now = Date.now(), withSize = false } = {}) {
@@ -182,7 +181,7 @@ export function listDevUserDataFolders({ appDataPath = electronAppDataPath(), no
     return [];
   }
   return names
-    .filter((name) => name.startsWith(`${BASE_DEV_USER_DATA_NAME}-`))
+    .filter((name) => name.startsWith(`${BASE_DEV_USER_DATA_NAME}-`) && !name.includes(".deleting-"))
     .map((name) => {
       const folder = path.join(appDataPath, name);
       const marker = readMarker(folder);
@@ -226,11 +225,32 @@ export function pruneStaleDevUserData({ appDataPath = electronAppDataPath(), now
  */
 export function removeIfStillStale(folder, now = Date.now()) {
   if (!staleReason(folder, now)) return false;
+  return removeFolder(folder);
+}
+
+/**
+ * Move the folder out of the way in one atomic rename, then delete the copy.
+ * A recursive delete can take seconds; a lane starting meanwhile gets a fresh
+ * folder instead of a half-deleted one. On Windows the rename fails while an
+ * app holds files open, which keeps the folder.
+ */
+function removeFolder(folder) {
+  const doomed = `${folder}.deleting-${process.pid}-${Date.now()}`;
   try {
-    fs.rmSync(folder, { recursive: true, force: true });
-    return true;
+    fs.renameSync(folder, doomed);
   } catch {
     // Left for the next run or `npm run dev:clean-data`.
     return false;
   }
+  fs.rmSync(doomed, { recursive: true, force: true });
+  return true;
+}
+
+/**
+ * Remove a folder made by hand (no marker) if no app holds it at this moment.
+ * Only `npm run dev:clean-data --include-unmarked` asks for this.
+ */
+export function removeUnmarkedIfIdle(folder) {
+  if (userDataInUse(folder)) return false;
+  return removeFolder(folder);
 }

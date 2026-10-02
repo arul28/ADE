@@ -11,8 +11,7 @@
 // for a look at what is there, and for folders made by hand before lanes got
 // their own (those carry no marker, so nothing removes them on its own).
 
-import fs from "node:fs";
-import { listDevUserDataFolders, removeIfStillStale, userDataInUse } from "./dev-user-data.mjs";
+import { listDevUserDataFolders, removeIfStillStale, removeUnmarkedIfIdle } from "./dev-user-data.mjs";
 
 const args = new Set(process.argv.slice(2));
 if (args.has("-h") || args.has("--help")) {
@@ -37,49 +36,33 @@ if (entries.length === 0) {
   process.exit(0);
 }
 
+function describe(entry) {
+  if (entry.inUse) return "in use";
+  if (entry.stale) return `stale: ${entry.reason}`;
+  return entry.marked ? "kept" : "unmarked (made by hand)";
+}
+
 let removable = 0;
 let removed = 0;
 let freed = 0;
 for (const entry of entries) {
   const target = entry.stale || (includeUnmarked && !entry.marked && !entry.inUse);
-  const state = entry.inUse
-    ? "in use"
-    : entry.stale
-      ? `stale: ${entry.reason}`
-      : entry.marked
-        ? "kept"
-        : "unmarked (made by hand)";
   let action = "";
   if (target) {
     removable += 1;
-    if (apply) {
-      // Ask again right before deleting: a dev app may have started on this
-      // folder since the list was read.
-      let ok = false;
-      let why = "an app started using it";
-      if (entry.marked) {
-        ok = removeIfStillStale(entry.folder);
-      } else if (!userDataInUse(entry.folder)) {
-        try {
-          fs.rmSync(entry.folder, { recursive: true, force: true });
-          ok = true;
-        } catch (error) {
-          why = error instanceof Error ? error.message : String(error);
-        }
-      }
-      if (ok) {
-        removed += 1;
-        freed += entry.bytes;
-        action = "  -> removed";
-      } else {
-        action = `  -> not removed: ${why}`;
-      }
+    // Both removers ask again right before deleting: a dev app may have started
+    // on this folder since the list was read.
+    if (!apply) action = "  -> would remove";
+    else if (entry.marked ? removeIfStillStale(entry.folder) : removeUnmarkedIfIdle(entry.folder)) {
+      removed += 1;
+      freed += entry.bytes;
+      action = "  -> removed";
     } else {
-      action = "  -> would remove";
+      action = "  -> not removed: in use, or it could not be deleted";
     }
   }
   process.stdout.write(
-    `${entry.folder}\n    ${megabytes(entry.bytes)} · last used ${day(entry.lastUsedMs)} · ${state}${
+    `${entry.folder}\n    ${megabytes(entry.bytes)} · last used ${day(entry.lastUsedMs)} · ${describe(entry)}${
       entry.worktreePath ? ` · ${entry.worktreePath}` : ""
     }${action}\n`,
   );

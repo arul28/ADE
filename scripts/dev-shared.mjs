@@ -706,6 +706,17 @@ export function assertDevAdeHome() {
   );
 }
 
+/** Whether a process exists. EPERM means it exists but belongs to someone else. */
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
 /**
  * Start (or reuse) the dev brain on `socketPath`.
  *
@@ -795,14 +806,7 @@ export async function ensureRuntime(socketPath, projectRoot = null, { exitWithLa
 async function terminateSpawnedRuntime(child) {
   const pid = child?.pid;
   if (!pid) return;
-  const alive = () => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      return error?.code === "EPERM";
-    }
-  };
+  const alive = () => isPidAlive(pid);
   try {
     process.kill(pid, "SIGTERM");
   } catch {

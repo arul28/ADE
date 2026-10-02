@@ -148,9 +148,14 @@ async function main() {
       });
     return runtimeStopPromise;
   };
+  let signalCount = 0;
   const handleSignal = () => {
     // Ctrl+C is also delivered to the npm/Electron child. Keep this launcher
-    // alive just long enough to stop the detached runtime it created.
+    // alive just long enough to stop the detached runtime it created. A second
+    // signal means the user wants out now: the brain watches this process
+    // (exitWithLauncher), so exiting does not leak it.
+    signalCount += 1;
+    if (signalCount > 1) process.exit(130);
     void stopOwnedRuntime();
   };
   // App Control stops an app with SIGINT, then SIGTERM, then closes its

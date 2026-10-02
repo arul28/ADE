@@ -125,13 +125,6 @@ const PREVIEW_FPS = 12;
 const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 /**
- * What "the browser did something" means, as a string.
- *
- * Status events are bookkeeping as much as activity — closing the card stops
- * its preview stream, which itself emits one. Diffing the parts a human would
- * call activity is what keeps the most-recent-tool clock honest.
- */
-/**
  * The tab the card pictures: this chat's own tab when it has one, else the
  * browser's active tab.
  *
@@ -161,10 +154,14 @@ function browserTabForChat(
 }
 
 /**
- * What counts as browser activity for this chat: a change to the tab the card
- * pictures. It used to read the active tab only, so an agent navigating its
- * own background tab (agent opens never take focus) changed nothing here and
- * the card never woke for it.
+ * What "the browser did something" means for this chat, as a string.
+ *
+ * Status events are bookkeeping as much as activity — closing the card stops
+ * its preview stream, which itself emits one. Diffing the parts a human would
+ * call activity is what keeps the most-recent-tool clock honest. The parts come
+ * from the tab the card pictures: reading the active tab only meant an agent
+ * navigating its own background tab (agent opens never take focus) never
+ * counted.
  */
 function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessionId: string | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
@@ -439,6 +436,13 @@ export function WorkLiveCornerCard({
     () => browserTabForChat(browserStatus, chatSessionId),
     [browserStatus, chatSessionId],
   );
+  // The signature is per chat. Re-base it on a chat switch, or the next status
+  // event compares the new chat's tab with the old chat's and counts as activity.
+  const browserStatusRef = useRef(browserStatus);
+  browserStatusRef.current = browserStatus;
+  useEffect(() => {
+    browserSignatureRef.current = browserActivitySignature(browserStatusRef.current, chatSessionId);
+  }, [chatSessionId]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool

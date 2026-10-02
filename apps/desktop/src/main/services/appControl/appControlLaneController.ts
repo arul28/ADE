@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { isPathInside } from "../shared/pathCompare";
 import { WebSocket, type RawData } from "ws";
 import type {
   AppControlClaimArgs,
@@ -306,7 +307,9 @@ export function normalizeCwd(cwd: string | null | undefined, projectRoot: string
 
 function ensureCwdInsideRoot(cwd: string, projectRoot: string): void {
   const root = path.resolve(projectRoot);
-  if (cwd === root || cwd.startsWith(`${root}${path.sep}`)) return;
+  // The same check `resolveLaneLaunchCwd` uses, so a lane cwd it accepts is
+  // never refused here over drive-letter or folded case.
+  if (isPathInside(cwd, root)) return;
   throw new Error(
     `App Control launch must run inside the current lane. cwd ${cwd} is outside ${root}.`,
   );

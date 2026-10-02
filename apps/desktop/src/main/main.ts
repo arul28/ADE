@@ -1300,21 +1300,10 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 // Register the user-facing `ade://` deeplink scheme + single-instance lock so a
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
-registerAdeProtocolHandler({
-  claimAsDefault: deeplinkClaimAsDefault,
-  dispatch: dispatchOrQueueAppNavigationRequest,
-  // Which scheme this build claimed, and which process won the single-instance
-  // lock, are facts about the computer, not about any project — and they are
-  // decided before one can be open. They were `console.log` only because no
-  // structured logger existed this early; the machine log does.
-  log: (event, fields) => logMachineEvent("info", event, fields),
-  flushLog: flushMachineMainLog,
-});
-
 // A dev app that lost the single-instance lock shares its user-data folder with
 // another running dev app. Electron then never fires `ready`: no window, no
 // error, a process that waits forever. Say so and exit instead.
-if (!app.isPackaged && !app.hasSingleInstanceLock()) {
+function exitDevAppSharingUserData(): void {
   const userData = app.getPath("userData");
   let holder = "another ADE dev app";
   try {
@@ -1330,6 +1319,18 @@ if (!app.isPackaged && !app.hasSingleInstanceLock()) {
   process.stderr.write(`[ade] ${message}\n`);
   app.exit(1);
 }
+
+registerAdeProtocolHandler({
+  claimAsDefault: deeplinkClaimAsDefault,
+  dispatch: dispatchOrQueueAppNavigationRequest,
+  // Which scheme this build claimed, and which process won the single-instance
+  // lock, are facts about the computer, not about any project — and they are
+  // decided before one can be open. They were `console.log` only because no
+  // structured logger existed this early; the machine log does.
+  log: (event, fields) => logMachineEvent("info", event, fields),
+  flushLog: flushMachineMainLog,
+  ...(app.isPackaged ? {} : { onLockLostWithoutForward: exitDevAppSharingUserData }),
+});
 
 let pendingProjectOpenFiles: string[] = [];
 let handleProjectOpenFile: ((filePath: string) => void) | null = null;
