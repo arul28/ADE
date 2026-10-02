@@ -6320,11 +6320,11 @@ describe("prService.land", () => {
     }));
   });
 
-  it("finishes the stack merge as failed when the background poll runs out still pending", async () => {
+  it("leaves the stack merge open when the background poll runs out still pending", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     // The PUT is accepted, but every poll stays pending past the 15-minute
     // background wait, and the fresh PR read still shows it unmerged.
-    const { service, operationService } = buildStackLand([{ status: 202, body: pending() }]);
+    const { service, operationService, asyncCalls } = buildStackLand([{ status: 202, body: pending() }]);
 
     const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
 
@@ -6332,14 +6332,14 @@ describe("prService.land", () => {
     expect(result.error).toMatch(/still merging/);
     expect(operationService.finish).not.toHaveBeenCalled();
 
-    // The foreground answered; the background poll gives up without a merge.
-    // The operation must not be finished as a success the merge never reached.
+    // The background poll keeps running after the foreground answered.
+    const foregroundPolls = asyncCalls.filter((call) => call.method === "GET").length;
     await vi.advanceTimersByTimeAsync(16 * 60_000);
-    expect(operationService.finish).toHaveBeenCalledTimes(1);
-    expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({
-      status: "failed",
-      metadataPatch: expect.objectContaining({ mergeStatus: "pending", stackPrNumbers: [90, 91] }),
-    }));
+    expect(asyncCalls.filter((call) => call.method === "GET").length).toBeGreaterThan(foregroundPolls);
+
+    // GitHub can still finish the merge after ADE stops polling, so the
+    // operation must stay open rather than record a failure the merge never had.
+    expect(operationService.finish).not.toHaveBeenCalled();
   });
 
   it("refuses auto-merge for a stacked PR", async () => {

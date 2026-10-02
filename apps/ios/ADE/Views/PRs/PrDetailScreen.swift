@@ -1304,7 +1304,7 @@ struct PrDetailView: View {
     let githubUrl = currentPr.githubUrl
     runPrAction(label, success: nil, action: {
       do {
-        outcome.result = try await syncService.mergePullRequest(
+        let result = try await syncService.mergePullRequest(
           prId: effectivePrId,
           method: mergeMethod.rawValue,
           bypassRules: bypassRules,
@@ -1312,6 +1312,9 @@ struct PrDetailView: View {
           commitBody: commitBody,
           expectedHeadSha: expectedHeadSha
         )
+        await MainActor.run {
+          outcome.result = result
+        }
       } catch let error where isStack && error.localizedDescription.contains("merge the stack on GitHub") {
         // A computer on an older ADE cannot merge a stack; it says to use
         // GitHub. Open the PR there, as this screen did before.

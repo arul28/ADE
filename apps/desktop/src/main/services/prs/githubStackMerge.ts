@@ -266,13 +266,14 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
           await settle(final);
           return;
         }
-        // The outcome is unknown, so this is not a landing.
-        finishOperation("failed", {
+        // The outcome is unknown, so this is not a failure. GitHub can still
+        // finish the merge after ADE stops polling; leave the operation open
+        // (as the app-quit path above does) and let the PR poller show the
+        // merged or unmerged state when GitHub settles.
+        logger.warn("prs.stack_merge_background_wait_exhausted", {
           stackNumber,
           stackPrNumbers,
           asyncMergeUuid: final.uuid,
-          mergeStatus: "pending",
-          error: "Stopped waiting for GitHub. The PR shows the result.",
         });
       })
       .catch((error) => {
