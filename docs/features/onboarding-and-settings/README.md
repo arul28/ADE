@@ -157,9 +157,19 @@ Main process:
   default selection, `resolve(provider, requestedId)` used by every launch path,
   and the per-provider settings (smart balance, auto-start windows). Backs the
   `provider_instances.*` action domain and `ade providers accounts`.
+- `apps/desktop/src/main/services/providerAccounts/` — the in-app sign-in.
+  `providerLoginRunner.ts` runs a provider's own login command for one
+  account's config home in a private node-pty, reads the sign-in link and any
+  code prompt from its output, and verifies the saved login when the CLI exits;
+  it is the only place that reads a login's raw output, and it never creates a
+  terminal session or Work row. `machineProviderLoginRunner.ts` is the one
+  runner per machine, shared by local IPC and the pinned `provider_instances`
+  actions. `refreshProviderAccounts.ts` re-reads a provider's accounts (and one
+  named account's saved login) after a sign-in.
 - `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
   account, environment-key, and per-provider-settings contracts used by the
-  registry, IPC, renderer, and CLI action surface.
+  registry, IPC, renderer, and CLI action surface. It also carries the
+  `ProviderLoginStatus` shape the sign-in sheet polls.
 - `apps/desktop/src/shared/types/apiCredentials.ts` — secret-free credential
   summaries for the stored-key panel and harness launch catalog; values are
   represented by provider, id, label, source, and masked tail rather than the
@@ -2092,7 +2102,11 @@ not carry the install command.
   works the same for a Settings page pinned to another machine — and shows a
   "finish with your browser" card with **Open sign-in page** / **Copy link**, a
   code field when the CLI asks for one (`loginSubmitCode`), and the CLI's output
-  behind a closed **Sign-in output** disclosure. It ends on a Done state with the
+  behind a closed **Sign-in output** disclosure. For a machine other than the
+  one holding the browser, a Codex sign-in passes `deviceAuth`, which appends
+  `--device-auth` so the CLI prints a one-time code instead of returning to a
+  localhost port the other computer cannot reach; the sheet shows that code to
+  type into the sign-in page. It ends on a Done state with the
   email, or "Sign-in did not complete." with the runner's reason, **Try again**
   and **Close**. Closing a running sign-in cancels it (`loginCancel`); a sign-in
   times out after ten minutes. No terminal session or Work row is created.
