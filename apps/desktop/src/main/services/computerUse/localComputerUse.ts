@@ -149,14 +149,14 @@ export function getCapabilityForRequirement(
  */
 const COMPUTER_USE_FILE_STEM_MAX = 60;
 
-/** FNV-1a, 32-bit, base36. A short, stable tag for the untruncated stem. */
+/** FNV-1a, 32-bit, as 8 lowercase hex digits. A short, stable tag for the untruncated stem. */
 function shortStemHash(stem: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < stem.length; index += 1) {
     hash ^= stem.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  return (hash >>> 0).toString(36);
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function computerUseFileName(stem: string, extension: string): string {

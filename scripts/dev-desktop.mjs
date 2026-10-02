@@ -85,7 +85,11 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
-    if (arg === "--disable-backgrounding-occluded-windows" || arg === "--disable-renderer-backgrounding") {
+    // Any Chromium `--disable-*` flag App Control adds is forwarded to Electron
+    // (the current set is the occlusion/backgrounding pair). Accepting the
+    // family, not two literals, keeps a new render flag from breaking the
+    // launcher the same way the port flag did.
+    if (arg.startsWith("--disable-")) {
       options.forwardedDebugFlags.push(arg);
       continue;
     }
