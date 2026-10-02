@@ -627,8 +627,10 @@ import {
   filterClaudeGuiSlashCommands,
 } from "../../../shared/claudeGuiSlashCommands";
 import {
+  isClaudeDetachedToolCallResult,
   isClaudeHousekeepingTask,
   parseClaudeResourceLinks,
+  parseClaudeToolCallNotification,
   parseMcpResultResourceLinks,
   readClaudeSpawnDepth,
 } from "../../../shared/claudeAgentSdkFields";
@@ -1383,7 +1385,7 @@ function resolveClaudeAgentSdkVersion(): string {
   } catch {
     // The package metadata can be unavailable in partial development installs.
   }
-  return "0.3.284";
+  return "0.3.287";
 }
 
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
@@ -2052,6 +2054,7 @@ type PersistedPendingSteer = {
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
+  sentByUser?: boolean;
 };
 
 function normalizeCursorCloudServiceTier(value: unknown): CursorCloudServiceTier | null | undefined {
@@ -2302,6 +2305,8 @@ type QueuedSteer = {
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
+  /** `AgentChatSteerArgs.sentByUser`; Claude stamps a person's interrupt with it. */
+  sentByUser?: boolean;
 };
 
 /** The fields a steer's transcript row is built from (`emitSteerUserRow`). */
@@ -2441,6 +2446,13 @@ type ClaudeRuntime = {
   warmupCancelled: boolean;
   activeSubagents: Map<string, ClaudeActiveSubagent>;
   emittedSubagentStartIds: Set<string>;
+  /**
+   * WebFetch/WebSearch calls that stepped aside for a person's interrupt,
+   * keyed by tool_use_id. Their row stays running across turns until the
+   * `<task-notification>` carrying the real result is in the transcript, or
+   * until a Stop or teardown drops the call.
+   */
+  detachedToolCalls: Map<string, { toolName: string; turnId?: string }>;
   /**
    * Stash for Task-tool inputs captured at the assistant tool_use boundary,
    * keyed by the Task tool_use_id. Lets the `system:task_*` system-message
@@ -4602,6 +4614,17 @@ const DEFAULT_REASONING_EFFORT = "medium";
 
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES = 200 * 1024;
+/**
+ * The tools ADE's PostToolUse / PostToolUseFailure hooks skip. Claude Code
+ * will not detach a call that a post-tool hook has to see, so a catch-all hook
+ * makes a person's interrupt cancel a slow fetch instead of leaving it running.
+ * These tools lose little: their output stays under the trim threshold, they
+ * are not scheduled-work tools, and the stream's own tool_result settles their
+ * rows. The cost is that a person's approval of one is not relayed to the
+ * auto-mode classifier.
+ */
+const CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS: ReadonlySet<string> = new Set(["WebFetch", "WebSearch"]);
+const CLAUDE_POST_TOOL_HOOK_MATCHER = `^(?!${[...CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS].map((tool) => `${tool}$`).join("|")}).*`;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
 const TRANSCRIPT_WRITE_FLUSH_MS = 100;
@@ -11570,11 +11593,14 @@ export function createAgentChatService(args: {
         // session-wide choice the user just made.
         persistChatState(managed);
       }
-      if (approved) {
+      // The relay rides the PostToolUse hook, which never runs for these.
+      if (approved && !CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS.has(toolName.trim())) {
         rememberUserAuthoredClassifierContext(runtime, sdkOptions?.toolUseID, {
           typedText: response.responseText,
           explicitApproval: true,
         });
+      }
+      if (approved) {
         return {
           behavior: "allow",
           ...(sessionWide && sdkOptions?.suggestions?.length
@@ -16769,6 +16795,7 @@ export function createAgentChatService(args: {
                 ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
                 ...(s.executionMode ? { executionMode: s.executionMode } : {}),
                 ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
+                ...(s.sentByUser === true ? { sentByUser: true } : {}),
               })),
             }
           : {}
@@ -20347,6 +20374,70 @@ export function createAgentChatService(args: {
     return issueClaudeInternalCompaction(managed, runtime, "ade_fallback", options.turnId);
   };
 
+  /**
+   * Closes the rows of detached tool calls whose result Claude Code will never
+   * deliver: a Stop cancels them, and a teardown ends the process running them.
+   */
+  const closeDetachedClaudeToolCalls = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    summary: string,
+  ): void => {
+    for (const [toolUseId, call] of runtime.detachedToolCalls) {
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: call.toolName,
+        result: { synthetic: true, source: "claude_detached_tool_call_dropped", summary },
+        itemId: toolUseId,
+        ...(call.turnId ? { turnId: call.turnId } : {}),
+        status: "interrupted",
+      });
+    }
+    runtime.detachedToolCalls.clear();
+  };
+
+  /**
+   * Delivers the real result of each detached tool call to its row. Claude
+   * Code hands that result to the model as a `<task-notification>` user
+   * message and never emits it on the stream, so it is read from the session
+   * transcript after a turn result, while any call is still waiting.
+   */
+  const settleDetachedClaudeToolCalls = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+  ): Promise<void> => {
+    const sdkSessionId = runtime.sdkSessionId?.trim();
+    if (!runtime.detachedToolCalls.size || !sdkSessionId) return;
+    let messages: ClaudeSdkSessionMessage[];
+    try {
+      messages = await getClaudeSdkSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
+    } catch (error) {
+      // The transcript may not be flushed yet; the next turn result retries.
+      logger.warn("agent_chat.claude_detached_tool_read_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    for (const message of messages) {
+      if (!runtime.detachedToolCalls.size) break;
+      if (message.type !== "user") continue;
+      const notification = parseClaudeToolCallNotification(asRecord(message.message)?.content);
+      if (!notification) continue;
+      const call = runtime.detachedToolCalls.get(notification.toolUseId);
+      if (!call) continue;
+      runtime.detachedToolCalls.delete(notification.toolUseId);
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: call.toolName,
+        result: notification.result,
+        itemId: notification.toolUseId,
+        ...(call.turnId ? { turnId: call.turnId } : {}),
+        status: notification.status,
+      });
+    }
+  };
+
   const emitClaudeStructuredToolResult = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -20361,6 +20452,17 @@ export function createAgentChatService(args: {
     if (!toolMeta) return false;
     openToolUses.delete(payload.toolUseId);
     const structured = record.tool_use_result;
+    // A WebFetch/WebSearch that stepped aside for a person's interrupt is still
+    // running: its row stays running, outside this turn's open-tool set so the
+    // turn end does not close it, until `settleDetachedClaudeToolCalls` finds
+    // the real result.
+    if (isClaudeDetachedToolCallResult(structured)) {
+      runtime.detachedToolCalls.set(payload.toolUseId, {
+        toolName: toolMeta.toolName,
+        ...(turnId ? { turnId } : {}),
+      });
+      return true;
+    }
     // `structured` never reaches clients, so WebSearch/WebFetch hits travel as `sources`.
     const webSources = claudeWebToolSourceRefs(toolMeta.toolName, structured);
     // An MCP tool's `resource_link` items survive only here: the model-facing
@@ -25821,6 +25923,7 @@ export function createAgentChatService(args: {
     }
 
     if (msg.type === "result") {
+      await settleDetachedClaudeToolCalls(managed, runtime);
       const resultMsg = record;
       const turnId = state.turnId;
       const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
@@ -28113,6 +28216,7 @@ export function createAgentChatService(args: {
 
         // result — turn complete
         if (msg.type === "result") {
+          await settleDetachedClaudeToolCalls(managed, runtime);
           const resultMsg = msg as any;
           const resultErrors = partitionClaudeResultErrors(resultMsg.errors);
           const diagnosticOnlyError = resultMsg.is_error === true
@@ -32336,6 +32440,7 @@ export function createAgentChatService(args: {
       stopSource: attribution.stopSource,
       ...(attribution.stopReason ? { stopReason: attribution.stopReason } : {}),
     } as const;
+    closeDetachedClaudeToolCalls(managed, runtime, summary);
     // Close any still-running Workflow agent rows first — they are tracked
     // separately from activeSubagents (they are snapshot-derived, not SDK
     // tasks, so there is nothing to stopTask for them).
@@ -36966,6 +37071,7 @@ export function createAgentChatService(args: {
     ],
     PostToolUse: [
       {
+        matcher: CLAUDE_POST_TOOL_HOOK_MATCHER,
         hooks: [
           async (input: HookInput) => {
             // Classifier context is computed first and returned on this same
@@ -37012,6 +37118,7 @@ export function createAgentChatService(args: {
     ],
     PostToolUseFailure: [
       {
+        matcher: CLAUDE_POST_TOOL_HOOK_MATCHER,
         hooks: [
           async (input: HookInput) => {
             logger.warn("agent_chat.claude_post_tool_use_failure", {
@@ -38387,6 +38494,7 @@ export function createAgentChatService(args: {
       reasoningEffort?: string | null;
       executionMode?: AgentChatExecutionMode | null;
       interactionMode?: AgentChatInteractionMode | null;
+      sentByUser?: boolean;
     },
   ): boolean => {
     if (runtime.pendingSteers.length >= MAX_PENDING_STEERS && !metadata?.scheduledWake) {
@@ -38428,6 +38536,7 @@ export function createAgentChatService(args: {
       ...(extra?.reasoningEffort != null ? { reasoningEffort: extra.reasoningEffort } : {}),
       ...(extra?.executionMode ? { executionMode: extra.executionMode } : {}),
       ...(extra?.interactionMode ? { interactionMode: extra.interactionMode } : {}),
+      ...(extra?.sentByUser === true ? { sentByUser: true } : {}),
     });
     if (runtime.kind === "claude") {
       const queuedSteer = runtime.pendingSteers[runtime.pendingSteers.length - 1];
@@ -38731,6 +38840,7 @@ export function createAgentChatService(args: {
         ...(typeof entry.reasoningEffort === "string" ? { reasoningEffort: entry.reasoningEffort } : {}),
         ...(entry.executionMode ? { executionMode: entry.executionMode } : {}),
         ...(entry.interactionMode ? { interactionMode: entry.interactionMode } : {}),
+        ...(entry.sentByUser === true ? { sentByUser: true } : {}),
       });
       if (out.length >= MAX_PENDING_STEERS) break;
     }
@@ -38856,6 +38966,7 @@ export function createAgentChatService(args: {
       warmupCancelled: false,
       activeSubagents: new Map(),
       emittedSubagentStartIds: new Set(),
+      detachedToolCalls: new Map(),
       taskToolInputByToolUseId: new Map(),
       subagentLabelById: new Map(),
       workflowAgentsByTask: new Map(),
@@ -49883,6 +49994,13 @@ export function createAgentChatService(args: {
     // steps; "now" aborts only the live model request and redirects without
     // tearing down the SDK query or killing unrelated background work.
     sdkMsg.priority = mode === "interrupt" ? "now" : "next";
+    // A person's "now" keeps a slow WebFetch/WebSearch running (it detaches)
+    // and moves a running Bash command to the background, where an unstamped
+    // "now" cancels the fetch or waits for the command. Only interrupts get
+    // it: Claude Code also lets a person's "next" end the running turn early.
+    if (mode === "interrupt" && steer.sentByUser === true) {
+      sdkMsg.origin = { kind: "human" };
+    }
     sdkMsg.shouldQuery = true;
     sdkMsg.uuid = dispatchUuid as NonNullable<SDKUserMessage["uuid"]>;
 
@@ -49928,6 +50046,7 @@ export function createAgentChatService(args: {
       executionMode,
       interactionMode,
       dispatchMode: requestedDispatchMode,
+      sentByUser,
     } = expandedArgs;
     if (
       requestedDispatchMode !== undefined
@@ -50624,6 +50743,7 @@ export function createAgentChatService(args: {
             ...(reasoningEffort != null ? { reasoningEffort } : {}),
             ...(executionMode ? { executionMode } : {}),
             ...(interactionMode ? { interactionMode } : {}),
+            ...(sentByUser === true ? { sentByUser: true } : {}),
           };
           await dispatchClaudeSteerMessage(managed, runtime, immediateSteer, dispatchMode);
           return { steerId, queued: false };
@@ -50638,7 +50758,13 @@ export function createAgentChatService(args: {
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
           preparedSteer.metadata,
-          { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
+          {
+            displayText: preparedSteer.visibleText,
+            reasoningEffort,
+            executionMode,
+            interactionMode,
+            ...(sentByUser === true ? { sentByUser: true } : {}),
+          },
         );
         return queued
           ? { steerId, queued: true }
@@ -52059,6 +52185,9 @@ export function createAgentChatService(args: {
     // break cleanly while the underlying SDK stream is aborted below.
     runtime.interrupted = true;
     runtime.spareBackgroundOnInterrupt = !stopModeStopsBackground(mode);
+    // Claude Code drops a detached WebFetch/WebSearch on any interrupt, even in
+    // the stop modes that spare background jobs.
+    closeDetachedClaudeToolCalls(managed, runtime, "Stopped before the result arrived.");
     const interruptedTurnId = runtime.activeTurnId;
     if (runtime.busy && interruptedTurnId) {
       runtime.interruptEventsEmitted = true;

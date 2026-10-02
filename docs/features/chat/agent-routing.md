@@ -1473,9 +1473,9 @@ access mode, and the `canUseTool` gate refuses any tool not on
 `isSessionInPlanMode` holds — so when the CLI defers a call to the host, a
 `bypassPermissions` session that entered plan mode mid-run cannot have it
 silently allowed. (The SDK's `canUseTool` firing is not re-measured against
-0.3.284 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
+0.3.287 — see [the SDK surface](../sdk/README.md) — but the fence holds on every
 call that does reach it.) The allowlist is checked against the bundled CLI
-2.1.284's own plan-mode allowlist — read-only built-ins including
+2.1.287's own plan-mode allowlist — read-only built-ins including
 `NotebookRead`, `Agent`/`Task` subagent exploration, `Skill`, task bookkeeping,
 `AskUserQuestion` — plus ADE's plan-flow and question tools. It is an allowlist
 rather than a mutating denylist on purpose:

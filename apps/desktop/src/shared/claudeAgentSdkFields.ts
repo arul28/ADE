@@ -145,3 +145,65 @@ export function parseMcpResultResourceLinks(result: unknown): AgentChatResourceL
   }
   return links;
 }
+
+/**
+ * `tool_use_result` of a WebFetch or WebSearch call that stepped aside for a
+ * person's "now" message (Agent SDK 0.3.287+). The call is still running; its
+ * real result reaches the model later, in a `<task-notification>` that names
+ * the same tool_use_id, and never as a stream message of its own.
+ */
+export function isClaudeDetachedToolCallResult(value: unknown): boolean {
+  return asRecord(value)?.detachedToolCall === true;
+}
+
+export type ClaudeToolCallNotification = {
+  toolUseId: string;
+  status: "completed" | "failed" | "interrupted";
+  result: string;
+};
+
+function messageContentText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") parts.push(record.text);
+  }
+  return parts.length ? parts.join("\n") : null;
+}
+
+/** `body` tags take the LAST close, because their content (a fetched page) can hold the close tag itself. */
+function notificationTag(text: string, tag: string, body = false): string | null {
+  const open = `<${tag}>`;
+  const start = text.indexOf(open);
+  if (start < 0) return null;
+  const close = `</${tag}>`;
+  const end = body ? text.lastIndexOf(close) : text.indexOf(close, start + open.length);
+  if (end < start + open.length) return null;
+  return text.slice(start + open.length, end).trim();
+}
+
+/**
+ * Reads the `<task-notification>` that delivers a detached tool call's result
+ * from a Claude session transcript message's content. Returns null for any
+ * other content, including task notifications about shells and agents.
+ */
+export function parseClaudeToolCallNotification(content: unknown): ClaudeToolCallNotification | null {
+  const text = messageContentText(content);
+  if (!text || !text.trimStart().startsWith("<task-notification>")) return null;
+  if (notificationTag(text, "task-type") !== "tool_call") return null;
+  const toolUseId = notificationTag(text, "tool-use-id");
+  if (!toolUseId) return null;
+  const rawStatus = notificationTag(text, "status")?.toLowerCase() ?? "completed";
+  const status = rawStatus === "completed"
+    ? "completed"
+    : rawStatus === "stopped" || rawStatus === "killed" || rawStatus === "cancelled"
+      ? "interrupted"
+      : "failed";
+  return {
+    toolUseId,
+    status,
+    result: notificationTag(text, "result", true) ?? notificationTag(text, "summary") ?? "",
+  };
+}

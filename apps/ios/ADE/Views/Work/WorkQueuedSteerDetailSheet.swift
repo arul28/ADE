@@ -157,7 +157,7 @@ struct WorkQueuedSteerDetailSheet: View {
       title: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
       description: capability.interruptContinues
         ? "Stop the current \(capability.agentLabel) turn and continue with this message."
-        : "Stop \(capability.agentLabel) now and redirect it to this message.",
+        : "Redirect \(capability.agentLabel) now.",
       unavailableReason: interruptUnavailableReason,
       identifier: "Work.Chat.StagedStrip.DetailSheet.Interrupt"
     ) {

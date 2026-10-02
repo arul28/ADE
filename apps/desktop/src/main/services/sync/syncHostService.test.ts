@@ -2817,7 +2817,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       args: { sessionId: "session-1", text: "Please continue." },
     });
     expect((steer.result.payload as { ok: boolean }).ok).toBe(true);
-    expect(chatService.service.steerUserMessage).toHaveBeenCalledWith({ sessionId: "session-1", text: "Please continue." });
+    expect(chatService.service.steerUserMessage).toHaveBeenCalledWith({ sessionId: "session-1", text: "Please continue.", sentByUser: true });
 
     const approve = await sendCommand(secondClient.ws, secondClient.queue, {
       commandId: "chat-approve",

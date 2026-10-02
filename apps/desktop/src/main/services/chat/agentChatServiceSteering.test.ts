@@ -1942,7 +1942,12 @@ describe("createAgentChatService", () => {
         && event.event.status === "completed");
     });
 
-    it("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query", async () => {
+    // Claude Code keeps a slow WebFetch running, and moves a running Bash
+    // command to the background, only for a person's "now".
+    it.each([
+      { sender: "a person", sentByUser: true, origin: { kind: "human" } },
+      { sender: "an agent", sentByUser: undefined, origin: undefined },
+    ])("dispatchSteer mode:'interrupt' uses Claude priority-now without tearing down the query ($sender)", async ({ sentByUser, origin }) => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -1989,7 +1994,7 @@ describe("createAgentChatService", () => {
 
       // Queue two steers — the second one will be the dispatch target
       await service.steer({ sessionId: session.id, text: "first queued" });
-      await service.steer({ sessionId: session.id, text: "interrupt with me" });
+      await service.steer({ sessionId: session.id, text: "interrupt with me", ...(sentByUser ? { sentByUser } : {}) });
 
       const target = events.find((e) =>
         e.event.type === "user_message"
@@ -2009,6 +2014,7 @@ describe("createAgentChatService", () => {
         .map((call: any[]) => call[0])
         .find((arg: any) => arg?.priority === "now" && arg?.shouldQuery === true);
       expect(interruptPayload).toBeDefined();
+      expect(interruptPayload.origin).toEqual(origin);
       expect(queryInterrupt).not.toHaveBeenCalled();
 
       await service.interrupt({ sessionId: session.id });

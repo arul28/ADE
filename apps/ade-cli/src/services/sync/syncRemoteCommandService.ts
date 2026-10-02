@@ -2793,6 +2793,9 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     text: requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
     ...(dispatchMode ? { dispatchMode } : {}),
+    // A paired controller (the phone, a remote desktop) sends what its user
+    // typed in the composer.
+    sentByUser: true,
   };
 }
 
