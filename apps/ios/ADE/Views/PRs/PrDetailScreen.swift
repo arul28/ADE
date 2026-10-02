@@ -86,6 +86,7 @@ struct PrDetailView: View {
   @State private var didRequestSnapshotOnDemand = false
   @State private var isRefreshingSnapshot = false
   @State private var mergeAnywayConfirmationPresented = false
+  @State private var stackMergeConfirmationPresented = false
 
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
@@ -341,6 +342,14 @@ struct PrDetailView: View {
     currentPr.stack ?? githubItem?.stack
   }
 
+  /// How many open PRs a merge of this stacked PR covers. An older host does
+  /// not send the count; the position is then the upper bound.
+  private var stackMergeCount: Int {
+    guard let stack = nativeStackMembership else { return 1 }
+    if let count = stack.openThroughHere, count > 0 { return count }
+    return stack.position
+  }
+
 
   private var canAutoMapCurrentPr: Bool {
     isLive && !isDetailBusy && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
@@ -564,6 +573,23 @@ struct PrDetailView: View {
         ? "The lane leaves the Lanes list. Its chats stay in history."
         : "Deletes the lane's worktree, its local branch and \(currentPr.headBranch.isEmpty ? "the remote branch" : currentPr.headBranch) on GitHub.")
     }
+    .confirmationDialog(
+      stackMergeCount > 1 ? "Merge \(stackMergeCount) stacked PRs?" : "Merge this stacked PR?",
+      isPresented: $stackMergeConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      ForEach(PrMergeMethodOption.allCases) { method in
+        Button(method.title) {
+          mergeMethod = method
+          mergeCurrentPr()
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(stackMergeCount > 1
+        ? "GitHub merges the \(stackMergeCount) open PRs up to #\(currentPr.githubPrNumber) together, or none of them. It checks the branch rules during the merge."
+        : "This is the bottom open PR of the stack. GitHub checks the branch rules during the merge.")
+    }
     .confirmationDialog("Merge anyway?", isPresented: $mergeAnywayConfirmationPresented, titleVisibility: .visible) {
       ForEach(PrMergeMethodOption.allCases) { method in
         Button(nextStep.mergeAnyway.bypass ? "\(method.title), bypassing rules" : method.title, role: .destructive) {
@@ -698,7 +724,8 @@ struct PrDetailView: View {
                 .disabled(!canAutoMerge)
             }
           }
-          if step.mergeAnyway.visible && !step.mergeAnyway.blocked && nativeStackMembership == nil {
+          // GitHub bypasses rules for a stack only from its bottom open PR.
+          if step.mergeAnyway.visible && !step.mergeAnyway.blocked && (nativeStackMembership == nil || stackMergeCount == 1) {
             Button(role: step.mergeAnyway.bypass ? .destructive : nil) {
               mergeAnywayConfirmationPresented = true
             } label: {
@@ -810,11 +837,23 @@ struct PrDetailView: View {
 
   @ViewBuilder
   private func nextStepPrimary(_ step: PrNextStep) -> some View {
-    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
+    if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed, isCurrentPrDraft {
       Button("Stack on GitHub") { openGitHub(urlString: currentPr.githubUrl) }
         .buttonStyle(.glassProminent)
         .tint(ADEColor.accent)
         .disabled(currentPr.githubUrl.isEmpty)
+    } else if nativeStackMembership != nil, step.kind != .merged, step.kind != .closed {
+      // GitHub merges a stack as one unit, so the method choice and the
+      // confirm live in one dialog that names how many PRs merge.
+      Button {
+        ADEHaptics.light()
+        stackMergeConfirmationPresented = true
+      } label: {
+        Text(stackMergeCount > 1 ? "Merge \(stackMergeCount) PRs" : "Merge").font(.subheadline.weight(.semibold))
+      }
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.success)
+      .disabled(isDetailBusy)
     } else if let primary = step.primary, nextStepAvailable(primary) {
       if primary == .merge {
         // A merge always names its method: one tap opens the choice, a second
@@ -1220,6 +1259,7 @@ struct PrDetailView: View {
     _ label: String,
     success: String? = nil,
     action: @escaping () async throws -> Void,
+    successText: (@MainActor () -> String?)? = nil,
     onSuccess: @escaping @MainActor () -> Void = {}
   ) {
     let service = syncService
@@ -1238,7 +1278,7 @@ struct PrDetailView: View {
         onSuccess()
         Task { await reload(includeLiveSidecars: true) }
         ADEHaptics.success()
-        toast = ADEToastMessage(text: success ?? "\(label) done")
+        toast = ADEToastMessage(text: successText?() ?? success ?? "\(label) done")
       },
       onFailure: { error in
         Task { await reload(includeLiveSidecars: true) }
@@ -1253,16 +1293,14 @@ struct PrDetailView: View {
     commitTitle: String? = nil,
     commitBody: String? = nil
   ) {
-    guard nativeStackMembership == nil else {
-      openGitHub(urlString: currentPr.githubUrl)
-      return
-    }
     // Stale-head guard: pass the SHA the status was computed against so GitHub
     // rejects (409) if the head advanced while the sheet was open.
     let expectedHeadSha = snapshot?.status?.headSha
-    let label = bypassRules ? "Merging (admin bypass)" : "Merging pull request"
-    runPrAction(label, success: "Merged") {
-      try await syncService.mergePullRequest(
+    let isStack = nativeStackMembership != nil
+    let label = bypassRules ? "Merging (admin bypass)" : isStack ? "Merging the stack" : "Merging pull request"
+    let outcome = PrLandOutcomeBox()
+    runPrAction(label, success: nil, action: {
+      outcome.result = try await syncService.mergePullRequest(
         prId: effectivePrId,
         method: mergeMethod.rawValue,
         bypassRules: bypassRules,
@@ -1270,7 +1308,7 @@ struct PrDetailView: View {
         commitBody: commitBody,
         expectedHeadSha: expectedHeadSha
       )
-    }
+    }, successText: { outcome.successText })
   }
 
   private func closeCurrentPr() {
@@ -1591,5 +1629,20 @@ private struct PrSubmitReviewSheet: View {
         }
       }
     }
+  }
+}
+
+/// Carries a merge result out of the durable action closure to its toast.
+@MainActor
+private final class PrLandOutcomeBox {
+  var result: LandResult?
+
+  var successText: String {
+    guard let result else { return "Merged" }
+    if result.isInFlight { return result.error ?? "GitHub is merging the stack." }
+    if let numbers = result.stackPrNumbers, numbers.count > 1 {
+      return "Merged \(numbers.count) stacked PRs"
+    }
+    return "Merged"
   }
 }
