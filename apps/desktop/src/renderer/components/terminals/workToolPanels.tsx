@@ -590,6 +590,7 @@ function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
     <NativePanelFrame padded frameRef={mountRef}>
       <ChatMacDesktopPanel
         key={`work-windows-desktop:${mountScope}`}
+        desktopKind="windows"
         laneId={laneId}
         laneName={activeLane?.name ?? null}
         sessionId={panelSessionId}

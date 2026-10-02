@@ -74,6 +74,12 @@ HRESULT nativePromptPolicy(IOleObject* control, bool allow) {
     VARIANT value; VariantInit(&value); value.vt = VT_BOOL; value.boolVal = allow ? VARIANT_TRUE : VARIANT_FALSE;
     DISPID put = DISPID_PROPERTYPUT; DISPPARAMS params{&value, &put, 1, 1};
     hr = info->Invoke(native, id, DISPATCH_PROPERTYPUT, &params, nullptr, nullptr, nullptr);
+    if (SUCCEEDED(hr)) {
+      DISPPARAMS none{}; VARIANT actual; VariantInit(&actual);
+      hr = info->Invoke(native, id, DISPATCH_PROPERTYGET, &none, &actual, nullptr, nullptr);
+      if (SUCCEEDED(hr) && (actual.vt != VT_BOOL || (actual.boolVal != VARIANT_FALSE) != allow)) hr = E_FAIL;
+      VariantClear(&actual);
+    }
   }
   if (info) info->Release(); if (library) library->Release();
   if (classInfo) classInfo->Release(); if (provider) provider->Release(); if (native) native->Release();
@@ -339,6 +345,7 @@ RdpSession::~RdpSession() {
 }
 
 bool RdpSession::begin(HWND host, int width, int height, std::string* error, const WindowsCredential* credential) {
+  logLine("rdp: begin credential=" + std::string(credential ? "supplied" : "interactive"));
   end();
   HRESULT hr = CoCreateInstance(kRdpClsid, nullptr, CLSCTX_INPROC_SERVER, IID_IOleObject,
                                 reinterpret_cast<void**>(&impl_->ole));
@@ -413,27 +420,40 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
   dispPut(impl_->disp, L"DesktopHeight", vLong(height));
   dispPut(impl_->disp, L"ColorDepth", vLong(32));
   VARIANT adv;
-  if (SUCCEEDED(dispGet(impl_->disp, L"AdvancedSettings9", &adv)) && adv.vt == VT_DISPATCH && adv.pdispVal) {
+  hr = dispGet(impl_->disp, L"AdvancedSettings9", &adv);
+  if (SUCCEEDED(hr) && adv.vt == VT_DISPATCH && adv.pdispVal) {
     hr = dispPut(adv.pdispVal, L"EnableCredSspSupport", vBool(true));
-    if (FAILED(hr)) logLine(hrString("rdp: EnableCredSspSupport failed", hr));
+    logLine(hrString("rdp: EnableCredSspSupport=true", hr));
     // A dropped loopback link should come back on its own.
-    dispPut(adv.pdispVal, L"EnableAutoReconnect", vBool(true));
-  }
+    // A credential test must fail once rather than reconnect indefinitely.
+    dispPut(adv.pdispVal, L"EnableAutoReconnect", vBool(credential == nullptr));
+  } else if (SUCCEEDED(hr)) hr = E_NOINTERFACE;
   VariantClear(&adv);
+  if (FAILED(hr)) {
+    if (error) *error = "Windows could not enable secure sign-in.";
+    end(); return false;
+  }
 
   hr = nativePromptPolicy(impl_->ole, credential == nullptr);
+  logLine(hrString(credential ? "rdp: AllowPromptingForCredentials=false" : "rdp: AllowPromptingForCredentials=true", hr));
   if (FAILED(hr)) {
     if (error) *error = "Windows could not configure the sign-in prompt.";
     end(); return false;
   }
   if (credential) {
-    std::wstring username = credential->username, domain;
-    auto slash = username.find(L'\\');
-    if (slash != std::wstring::npos) { domain = username.substr(0, slash); username.erase(0, slash + 1); }
-    VARIANT user = vBstr(username.c_str()), realm = vBstr(domain.c_str());
+    // Match the successful saved-password spike exactly: the full qualified
+    // name belongs in UserName, not split across UserName and Domain.
+    logLine("rdp: account UserName=" + Json(narrow(credential->username)).dump() + " Domain=control default");
+    VARIANT user = vBstr(credential->username.c_str());
     hr = dispPut(impl_->disp, L"UserName", user);
-    if (SUCCEEDED(hr)) hr = dispPut(impl_->disp, L"Domain", realm);
-    VariantClear(&user); VariantClear(&realm);
+    VariantClear(&user);
+    logLine(hrString("rdp: account configured", hr));
+    for (const wchar_t* property : {L"UserName", L"Domain"}) {
+      VARIANT actual;
+      if (SUCCEEDED(dispGet(impl_->disp, property, &actual)) && actual.vt == VT_BSTR)
+        logLine("rdp: account readback " + narrow(property) + "=" + Json(actual.bstrVal ? narrow(actual.bstrVal) : "").dump());
+      VariantClear(&actual);
+    }
     IMsTscNonScriptable* native = nullptr;
     if (SUCCEEDED(hr)) hr = impl_->ole->QueryInterface(__uuidof(IMsTscNonScriptable), reinterpret_cast<void**>(&native));
     if (SUCCEEDED(hr) && native) {
@@ -441,6 +461,7 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
       if (!password) hr = E_OUTOFMEMORY;
       else {
         hr = native->put_ClearTextPassword(password);
+        logLine(hrString("rdp: native password supplied (value omitted)", hr));
         SecureZeroMemory(password, SysStringByteLen(password)); SysFreeString(password);
       }
       native->Release();
@@ -451,9 +472,11 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
     std::lock_guard<std::mutex> lock(mutex_);
     suppliedCredential_ = credential != nullptr;
     state_ = State::Connecting;
-    reason_ = 0;
+    reason_ = 0; extendedReason_ = 0; passwordRejected_ = false;
   }
+  logLine("rdp: state Connecting; Connect calling");
   hr = dispCall(impl_->disp, L"Connect");
+  logLine(hrString("rdp: Connect returned", hr));
   if (FAILED(hr)) {
     if (error) *error = hrString("Connect failed", hr);
     end();
@@ -463,14 +486,25 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
 }
 
 void RdpSession::end() {
-  if (impl_->sink) impl_->sink->detach();
+  logLine("rdp: teardown begin");
   if (impl_->disp) {
     VARIANT connected;
     if (SUCCEEDED(dispGet(impl_->disp, L"Connected", &connected)) && connected.vt == VT_I2 && connected.iVal != 0) {
       dispCall(impl_->disp, L"Disconnect");
     }
     VariantClear(&connected);
+    VARIANT value;
+    if (SUCCEEDED(dispGet(impl_->disp, L"ExtendedDisconnectReason", &value))) {
+      VARIANT number; VariantInit(&number);
+      if (SUCCEEDED(VariantChangeType(&number, &value, 0, VT_I4))) {
+        std::lock_guard<std::mutex> lock(mutex_); extendedReason_ = number.lVal;
+      }
+      VariantClear(&number);
+    }
+    VariantClear(&value);
+    logLine("rdp: teardown disconnect reason=" + std::to_string(disconnectReason()) + " extended=" + std::to_string(extendedDisconnectReason()));
   }
+  if (impl_->sink) impl_->sink->detach();
   if (impl_->cp) {
     impl_->cp->Unadvise(impl_->cookie);
     impl_->cp->Release();
@@ -497,6 +531,7 @@ void RdpSession::end() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (state_ == State::Connecting || state_ == State::SignedIn) state_ = State::Ended;
   changed_.notify_all();
+  logLine("rdp: teardown complete state=" + std::to_string(static_cast<int>(state_)));
 }
 
 RdpSession::State RdpSession::waitSettled(int timeoutMs) {
@@ -515,12 +550,25 @@ int RdpSession::disconnectReason() {
   return reason_;
 }
 
+int RdpSession::extendedDisconnectReason() {
+  std::lock_guard<std::mutex> lock(mutex_); return extendedReason_;
+}
+bool RdpSession::passwordRejected() {
+  std::lock_guard<std::mutex> lock(mutex_); return passwordRejected_;
+}
 void RdpSession::onLogonError(int error) {
+  logLine("rdp: OnLogonError=" + std::to_string(error));
   std::lock_guard<std::mutex> lock(mutex_);
-  // Other negative codes are session arbitration, not password failures.
-  if (suppliedCredential_ && (error == 0 || error == 1 || error == static_cast<int>(0xC000006D) || error == static_cast<int>(0xC0000224))) {
-    reason_ = 2055;
+  // 1 means password renewal, not a wrong password; STATUS_LOGON_FAILURE is
+  // also ambiguous. Keep the actual disconnect reason separate from this flag.
+  if (suppliedCredential_ && (error == 0 || error == static_cast<int>(0xC000006A))) {
+    passwordRejected_ = true;
     state_ = State::Failed;
+    logLine("rdp: state Failed, explicit password rejection");
+    changed_.notify_all();
+  } else if (suppliedCredential_ && (error == 1 || error == static_cast<int>(0xC000006D) || error == static_cast<int>(0xC0000224))) {
+    state_ = State::Failed;
+    logLine("rdp: state Failed, account sign-in or password renewal required");
     changed_.notify_all();
   }
 }
@@ -529,13 +577,24 @@ void RdpSession::onLoginComplete() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (state_ != State::Connecting) return;
   state_ = State::SignedIn;
+  logLine("rdp: OnLoginComplete; state SignedIn");
   changed_.notify_all();
 }
 
 void RdpSession::onDisconnected(int reason) {
+  int extended = -1;
+  VARIANT value; VariantInit(&value);
+  if (impl_->disp && SUCCEEDED(dispGet(impl_->disp, L"ExtendedDisconnectReason", &value))) {
+    VARIANT number; VariantInit(&number);
+    if (SUCCEEDED(VariantChangeType(&number, &value, 0, VT_I4))) extended = number.lVal;
+    VariantClear(&number);
+  }
+  VariantClear(&value);
+  logLine("rdp: OnDisconnected reason=" + std::to_string(reason) + " extended=" + std::to_string(extended));
   std::lock_guard<std::mutex> lock(mutex_);
-  if (reason_ != 2055) reason_ = reason;
+  reason_ = reason; extendedReason_ = extended;
   state_ = state_ == State::Connecting ? State::Failed : State::Ended;
+  logLine("rdp: state=" + std::to_string(static_cast<int>(state_)));
   changed_.notify_all();
 }
 
@@ -577,9 +636,22 @@ bool consoleLocked() {
   return locked;
 }
 
-bool signOutSession(DWORD sessionId) {
+bool signOutSession(DWORD sessionId, int64_t deadline) {
   if (!sessionId || sessionId == WTSGetActiveConsoleSessionId()) return false;
-  return WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, sessionId, TRUE) != FALSE;
+  if (!deadline) deadline = nowMs() + 10'000;
+  logLine("rdp: sign-out request child=" + std::to_string(sessionId));
+  // TRUE can wait indefinitely inside Windows. Request asynchronously, then
+  // poll only this captured child identity up to the caller's cleanup budget.
+  if (!WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, sessionId, FALSE)) {
+    const DWORD error = GetLastError();
+    if (childSessionId() != sessionId) return true;
+    logLine("rdp: sign-out refused error=" + std::to_string(error)); return false;
+  }
+  while (nowMs() < deadline) {
+    if (childSessionId() != sessionId) { logLine("rdp: sign-out complete"); return true; }
+    Sleep(50);
+  }
+  logLine("rdp: sign-out deadline expired"); return false;
 }
 
 }  // namespace ade

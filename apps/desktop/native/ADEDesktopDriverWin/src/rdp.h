@@ -38,6 +38,8 @@ class RdpSession {
   State waitSettled(int timeoutMs);
   State state();
   int disconnectReason();
+  int extendedDisconnectReason();
+  bool passwordRejected();
 
   // Called by the event sink on the UI thread.
   void onLoginComplete();
@@ -50,7 +52,8 @@ class RdpSession {
   std::mutex mutex_;
   std::condition_variable changed_;
   State state_ = State::Idle;
-  int reason_ = 0;
+  int reason_ = 0, extendedReason_ = 0;
+  bool passwordRejected_ = false;
   bool suppliedCredential_ = false;
 };
 
@@ -61,6 +64,6 @@ bool remoteDesktopAllowed();
 // Whether the console session is locked right now.
 bool consoleLocked();
 // Signs a session out. Only ever called with the child session's id.
-bool signOutSession(DWORD sessionId);
+bool signOutSession(DWORD sessionId, int64_t deadline = 0);
 
 }  // namespace ade

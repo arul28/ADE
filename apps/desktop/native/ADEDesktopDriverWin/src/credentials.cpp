@@ -47,14 +47,18 @@ struct PromptWait { HWND owner; int64_t deadline; const std::atomic<bool>* stopp
 thread_local PromptWait* promptWait = nullptr;
 void CALLBACK cancelPrompt(HWND, UINT, UINT_PTR, DWORD) {
   if (!promptWait || (!promptWait->stopping->load() && nowMs() < promptWait->deadline)) return;
+  if (!promptWait->cancelled) logLine("save: prompt deadline/cancellation; closing owned dialog");
   promptWait->cancelled = true;
   EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM owner) -> BOOL {
-    if (GetWindow(window, GW_OWNER) == reinterpret_cast<HWND>(owner)) PostMessageW(window, WM_CLOSE, 0, 0);
+    if (GetWindow(window, GW_OWNER) == reinterpret_cast<HWND>(owner)) {
+      PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+      PostMessageW(window, WM_CLOSE, 0, 0);
+    }
     return TRUE;
   }, reinterpret_cast<LPARAM>(promptWait->owner));
 }
 }
-std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping) {
+std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping, int64_t deadline) {
   wchar_t username[CREDUI_MAX_USERNAME_LENGTH + 1] = {};
   ULONG size = ARRAYSIZE(username);
   if (!GetUserNameExW(NameSamCompatible, username, &size)) username[0] = 0;
@@ -63,7 +67,10 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   wchar_t localName[UNLEN + 1] = {};
   DWORD localSize = ARRAYSIZE(localName);
   LPBYTE account = nullptr;
-  if (GetUserNameW(localName, &localSize) && NetUserGetInfo(nullptr, localName, 24, &account) == NERR_Success) {
+  const NET_API_STATUS identityResult = GetUserNameW(localName, &localSize)
+      ? NetUserGetInfo(nullptr, localName, 24, &account) : ERROR_INVALID_NAME;
+  logLine("save: account resolution result=" + std::to_string(identityResult));
+  if (identityResult == NERR_Success) {
     auto* identity = reinterpret_cast<USER_INFO_24*>(account);
     HANDLE token = nullptr;
     DWORD bytes = 0;
@@ -77,6 +84,8 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
               reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
       CloseHandle(token);
     }
+    logLine("save: identity provider=" + Json(identity->usri24_internet_provider_name ? narrow(identity->usri24_internet_provider_name) : "").dump() +
+        " connected=" + std::to_string(identity->usri24_internet_identity) + " matchesCurrentSid=" + std::to_string(sameUser));
     if (sameUser && identity->usri24_internet_identity && identity->usri24_internet_provider_name &&
         _wcsicmp(identity->usri24_internet_provider_name, L"MicrosoftAccount") == 0 &&
         identity->usri24_internet_principal_name && *identity->usri24_internet_principal_name) {
@@ -92,18 +101,21 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   info.pszCaptionText = L"Save your Windows password for ADE";
   info.pszMessageText = L"Enter your Windows password, not your PIN. ADE checks it before saving it on this PC.";
   BOOL save = FALSE;
-  PromptWait wait{owner, nowMs() + 120'000, &stopping};
+  PromptWait wait{owner, deadline, &stopping};
   promptWait = &wait;
   UINT_PTR timer = SetTimer(nullptr, 0, 250, cancelPrompt);
   if (!timer) { promptWait = nullptr; fail(code::kDriverUnavailable, "Windows could not open a cancellable password dialog."); }
   struct Timer { UINT_PTR value; ~Timer() { KillTimer(nullptr, value); promptWait = nullptr; } } cleanup{timer};
+  logLine("save: prompt opened account=" + Json(narrow(username)).dump());
   DWORD result = CredUIPromptForCredentialsW(&info, L"ADE private Windows screen", nullptr, 0,
       username, ARRAYSIZE(username), credential->password.data(), static_cast<ULONG>(credential->password.size()), &save,
       CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_EXCLUDE_CERTIFICATES);
+  logLine("save: prompt result=" + std::to_string(result) + " cancelled=" + std::to_string(wait.cancelled));
   if (wait.cancelled || stopping) fail(code::kCancelled, "The Windows password dialog timed out or was cancelled.");
   if (result == ERROR_CANCELLED) fail(code::kCancelled, "Saving the Windows password was cancelled.");
   if (result != NO_ERROR) fail(code::kDriverUnavailable, "Windows could not open the password dialog.");
   credential->username = username;
+  logLine("save: submitted account=" + Json(narrow(credential->username)).dump());
   size_t length = wcslen(credential->password.data());
   if (!length || credential->username.empty()) fail(code::kInvalidArgument, "Enter a Windows user name and password.");
   // Preserve the allocated buffer so its entire capacity is wiped on destruction.

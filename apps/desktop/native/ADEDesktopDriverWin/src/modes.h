@@ -22,6 +22,9 @@ int runChild(const std::wstring& pipeBase);
 int runSetupElevated();
 int runSetupPrompt();
 
+// cleanup-child --session <id> is an internal recovery helper: it only signs
+// out that exact child of its console session after a host hard timeout.
+
 // Two one-way pipes, because a synchronous pipe handle serializes a blocking
 // read against a write on the same handle.
 inline std::wstring pipeToChild(const std::wstring& base) { return base + L"-in"; }

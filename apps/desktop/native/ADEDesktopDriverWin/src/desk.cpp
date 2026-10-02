@@ -200,9 +200,9 @@ std::map<DWORD, FILETIME> processTreeIdentities(DWORD root, const FILETIME& expe
   PROCESSENTRY32W pe = {sizeof(pe)};
   for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
     FILETIME created = processCreationTime(pe.th32ProcessID);
-    // Reject a recycled snapshot PID whose current parent is different.
-    if (parentProcessId(pe.th32ProcessID) == pe.th32ParentProcessID)
-      entries.push_back({pe.th32ProcessID, pe.th32ParentProcessID, created});
+    // Use this one snapshot's ancestry. The creation-time rule below rejects
+    // descendants older than their captured parent identity.
+    entries.push_back({pe.th32ProcessID, pe.th32ParentProcessID, created});
   }
   CloseHandle(snap);
   bool grew = true;

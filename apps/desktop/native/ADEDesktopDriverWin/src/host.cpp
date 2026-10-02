@@ -141,6 +141,50 @@ class Host {
     output_.write(Json::Object{{"event", "windows-state-changed"}, {"signInWaiting", waiting}});
   }
 
+  bool replyRead(const Json& req) {
+    const auto op = req["op"].str();
+    if (op == "windows.status" || op == "ping") { replyStatus(req); return true; }
+    if (op == "watch-permissions" || op == "request-permission") {
+      output_.write(okReply(req["id"].str(), Json::Object{{"permissions", Json::Object{{"screenRecording", "granted"}, {"accessibility", "granted"}}}}));
+      return true;
+    }
+    if (op != "window.list" && op != "observe" && op != "capture.screenshot") return false;
+    const auto lane = req["laneId"].str();
+    bool sharedLane = false, hasShared = false;
+    Json result = Json::Object{{"windows", Json::array()}};
+    {
+      std::lock_guard<std::mutex> lock(statusMutex_);
+      const auto holder = cachedStatus_["holderLaneId"].str();
+      if (privateActive_ && !holder.empty() && holder == lane) return false;
+      for (const auto& id : cachedLanes_.items()) {
+        if (id.str() == holder) continue;
+        hasShared = true;
+        if (id.str() == lane) sharedLane = true;
+      }
+      auto cached = cachedWindows_.find(lane);
+      if (cached != cachedWindows_.end()) result = Json::parse(cached->second.dump());
+    }
+    if (op != "window.list") {
+      if (sharedLane) return false;
+      output_.write(errorReply(req["id"].str(), {code::kNoDisplay, "This lane has no Windows screen.", Json()}));
+      return true;
+    }
+    // No seat is an empty list, not a poll queued behind a password dialog.
+    if (!sharedLane && !(lane.empty() && hasShared)) result = Json::Object{{"windows", Json::array()}};
+    else {
+      try {
+        Json fresh;
+        if (shared_.tryListWindows(req, &fresh)) {
+          result = std::move(fresh);
+          std::lock_guard<std::mutex> lock(statusMutex_);
+          cachedWindows_[lane] = Json::parse(result.dump());
+        }
+      } catch (const DriverError& error) { output_.write(errorReply(req["id"].str(), error)); return true; }
+    }
+    output_.write(okReply(req["id"].str(), result));
+    return true;
+  }
+
   void replyStatus(const Json& req) {
     output_.write(okReply(req["id"].str(), req["op"].str() == "ping" ? ping() : status()));
   }
@@ -153,6 +197,7 @@ class Host {
     if (op == "watch-permissions" || op == "request-permission") {
       return Json::Object{{"permissions", Json::Object{{"screenRecording", "granted"}, {"accessibility", "granted"}}}};
     }
+    if (stopping_) fail(code::kCancelled, "The Windows screen host is stopping.");
     if (currentSessionId() != consoleSessionId()) fail(code::kNotConsoleSession, "The Windows screen host must run in the console session.");
     if (op == "windows.setup") {
       if (!req["allowPrompt"].asBool()) fail(code::kSetupRequired, "Open Windows Desktop setup on this PC.");
@@ -224,12 +269,59 @@ class Host {
   }
 
   void reply(const Json& req) {
-    auto id = req["id"].str();
+    const auto id = req["id"].str(), op = req["op"].str();
+    const bool interactive = op == "windows.setup" || op == "display.create" || op == "display.destroy";
+    // One budget includes the prompt, sign-in, IPC handshake and teardown.
+    operationDeadline_ = interactive ? nowMs() + 120'000 : 0;
+    hardDeadline_ = interactive ? operationDeadline_ + 15'000 : 0;
+    std::mutex deadlineMutex;
+    std::condition_variable finished;
+    bool complete = false;
+    std::thread watchdog;
+    if (interactive) watchdog = std::thread([&, id, op] {
+      std::unique_lock<std::mutex> lock(deadlineMutex);
+      if (finished.wait_for(lock, std::chrono::milliseconds(120'000), [&] { return complete; })) return;
+      logLine(op + ": operation deadline; cancelling owned UI");
+      struct OwnedUi { DWORD pid; HWND host; } ownedUi{GetCurrentProcessId(), window_};
+      EnumWindows([](HWND hwnd, LPARAM context) -> BOOL {
+        const auto* owned = reinterpret_cast<OwnedUi*>(context);
+        DWORD owner = 0; GetWindowThreadProcessId(hwnd, &owner);
+        // Do not re-enter RdpSession::end from inside a hung COM call. The
+        // worker performs normal teardown once the native dialog returns.
+        if (owner == owned->pid && hwnd != owned->host) {
+          PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+          PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+        return TRUE;
+      }, reinterpret_cast<LPARAM>(&ownedUi));
+      if (finished.wait_for(lock, std::chrono::milliseconds(15'000), [&] { return complete; })) return;
+      // In-process COM/Windows RPC is not safely interruptible. If it ignores
+      // cancellation, retire only this driver, after replying; the brain will
+      // recreate it on the next request. Never leave executing_ stuck forever.
+      logLine(op + ": hard deadline; retiring unresponsive native driver");
+      if (op == "display.create") DeleteFileW(joinPath(joinPath(home_, L"windows-desktop"), L"child-launch.json").c_str());
+      const DWORD child = cleanupSession_.load();
+      if (child) {
+        auto command = L"\"" + exePath() + L"\" cleanup-child --session " + std::to_wstring(child);
+        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
+        if (CreateProcessW(exePath().c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+          CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        }
+      }
+      setSignInWaiting(false);
+      output_.write(errorReply(id, {code::kCancelled, "Windows Desktop timed out. Its native host was reset; try again.", Json()}));
+      TerminateProcess(GetCurrentProcess(), 1);
+    });
     executing_ = true;
-    try { auto result = handle(req); refreshStatus(); output_.write(okReply(id, result)); }
-    catch (const DriverError& e) { refreshStatus(); output_.write(errorReply(id, e)); }
-    catch (const std::exception& e) { refreshStatus(); output_.write(errorReply(id, {code::kInternalError, e.what(), Json()})); }
+    logLine(op + ": request begin");
+    try { auto result = handle(req); refreshStatus(); output_.write(okReply(id, result)); logLine(op + ": request complete"); }
+    catch (const DriverError& e) { logLine(op + ": failed code=" + e.code + " message=" + e.message); refreshStatus(); output_.write(errorReply(id, e)); }
+    catch (const std::exception& e) { logLine(op + ": native exception=" + std::string(e.what())); refreshStatus(); output_.write(errorReply(id, {code::kInternalError, e.what(), Json()})); }
     executing_ = false;
+    { std::lock_guard<std::mutex> lock(deadlineMutex); complete = true; }
+    finished.notify_one();
+    if (watchdog.joinable()) watchdog.join();
+    operationDeadline_ = 0; hardDeadline_ = 0;
   }
 
   void stop() {
@@ -256,51 +348,75 @@ class Host {
     auto command = L"\"" + exePath() + L"\" setup-prompt";
     STARTUPINFOW startup = {sizeof(startup)};
     PROCESS_INFORMATION process = {};
-    if (!CreateProcessW(exePath().c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) fail(code::kSetupRequired, "Windows could not create a cancellable setup prompt.");
+    struct Job { HANDLE value; ~Job() { CloseHandle(value); } } ownedJob{job};
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+      fail(code::kSetupRequired, "Windows could not protect setup prompt cleanup.");
+    if (!CreateProcessW(exePath().c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED,
         nullptr, nullptr, &startup, &process)) fail(code::kSetupRequired, "Windows could not open the setup prompt.");
-    CloseHandle(process.hThread);
+    if (!AssignProcessToJobObject(job, process.hProcess)) {
+      TerminateProcess(process.hProcess, 1); CloseHandle(process.hProcess); CloseHandle(process.hThread);
+      fail(code::kSetupRequired, "Windows could not track its setup prompt.");
+    }
+    ResumeThread(process.hThread); CloseHandle(process.hThread);
     struct Process { HANDLE value; ~Process() { CloseHandle(value); } } owned{process.hProcess};
-    auto deadline = nowMs() + 120'000;
+    logLine("setup: prompt opened pid=" + std::to_string(process.dwProcessId));
+    auto deadline = operationDeadline_;
     while (!stopping_ && nowMs() < deadline) {
-      if (WaitForSingleObject(process.hProcess, 100) == WAIT_OBJECT_0) {
+      DWORD wait = WaitForSingleObject(process.hProcess, 100);
+      if (wait == WAIT_FAILED) fail(code::kSetupRequired, "Windows could not wait for setup.");
+      if (wait == WAIT_OBJECT_0) {
         DWORD exit = 1; GetExitCodeProcess(process.hProcess, &exit);
+        logLine("setup: prompt result=" + std::to_string(exit));
         if (exit == 2) fail(code::kCancelled, "Windows Desktop setup was cancelled.");
         if (exit != 0) fail(code::kSetupRequired, "Windows Desktop setup did not complete.");
         return;
       }
     }
+    logLine("setup: deadline/cancellation; terminating owned prompt helper");
     TerminateProcess(process.hProcess, 1);
     WaitForSingleObject(process.hProcess, 1'000);
     fail(code::kCancelled, "Windows Desktop setup timed out or was cancelled. Close any remaining Windows prompt and try again.");
   }
 
   void savePassword() {
+    if (holder_.empty() && childId_) stopPrivate();  // Retry cleanup of our own failed attempt.
     if (consoleLocked()) fail(code::kLocked, "Unlock this PC before saving the Windows password.");
     if (!holder_.empty() || childSessionId()) fail(code::kHeld, "Stop the private Windows screen before changing its saved password.");
     if (rdp_.state() == RdpSession::State::Connecting || signInWaiting_)
       fail(code::kSignInFailed, "Finish or close the Windows sign-in window before saving your password.");
     setSignInWaiting(true);
     struct Waiting { Host& host; ~Waiting() { host.setSignInWaiting(false); } } waiting{*this};
-    auto credential = promptCredential(window_, stopping_);
+    auto credential = promptCredential(window_, stopping_, std::min<int64_t>(operationDeadline_, nowMs() + 90'000));
     setSignInWaiting(false);
     bool connected = false; std::string error;
     try {
       ui([&] { ShowWindow(window_, SW_HIDE); connected = rdp_.begin(window_, 1280, 800, &error, credential.get()); });
       refreshStatus();
+      logLine("save: rdp begin result=" + std::to_string(connected));
       if (!connected) fail(code::kSignInFailed, error);
-      auto deadline = nowMs() + 30'000;
+      auto deadline = std::min<int64_t>(operationDeadline_, nowMs() + 30'000);
       auto settled = rdp_.state();
-      while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) settled = rdp_.waitSettled(100);
-      childId_ = childSessionId();
+      while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
+        if (const DWORD partial = childSessionId()) cleanupSession_ = partial;
+        settled = rdp_.waitSettled(100);
+      }
+      childId_ = childSessionId(); cleanupSession_ = childId_;
+      logLine("save: sign-in outcome state=" + std::to_string(static_cast<int>(settled)) + " child=" + std::to_string(childId_) + " reason=" + std::to_string(rdp_.disconnectReason()) + " extended=" + std::to_string(rdp_.extendedDisconnectReason()));
       if (settled != RdpSession::State::SignedIn || !childId_) {
-        if (rdp_.disconnectReason() == 2055) fail(code::kWrongPassword, "Windows rejected that password. Nothing was saved.");
+        if (rdp_.passwordRejected()) fail(code::kWrongPassword, "Windows rejected that password. Nothing was saved.");
         fail(code::kSignInFailed, "Windows could not verify the password. Nothing was saved.");
       }
       stopPrivate();
       saveCredential(credentialTarget(home_), *credential);
+      logLine("save: password verified and saved (value omitted)");
     } catch (...) {
       setSignInWaiting(false);
       if (!childId_) childId_ = childSessionId();
+      cleanupSession_ = childId_;
       stopPrivate();
       throw;
     }
@@ -339,6 +455,7 @@ class Host {
   }
 
   void startPrivate(const Json& req) {
+    if (holder_.empty() && childId_) stopPrivate();  // Never strand a retry behind our stale child.
     if (currentSessionId() != consoleSessionId()) fail(code::kNotConsoleSession, "The Windows screen host must run in the console session.");
     if (consoleLocked()) fail(code::kLocked, "This PC is locked. Unlock it to continue.");
     if (!childSessionsEnabled() || !remoteDesktopAllowed()) fail(code::kSetupRequired, "Open Windows Desktop setup on this PC first.");
@@ -351,7 +468,8 @@ class Host {
     auto dir = joinPath(home_, L"windows-desktop");
     if (!ensureDir(dir)) fail(code::kDriverUnavailable, "Cannot create Windows Desktop state directory.");
     launchFile_ = joinPath(dir, L"child-launch.json");
-    const auto createDeadline = nowMs() + 145'000;
+    const auto createDeadline = operationDeadline_;
+    logLine("start: private session begin");
     try {
       toChild_ = makePipe(pipeToChild(base), PIPE_ACCESS_OUTBOUND);
       fromChild_ = makePipe(pipeFromChild(base), PIPE_ACCESS_INBOUND);
@@ -385,16 +503,19 @@ class Host {
       });
       setSignInWaiting(!credential && connected);
       refreshStatus();
+      logLine("start: rdp begin result=" + std::to_string(connected));
       if (!connected) fail(code::kSignInFailed, error);
       auto settled = rdp_.state();
-      auto deadline = nowMs() + 120'000;
+      auto deadline = std::min<int64_t>(createDeadline - 15'000, nowMs() + 90'000);
       while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
+        if (const DWORD partial = childSessionId()) cleanupSession_ = partial;
         settled = rdp_.waitSettled(100);
       }
       setSignInWaiting(false);
-      childId_ = childSessionId();
+      childId_ = childSessionId(); cleanupSession_ = childId_;
+      logLine("start: sign-in outcome state=" + std::to_string(static_cast<int>(settled)) + " child=" + std::to_string(childId_) + " reason=" + std::to_string(rdp_.disconnectReason()) + " extended=" + std::to_string(rdp_.extendedDisconnectReason()));
       if (settled != RdpSession::State::SignedIn || !childId_) {
-        if (credential && rdp_.disconnectReason() == 2055) {
+        if (credential && rdp_.passwordRejected()) {
           forgetCredential(credentialTarget(home_));
           fail(code::kWrongPassword, "Windows rejected the saved password. It was forgotten; save your current password in Windows Desktop.");
         }
@@ -423,6 +544,7 @@ class Host {
     } catch (...) {
       setSignInWaiting(false);
       if (!childId_) childId_ = childSessionId();
+      cleanupSession_ = childId_;
       stopPrivate();
       throw;
     }
@@ -463,6 +585,7 @@ class Host {
   }
 
   Json childRequest(const Json& req, int64_t timeout = 130'000) {
+    if (operationDeadline_) timeout = std::max<int64_t>(0, std::min<int64_t>(timeout, operationDeadline_ - nowMs()));
     const auto id = requireString(req, "id");
     std::unique_lock<std::mutex> lock(childReplyMutex_);
     childReplies_[id] = std::nullopt;
@@ -506,6 +629,7 @@ class Host {
   }
 
   void stopPrivate() {
+    logLine("teardown: begin child=" + std::to_string(childId_));
     if (!launchFile_.empty()) DeleteFileW(launchFile_.c_str());
     if (childOutput_) childOutput_->write(Json::Object{{"id", "shutdown"}, {"op", "child.quit"}});
     childReadRun_ = false;
@@ -513,13 +637,19 @@ class Host {
     childOutput_.reset(); childBuffer_.clear();
     if (toChild_ != INVALID_HANDLE_VALUE) { CloseHandle(toChild_); toChild_ = INVALID_HANDLE_VALUE; }
     if (fromChild_ != INVALID_HANDLE_VALUE) { CloseHandle(fromChild_); fromChild_ = INVALID_HANDLE_VALUE; }
-    const bool signedOut = !childId_ || signOutSession(childId_);
+    // Disconnect first so a still-connecting control cannot create a child
+    // after the cleanup query. Windows logoff itself is asynchronous/bounded.
     ui([&] { rdp_.end(); ShowWindow(window_, SW_HIDE); });
+    if (!childId_) childId_ = childSessionId();
+    cleanupSession_ = childId_;
+    const auto deadline = hardDeadline_ ? std::min<int64_t>(hardDeadline_, nowMs() + 10'000) : nowMs() + 10'000;
+    const bool signedOut = !childId_ || signOutSession(childId_, deadline);
     if (!signedOut) {
       privateActive_ = false; recording_ = false;
       fail(code::kDriverUnavailable, "Windows could not sign out the private screen. Its session is retained; retry Stop before starting another screen.");
     }
-    childId_ = 0; holder_.clear(); holderName_.clear(); activeUntil_ = 0; privateActive_ = false; recording_ = false;
+    childId_ = 0; cleanupSession_ = 0; holder_.clear(); holderName_.clear(); activeUntil_ = 0; privateActive_ = false; recording_ = false;
+    logLine("teardown: complete");
   }
 
   HWND window_;
@@ -529,6 +659,9 @@ class Host {
   bool sharedReady_ = false;
   std::mutex requestMutex_, statusMutex_;
   Json cachedStatus_, cachedLanes_;
+  std::map<std::string, Json> cachedWindows_;
+  int64_t operationDeadline_ = 0, hardDeadline_ = 0;
+  std::atomic<DWORD> cleanupSession_{0};
   RdpSession rdp_;
   std::string holder_, holderName_;
   DWORD childId_ = 0;
@@ -578,7 +711,7 @@ int runHost(const std::wstring& home) {
         auto req = Json::parse(line);
         if (req["type"].str() == "quit") break;
         if (!req["id"].str().empty()) {
-          if (req["op"].str() == "windows.status" || req["op"].str() == "ping") { host.replyStatus(req); continue; }
+          if (host.replyRead(req)) continue;
           if (host.rejectSetupWhileBusy(req)) continue;
           std::lock_guard<std::mutex> lock(queueMutex);
           if (requests.size() >= 128) { host.replyBusy(req); continue; }

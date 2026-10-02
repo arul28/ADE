@@ -147,9 +147,11 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopKind,
   } = controller;
-  const desktopName = status?.platform === "win32" || status?.windowsDesktop ? "Windows Desktop" : "Mac Desktop";
+  const desktopName = desktopKind === "windows" || status?.platform === "win32" || status?.windowsDesktop
+    ? "Windows Desktop"
+    : "Mac Desktop";
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
   // when the answer arrived.

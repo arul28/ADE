@@ -16,7 +16,7 @@ struct WindowsCredential {
 std::wstring credentialTarget(const std::wstring& home);
 bool credentialSaved(const std::wstring& target);
 std::unique_ptr<WindowsCredential> readCredential(const std::wstring& target);
-std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping);
+std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomic<bool>& stopping, int64_t deadline);
 void saveCredential(const std::wstring& target, const WindowsCredential& credential);
 void forgetCredential(const std::wstring& target);
 }  // namespace ade

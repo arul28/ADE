@@ -321,9 +321,10 @@ Json Engine::destroyDisplay(const Json& req) {
   if (mode_ == Mode::Shared) {
     // Quit what the lane opened, then give claimed windows back.
     const auto identities = ownedProcessIdentities(*lane);
-    std::set<DWORD> tree;
+    std::set<DWORD> tree, reportedLeftOpen;
     for (const auto& entry : identities) tree.insert(entry.first);
     for (auto& w : laneWindows(*lane)) {
+      if (reportedLeftOpen.count(w.pid)) { releaseWindow(*lane, w.hwnd); continue; }
       if (tree.count(w.pid)) {
         FILETIME created = identities.at(w.pid);
         if (!closeWindowGracefully(w.hwnd, 3000) && !terminatePid(w.pid, created)) {
@@ -332,6 +333,7 @@ Json Engine::destroyDisplay(const Json& req) {
           app["appName"] = narrow(w.appName);
           app["message"] = narrow(w.appName) + " did not quit. It moved to your screen.";
           leftOpen.push(app);
+          reportedLeftOpen.insert(w.pid);
           releaseWindow(*lane, w.hwnd);
         } else {
           Json q = Json::object();
@@ -349,6 +351,7 @@ Json Engine::destroyDisplay(const Json& req) {
     // Windows are not process ownership: a launched root or background child
     // can outlive its last window. Preserve identity until all owned PIDs stop.
     for (const auto& [pid, created] : identities) {
+      if (reportedLeftOpen.count(pid)) continue;
       FILETIME current = processCreationTime(pid);
       if ((!current.dwLowDateTime && !current.dwHighDateTime) || CompareFileTime(&current, &created) != 0) continue;
       if (!terminatePid(pid, created)) {
@@ -432,6 +435,13 @@ void Engine::releaseWindow(Lane& lane, HWND hwnd) {
   }
   lane.origin.erase(hwnd);
   lane.home.erase(hwnd);
+}
+
+bool Engine::tryListWindows(const Json& req, Json* result) {
+  std::unique_lock<std::recursive_mutex> operation(operationMutex_, std::try_to_lock);
+  if (!operation.owns_lock() || !running_) return false;
+  *result = listWindowsOp(req);
+  return true;
 }
 
 Json Engine::listWindowsOp(const Json& req) {

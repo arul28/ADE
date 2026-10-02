@@ -48,6 +48,9 @@ class Engine {
   // this engine serves (see `serves`).
   Json handle(const Json& req);
   static bool serves(const std::string& op);
+  // Reader-side snapshots never wait for an operation or watcher holding this
+  // engine. False means the caller should use its last completed snapshot.
+  bool tryListWindows(const Json& req, Json* result);
 
   bool hasLane(const std::string& laneId);
   std::vector<std::string> laneIds();

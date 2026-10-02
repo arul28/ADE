@@ -228,6 +228,9 @@ Json Engine::startRecording(const Json& req) {
   HWND window = req["windowId"].isNumber() ? hwndFromId(req["windowId"].asInt()) : nullptr;
   int width = lane->width, height = lane->height;
   if (window) {
+    const auto owned = laneWindows(*lane);
+    if (std::none_of(owned.begin(), owned.end(), [&](const WinInfo& entry) { return entry.hwnd == window; }))
+      fail(code::kWindowNotFound, "That window is not on this lane's screen.");
     RECT r;
     if (!GetWindowRect(window, &r)) fail(code::kWindowNotFound, "That window is not open.");
     width = r.right - r.left;
