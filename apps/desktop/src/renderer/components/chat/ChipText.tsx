@@ -45,16 +45,22 @@ import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatWorkspacePathOpener, type ChatWorkspacePathOpener } from "./chatWorkspacePaths";
 import { rootAppStoreApi } from "../../state/appStore";
 import { machineEntryForBinding } from "../../state/crossMachineLanes";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { mentionChipMarkSvg } from "./mentionChipMark";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 
 /**
  * The machine that holds the chat's lane, or null when the chat runs on the
  * tab's own machine. Read on click, so a transcript of pills holds no extra
- * store subscription.
+ * store subscription. Before the union has read that machine, the pin still
+ * names it: a remote pin by its target id, a local pin as This computer (a
+ * local pin only exists while the tab is bound to a remote machine).
  */
 function chatMachineId(scope: Pick<ChatRuntimeScope, "pin">): string | null {
-  return machineEntryForBinding(rootAppStoreApi.getState(), scope.pin)?.machineId ?? null;
+  const pin = scope.pin;
+  if (!pin) return null;
+  return machineEntryForBinding(rootAppStoreApi.getState(), pin)?.machineId
+    ?? (pin.kind === "remote" ? pin.targetId : THIS_MACHINE_ID);
 }
 
 /** Where a click on this chip should land, or null when it is not actionable. */

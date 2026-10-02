@@ -113,7 +113,6 @@ import {
   createProjectAppStore,
   hydrateProjectAppStore,
   releaseProjectAppStore,
-  rootAppStoreApi,
   retainProjectAppStoreState,
   selectActiveProjectRoot,
   selectEffectiveThemeId,
@@ -144,12 +143,8 @@ import {
   parseDeeplink,
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import {
-  buildAllMachineLanes,
-  connectionOnline,
-  createLaneMachineRouter,
-} from "../../state/laneMachineRouting";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
 import type {
   AppNavigationRequest,
   AppNavigationTarget,
@@ -1031,9 +1026,6 @@ function ShellLayout() {
   );
 }
 
-/** How long a link waits for the other machines to report before it gives up. */
-const OTHER_MACHINES_LOOKUP_MS = 3_000;
-
 /**
  * Keeps the cross-machine lane sync running while a link waits for another
  * machine. Mounted only during that wait, so idle surfaces read nothing.
@@ -1061,67 +1053,13 @@ function AppNavigationBridge() {
   projectBindingRef.current = projectBinding ?? null;
   const [otherMachineLookups, setOtherMachineLookups] = React.useState(0);
 
-  // Lanes and chats on the other connected machines, read fresh from the ROOT
-  // store, which alone holds the union. A link to one of them opens on that
-  // machine, not in the "cannot find" modal.
-  const readOtherMachines = React.useCallback(() => {
-    const all = buildAllMachineLanes({
-      activeBinding: projectBindingRef.current,
-      activeLanes: lanesRef.current,
-      machines: rootAppStoreApi.getState().crossMachineLanesByMachineId ?? {},
-    });
-    const router = createLaneMachineRouter(all);
-    return {
-      /** The id of another machine that holds the lane, or null. */
-      machineIdForLane: (laneId: string | null | undefined, machineId?: string | null) => {
-        if (!laneId) return null;
-        const route = router.route(laneId, machineId);
-        if (route.kind === "unknown" || route.machine.isActiveBinding) return null;
-        return route.machine.machineId;
-      },
-      hasSession: (sessionId: string) => {
-        for (const sessions of all.sessionsByMachineId.values()) {
-          if (sessions.some((session) => session.id === sessionId)) return true;
-        }
-        return false;
-      },
-    };
+  const readOtherMachinesNow = React.useCallback(
+    () => readOtherMachines(projectBindingRef.current, lanesRef.current),
+    [],
+  );
+  const onOtherMachineWait = React.useCallback((waiting: boolean) => {
+    setOtherMachineLookups((count) => Math.max(0, count + (waiting ? 1 : -1)));
   }, []);
-
-  /**
-   * Resolve `find` against the other machines. When it misses and a machine is
-   * online, run the sync and wait briefly: the union may not be loaded yet (no
-   * Work, Lanes or Files surface was open, or the app just started), and a
-   * miss there would show the modal for an item this machine can open.
-   */
-  const findOnOtherMachines = React.useCallback(async <T,>(
-    find: (other: ReturnType<typeof readOtherMachines>) => T | null,
-  ): Promise<T | null> => {
-    const first = find(readOtherMachines());
-    if (first != null) return first;
-    const snapshot = await window.ade?.remoteRuntime?.getConnectionSnapshot?.().catch(() => null);
-    if (!snapshot?.connections?.some((connection) => connectionOnline(connection))) return null;
-    setOtherMachineLookups((count) => count + 1);
-    try {
-      return await new Promise<T | null>((resolve) => {
-        let settled = false;
-        const finish = (value: T | null) => {
-          if (settled) return;
-          settled = true;
-          window.clearTimeout(timer);
-          unsubscribe();
-          resolve(value);
-        };
-        const timer = window.setTimeout(() => finish(find(readOtherMachines())), OTHER_MACHINES_LOOKUP_MS);
-        const unsubscribe = rootAppStoreApi.subscribe(() => {
-          const found = find(readOtherMachines());
-          if (found != null) finish(found);
-        });
-      });
-    } finally {
-      setOtherMachineLookups((count) => Math.max(0, count - 1));
-    }
-  }, [readOtherMachines]);
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
     const lane = lanesRef.current[0];
@@ -1182,13 +1120,20 @@ function AppNavigationBridge() {
   ): Promise<boolean> => {
     const laneById = (laneId: string | null | undefined) =>
       laneId ? lanesRef.current.find((lane) => lane.id === laneId) ?? null : null;
-    // A project-switch retry must not wait: it already retries on its own.
+    // A lane that names another machine is that machine's lane, even when this
+    // tab holds a lane with the same id: lane ids are unique per machine only.
+    const localLane = (laneId: string | null | undefined, machineId: string | null | undefined) =>
+      machineId && !readOtherMachinesNow().isActiveMachine(machineId) ? null : laneById(laneId);
+    // Lanes and chats on the other connected machines open there, not in the
+    // "cannot find" modal. A project-switch retry does not wait for them: it
+    // already retries on its own.
     const mayWaitForOtherMachines = !options.forceLocal && !options.suppressUnresolved;
-    const otherMachineIdForLane = async (laneId: string | null | undefined, machineId?: string | null) => {
-      if (!laneId) return null;
-      if (!mayWaitForOtherMachines) return readOtherMachines().machineIdForLane(laneId, machineId);
-      return findOnOtherMachines((other) => other.machineIdForLane(laneId, machineId));
-    };
+    const onOtherMachines = <T,>(find: (other: OtherMachines) => T | null) =>
+      mayWaitForOtherMachines
+        ? findOnOtherMachines(readOtherMachinesNow, find, onOtherMachineWait)
+        : Promise.resolve(find(readOtherMachinesNow()));
+    const otherMachineIdForLane = (laneId: string | null | undefined, machineId: string | null | undefined) =>
+      laneId ? onOtherMachines((other) => other.machineIdForLane(laneId, machineId)) : Promise.resolve(null);
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
@@ -1196,11 +1141,8 @@ function AppNavigationBridge() {
         // Work lists the chats of every connected machine, so a chat that one
         // of them holds opens there like a local one.
         const sessionId = target.sessionId;
-        const onOtherMachine = localSession
-          ? false
-          : mayWaitForOtherMachines
-            ? (await findOnOtherMachines((other) => (other.hasSession(sessionId) ? true : null))) === true
-            : readOtherMachines().hasSession(sessionId);
+        const onOtherMachine = !localSession
+          && (await onOtherMachines((other) => (other.hasSession(sessionId) ? true : null))) === true;
         if (!localSession && !onOtherMachine) {
           const handled = await resolvePortableFallback("chat", target, options);
           if (handled) return true;
@@ -1250,7 +1192,7 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "commit") {
-      const lane = laneById(target.laneId);
+      const lane = localLane(target.laneId, target.machineId);
       if (lane) {
         const params = new URLSearchParams();
         params.set("laneId", lane.id);
@@ -1313,7 +1255,7 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "lane") {
-      const lane = laneById(target.laneId);
+      const lane = localLane(target.laneId, target.machineId);
       const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
@@ -1376,7 +1318,7 @@ function AppNavigationBridge() {
     }
 
     return false;
-  }, [findOnOtherMachines, navigate, readOtherMachines, refreshLanes, resolvePortableFallback]);
+  }, [navigate, onOtherMachineWait, readOtherMachinesNow, refreshLanes, resolvePortableFallback]);
 
   // The modal's post-switch retry loop must always call the LATEST dispatcher
   // (fresh lanes/project), not the instance captured when the card rendered.
