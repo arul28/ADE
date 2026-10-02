@@ -155,8 +155,18 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   // must be measured, not inherited: on opening History unless it was read a
   // moment ago, and again whenever the commit list reloads (a commit action, a
   // fetch, an agent's operation), since that is when the branch moved.
-  const laneMovedToken = rawEvents.length + commitRefreshToken;
-  const laneMovedTokenRef = useRef<number | null>(null);
+  // A running head-changing operation is replaced by its completed row on a
+  // later poll without changing the list length, so include each row's head
+  // SHAs: completing one (a commit, a fetch) still re-measures the lane.
+  // Unchanged polls produce the same string, so the effect stays put.
+  const laneMovedToken = useMemo(
+    () => [
+      String(commitRefreshToken),
+      ...rawEvents.map((event) => `${event.id}:${event.preHeadSha ?? ""}:${event.postHeadSha ?? ""}`),
+    ].join("|"),
+    [commitRefreshToken, rawEvents],
+  );
+  const laneMovedTokenRef = useRef<string | null>(null);
   useEffect(() => {
     if (!active) return;
     const moved = laneMovedTokenRef.current != null && laneMovedTokenRef.current !== laneMovedToken;
