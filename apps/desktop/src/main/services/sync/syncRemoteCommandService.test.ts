@@ -1809,9 +1809,11 @@ describe("createSyncRemoteCommandService", () => {
         sessionId: "sess-1",
         text: "change direction",
       }));
+      // A paired controller sends what its user typed in the composer.
       expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
         sessionId: "sess-1",
         text: "change direction",
+        sentByUser: true,
       });
       expect(result).toEqual({ ok: true });
     });
@@ -2013,6 +2015,7 @@ describe("createSyncRemoteCommandService", () => {
         expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
           sessionId: "sess-1",
           text: "redirect",
+          sentByUser: true,
           attachments: [
             { path: "img.png", type: "image" },
             { path: "notes.txt", type: "file" },
@@ -2029,7 +2032,7 @@ describe("createSyncRemoteCommandService", () => {
         }));
         const sent = agentChatService.steerUserMessage.mock.calls[0][0] as Record<string, unknown>;
         expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
-        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect" });
+        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect", sentByUser: true });
       });
 
       it("still throws when text is missing even if attachments are provided", async () => {
