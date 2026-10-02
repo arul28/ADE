@@ -97,7 +97,7 @@ function accessibilityMissReason(
 }
 
 function realInputStep(
-  args: MacDesktopNextStepInput,
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "lease">,
   why: string,
 ): ComputerUseActionNextStep {
   const { lease, resolved } = args;
@@ -171,4 +171,23 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
     };
   }
   return realInputStep(args, why);
+}
+
+/**
+ * The next step when the driver refused an accessibility action outright.
+ *
+ * An element with no press action never reaches the effect comparison: the
+ * driver throws first. That is the commonest case where real input is the
+ * fix, so the refusal carries the same advice an unconfirmed effect would.
+ */
+export function macDesktopRefusedNextStep(args: {
+  action: string;
+  mode: MacDesktopInputMode;
+  message: string;
+  resolved: MacDesktopElement | null;
+  lease: MacDesktopLeaseDecision;
+}): ComputerUseActionNextStep | null {
+  if (args.mode !== "accessibility" || args.action !== "click") return null;
+  if (!/answered no press action/i.test(args.message)) return null;
+  return realInputStep(args, "the element has no press action");
 }

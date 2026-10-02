@@ -14,7 +14,7 @@
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
-import { macDesktopNextStep } from "./macDesktopNextStep";
+import { macDesktopNextStep, macDesktopRefusedNextStep } from "./macDesktopNextStep";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
@@ -409,7 +409,19 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
-    if (failure) throw failure;
+    if (failure) {
+      const refused = macDesktopRefusedNextStep({
+        action: args.action,
+        mode: args.mode,
+        message: failure.message,
+        resolved: args.resolved,
+        lease: leases.checkRealInput({ laneId, holderId }),
+      });
+      if (!refused) throw failure;
+      const code = (failure as { code?: unknown }).code;
+      const message = `${failure.message.replace(/^[A-Za-z_]+: /, "")} Next: ${refused.reason}${refused.command ? ` — run: ${refused.command}` : ""}`;
+      throw typeof code === "string" ? deps.serviceError(code, message) : new Error(message);
+    }
     if (args.demo) {
       const element = args.resolved
         ?? (resolvedIndex != null ? resolvedAgainst?.elements.find((entry) => entry.index === resolvedIndex) ?? null : null);
