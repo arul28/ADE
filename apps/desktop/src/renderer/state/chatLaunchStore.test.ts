@@ -390,4 +390,17 @@ describe("hydrateChatLaunchFromHost", () => {
     expect(get).toHaveBeenCalledTimes(1);
     expect(getChatLaunchEntry("launch-missing")).toBeNull();
   });
+
+  it("does not re-read a launch the store already holds", async () => {
+    applyChatLaunchSnapshot(BINDING_A, optimistic("launch-known", { phase: "failed", sequence: 1 }));
+    const get = vi.fn(async () => null);
+    (window as unknown as { ade: unknown }).ade = { chatLaunch: { get } };
+
+    await act(async () => {
+      hydrateChatLaunchFromHost("launch-known", BINDING_A);
+    });
+
+    expect(get).not.toHaveBeenCalled();
+    expect(getChatLaunchEntry("launch-known")?.binding).toEqual(BINDING_A);
+  });
 });
