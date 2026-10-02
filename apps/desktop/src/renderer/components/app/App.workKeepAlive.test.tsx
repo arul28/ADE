@@ -92,6 +92,7 @@ vi.mock("../../state/appStore", async () => {
     lanesLoading: false,
     keybindings: null,
     refreshLanes: vi.fn(async () => undefined),
+    requestLaneStatusRead: vi.fn(),
     refreshKeybindings: vi.fn(async () => undefined),
     refreshProviderMode: vi.fn(async () => undefined),
   });

@@ -22,7 +22,9 @@ import { stripIpcErrorPrefix } from "./historyClipboard";
 /** "3 ahead · 12 behind" against the lane's base; opens the lane in Lanes. */
 export function LaneDriftPill({ lane }: { lane: LaneSummary | null }) {
   const navigate = useNavigate();
-  if (!lane || lane.laneType === "primary" || !lane.status) return null;
+  // A lane whose worktree is missing on this machine has no measured status:
+  // the brain reports its 0/0 placeholder, which must not read as "Even with".
+  if (!lane || lane.laneType === "primary" || !lane.status || lane.worktreeAvailable === false) return null;
   const ahead = Math.max(0, lane.status.ahead ?? 0);
   const behind = Math.max(0, lane.status.behind ?? 0);
   const base = normalizeBranchName(lane.baseRef) || "base";

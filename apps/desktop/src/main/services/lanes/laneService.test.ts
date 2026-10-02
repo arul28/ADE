@@ -249,6 +249,45 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
+  it("counts ahead/behind against origin/<base> when the base branch exists only remotely", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-remote-only-base-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-remote-only-base", repoRoot });
+      // Git as it behaves in a clone that never checked out `main`: the short
+      // name does not resolve (git's lookup skips refs/remotes/origin/<name>),
+      // the remote-tracking ref does.
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
+        }
+        if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/parent\n", stderr: "" } as any;
+        if (args[0] === "rev-list" && args[1] === "--left-right") {
+          const range = args[3] ?? "";
+          if (range === "refs/remotes/origin/main...feature/parent") return { exitCode: 0, stdout: "5\t2\n", stderr: "" } as any;
+          return { exitCode: 128, stdout: "", stderr: `fatal: ambiguous argument '${range}': unknown revision` } as any;
+        }
+        return { exitCode: 1, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-remote-only-base",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const summary = await service.getSummary("lane-parent", { includeStatus: true });
+
+      expect(summary?.status).toMatchObject({ ahead: 2, behind: 5 });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("caches tracked-file totals by tree hash and refreshes them after the TTL", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
