@@ -2788,14 +2788,20 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
   if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
     throw new Error("chat.steer dispatchMode must be 'inline' or 'interrupt'.");
   }
+  // A steer that carries the chat's pending thread comments may have no text
+  // of its own: the host builds the message from the comments.
+  const includeThreadComments = value.includeThreadComments === true;
   return {
     sessionId: requireString(value.sessionId, "chat.steer requires sessionId."),
-    text: requireString(value.text, "chat.steer requires text."),
+    text: includeThreadComments
+      ? asTrimmedString(value.text) ?? ""
+      : requireString(value.text, "chat.steer requires text."),
     ...(attachments?.length ? { attachments } : {}),
     ...(dispatchMode ? { dispatchMode } : {}),
     // A paired controller (the phone, a remote desktop) sends what its user
     // typed in the composer.
     sentByUser: true,
+    ...(includeThreadComments ? { includeThreadComments: true } : {}),
   };
 }
 
@@ -4970,6 +4976,32 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (!id) throw new Error("Missing prompt stash id.");
     return deletePromptStash(requireService(args.db, "Database not available."), id);
   });
+  // Thread comments: the user's pending notes on parts of an agent reply. The
+  // host's chat service validates every field; these only route.
+  register("chat.listThreadComments", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
+      sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
+    }));
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.createThreadComment requires sessionId."),
+      messageKey: requireString(payload.messageKey, "chat.createThreadComment requires messageKey."),
+      messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
+      anchor: payload.anchor as never,
+      body: typeof payload.body === "string" ? payload.body : "",
+    }));
+  register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.updateThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.updateThreadComment requires commentId."),
+      ...(typeof payload.body === "string" ? { body: payload.body } : {}),
+      ...(typeof payload.includeInNextSend === "boolean" ? { includeInNextSend: payload.includeInNextSend } : {}),
+    }));
+  register("chat.deleteThreadComment", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").deleteThreadComment({
+      sessionId: requireString(payload.sessionId, "chat.deleteThreadComment requires sessionId."),
+      commentId: requireString(payload.commentId, "chat.deleteThreadComment requires commentId."),
+    }));
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {

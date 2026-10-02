@@ -20,6 +20,7 @@ import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
+import type { ChatThreadComment } from "../threadComments";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -2148,6 +2149,11 @@ export type AgentChatEvent =
       usageLimitResume?: AgentChatUsageLimitResume | null;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
+      /**
+       * The chat's full list of pending thread comments, sent after every
+       * change. Absent means this patch is about something else.
+       */
+      threadComments?: ChatThreadComment[];
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
     };
@@ -4267,6 +4273,14 @@ export type AgentChatSendArgs = {
   runtime?: AgentChatRuntime;
   /** Cloud-only launch overrides; ignored when runtime !== "cloud". */
   cloudOverrides?: AgentChatCloudOverrides;
+  /**
+   * True only for a send the user made from a composer that shows pending
+   * thread comments. The host then adds every comment marked for the next
+   * send to the message, as one review block, and removes them. Automated
+   * sends (agents, schedules, the CLI) leave it unset, so they never take a
+   * review the user has not sent.
+   */
+  includeThreadComments?: boolean;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
@@ -4476,6 +4490,8 @@ export type AgentChatSteerArgs = {
    * senders leave it unset.
    */
   sentByUser?: boolean;
+  /** See `AgentChatSendArgs.includeThreadComments`. */
+  includeThreadComments?: boolean;
 };
 
 export type AgentChatSteerResult = {

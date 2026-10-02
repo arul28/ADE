@@ -1,8 +1,17 @@
-export const CHAT_OUTPUT_CONTEXT_CHIP_LABEL = "Chat context";
+export const CHAT_OUTPUT_CONTEXT_CHIP_LABEL = "Quote";
 export const CHAT_OUTPUT_CONTEXT_OPEN = "<ade-chat-context>";
 export const CHAT_OUTPUT_CONTEXT_CLOSE = "</ade-chat-context>";
+/**
+ * Tells the agent what the quote is AND that the prose after the block is the
+ * user's reply to it. Without the second half, three quotes and three replies
+ * read as one ramble, and the agent has to guess which reply goes with which.
+ */
 export const CHAT_OUTPUT_CONTEXT_PREAMBLE =
-  "The user highlighted the following text from your previous output and added it as context:";
+  "The user quoted this from your earlier output. The text that follows this block, up to the next quote, is their reply to it:";
+/** Preambles older messages were sent with. Still stripped when they render. */
+const LEGACY_CHAT_OUTPUT_CONTEXT_PREAMBLES = [
+  "The user highlighted the following text from your previous output and added it as context:",
+];
 export const MAX_CHAT_OUTPUT_CONTEXT_CHARS = 16_384;
 
 export type ChatOutputContextMatch = {
@@ -38,8 +47,8 @@ export function extractChatOutputContextQuote(block: string): string {
     .slice(open + CHAT_OUTPUT_CONTEXT_OPEN.length, close)
     .replace(/^\n/, "")
     .replace(/\n$/, "");
-  if (inner.startsWith(CHAT_OUTPUT_CONTEXT_PREAMBLE)) {
-    return inner.slice(CHAT_OUTPUT_CONTEXT_PREAMBLE.length).replace(/^\n+/, "");
+  for (const preamble of [CHAT_OUTPUT_CONTEXT_PREAMBLE, ...LEGACY_CHAT_OUTPUT_CONTEXT_PREAMBLES]) {
+    if (inner.startsWith(preamble)) return inner.slice(preamble.length).replace(/^\n+/, "");
   }
   return inner;
 }

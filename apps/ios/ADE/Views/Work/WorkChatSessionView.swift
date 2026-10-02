@@ -579,7 +579,14 @@ struct WorkChatSessionView: View {
   var onRetryTranscript: (() -> Void)? = nil
   var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
   var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
+  /// The chat's pending thread comments. Empty on a host that predates them.
+  var threadComments: [ChatThreadComment] = []
+  /// `chat.updateThreadComment` (comment id, new body, new send flag). Nil
+  /// hides the comments chip, which is how an older host shows nothing new.
+  var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
+  var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
 
+  @State private var threadCommentsSheetPresented = false
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
@@ -958,10 +965,25 @@ struct WorkChatSessionView: View {
     inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
   }
 
+  /// The thread-comments chip: only while the chat has at least one comment
+  /// and the host can edit and delete them.
+  var showsComposerThreadCommentsChip: Bool {
+    inputLockMessage == nil
+      && !threadComments.isEmpty
+      && onUpdateThreadComment != nil
+      && onDeleteThreadComment != nil
+  }
+
+  /// True when a send would carry comments, so an empty field may still send.
+  var hasSendableThreadComments: Bool {
+    showsComposerThreadCommentsChip && workThreadCommentsHaveSendable(threadComments)
+  }
+
   /// Whether the floating badge row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
+      || showsComposerThreadCommentsChip
   }
 
   /// Chat-info / PR / lane tool badges: small glass capsules sitting just
@@ -971,6 +993,13 @@ struct WorkChatSessionView: View {
   var composerBadgeChipRow: some View {
     let chatInfoCount = composerBadgeChatInfoCount
     let chips = HStack(spacing: 8) {
+      // First: it is the one chip that changes what the next send carries.
+      if showsComposerThreadCommentsChip {
+        WorkThreadCommentsChip(comments: threadComments) {
+          ADEHaptics.light()
+          threadCommentsSheetPresented = true
+        }
+      }
       if showsComposerChatInfoBadge, let onOpenChatInfo {
         WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
       }
@@ -1549,7 +1578,8 @@ struct WorkChatSessionView: View {
         onSend: onSend,
         onSent: {
           transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
-        }
+        },
+        hasSendableThreadComments: hasSendableThreadComments
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
@@ -2006,6 +2036,13 @@ struct WorkChatSessionView: View {
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $threadCommentsSheetPresented) {
+          WorkThreadCommentsSheet(
+            comments: threadComments,
+            onUpdate: onUpdateThreadComment,
+            onDelete: onDeleteThreadComment
+          )
+        }
         .sheet(isPresented: $modelPickerPresented) {
           let currentModelId = chatSummaryContext.currentModelId
           WorkModelPickerSheet(
@@ -2336,6 +2373,9 @@ private struct WorkChatComposerCard: View {
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
+  /// Pending thread comments will ride the next send, so an empty field may
+  /// still send.
+  var hasSendableThreadComments = false
 
   var body: some View {
     WorkChatComposerDraftInput(
@@ -2368,7 +2408,8 @@ private struct WorkChatComposerCard: View {
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSend: onSend,
-      onSent: onSent
+      onSent: onSent,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 }
@@ -2410,6 +2451,9 @@ private struct WorkChatComposerDraftInput: View {
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
   let onSent: () -> Void
+  /// Pending thread comments will ride the next send, so an empty field may
+  /// still send.
+  var hasSendableThreadComments = false
 
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
@@ -2440,6 +2484,7 @@ private struct WorkChatComposerDraftInput: View {
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
+      || hasSendableThreadComments
   }
 
   /// One capability lookup for the whole active-turn send affordance. See
@@ -2568,7 +2613,8 @@ private struct WorkChatComposerDraftInput: View {
       text: draftState.text,
       attachments: inputAttachments,
       baseEnabled: canSend,
-      canUploadAttachments: canUploadAttachments
+      canUploadAttachments: canUploadAttachments,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 
@@ -3007,6 +3053,7 @@ private struct WorkChatComposerDraftInput: View {
             canUploadAttachments: canUploadAttachments,
             sending: sending,
             accessibilityLabelText: "Stage message",
+            hasSendableThreadComments: hasSendableThreadComments,
             action: { performSend(mode: .queue) }
           )
         }
@@ -3020,6 +3067,7 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
+        hasSendableThreadComments: hasSendableThreadComments,
         action: { performSend(mode: .queue) }
       )
     }
@@ -3036,6 +3084,7 @@ private struct WorkChatComposerDraftInput: View {
       sending: sending,
       accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
       systemImageName: activeSendModeIcon(effectiveActiveSendMode),
+      hasSendableThreadComments: hasSendableThreadComments,
       action: { performSend(mode: effectiveActiveSendMode) }
     )
   }
@@ -3512,6 +3561,7 @@ private struct WorkChatComposerSendButton: View {
   var accessibilityLabelText = "Send message"
   var systemImageName = "arrow.up"
   var minimumTapTargetSize: CGFloat = 28
+  var hasSendableThreadComments = false
   /// The send itself lives on the composer, not here: the retry row runs the
   /// exact same action, and two copies of "clear the field, stage, restore on
   /// failure" is how the two drift apart.
@@ -3522,7 +3572,8 @@ private struct WorkChatComposerSendButton: View {
       text: draftState.text,
       attachments: attachments,
       baseEnabled: canSend,
-      canUploadAttachments: canUploadAttachments
+      canUploadAttachments: canUploadAttachments,
+      hasSendableThreadComments: hasSendableThreadComments
     )
   }
 

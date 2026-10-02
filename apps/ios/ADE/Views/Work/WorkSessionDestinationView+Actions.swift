@@ -28,7 +28,13 @@ extension WorkSessionDestinationView {
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty else { return false }
+    // Pending thread comments marked for the next send ride this message. A
+    // manual `/compact` is a command, not a reply, so it never takes them.
+    let includeThreadComments = !workChatIsManualCompactCommand(text)
+      && workThreadCommentsHaveSendable(sendableThreadComments)
+    // With comments to carry, an empty field is a real send: the host builds
+    // the message from the comments alone.
+    guard !text.isEmpty || includeThreadComments else { return false }
     guard canSendChatMessages else { return false }
     if workChatBlocksManualCompactSend(
       text: text,
@@ -65,7 +71,16 @@ extension WorkSessionDestinationView {
       attachments: pendingUploadRefs.isEmpty ? nil : pendingUploadRefs
     )
     let echoId = echo.id
-    localEchoMessages.append(echo)
+    // A comments-only send has no typed text, so its echo would have no dedupe
+    // key and could never be retired by the host's row. Skip it; the host's
+    // own row (with the comment card) arrives instead. A send with typed text
+    // keeps its echo: the dedupe key ignores the leading review block.
+    let showsEcho = !text.isEmpty || !pendingUploadRefs.isEmpty
+    if showsEcho {
+      localEchoMessages.append(echo)
+    }
+    // The staged-steer chip needs some words even when the user typed none.
+    let pendingSteerText = text.isEmpty ? "Your comments" : text
     // Before the first await: the echo rides this turn's overlays, so the
     // bubble is in the frame that follows the tap.
     syncThreadOverlays()
@@ -104,7 +119,8 @@ extension WorkSessionDestinationView {
             sessionId: sessionId,
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            dispatchMode: atomicDispatchMode
+            dispatchMode: atomicDispatchMode,
+            includeThreadComments: includeThreadComments
           )
         } catch where workChatErrorIndicatesUnsupportedDispatchMode(error) {
           // An older host rejects a mode this client offers. On a normal chat,
@@ -118,7 +134,8 @@ extension WorkSessionDestinationView {
               sessionId: sessionId,
               text: text,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-              dispatchMode: nil
+              dispatchMode: nil,
+              includeThreadComments: includeThreadComments
             )
           } else {
             ADEHaptics.error()
@@ -133,7 +150,8 @@ extension WorkSessionDestinationView {
           delivery = try await syncService.sendChatMessage(
             sessionId: sessionId,
             text: text,
-            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            includeThreadComments: includeThreadComments
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {
@@ -153,7 +171,8 @@ extension WorkSessionDestinationView {
             sessionId: sessionId,
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-            dispatchMode: atomicDispatchMode
+            dispatchMode: atomicDispatchMode,
+            includeThreadComments: includeThreadComments
           )
         }
       }
@@ -179,7 +198,7 @@ extension WorkSessionDestinationView {
               updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
               upsertOptimisticPendingSteer(
                 id: steerId,
-                text: text,
+                text: pendingSteerText,
                 timestamp: echo.timestamp,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
               )
@@ -199,7 +218,7 @@ extension WorkSessionDestinationView {
             updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
             upsertOptimisticPendingSteer(
               id: steerId,
-              text: text,
+              text: pendingSteerText,
               timestamp: echo.timestamp,
               attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
             )
@@ -215,7 +234,7 @@ extension WorkSessionDestinationView {
         if let steerId {
           upsertOptimisticPendingSteer(
             id: steerId,
-            text: text,
+            text: pendingSteerText,
             timestamp: echo.timestamp,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
           )

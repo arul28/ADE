@@ -587,6 +587,16 @@ async function getAgentChatImageDataUrl(projectRoot: string, arg: { path?: strin
   return { dataUrl: `data:${mimeType};base64,${data.toString("base64")}` };
 }
 
+/**
+ * A send's text. Required, except on a user send that carries the chat's
+ * pending thread comments: those can go on their own, and the host builds the
+ * message text from them.
+ */
+function readSendText(record: Record<string, unknown>): string {
+  if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
+  return requireNonEmptyString(record.text, "text");
+}
+
 function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const agentChatService = runtime.agentChatService;
   if (!agentChatService) return null;
@@ -770,7 +780,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     sendMessage: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
-      const text = requireNonEmptyString(record.text, "text");
+      const text = readSendText(record);
       await agentChatService.sendMessage({
         ...withoutHostOnlyChatMetadata(record),
         sessionId,
@@ -799,7 +809,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     steer: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.steer");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
-      const text = requireNonEmptyString(record.text, "text");
+      const text = readSendText(record);
       if (typeof agentChatService.steer !== "function") {
         throw new Error("Chat steer is not available in this runtime.");
       }

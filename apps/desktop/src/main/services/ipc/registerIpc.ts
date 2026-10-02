@@ -125,6 +125,13 @@ import {
   deletePromptStash,
   listPromptStashes,
 } from "../chat/promptStashService";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import { isMeaningfulUsageAction, recordUsageInteraction, usageActionFromIpcChannel } from "../usage/usageStatsStore";
 import { createAccountRollupFetcher } from "../usage/accountUsageLiveRefresh";
 import {
@@ -8860,6 +8867,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().delete(arg));
+
+  ipcMain.handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
+    return ensureAgentChatContext().agentChatService.listThreadComments(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsCreate, async (_event, arg: ChatThreadCommentCreateArgs): Promise<ChatThreadComment> => {
+    return ensureAgentChatContext().agentChatService.createThreadComment(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsUpdate, async (_event, arg: ChatThreadCommentUpdateArgs): Promise<ChatThreadComment> => {
+    return ensureAgentChatContext().agentChatService.updateThreadComment(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatThreadCommentsDelete, async (_event, arg: ChatThreadCommentDeleteArgs): Promise<{ deleted: boolean }> => {
+    return ensureAgentChatContext().agentChatService.deleteThreadComment(arg);
+  });
 
   ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();

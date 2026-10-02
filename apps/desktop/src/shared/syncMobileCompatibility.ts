@@ -121,6 +121,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.listPromptStashes",
   "chat.createPromptStash",
   "chat.deletePromptStash",
+  // Thread comments. An older brain omits them, and the phone hides the chip.
+  "chat.listThreadComments",
+  "chat.createThreadComment",
+  "chat.updateThreadComment",
+  "chat.deleteThreadComment",
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",

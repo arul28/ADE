@@ -153,6 +153,13 @@ import type {
   ProviderInstanceSettings,
 } from "../shared/types";
 import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../shared/threadComments";
+import type {
   HarnessRouteCatalog,
   HarnessRouteSource,
   HarnessRouteTestResult,
@@ -1896,6 +1903,12 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "listPromptStashes",
   "createPromptStash",
   "deletePromptStash",
+  // Thread comments live on the chat's host; a write that fell through to this
+  // window's process during a project switch would land on the wrong machine.
+  "listThreadComments",
+  "createThreadComment",
+  "updateThreadComment",
+  "deleteThreadComment",
 ]);
 
 // Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
@@ -8031,6 +8044,36 @@ const adeBridge = {
           "deletePromptStash",
           { args },
           () => ipcRenderer.invoke(IPC.agentChatPromptStashesDelete, args),
+        ),
+    },
+    threadComments: {
+      list: async (
+        args: ChatThreadCommentListArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ChatThreadComment[]> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "listThreadComments", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatThreadCommentsList, args),
+        ),
+      create: async (
+        args: ChatThreadCommentCreateArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ChatThreadComment> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "createThreadComment", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatThreadCommentsCreate, args),
+        ),
+      update: async (
+        args: ChatThreadCommentUpdateArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<ChatThreadComment> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "updateThreadComment", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatThreadCommentsUpdate, args),
+        ),
+      delete: async (
+        args: ChatThreadCommentDeleteArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<{ deleted: boolean }> =>
+        callPinnedOrBoundRuntimeActionOr(pin, "chat", "deleteThreadComment", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatThreadCommentsDelete, args),
         ),
     },
     getTurnFileDiff: async (

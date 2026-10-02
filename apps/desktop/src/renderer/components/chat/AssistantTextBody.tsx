@@ -25,6 +25,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
   mosaicScopeKey,
   sceneScopeKey,
   sceneLive,
+  commentKey,
 }: {
   text: string;
   paced: boolean;
@@ -39,6 +40,12 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
    * in the transcript would freeze before it had painted.
    */
   sceneLive?: boolean;
+  /**
+   * The row's stable identity, set only once the reply is finished. Thread
+   * comments hang off this element; a streaming reply has none, so the
+   * selection toolbar offers no comment on text that is still changing.
+   */
+  commentKey?: string;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const revealedLength = useRevealedLength(text, paced, hostRef);
@@ -62,6 +69,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
       ref={hostRef}
       className="min-w-0"
       data-assistant-output="true"
+      data-thread-comment-key={commentKey}
       data-stream-text-len={isPerfActive() ? revealedLength : undefined}
     >
       <MarkdownBlock

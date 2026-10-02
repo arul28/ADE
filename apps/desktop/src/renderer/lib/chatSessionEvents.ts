@@ -92,9 +92,12 @@ export function getChatSessionLocalTouchTimestampForEvent(
   envelope: AgentChatEventEnvelope,
 ): string | null {
   switch (envelope.event.type) {
+    case "session_meta_updated":
+      // A comment edit is not chat activity: it must not move the chat up
+      // the list or refetch it.
+      return isThreadCommentsOnlyMetaEvent(envelope.event) ? null : envelope.timestamp;
     case "approval_request":
     case "pending_input_resolved":
-    case "session_meta_updated":
     case "done":
     case "error":
     case "user_message":
@@ -116,4 +119,9 @@ export function getChatSessionLocalTouchTimestampForEvent(
 
 export function shouldRefreshSessionListForChatEvent(envelope: AgentChatEventEnvelope): boolean {
   return getChatSessionLocalTouchTimestampForEvent(envelope) != null;
+}
+
+function isThreadCommentsOnlyMetaEvent(event: AgentChatEventEnvelope["event"]): boolean {
+  if (event.type !== "session_meta_updated" || event.threadComments === undefined) return false;
+  return Object.keys(event).every((key) => key === "type" || key === "threadComments" || key === "turnId");
 }

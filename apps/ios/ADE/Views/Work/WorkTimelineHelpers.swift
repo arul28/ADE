@@ -3393,7 +3393,9 @@ private func workActivityCardSummary(_ card: WorkEventCardModel) -> String {
 }
 
 func normalizedWorkLocalEchoText(_ text: String) -> String {
-  text
+  // The host puts a sent review block ahead of the typed words; the echo only
+  // ever holds the typed words, so the key compares those.
+  workTextWithoutLeadingThreadReview(text)
     .trimmingCharacters(in: .whitespacesAndNewlines)
     .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 }

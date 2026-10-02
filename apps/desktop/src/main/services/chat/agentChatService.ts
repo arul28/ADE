@@ -234,6 +234,15 @@ import {
   normalizeSessionContextHealth,
 } from "./sessionTurnHealth";
 import type { Logger } from "../logging/logger";
+import { createThreadCommentService, type ThreadCommentService } from "./threadCommentService";
+import {
+  prependThreadReview,
+  type ChatThreadComment,
+  type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentDeleteArgs,
+  type ChatThreadCommentListArgs,
+  type ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
 import {
   localBrowserActorCapabilityIssuer,
@@ -19283,6 +19292,36 @@ export function createAgentChatService(args: {
       }
     }
   };
+
+  const threadComments = createThreadCommentService({
+    chatSessionsDir,
+    logger,
+    onChanged: (sessionId, comments) => {
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", threadComments: comments });
+    },
+  });
+
+  const assertThreadCommentSession = (sessionId: unknown): string => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    const wellFormed = /^[A-Za-z0-9_.:-]{1,200}$/.test(id) && !id.includes("..");
+    const existing = wellFormed ? sessionService.get(id) : null;
+    if (!existing || !isChatToolType(existing.toolType)) {
+      throw new Error("That chat does not exist on this machine.");
+    }
+    return id;
+  };
+
+  const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
+    threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const createThreadComment = (args: ChatThreadCommentCreateArgs): ChatThreadComment =>
+    threadComments.create({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const updateThreadComment = (args: ChatThreadCommentUpdateArgs): ChatThreadComment =>
+    threadComments.update({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
+
+  const deleteThreadComment = (args: ChatThreadCommentDeleteArgs): { deleted: boolean } =>
+    threadComments.delete({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
 
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     managed.lastActivityTimestamp = Date.now();
@@ -49738,6 +49777,50 @@ export function createAgentChatService(args: {
     return runtime.busy;
   };
 
+  type SendMessageOptions = {
+    awaitDispatch?: boolean;
+    awaitBackendDispatch?: boolean;
+    onBackendDispatched?: () => void;
+    preparedMessage?: PreparedSendMessage;
+    automaticRecovery?: boolean;
+    routeActiveToSteer?: boolean;
+    rerunToken?: symbol;
+  };
+
+  /**
+   * Adds the chat's pending thread comments to a user send, as one review
+   * block ahead of what the user typed, and takes them off the pending list.
+   * `displayText` keeps what the user typed, so the transcript and the phone
+   * show their words; the renderer reads the block from `text` for its card.
+   * The flag is cleared on the result, so a send that reroutes into a steer
+   * cannot take the comments twice.
+   */
+  const takeThreadReviewForSend = <T extends { sessionId: string; text: string; displayText?: string; includeThreadComments?: boolean }>(
+    args: T,
+  ): { args: T; restore: () => void } => {
+    if (!args.includeThreadComments) return { args, restore: () => {} };
+    const { includeThreadComments: _flag, ...rest } = args;
+    let taken: ReturnType<ThreadCommentService["takeForSend"]>;
+    try {
+      taken = threadComments.takeForSend(args.sessionId);
+    } catch (error) {
+      logger.warn("agent_chat.thread_comments_take_failed", {
+        sessionId: args.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { args: rest as T, restore: () => {} };
+    }
+    if (!taken.block) return { args: rest as T, restore: () => {} };
+    return {
+      args: {
+        ...rest,
+        text: prependThreadReview(args.text, taken.block),
+        displayText: args.displayText ?? args.text,
+      } as T,
+      restore: taken.restore,
+    };
+  };
+
   async function sendMessage(
     args: AgentChatSendArgs,
     options: {
@@ -49764,6 +49847,47 @@ export function createAgentChatService(args: {
     },
   ): Promise<void>;
   async function sendMessage(
+    args: AgentChatSendArgs,
+    options?: SendMessageOptions,
+  ): Promise<void | AgentChatSteerResult> {
+    const reviewed = takeThreadReviewForSend(args);
+    try {
+      return await (sendMessageWithoutReview as (
+        args: AgentChatSendArgs,
+        options?: SendMessageOptions,
+      ) => Promise<void | AgentChatSteerResult>)(reviewed.args, options);
+    } catch (error) {
+      reviewed.restore();
+      throw error;
+    }
+  }
+
+  async function sendMessageWithoutReview(
+    args: AgentChatSendArgs,
+    options: {
+      awaitDispatch?: boolean;
+      awaitBackendDispatch?: boolean;
+      onBackendDispatched?: () => void;
+      preparedMessage?: PreparedSendMessage;
+      automaticRecovery?: boolean;
+      routeActiveToSteer: true;
+      rerunToken?: symbol;
+    },
+  ): Promise<void | AgentChatSteerResult>;
+  async function sendMessageWithoutReview(
+    args: AgentChatSendArgs,
+    options?: {
+      awaitDispatch?: boolean;
+      awaitBackendDispatch?: boolean;
+      onBackendDispatched?: () => void;
+      preparedMessage?: PreparedSendMessage;
+      automaticRecovery?: boolean;
+      routeActiveToSteer?: false;
+      /** `rerunLastTurn`'s token: lets its own resend past its lock. */
+      rerunToken?: symbol;
+    },
+  ): Promise<void>;
+  async function sendMessageWithoutReview(
     rawArgs: AgentChatSendArgs,
     options?: {
       awaitDispatch?: boolean;
@@ -50021,6 +50145,25 @@ export function createAgentChatService(args: {
   };
 
   const steerWithOptions = async (
+    steerArgs: AgentChatSteerArgs,
+    options?: {
+      allowPendingInput?: boolean;
+      onAcceptedDispatch?: () => void;
+    },
+  ): Promise<AgentChatSteerResult> => {
+    const reviewed = takeThreadReviewForSend(steerArgs);
+    try {
+      const result = await steerWithOptionsWithoutReview(reviewed.args, options);
+      // A refused or dropped steer delivered nothing; the comments go back.
+      if (!result.queued && result.reason === "queue_full") reviewed.restore();
+      return result;
+    } catch (error) {
+      reviewed.restore();
+      throw error;
+    }
+  };
+
+  const steerWithOptionsWithoutReview = async (
     steerArgs: AgentChatSteerArgs,
     options?: {
       allowPendingInput?: boolean;
@@ -50802,7 +50945,8 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(args.sessionId);
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
-      || (args.contextAttachments?.length ?? 0) > 0;
+      || (args.contextAttachments?.length ?? 0) > 0
+      || args.includeThreadComments === true;
     const waitsForProviderDispatch =
       (
         managed.session.provider === "opencode"
@@ -56793,6 +56937,8 @@ export function createAgentChatService(args: {
       });
     }
 
+    threadComments.forgetSession(trimmedSessionId);
+
     await scheduledWorkReady;
     if (scheduledWorkScheduler) {
       const providerSchedules = scheduledWorkScheduler.list(trimmedSessionId).filter((schedule) =>
@@ -60993,6 +61139,10 @@ export function createAgentChatService(args: {
     markCrossMachineHandoff,
     emitAdeCard,
     sendMessage,
+    listThreadComments,
+    createThreadComment,
+    updateThreadComment,
+    deleteThreadComment,
     listMentionSuggestions,
     messageSession,
     createScheduledWork,

@@ -158,6 +158,9 @@ import {
 } from "../../../shared/smartLinks";
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
+import type { ChatThreadComment } from "../../../shared/threadComments";
+import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
+import { countCommentsForNextSend } from "./threadCommentsStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type { ZLayer } from "../ui/zLayers";
@@ -209,6 +212,8 @@ export type ComposerDraftEditIntent = {
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
+
+const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -1793,6 +1798,11 @@ export function AgentChatComposer({
   composerMaxHeightPx = null,
   isActive = false,
   shouldAutofocus = isActive,
+  caretToEndRequest = 0,
+  threadComments = EMPTY_THREAD_COMMENTS,
+  threadCommentsSessionId = null,
+  threadCommentsPin = null,
+  onJumpToThreadComment,
   sdkSlashCommands = [],
   modelId,
   activeHarnessPresetId = null,
@@ -1949,6 +1959,17 @@ export function AgentChatComposer({
   composerMaxHeightPx?: number | null;
   isActive?: boolean;
   shouldAutofocus?: boolean;
+  /**
+   * Bumped when something outside the composer adds to the draft for the user
+   * to keep typing after (an "Add to chat" quote). Each new value focuses the
+   * editor with the caret at the very end, after the added chip.
+   */
+  caretToEndRequest?: number;
+  /** The chat's pending thread comments; the ones marked for send go with the next message. */
+  threadComments?: readonly ChatThreadComment[];
+  threadCommentsSessionId?: string | null;
+  threadCommentsPin?: OpenProjectBinding | null;
+  onJumpToThreadComment?: (comment: ChatThreadComment) => void;
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   /**
@@ -3387,6 +3408,41 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
+  // Applied on the first commit where the editor that will hold the text
+  // exists: a quote promotes the plain textarea to the rich editor one render
+  // later, and focusing the textarea in between would put the caret in an
+  // element that is about to unmount.
+  const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
+  useEffect(() => {
+    if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
+    if (hasChatOutputContext(draft) && !useRichComposer) return;
+    appliedCaretToEndRequestRef.current = caretToEndRequest;
+    if (useRichComposer) {
+      const editor = richEditorRef.current;
+      if (!editor) return;
+      let tail = editor.lastChild;
+      if (!(tail instanceof Text) || !/[ \u00a0]$/.test(tail.textContent ?? "")) {
+        tail = document.createTextNode(" ");
+        editor.appendChild(tail);
+        // Keep the draft equal to the editor, or the next render would
+        // treat the space as an outside edit and reset the editor.
+        syncRichDraft();
+      }
+      const range = document.createRange();
+      range.setStart(tail, (tail.textContent ?? "").length);
+      range.collapse(true);
+      editor.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
   const getRichCursorTextOffset = useCallback((): number => {
     const editor = richEditorRef.current;
     const selection = window.getSelection();
@@ -5601,8 +5657,23 @@ export function AgentChatComposer({
    * File attachments stay separate because local file-only sends are opt-in and
    * Cursor Cloud validates its own file-delivery path.
    */
+  const threadCommentSendCount = threadCommentsSessionId ? countCommentsForNextSend(threadComments) : 0;
+  /** Send, merged with the pending-comments pill when the chat has comments. */
+  const withThreadComments = (sendControl: React.ReactNode) => (
+    parallelChatMode ? sendControl : (
+      <ComposerThreadCommentsButton
+        sessionId={threadCommentsSessionId}
+        pin={threadCommentsPin}
+        comments={threadComments}
+        onJumpToComment={onJumpToThreadComment}
+      >
+        {sendControl}
+      </ComposerThreadCommentsButton>
+    )
+  );
   const hasComposerContextContent =
     draft.trim().length > 0
+    || threadCommentSendCount > 0
     || hasIosElementContext
     || hasAppControlContext
     || hasBuiltInBrowserContext
@@ -6899,7 +6970,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {!composerInputLocked ? (
+                {!composerInputLocked ? withThreadComments(
                   activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
@@ -6932,7 +7003,7 @@ export function AgentChatComposer({
                         <ArrowUp size={14} weight="bold" />
                       </button>
                     </SmartTooltip>
-                  )
+                  ),
                 ) : null}
                 <ActiveTurnStopButton
                   mode={activeTurnStopMode}
@@ -6967,7 +7038,7 @@ export function AgentChatComposer({
 
                 // Without a background option this is a plain circular Send.
                 if (!backgroundAvailable) {
-                  return (
+                  return withThreadComments(
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
                         type="button"
@@ -6983,11 +7054,11 @@ export function AgentChatComposer({
                       >
                         {sendIcon}
                       </button>
-                    </SmartTooltip>
+                    </SmartTooltip>,
                   );
                 }
 
-                return (
+                return withThreadComments(
                   <ComposerIdleSendButton
                     label={label}
                     description={description}
@@ -6999,7 +7070,7 @@ export function AgentChatComposer({
                     backgroundBusy={backgroundLaunchBusy}
                     onSend={submitComposerDraft}
                     onSendInBackground={onSubmitInBackground!}
-                  />
+                  />,
                 );
               })()
             )}

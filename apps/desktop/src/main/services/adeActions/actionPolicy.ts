@@ -175,6 +175,13 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
+      // Thread comments are the user's unsent review of an agent's reply. An
+      // agent that could write or delete them could edit what the user is
+      // about to tell it.
+      "listThreadComments",
+      "createThreadComment",
+      "updateThreadComment",
+      "deleteThreadComment",
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -671,6 +678,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listPromptStashes",
     "createPromptStash",
     "deletePromptStash",
+    "listThreadComments",
+    "createThreadComment",
+    "updateThreadComment",
+    "deleteThreadComment",
     "messageSession",
     "modelCatalog",
     "approveToolUse",

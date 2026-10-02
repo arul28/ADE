@@ -28,6 +28,13 @@ import type {
   PromptStashEntry,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
+import type {
+  ChatThreadComment,
+  ChatThreadCommentCreateArgs,
+  ChatThreadCommentDeleteArgs,
+  ChatThreadCommentListArgs,
+  ChatThreadCommentUpdateArgs,
+} from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
@@ -249,6 +256,25 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       delete: async (args: PromptStashDeleteArgs, pin?: RuntimePinArg) => {
         guardPin("promptStashes.delete", pin);
         return await callRequiredMutation<boolean>("chat.deletePromptStash", args);
+      },
+    },
+    threadComments: {
+      list: async (args: ChatThreadCommentListArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.list", pin);
+        const result = await call<unknown>("chat.listThreadComments", args, []);
+        return Array.isArray(result) ? result as ChatThreadComment[] : [];
+      },
+      create: async (args: ChatThreadCommentCreateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.create", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.createThreadComment", args);
+      },
+      update: async (args: ChatThreadCommentUpdateArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.update", pin);
+        return await callRequiredMutation<ChatThreadComment>("chat.updateThreadComment", args);
+      },
+      delete: async (args: ChatThreadCommentDeleteArgs, pin?: RuntimePinArg) => {
+        guardPin("threadComments.delete", pin);
+        return await callRequiredMutation<{ deleted: boolean }>("chat.deleteThreadComment", args);
       },
     },
     handoff: async (args, pin) => {
