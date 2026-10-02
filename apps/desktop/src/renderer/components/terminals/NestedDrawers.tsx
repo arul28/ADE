@@ -1,5 +1,5 @@
 import React from "react";
-import { CaretDown, Circle, CircleNotch, Terminal, UsersThree, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Circle, CircleNotch, Terminal, UsersThree, X } from "@phosphor-icons/react";
 import {
   NESTED_DRAWER_STATUS_PRESENTATION,
   attachedShellSectionId,
@@ -18,9 +18,9 @@ import { QUIET_LABEL_CLASS } from "./sessionListStyles";
  *
  * They default to COLLAPSED: a busy agent can hang a dozen App Control shells
  * and subagents off one chat, and listing every one pushed the other chats off
- * the screen. Collapsed drawers share one thin line of marks under the card —
- * kind icon, count, and the one state worth seeing (`nestedDrawerStatus`).
- * An opened drawer lists its rows below that line.
+ * the screen. A collapsed drawer keeps the full header strip — kind icon, kind
+ * label and count, and the one state worth seeing (`nestedDrawerStatus`) — and
+ * simply hides its rows. An opened drawer lists its rows below that same strip.
  */
 
 export type NestedDrawerKind = "shells" | "subagents";
@@ -88,62 +88,49 @@ export function NestedDrawers({
       const sectionId = nestedDrawerSectionId(parentId, kind);
       return { kind, children, sectionId, collapsed: isCollapsed(sectionId) };
     });
-  const collapsed = drawers.filter((drawer) => drawer.collapsed);
-  const open = drawers.filter((drawer) => !drawer.collapsed);
   return (
     <>
-      {collapsed.length > 0 ? (
-        <div className="ml-3 mt-0.5 flex items-center gap-1 pl-1.5" data-testid="nested-drawer-marks">
-          {collapsed.map(({ kind, children, sectionId }) => {
-            const label = kindLabel(kind, children.length);
-            return (
-              <button
-                key={kind}
-                type="button"
-                onClick={() => onToggle(nestedDrawerOpenMarker(sectionId))}
-                className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-fg/60 transition-colors hover:bg-white/[0.04] hover:text-muted-fg/85"
-                aria-expanded={false}
-                aria-label={`Show ${label}`}
-                title={`Show ${label}`}
-                data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
-              >
-                <KindIcon kind={kind} />
-                <span>{children.length}</span>
-                <StatusMark status={nestedDrawerStatus(children, nowMs)} />
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {open.map(({ kind, children, sectionId }) => (
-        // `data-indented` for the card's bleed rule, same as a lane group body:
-        // these rows hang off their own rail, so a left bleed would cross it.
-        <div
-          key={kind}
-          className="ml-3 mt-1 border-l border-white/[0.06] pl-1.5"
-          data-indented="true"
-          data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
-        >
-          <button
-            type="button"
-            onClick={() => onToggle(nestedDrawerOpenMarker(sectionId))}
-            className={cn(
-              "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
-              QUIET_LABEL_CLASS,
-            )}
-            aria-expanded
+      {drawers.map(({ kind, children, sectionId, collapsed }) => {
+        const label = kindLabel(kind, children.length);
+        return (
+          // `data-indented` for the card's bleed rule, same as a lane group body:
+          // these rows hang off their own rail, so a left bleed would cross it.
+          <div
+            key={kind}
+            className={cn("ml-3 border-l border-white/[0.06] pl-1.5", collapsed ? "mt-0.5" : "mt-1")}
+            data-indented="true"
+            data-testid={kind === "subagents" ? "nested-subagent-section" : "nested-shell-section"}
           >
-            <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
-            <KindIcon kind={kind} />
-            <span className="truncate">{kindLabel(kind, children.length)}</span>
-          </button>
-          <div className="mt-1 flex flex-col gap-1">
-            {children.map((child) => (
-              <div key={child.id}>{renderChild(child, kind)}</div>
-            ))}
+            <button
+              type="button"
+              onClick={() => onToggle(nestedDrawerOpenMarker(sectionId))}
+              className={cn(
+                "flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70",
+                QUIET_LABEL_CLASS,
+              )}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? `Show ${label}` : `Hide ${label}`}
+              title={collapsed ? `Show ${label}` : `Hide ${label}`}
+            >
+              {collapsed ? (
+                <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+              ) : (
+                <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+              )}
+              <KindIcon kind={kind} />
+              <span className="truncate">{label}</span>
+              <StatusMark status={nestedDrawerStatus(children, nowMs)} />
+            </button>
+            {collapsed ? null : (
+              <div className="mt-1 flex flex-col gap-1">
+                {children.map((child) => (
+                  <div key={child.id}>{renderChild(child, kind)}</div>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 }
