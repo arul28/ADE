@@ -131,6 +131,12 @@ type CommitHistoryViewProps = {
   lanes: LaneSummary[];
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary, ownerLaneId: string | null) => void;
+  /**
+   * The lane whose work the selected commit is (null: base history), once the
+   * loaded rows contain it — however it was selected (a deep link, a parent
+   * link, a remount, a kept selection across a scope switch).
+   */
+  onSelectionOwner: (sha: string, ownerLaneId: string | null) => void;
   onOpenCommit: (commit: GitCommitSummary) => void;
   onFocusLane: (laneId: string) => void;
   /** Lanes, on this lane's machine. */
@@ -148,6 +154,7 @@ export function CommitHistoryView({
   lanes,
   selectedSha,
   onSelectCommit,
+  onSelectionOwner,
   onOpenCommit,
   onFocusLane,
   onOpenLane,
@@ -594,6 +601,13 @@ export function CommitHistoryView({
     return owner === baseLinePrimaryId && owner !== laneId ? null : owner;
   }, [baseLinePrimaryId, laneColor, laneId, owners]);
 
+  // The selected commit's owner, from the rows that hold it.
+  const loadedShas = useMemo(() => new Set(commits.map((c) => c.sha)), [commits]);
+  useEffect(() => {
+    if (!selectedSha || !viewKey || rowsViewRef.current !== viewKey || !loadedShas.has(selectedSha)) return;
+    onSelectionOwner(selectedSha, laneOwnerOf(selectedSha));
+  }, [laneOwnerOf, loadedShas, onSelectionOwner, selectedSha, viewKey]);
+
   const selectIndex = useCallback((index: number) => {
     const row = graphRowsRef.current[index];
     if (row) onSelectCommit(row.commit, laneOwnerOf(row.commit.sha));
@@ -692,6 +706,21 @@ export function CommitHistoryView({
   const colorOfLane = useCallback((id: string) => laneColor.get(id) ?? null, [laneColor]);
   const ownerOfLane = useCallback((id: string) => (laneColor.has(id) ? id : null), [laneColor]);
 
+  // A row's git actions act on the lane whose work it is; base rows and
+  // branches no lane owns act on the focused lane.
+  const laneTipShas = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lane of liveLanes) {
+      const sha = lane.id === laneId ? headSha : branchTip(normalizeBranchName(lane.branchRef));
+      if (sha) map.set(lane.id, sha);
+    }
+    return map;
+  }, [branchTip, headSha, laneId, liveLanes]);
+  const laneHasOwnWorktree = useCallback(
+    (id: string) => !pin && Boolean(liveLanes.find((lane) => lane.id === id)?.worktreePath?.trim()),
+    [liveLanes, pin],
+  );
+
   const worktreeMissing = error != null && /worktree is missing/i.test(error);
   const commitGitActionsEnabled = Boolean(laneId) && laneHasWorktree && !worktreeMissing;
   const onRowNotice = useCallback((message: string) => {
@@ -700,13 +729,11 @@ export function CommitHistoryView({
   }, [notify, reload]);
   const onRowError = useCallback((message: string) => notify(message, true), [notify]);
   const rowMenu: RowMenuContext = useMemo(() => ({
-    laneId: laneId ?? "",
-    hasWorktree: commitGitActionsEnabled,
     remoteMachineName,
     onNotice: onRowNotice,
     onError: onRowError,
     navigate: (path: string) => navigate(path),
-  }), [commitGitActionsEnabled, laneId, navigate, onRowError, onRowNotice, remoteMachineName]);
+  }), [navigate, onRowError, onRowNotice, remoteMachineName]);
 
   /* ── Render ── */
 
@@ -845,8 +872,10 @@ export function CommitHistoryView({
               // "This lane" only ever walks HEAD, so every row is on it. In
               // "All lanes", a row is on the focused lane only when it is the
               // lane's own commit or base history — never another lane's.
+              const rowLaneId = laneOwnerOf(commit.sha);
+              const actionLaneId = rowLaneId ?? laneId;
               const commitOnLaneHistory = scope === "lane"
-                || owner === laneId
+                || rowLaneId != null
                 || (baseOwnerKey != null && owner === baseOwnerKey)
                 || (trunkOwnerKey != null && owner === trunkOwnerKey);
               // The first row under the divider starts a new run of authors.
@@ -863,6 +892,9 @@ export function CommitHistoryView({
                     muted={ownLaneId != null && owners.get(commit.sha) !== ownLaneId}
                     author={singleAuthor ? "hidden" : !prevCommit || authorKey(prevCommit) !== authorKey(commit) ? "shown" : "blank"}
                     isHead={commit.sha === headSha}
+                    actionLaneId={actionLaneId}
+                    actionIsHead={commit.sha === (rowLaneId ? laneTipShas.get(rowLaneId) : headSha)}
+                    actionHasWorktree={rowLaneId && rowLaneId !== laneId ? laneHasOwnWorktree(rowLaneId) && commitGitActionsEnabled : commitGitActionsEnabled}
                     commitOnLaneHistory={commitOnLaneHistory}
                     badges={badgesBySha.get(commit.sha)}
                     columns={columns}

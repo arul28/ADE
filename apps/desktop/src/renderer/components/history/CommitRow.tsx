@@ -69,8 +69,6 @@ function ShaCell({ commit }: { commit: GitCommitSummary }) {
 }
 
 export type RowMenuContext = {
-  laneId: string;
-  hasWorktree: boolean;
   remoteMachineName: string | null;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
@@ -89,7 +87,12 @@ export type RowProps = {
   /** "hidden": no author column; "blank": same author as the row above. */
   author: "shown" | "blank" | "hidden";
   isHead: boolean;
-  /** False when this row belongs to another lane in the All-lanes graph. */
+  /** The lane the row's git actions act on: the lane whose work it is, else the focused lane. */
+  actionLaneId: string;
+  /** The row is that lane's HEAD. */
+  actionIsHead: boolean;
+  actionHasWorktree: boolean;
+  /** False when the row is on no lane's history the actions could reach. */
   commitOnLaneHistory: boolean;
   badges: CommitRefBadge[] | undefined;
   columns: CommitColumns;
@@ -116,6 +119,9 @@ export const CommitRow = React.memo(function CommitRow({
   muted,
   author,
   isHead,
+  actionLaneId,
+  actionIsHead,
+  actionHasWorktree,
   commitOnLaneHistory,
   badges,
   columns,
@@ -135,10 +141,10 @@ export const CommitRow = React.memo(function CommitRow({
   const { text, pr } = splitPrSuffix(commit.subject);
   return (
     <HistoryGitContextMenu
-      laneId={menu.laneId}
+      laneId={actionLaneId}
       commit={commit}
-      isHead={isHead}
-      hasWorktree={menu.hasWorktree}
+      isHead={actionIsHead}
+      hasWorktree={actionHasWorktree}
       commitOnLaneHistory={commitOnLaneHistory}
       remoteMachineName={menu.remoteMachineName}
       onNotice={menu.onNotice}

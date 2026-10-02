@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -36,7 +36,7 @@ vi.mock("./useTimelineStore", async (importOriginal) => {
 import { HistoryPage } from "./HistoryPage";
 import { useCommitViewPrefs } from "./commitViewPrefs";
 import { useAppStore } from "../../state/appStore";
-import type { GitCommitListScope, GitCommitSummary, LaneStatus, LaneSummary } from "../../../shared/types";
+import type { GitBranchSummary, GitCommitListScope, GitCommitSummary, LaneStatus, LaneSummary } from "../../../shared/types";
 
 const status: LaneStatus = {
   dirty: false,
@@ -197,5 +197,35 @@ describe("HistoryPage lane/URL sync", () => {
     });
 
     await waitFor(() => expect(captured.store?.getState().selectedCommitSha).toBe(expected));
+  });
+
+  it.each([
+    { name: "another lane's commit names that lane", sha: "b2", lane: "Lane B" },
+    { name: "a base commit names no lane", sha: "m1", lane: null },
+  ])("All lanes, deep link: $name", async ({ sha, lane }) => {
+    useCommitViewPrefs.setState({ scope: "lanes" });
+    const rows = [commit("b2", ["b1"]), commit("b1", ["m1"]), commit("a1", ["m1"]), commit("m1")];
+    const branch = (name: string, tip: string, isCurrent = false): GitBranchSummary => ({
+      name, isCurrent, isRemote: false, upstream: null, lastCommitSha: tip,
+    });
+    (window as any).ade.git.listRecentCommits = vi.fn(async (args: { skip?: number }) => ((args.skip ?? 0) > 0 ? [] : rows));
+    (window as any).ade.git.listBranches = vi.fn(async () => [
+      branch("ade/lane-a", "a1", true),
+      branch("ade/lane-b", "b2"),
+      branch("main", "m1"),
+    ]);
+    render(
+      <MemoryRouter initialEntries={[`/history?surface=commits&laneId=lane-a&commitSha=${sha}`]}>
+        <HistoryPage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByTestId("commit-detail");
+    await waitFor(() => expect((window as any).ade.git.listBranches).toHaveBeenCalled());
+    await waitFor(() => {
+      const detail = within(screen.getByTestId("commit-detail"));
+      const named = ["Lane A", "Lane B"].filter((name) => detail.queryAllByText(name).length > 0);
+      expect(named).toEqual(lane ? [lane] : []);
+    });
   });
 });
