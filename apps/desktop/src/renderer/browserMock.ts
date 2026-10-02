@@ -1567,19 +1567,16 @@ const MOCK_COMMIT_TRAILERS = [
 ];
 const MOCK_COMMIT_MESSAGES = new Map<string, string>();
 
-function mockLaneRecentCommits(args: any = {}): any[] | null {
-  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
-  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
-  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
-  const ahead = lane.laneType === "primary" ? limit : Math.max(0, lane.status?.ahead ?? 0);
-  const count = Math.min(limit, ahead + 5);
+function mockCommitsForLane(lane: any, count: number): any[] {
+  const ahead = lane.laneType === "primary" ? count : Math.max(0, lane.status?.ahead ?? 0);
+  const total = Math.min(count, ahead + 5);
   let seed = 0;
   for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
   const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
-  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, count)));
+  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, total)));
   const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
-  return Array.from({ length: count }, (_, index) => {
+  return Array.from({ length: total }, (_, index) => {
     const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];
     const sourceSha = String(source.sha);
     const sha = `${sourceSha.slice(0, 7)}${index.toString(16).padStart(4, "0")}${lanePrefix}${sourceSha.slice(19)}`;
@@ -1596,6 +1593,21 @@ function mockLaneRecentCommits(args: any = {}): any[] | null {
       pushed: index > 0,
     };
   });
+}
+
+function mockLaneRecentCommits(args: any = {}): any[] | null {
+  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
+  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
+  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
+  const skip = Number.isFinite(args?.skip) ? Math.max(0, Math.floor(args.skip)) : 0;
+  // "All lanes" unions every lane; both scopes page by `skip` so the preview's
+  // "Load older" advances instead of re-reading page one.
+  const lanes = args?.scope === "lanes"
+    ? [lane, ...MOCK_LANES.filter((row) => row.id !== lane.id)]
+    : [lane];
+  const rows = lanes.flatMap((row) => mockCommitsForLane(row, limit + skip));
+  rows.sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
+  return rows.slice(skip, skip + limit);
 }
 
 const ADE_DB_OPERATIONS: any[] =

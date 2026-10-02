@@ -487,6 +487,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const handleSelectCommit = useCallback(
     (commit: GitCommitSummary, ownerLaneId?: string | null) => {
       setCommitOwnerLaneId(ownerLaneId);
+      // Settle the destructive-action gate from the row's owner immediately.
+      // Without this, selecting another lane's commit in All lanes leaves the
+      // previous lane's "on history" verdict in place. A null owner means base
+      // history, which is on the focused lane; the reachability effect below
+      // still refines this for a deep link.
+      setSelectedCommitLaneId(ownerLaneId ?? null);
+      setCommitOnLaneHistory(ownerLaneId == null || ownerLaneId === focusLaneId);
       setSelectedCommit(commit);
       setSelectedEventId(null);
       setSearchParams((prev) => {

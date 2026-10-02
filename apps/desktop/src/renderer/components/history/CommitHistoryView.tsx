@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowClockwise, CircleNotch, GitPullRequest, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CircleNotch, Warning } from "@phosphor-icons/react";
 import type {
   GitBranchSummary,
   GitCommitSummary,
@@ -9,13 +9,10 @@ import type {
   OpenProjectBinding,
   PrSummary,
 } from "../../../shared/types";
-import { cn } from "../ui/cn";
-import { ProviderLogo } from "../shared/ProviderLogos";
 import { BranchIcon } from "../ui/vcsIcons";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { lanePrTagRoutePath } from "../lanes/lanePageModel";
 import { boundMachineLanePrs, useLanePrsByLaneId } from "../terminals/useLanePrs";
-import { HistoryGitContextMenu } from "./HistoryGitContextMenu";
 import { filterCommitsForSearch } from "./historySearch";
 import {
   assignCommitOwners,
@@ -31,18 +28,16 @@ import {
   type LaneTip,
 } from "./commitGraphLayout";
 import { CommitGraphLayer, applyGraphFocus, type GraphPaint } from "./CommitGraphLayer";
-import { CommitRefBadges, type RefBadgeActions } from "./CommitRefBadges";
+import type { RefBadgeActions } from "./CommitRefBadges";
+import { CommitRow, type RowMenuContext } from "./CommitRow";
 import {
   buildRefBadges,
-  commitAgentProvider,
-  githubAvatarForEmail,
   githubRepoFromRemote,
   normalizeBranchName,
-  shortWhen,
-  splitPrSuffix,
-  type CommitRefBadge,
 } from "./commitRowModel";
-import { useCommitViewPrefs, type CommitColumns } from "./commitViewPrefs";
+import { useCommitViewPrefs } from "./commitViewPrefs";
+import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
+import { showToast } from "../app/toast/toastStore";
 
 const PAGE_SIZE = 100;
 /** Search keeps reading older pages until it has this many matches… */
@@ -69,8 +64,7 @@ const WIDE_ENTER_PX = 980;
 const WIDE_EXIT_PX = 920;
 
 function formatTimelineError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const message = raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
+  const message = stripIpcErrorPrefix(err);
   if (/^Lane worktree is missing\./i.test(message)) return message;
   if (/git working directory not found:/i.test(message)) {
     return "Lane worktree is missing. Restore or recreate the lane worktree before viewing commits.";
@@ -81,12 +75,6 @@ function formatTimelineError(err: unknown): string {
 /** Same person across rows, by email when git has one. */
 function authorKey(commit: GitCommitSummary): string {
   return (commit.authorEmail || commit.authorName).toLowerCase();
-}
-
-function copyText(text: string): void {
-  void window.ade.app.writeClipboardText(text).catch(() => {
-    void navigator.clipboard?.writeText(text).catch(() => {});
-  });
 }
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -105,6 +93,7 @@ type WidthClass = { compact: boolean; medium: boolean; wide: boolean };
 function useWidthClass(ref: React.RefObject<HTMLElement | null>, enabled: boolean): WidthClass {
   const [state, setState] = useState<WidthClass>({ compact: false, medium: false, wide: false });
   useEffect(() => {
+    if (!enabled) return;
     const el = ref.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
@@ -123,222 +112,6 @@ function useWidthClass(ref: React.RefObject<HTMLElement | null>, enabled: boolea
   }, [ref, enabled]);
   return state;
 }
-
-/* ───────────────────────── Row ───────────────────────── */
-
-function AuthorAvatar({ name, email }: { name: string; email?: string }) {
-  const [failed, setFailed] = useState(false);
-  const url = failed ? null : githubAvatarForEmail(email);
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt=""
-        loading="lazy"
-        onError={() => setFailed(true)}
-        className="h-4 w-4 shrink-0 rounded-full"
-        style={{ boxShadow: "0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent)" }}
-      />
-    );
-  }
-  const letter = name.replace(/[^A-Za-z0-9]/g, "").charAt(0).toUpperCase() || "?";
-  return (
-    <span
-      aria-hidden
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-[9px] font-semibold text-fg/70"
-    >
-      {letter}
-    </span>
-  );
-}
-
-function ShaCell({ commit }: { commit: GitCommitSummary }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      title={copied ? "Copied" : `Copy ${commit.sha}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        copyText(commit.sha);
-        setCopied(true);
-      }}
-      onDoubleClick={(event) => event.stopPropagation()}
-      className={cn(
-        "w-[64px] shrink-0 rounded-[5px] px-1 text-left font-mono text-[11px] tabular-nums transition-colors duration-100",
-        copied ? "text-[var(--color-success)]" : "text-muted-fg/70 hover:bg-white/[0.06] hover:text-fg",
-      )}
-    >
-      {copied ? "copied" : commit.shortSha}
-    </button>
-  );
-}
-
-type RowMenuContext = {
-  laneId: string;
-  hasWorktree: boolean;
-  remoteMachineName: string | null;
-  onNotice: (message: string) => void;
-  onError: (message: string) => void;
-  navigate: (path: string) => void;
-};
-
-type RowProps = {
-  commit: GitCommitSummary;
-  index: number;
-  start: number;
-  graphWidth: number;
-  owner: string;
-  selected: boolean;
-  /** Base history under a lane's own commits: drawn quieter. */
-  muted: boolean;
-  /** "hidden": no author column; "blank": same author as the row above. */
-  author: "shown" | "blank" | "hidden";
-  isHead: boolean;
-  badges: CommitRefBadge[] | undefined;
-  columns: CommitColumns;
-  compact: boolean;
-  medium: boolean;
-  wide: boolean;
-  focusLaneId: string | null;
-  menu: RowMenuContext;
-  badgeActions: RefBadgeActions;
-  colorOfLane: (laneId: string) => string | null;
-  ownerOfLane: (laneId: string) => string | null;
-  onSelect: (index: number) => void;
-  onOpen: (index: number) => void;
-  onOpenPrNumber: ((pr: number) => void) | null;
-};
-
-const CommitRow = React.memo(function CommitRow({
-  commit,
-  index,
-  start,
-  graphWidth,
-  owner,
-  selected,
-  muted,
-  author,
-  isHead,
-  badges,
-  columns,
-  compact,
-  medium,
-  wide,
-  focusLaneId,
-  menu,
-  badgeActions,
-  colorOfLane,
-  ownerOfLane,
-  onSelect,
-  onOpen,
-  onOpenPrNumber,
-}: RowProps) {
-  const agent = commitAgentProvider(commit);
-  const { text, pr } = splitPrSuffix(commit.subject);
-  return (
-    <HistoryGitContextMenu
-      laneId={menu.laneId}
-      commit={commit}
-      isHead={isHead}
-      hasWorktree={menu.hasWorktree}
-      remoteMachineName={menu.remoteMachineName}
-      onNotice={menu.onNotice}
-      onError={menu.onError}
-      navigate={menu.navigate}
-    >
-    <div
-      role="row"
-      aria-selected={selected}
-      data-owner={owner}
-      data-sha={commit.sha}
-      onClick={() => onSelect(index)}
-      onDoubleClick={() => onOpen(index)}
-      className={cn(
-        "chv-row absolute left-0 right-0 flex cursor-default items-center gap-2 pr-2",
-        selected
-          ? "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)]"
-          : "hover:bg-white/[0.035]",
-      )}
-      style={{ height: COMMIT_ROW_HEIGHT, transform: `translateY(${start}px)` }}
-    >
-      {selected ? <span aria-hidden className="absolute bottom-1 left-0 top-1 w-[2px] rounded-r bg-[var(--color-accent)]" /> : null}
-      <span className="shrink-0" style={{ width: graphWidth }} />
-      <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", muted && !selected ? "opacity-[0.62]" : null)}>
-        {badges && badges.length > 0 ? (
-          <CommitRefBadges
-            badges={badges}
-            max={wide ? 2 : 1}
-            colorOfLane={colorOfLane}
-            ownerOfLane={ownerOfLane}
-            focusLaneId={focusLaneId}
-            actions={badgeActions}
-          />
-        ) : null}
-        {agent ? (
-          <span className="inline-flex shrink-0" title={`Co-authored by ${agent.name}`}>
-            <ProviderLogo family={agent.provider} size={13} />
-          </span>
-        ) : null}
-        <span
-          className={cn(
-            "min-w-0 truncate text-[12.5px]",
-            isHead ? "font-medium text-fg" : "text-fg/90",
-          )}
-        >
-          {text}
-        </span>
-        {pr != null ? (
-          onOpenPrNumber ? (
-            <button
-              type="button"
-              title={`Open PR #${pr}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onOpenPrNumber(pr);
-              }}
-              onDoubleClick={(event) => event.stopPropagation()}
-              className="inline-flex shrink-0 items-center gap-0.5 rounded-[5px] px-1 text-[11px] tabular-nums text-muted-fg/80 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
-            >
-              <GitPullRequest size={11} aria-hidden />
-              {pr}
-            </button>
-          ) : (
-            <span className="shrink-0 text-[11px] tabular-nums text-muted-fg/70">#{pr}</span>
-          )
-        ) : null}
-      </span>
-      {columns.author && !compact && author !== "hidden" ? (
-        <span
-          className={cn("flex shrink-0 items-center gap-1.5 overflow-hidden", medium ? "w-4" : "w-[132px]", muted && !selected ? "opacity-[0.62]" : null)}
-          title={commit.authorEmail ? `${commit.authorName} <${commit.authorEmail}>` : commit.authorName}
-        >
-          {author === "shown" ? (
-            <>
-              <AuthorAvatar name={commit.authorName} email={commit.authorEmail} />
-              {medium ? null : <span className="min-w-0 truncate text-[12px] text-muted-fg">{commit.authorName}</span>}
-            </>
-          ) : null}
-        </span>
-      ) : null}
-      {columns.date ? (
-        <span
-          className={cn("w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-muted-fg/70", muted && !selected ? "opacity-[0.62]" : null)}
-          title={new Date(commit.authoredAt).toLocaleString()}
-        >
-          {shortWhen(commit.authoredAt)}
-        </span>
-      ) : null}
-      {columns.sha && !compact ? <ShaCell commit={commit} /> : null}
-    </div>
-    </HistoryGitContextMenu>
-  );
-});
 
 /* ───────────────────────── View ───────────────────────── */
 
@@ -391,8 +164,11 @@ export function CommitHistoryView({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [repo, setRepo] = useState<{ owner: string; name: string } | null>(null);
+  // Transient action results are events, so they go through the shared toast.
+  const notify = useCallback((text: string, isError: boolean) => {
+    showToast({ id: "history-commit-action", tone: isError ? "error" : "info", title: text });
+  }, []);
   const commitsRef = useRef(commits);
   commitsRef.current = commits;
   /** Scroll anchor captured before a refresh replaces the rows. */
@@ -469,20 +245,23 @@ export function CommitHistoryView({
       });
       setHasMore(rows.length >= pageSize);
     } catch (err) {
-      if (loadSeq.current === seq) setNotice({ text: formatTimelineError(err), error: true });
+      if (loadSeq.current === seq) notify(formatTimelineError(err), true);
     } finally {
       if (loadSeq.current === seq) setLoadingMore(false);
     }
-  }, [hasMore, laneId, loading, loadingMore, readPage]);
+  }, [hasMore, laneId, loading, loadingMore, notify, readPage]);
 
   // A new lane or scope starts over from the top.
   useEffect(() => {
     loadSeq.current += 1;
+    // `setCommits([])` lands after the reload effect reads the ref, so clear
+    // it here too: otherwise the first load sizes itself off the previous
+    // lane's loaded rows and re-reads pages that no longer apply.
+    commitsRef.current = [];
     setCommits([]);
     setBranches([]);
     setHasMore(false);
     setError(null);
-    setNotice(null);
     setLoading(false);
     setLoadingMore(false);
     anchorRef.current = null;
@@ -514,12 +293,6 @@ export function CommitHistoryView({
       cancelled = true;
     };
   }, [laneId, pin]);
-
-  useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), notice.error ? 5000 : 2500);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
 
   /* ── Lanes, owners, colours ── */
 
@@ -554,10 +327,15 @@ export function CommitHistoryView({
 
   const baseName = normalizeBranchName(focusLane?.laneType === "primary" ? focusLane.branchRef : focusLane?.baseRef);
   const baseSha = baseName ? branchTip(baseName) : null;
+  // The owner key the base history is filed under, so a row can tell whether
+  // it is on the focused lane's own line.
+  const baseOwnerKey = useMemo(() => {
+    const baseLane = baseName ? lanesByBranch.get(baseName) ?? null : null;
+    return baseLane?.id ?? (baseName ? `base:${baseName}` : null);
+  }, [baseName, lanesByBranch]);
   const owners = useMemo(() => {
     if (commits.length === 0) return new Map<string, string>();
-    const baseLane = baseName ? lanesByBranch.get(baseName) ?? null : null;
-    const baseKey = baseLane?.id ?? `base:${baseName}`;
+    const baseKey = baseOwnerKey ?? `base:${baseName}`;
     let baseFrom = baseSha && commits.some((c) => c.sha === baseSha) ? baseSha : null;
     // A lane behind its base never reaches the base tip; its fork point is
     // `ahead` first-parent steps below its head.
@@ -576,7 +354,7 @@ export function CommitHistoryView({
       if (sha) tips.push({ key: lane.id, sha });
     }
     return assignCommitOwners({ commitsNewestFirst: commits, base, tips });
-  }, [baseName, baseSha, branchTip, commits, focusLane, headSha, lanesByBranch, liveLanes]);
+  }, [baseName, baseOwnerKey, baseSha, branchTip, commits, focusLane, headSha, liveLanes]);
 
   // Colour means "a lane's own work". The base line (main, or the primary
   // lane) is neutral so no lane colour can be mistaken for it; other branches
@@ -836,10 +614,10 @@ export function CommitHistoryView({
     },
     onCopy: (text) => {
       copyText(text);
-      setNotice({ text: "Branch name copied", error: false });
+      notify("Branch name copied", false);
     },
     onFocusOwner: focusOwner,
-  }), [focusOwner, navigate, onFocusLane, openPr]);
+  }), [focusOwner, navigate, notify, onFocusLane, openPr]);
 
   const openPrNumber = useMemo(
     () => (repo ? (number: number) => openPr({ number, linkedPrId: null, owner: repo.owner, name: repo.name }) : null),
@@ -851,10 +629,10 @@ export function CommitHistoryView({
   const worktreeMissing = error != null && /worktree is missing/i.test(error);
   const commitGitActionsEnabled = Boolean(laneId) && laneHasWorktree && !worktreeMissing;
   const onRowNotice = useCallback((message: string) => {
-    setNotice({ text: message, error: false });
+    notify(message, false);
     void reload({ keepAnchor: true });
-  }, [reload]);
-  const onRowError = useCallback((message: string) => setNotice({ text: message, error: true }), []);
+  }, [notify, reload]);
+  const onRowError = useCallback((message: string) => notify(message, true), [notify]);
   const rowMenu: RowMenuContext = useMemo(() => ({
     laneId: laneId ?? "",
     hasWorktree: commitGitActionsEnabled,
@@ -920,19 +698,6 @@ export function CommitHistoryView({
           <style>{`@keyframes chv-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }`}</style>
         </div>
       ) : null}
-      {notice ? (
-        <div
-          className={cn(
-            "absolute bottom-3 left-1/2 z-[3] -translate-x-1/2 truncate rounded-[8px] border border-white/[0.08] bg-[var(--color-card)] px-3 py-1.5 text-[12px] shadow-lg",
-            notice.error ? "text-[var(--color-error)]" : "text-fg/85",
-          )}
-          style={{ maxWidth: "80%" }}
-          title={notice.text}
-        >
-          {notice.text}
-        </div>
-      ) : null}
-
       {error ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <Warning size={20} className="text-[var(--color-warning)]" />
@@ -1010,6 +775,13 @@ export function CommitHistoryView({
               const rowIndex = kind.row;
               const row = graphRows[rowIndex]!;
               const commit = row.commit;
+              const owner = paint.ownerOf(commit.sha);
+              // "This lane" only ever walks HEAD, so every row is on it. In
+              // "All lanes", a row is on the focused lane only when it is the
+              // lane's own commit or base history — never another lane's.
+              const commitOnLaneHistory = scope === "lane"
+                || owner === laneId
+                || (baseOwnerKey != null && owner === baseOwnerKey);
               // The first row under the divider starts a new run of authors.
               const prevCommit = rowIndex > 0 && rowIndex !== (gapAfter ?? -2) + 1 ? graphRows[rowIndex - 1]!.commit : null;
               return (
@@ -1019,11 +791,12 @@ export function CommitHistoryView({
                     index={rowIndex}
                     start={item.start}
                     graphWidth={graphWidth}
-                    owner={paint.ownerOf(commit.sha)}
+                    owner={owner}
                     selected={rowIndex === selectedIndex}
                     muted={ownLaneId != null && owners.get(commit.sha) !== ownLaneId}
                     author={singleAuthor ? "hidden" : !prevCommit || authorKey(prevCommit) !== authorKey(commit) ? "shown" : "blank"}
                     isHead={commit.sha === headSha}
+                    commitOnLaneHistory={commitOnLaneHistory}
                     badges={badgesBySha.get(commit.sha)}
                     columns={columns}
                     compact={compact}

@@ -875,18 +875,20 @@ export function createGitOperationsService({
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 30;
       const skip = typeof args.skip === "number" && Number.isFinite(args.skip) ? Math.max(0, Math.floor(args.skip)) : 0;
       const scope: GitCommitListScope = args.scope === "lanes" ? "lanes" : "lane";
-      // The plain lane read keeps its original key and shape; History pages
-      // and the all-lanes graph are keyed apart.
-      const cacheKey = scope === "lane" && skip === 0
+      // Detailed rows (author email + co-authors) come from a different `git
+      // log` format than the plain read, so they must not share its cache
+      // entry. The plain read keeps its original key and shape; every other
+      // read is keyed by skip, scope, and whether it is detailed.
+      const detailed = args.scope != null || skip > 0;
+      const cacheKey = scope === "lane" && skip === 0 && !detailed
         ? `recent-commits:${laneId}:${limit}`
-        : `recent-commits:${laneId}:${limit}:${skip}:${scope}`;
+        : `recent-commits:${laneId}:${limit}:${skip}:${scope}:${detailed ? "detail" : "plain"}`;
       return readLaneCached(cacheKey, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
         const refs = scope === "lanes" ? await resolveLaneGraphRefs(lane) : null;
         // History asks for author email and co-author trailers; they ride in
         // the same `git log`, before the subject so a subject can't shift them.
-        const detailed = args.scope != null || skip > 0;
         const format = detailed
           ? "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1e)%x1f%s"
           : "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s";
@@ -912,8 +914,11 @@ export function createGitOperationsService({
         // Determine which commits are unpushed. One lane: against its upstream.
         // Every lane: against every remote, since each lane has its own upstream.
         let unpushedShas: Set<string> | null = null;
+        // Bound the walk by `--not --remotes` (only commits no remote has),
+        // not by a row count: a count cap can stop before it reaches unpushed
+        // commits on the loaded page and mislabel them as pushed.
         const notOnAnyRemote = async (walk: string[]): Promise<Set<string> | null> => {
-          const res = await runGit(["log", "--date-order", "--format=%H", `-n${skip + limit}`, ...walk, "--not", "--remotes"], {
+          const res = await runGit(["log", "--date-order", "--format=%H", ...walk, "--not", "--remotes"], {
             cwd: lane.worktreePath,
             timeoutMs: 15_000
           });
@@ -996,7 +1001,9 @@ export function createGitOperationsService({
               "log",
               "-1",
               "--date=iso-strict",
-              "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s",
+              // Same detailed format as the paged read, so a deep-linked or
+              // older commit still carries its author email and agent trailers.
+              "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%ae%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1e)%x1f%s",
               commitSha,
             ],
             { cwd: lane.worktreePath, timeoutMs: 10_000 },
@@ -1007,12 +1014,18 @@ export function createGitOperationsService({
         }
         const line = out.split("\n").map((l) => l.trim()).find(Boolean);
         if (!line) return null;
-        const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
+        const fields = parseDelimited(line);
+        const [sha, shortSha, parentsRaw, authorName, authoredAt, authorEmail] = fields;
         if (!sha || !shortSha) return null;
         const parents = (parentsRaw ?? "")
           .split(" ")
           .map((entry) => entry.trim())
           .filter(Boolean);
+        const coAuthors = (fields[6] ?? "")
+          .split("\u001e")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const subject = fields.slice(7).join("\u001f");
 
         let pushed = false;
         const upstreamRes = await runGit(
@@ -1038,7 +1051,9 @@ export function createGitOperationsService({
           parents,
           authorName: authorName ?? "",
           authoredAt: authoredAt ?? "",
-          subject: subject ?? "",
+          authorEmail: authorEmail ?? "",
+          coAuthors,
+          subject,
           pushed,
         };
       });

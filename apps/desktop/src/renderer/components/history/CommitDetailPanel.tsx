@@ -36,18 +36,8 @@ import {
   reflowCommitBody,
   splitPrSuffix,
 } from "./commitRowModel";
-import { PR_STATE_COLOR } from "./CommitRefBadges";
-
-function copyText(text: string) {
-  void window.ade.app.writeClipboardText(text).catch(() => {
-    void navigator.clipboard?.writeText(text).catch(() => {});
-  });
-}
-
-function stripIpcError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
-}
+import { PR_STATE_COLOR } from "./commitRowModel";
+import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 
 const FILE_ROWS = 200;
 
@@ -232,7 +222,7 @@ export function CommitDetailPanel({
       commit: resolvedCommit,
       navigate,
       onNotice: (message) => setNotice({ text: message, error: false }),
-      onError: (message) => setNotice({ text: stripIpcError(message), error: true }),
+      onError: (message) => setNotice({ text: stripIpcErrorPrefix(message), error: true }),
     });
   };
 

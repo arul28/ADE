@@ -180,13 +180,10 @@ export function branchTipKeep(
  * reused, so the graph stays as narrow as the history allows.
  */
 export function buildCommitGraphLayout(
-  input: readonly GitCommitSummary[] | readonly GraphCommit[],
+  rows: readonly GraphCommit[],
   options: CommitGraphLayoutOptions = {},
 ): CommitGraphLayout {
   const trunkSha = options.trunkSha ?? null;
-  const rows: GraphCommit[] = input.length > 0 && "commit" in (input[0] as object)
-    ? (input as GraphCommit[])
-    : toGraphCommits(input as GitCommitSummary[]);
 
   const shaToRow = new Map<string, number>();
   rows.forEach((row, index) => shaToRow.set(row.commit.sha, index));
@@ -279,10 +276,6 @@ export function buildCommitGraphLayout(
 
 export function columnCenterX(column: number): number {
   return COMMIT_GRAPH_PAD_LEFT + column * COMMIT_GRAPH_COL_WIDTH + COMMIT_GRAPH_COL_WIDTH / 2;
-}
-
-export function rowCenterY(rowIndex: number): number {
-  return rowIndex * COMMIT_ROW_HEIGHT + COMMIT_ROW_HEIGHT / 2;
 }
 
 /** A smooth S-bend between two points one or more rows apart. */

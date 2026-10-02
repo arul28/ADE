@@ -15,6 +15,8 @@ type HistoryGitContextMenuProps = {
   commit: GitCommitSummary;
   isHead: boolean;
   hasWorktree: boolean;
+  /** False when the row is another lane's commit in the All-lanes graph. */
+  commitOnLaneHistory?: boolean;
   /** The lane's machine when it is not this tab's; see `buildCommitContextActions`. */
   remoteMachineName?: string | null;
   children: React.ReactNode;
@@ -28,13 +30,14 @@ export function HistoryGitContextMenu({
   commit,
   isHead,
   hasWorktree,
+  commitOnLaneHistory = true,
   remoteMachineName = null,
   children,
   onNotice,
   onError,
   navigate,
 }: HistoryGitContextMenuProps) {
-  const actions = buildCommitContextActions({ commit, isHead, hasWorktree, remoteMachineName });
+  const actions = buildCommitContextActions({ commit, isHead, hasWorktree, commitOnLaneHistory, remoteMachineName });
   const groups = groupCommitContextActions(actions);
 
   const run = (actionId: HistoryGitActionId) => {

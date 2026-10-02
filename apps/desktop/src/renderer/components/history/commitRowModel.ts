@@ -1,5 +1,15 @@
-import type { GitBranchSummary, GitCommitSummary, LaneSummary, PrSummary } from "../../../shared/types";
+import type { GitBranchSummary, GitCommitSummary, LaneSummary, PrState, PrSummary } from "../../../shared/types";
 import { providerFromAuthorName } from "../lanes/overview/laneHistoryModel";
+import { COLORS } from "../lanes/laneDesignTokens";
+import { MERGED_COLOR } from "../lanes/overview/sectionUi";
+
+/** PR state → badge/icon colour, shared by the ref badges and the detail pane. */
+export const PR_STATE_COLOR: Record<PrState, string> = {
+  open: COLORS.success,
+  draft: COLORS.textMuted,
+  merged: MERGED_COLOR,
+  closed: COLORS.danger,
+};
 
 /** One ref drawn on a commit row. Local + remote at the same sha fold into one. */
 export type CommitRefBadge = {

@@ -307,7 +307,7 @@ export function TimelineToolbar({
         {surface === "commits" ? (
           <>
             <HistoryLanePicker value={laneSelectValue} groups={laneGroups} onChange={pickLane} />
-            {commitScope === "lane" ? <LaneDriftPill lane={focusLane} baseName={null} /> : null}
+            {commitScope === "lane" ? <LaneDriftPill lane={focusLane} /> : null}
             <span className="min-w-0 flex-1" />
             {commitListControls ? (
               <>

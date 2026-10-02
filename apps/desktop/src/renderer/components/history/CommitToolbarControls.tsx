@@ -17,14 +17,15 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { WORK_TOOL_CHROME_BUTTON, WORK_TOOL_CHROME_FOCUS, WorkToolChromeButton } from "../terminals/workToolChrome";
 import { useCommitViewPrefs, type CommitColumnId } from "./commitViewPrefs";
 import { normalizeBranchName } from "./commitRowModel";
+import { stripIpcErrorPrefix } from "./historyClipboard";
 
 /** "3 ahead · 12 behind" against the lane's base; opens the lane in Lanes. */
-export function LaneDriftPill({ lane, baseName }: { lane: LaneSummary | null; baseName: string | null }) {
+export function LaneDriftPill({ lane }: { lane: LaneSummary | null }) {
   const navigate = useNavigate();
   if (!lane || lane.laneType === "primary" || !lane.status) return null;
   const ahead = Math.max(0, lane.status.ahead ?? 0);
   const behind = Math.max(0, lane.status.behind ?? 0);
-  const base = baseName || normalizeBranchName(lane.baseRef) || "base";
+  const base = normalizeBranchName(lane.baseRef) || "base";
   const label = ahead === 0 && behind === 0
     ? `Even with ${base}`
     : `${ahead} ahead of ${base}, ${behind} behind`;
@@ -235,7 +236,7 @@ export function CommitFetchButton({
       onFetched();
     } catch (err) {
       setState("failed");
-      setError((err instanceof Error ? err.message : String(err)).replace(/^Error invoking remote method '[^']+':\s*/i, ""));
+      setError(stripIpcErrorPrefix(err));
     }
   }, [laneId, onFetched]);
   useEffect(() => {

@@ -1,20 +1,11 @@
 import React from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Cloud, GitPullRequest } from "@phosphor-icons/react";
-import type { PrState } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { Z_LAYERS } from "../ui/zLayers";
-import { COLORS } from "../lanes/laneDesignTokens";
-import { MERGED_COLOR } from "../lanes/overview/sectionUi";
 import type { CommitRefBadge } from "./commitRowModel";
-
-export const PR_STATE_COLOR: Record<PrState, string> = {
-  open: COLORS.success,
-  draft: COLORS.textMuted,
-  merged: MERGED_COLOR,
-  closed: COLORS.danger,
-};
+import { PR_STATE_COLOR } from "./commitRowModel";
 
 export type RefBadgeActions = {
   /** Lanes tab, with the lane selected. */

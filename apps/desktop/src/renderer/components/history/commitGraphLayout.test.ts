@@ -5,7 +5,7 @@ import {
   buildCommitGraphLayout,
   columnCenterX,
   contractCommitGraph,
-  rowCenterY,
+  toGraphCommits,
 } from "./commitGraphLayout";
 import type { GitCommitSummary } from "../../../shared/types";
 
@@ -25,6 +25,9 @@ function commit(
   };
 }
 
+const layoutOf = (commits: readonly GitCommitSummary[]) =>
+  buildCommitGraphLayout(toGraphCommits(commits));
+
 describe("buildCommitGraphLayout", () => {
   it("returns empty layout for no commits", () => {
     const layout = buildCommitGraphLayout([]);
@@ -36,7 +39,7 @@ describe("buildCommitGraphLayout", () => {
     const c3 = commit("c3", ["c2"]);
     const c2 = commit("c2", ["c1"]);
     const c1 = commit("c1", []);
-    const layout = buildCommitGraphLayout([c3, c2, c1]);
+    const layout = layoutOf([c3, c2, c1]);
     expect(layout.columnCount).toBe(1);
     expect(layout.nodes.every((n) => n.column === 0)).toBe(true);
     expect(layout.edges).toHaveLength(2);
@@ -46,7 +49,7 @@ describe("buildCommitGraphLayout", () => {
     const merge = commit("m", ["main", "feature"]);
     const main = commit("main", []);
     const feature = commit("feature", []);
-    const layout = buildCommitGraphLayout([merge, main, feature]);
+    const layout = layoutOf([merge, main, feature]);
     const mergeEdges = layout.edges.filter((e) => e.fromSha === "m");
     const mainNode = layout.nodes.find((node) => node.sha === "main");
     const featureNode = layout.nodes.find((node) => node.sha === "feature");
@@ -60,7 +63,7 @@ describe("buildCommitGraphLayout", () => {
     const branchA = commit("a", ["root"]);
     const branchB = commit("b", ["root"]);
     const root = commit("root", []);
-    const layout = buildCommitGraphLayout([merge, branchA, branchB, root]);
+    const layout = layoutOf([merge, branchA, branchB, root]);
     const colA = layout.nodes.find((node) => node.sha === "a")?.column;
     const colB = layout.nodes.find((node) => node.sha === "b")?.column;
 
@@ -77,21 +80,28 @@ describe("buildCommitGraphLayout", () => {
     const branchA = commit("a", ["root"]);
     const branchB = commit("b", ["root"]);
     const root = commit("root", []);
-    const layout = buildCommitGraphLayout([independent, tip, merge, branchA, branchB, root]);
-    const independentCol = layout.nodes.find((node) => node.sha === "independent")?.column;
-    const tipCol = layout.nodes.find((node) => node.sha === "tip")?.column;
+    const layout = layoutOf([independent, tip, merge, branchA, branchB, root]);
 
-    expect(independentCol).toBe(1);
-    expect(tipCol).toBe(0);
+    // Two branches are open at once (columns 0 and 1); once they merge into
+    // `root`, the columns freed by the merge are reused instead of the graph
+    // growing wider with every root.
+    expect(layout.nodes.map((node) => node.sha)).toEqual([
+      "independent",
+      "tip",
+      "m",
+      "a",
+      "b",
+      "root",
+    ]);
     expect(layout.columnCount).toBe(2);
   });
 
   it("maps row indices for positioning helpers", () => {
     const c2 = commit("c2", ["c1"]);
     const c1 = commit("c1", []);
-    const layout = buildCommitGraphLayout([c2, c1]);
+    const layout = layoutOf([c2, c1]);
     expect(layout.shaToRow.get("c2")).toBe(0);
-    expect(rowCenterY(0)).toBeGreaterThan(0);
+    expect(layout.rowCenter(0)).toBeGreaterThan(0);
     expect(columnCenterX(0)).toBeGreaterThan(0);
   });
 });
@@ -157,7 +167,7 @@ describe("buildCommitGraphLayout lane invariants", () => {
   ];
 
   it("never runs an edge through another commit's node", () => {
-    const layout = buildCommitGraphLayout(busy);
+    const layout = layoutOf(busy);
     const nodeAt = new Map(layout.nodes.map((n) => [`${n.rowIndex}:${n.column}`, n.sha]));
     for (const edge of layout.edges) {
       for (let row = edge.fromRow + 1; row < edge.toRow; row += 1) {
@@ -176,7 +186,7 @@ describe("buildCommitGraphLayout lane invariants", () => {
       commit("t0", ["t-1"]),
       commit("t-1", []),
     ];
-    const layout = buildCommitGraphLayout(withLateTips);
+    const layout = layoutOf(withLateTips);
     const trunk = ["m2", "t3", "t2", "t1", "t0", "t-1"];
     expect(layout.nodes.filter((n) => trunk.includes(n.sha)).map((n) => n.column)).toEqual(trunk.map(() => 0));
     expect(layout.columnCount).toBe(3);
@@ -184,7 +194,7 @@ describe("buildCommitGraphLayout lane invariants", () => {
   });
 
   it("puts a commit in the column its children wait in", () => {
-    const layout = buildCommitGraphLayout(busy);
+    const layout = layoutOf(busy);
     for (const edge of layout.edges.filter((e) => !e.open)) {
       const parent = layout.nodes[edge.toRow]!;
       expect(parent.sha).toBe(edge.toSha);
