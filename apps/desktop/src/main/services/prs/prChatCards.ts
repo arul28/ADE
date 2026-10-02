@@ -658,6 +658,12 @@ export async function emitPrCardsForChange(args: {
   }
 
   const stackNumber = pr.stack?.number ?? null;
+  // Anchor the stack-land card to the bottom layer so every changed layer in the
+  // same poll batch emits a byte-identical payload (stable navTarget) and
+  // `emitAdeCard` dedupes them, instead of one card per merged layer.
+  const stackLandAnchor = stackNumber == null
+    ? pr
+    : [...stackLayers].sort((a, b) => a.githubPrNumber - b.githubPrNumber)[0] ?? pr;
   const results = await Promise.allSettled([
     ...ordinarySessions.flatMap((session) => cards.map((card) => (
       chat.emitAdeCard({
@@ -669,7 +675,7 @@ export async function emitPrCardsForChange(args: {
       ? stackSessions.map((session) => chat.emitAdeCard({
         sessionId: session.sessionId,
         card: buildPrStackLandCard({
-          pr,
+          pr: stackLandAnchor,
           stackNumber,
           layers: stackLayers.map((layer) => ({
             githubPrNumber: layer.githubPrNumber,

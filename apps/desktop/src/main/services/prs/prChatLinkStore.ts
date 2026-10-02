@@ -218,9 +218,14 @@ export function createPrChatLinkStore(args: {
         });
         return false;
       }
-      const sessionLane = db.get<{ lane_id: string }>(
-        "select lane_id from terminal_sessions where id = ? limit 1",
-        [canonicalSessionId],
+      const sessionLane = db.get<{ lane_id: string | null }>(
+        `
+          select lane_id from terminal_sessions where id = ?
+          union all
+          select lane_id from claude_sessions where chat_session_id = ? and lane_id is not null
+          limit 1
+        `,
+        [canonicalSessionId, canonicalSessionId],
       );
       const sessionLaneId = String(sessionLane?.lane_id ?? "").trim();
       const crossLane = Boolean(sessionLaneId) && sessionLaneId !== pr.lane_id;
