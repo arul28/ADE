@@ -462,6 +462,7 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -3646,7 +3647,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
-          args: { laneId: string; limit?: number },
+          args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitCommitSummary[]>;
         listCommitFiles: (

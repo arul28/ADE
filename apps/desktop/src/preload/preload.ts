@@ -375,6 +375,7 @@ import type {
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
   BranchPullRequest,
@@ -10600,7 +10601,7 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
       ),
     listRecentCommits: async (
-      args: { laneId: string; limit?: number },
+      args: GitListRecentCommitsArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<GitCommitSummary[]> =>
       callPinnedOrBoundRuntimeActionOr<GitCommitSummary[]>(
