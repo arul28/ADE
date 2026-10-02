@@ -7,7 +7,7 @@ import type {
   OpenProjectBinding,
   PrSummary,
 } from "../../../shared/types";
-import { selectPrsForChatInLane } from "../../lib/prChatScope";
+import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";

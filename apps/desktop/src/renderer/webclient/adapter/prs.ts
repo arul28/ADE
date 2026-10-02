@@ -5,6 +5,7 @@ import type {
   PrDetailBundle,
   PrSummary,
   PrWithConflicts,
+  StackLinkOffer,
 } from "../../../shared/types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { AdapterInfra, AdeNamespace } from "./types";
@@ -305,6 +306,64 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return result;
     },
+    linkChatSession: async (args: unknown) => {
+      const result = await call("prs.linkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    unlinkChatSession: async (args: unknown) => {
+      const result = await call("prs.unlinkChatSession", args, { ok: false }, false);
+      invalidatePrsReads();
+      return result;
+    },
+    linkChatStack: async (args: unknown) => {
+      if (commands.hasAction("prs.linkChatStack")) {
+        const result = await call("prs.linkChatStack", args, { ok: false, linked: 0 }, false);
+        invalidatePrsReads();
+        return result;
+      }
+      // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+      // stack-link action, so the adapter re-derives "unclaimed siblings, roll
+      // back on failure" from the offer. Keep it a thin per-PR loop — the offer
+      // is the owner; do not grow policy here.
+      const record = asRecord(args);
+      const sessionId = String(record.sessionId ?? "");
+      const stackNumber = Number(record.stackNumber);
+      const offer = await read<StackLinkOffer | null>(
+        "prs.getStackLinkOffer",
+        { sessionId, prId: record.prId },
+        null,
+      );
+      if (!offer || offer.stackNumber !== stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      const linkedIds: string[] = [];
+      for (const sibling of unclaimed) {
+        const result = await call<{ ok: boolean }>("prs.linkChatSession", {
+          prId: sibling.prId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        }, { ok: false }, false);
+        if (!result.ok) {
+          for (const prId of [...linkedIds].reverse()) {
+            // `dismiss: false`: these were linked by this attempt, and the offer
+            // only lists siblings this chat had not unlinked, so nothing needs
+            // its tombstone restored. Match the server's failure shape.
+            await call<{ ok: boolean }>("prs.unlinkChatSession", {
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: false,
+            }, { ok: false }, false);
+          }
+          invalidatePrsReads();
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
+      }
+      invalidatePrsReads();
+      return { ok: true, linked: linkedIds.length };
+    },
+    listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
+    getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.onEvent", pin, infra);

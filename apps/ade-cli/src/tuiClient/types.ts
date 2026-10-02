@@ -195,6 +195,8 @@ export type ChatInfoPrSummary = {
   nextStep?: PrLaneNextStep | null;
   /** Agent reviewers on the PR, by product name. */
   agents?: string[];
+  /** Additional chat-linked PR numbers, shown as a compact switcher. */
+  linkedNumbers?: number[];
 };
 
 export type ChatInfoSnapshot = {

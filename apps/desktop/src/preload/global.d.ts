@@ -576,6 +576,12 @@ import type {
   PrSummary,
   PrWithConflicts,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDeployment,
   PrAiSummary,
   PostPrReviewCommentArgs,
@@ -4081,6 +4087,17 @@ declare global {
         unstackGitHubStack: (
           args: UnstackGitHubPrStackArgs,
         ) => Promise<GitHubPrStack | null>;
+        linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
+        listChatSessionsForPr: (
+          args: ListPrChatSessionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrChatSessionLink[]>;
+        getStackLinkOffer: (args: {
+          sessionId: string;
+          prId?: string | null;
+        }, pin?: OpenProjectBinding | null) => Promise<StackLinkOffer | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
           pin?: OpenProjectBinding | null,

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
-import { selectPrsForChat } from "../../lib/prChatScope";
+import { selectPrsForChat } from "../../../shared/prChatScope";
 import type { PrSummary } from "../../../shared/types";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 
@@ -149,14 +149,14 @@ describe("ChatGitToolbar", () => {
     expect(selectPrsForChat([{ id: "legacy" }] as unknown as PrSummary[], "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
   });
 
-  it("keeps a legacy PR visible when another PR in the lane has an explicit chat link", () => {
+  it("does not mix a legacy unedged PR into a chat that already has explicit edges", () => {
     const mixed = [
       { id: "legacy" },
       { id: "pr-a", chatSessionIds: ["chat-a"] },
       { id: "pr-b", chatSessionIds: ["chat-b"] },
     ] as unknown as PrSummary[];
 
-    expect(selectPrsForChat(mixed, "chat-a").map((pr) => pr.id)).toEqual(["legacy", "pr-a"]);
+    expect(selectPrsForChat(mixed, "chat-a").map((pr) => pr.id)).toEqual(["pr-a"]);
     expect(selectPrsForChat(mixed, "chat-c").map((pr) => pr.id)).toEqual(["legacy"]);
   });
 

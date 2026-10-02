@@ -439,9 +439,15 @@ struct WorkSessionDestinationView: View {
   /// capped at one PR — the lane may own several, and a PR opened on another
   /// lane can be linked to this session explicitly.
   @State var laneChatPrs: [PullRequestListItem] = []
+  /// Project-wide PR catalog, used to find GitHub stack siblings that are not
+  /// yet linked to this chat.
+  @State var chatPrCatalog: [PullRequestListItem] = []
   /// The user's pick from the switcher. Nil means "show what the resolver
   /// chose", which is the primary row.
   @State var selectedChatPrId: String?
+  /// "Not now" on a stack offer, keyed by session+stack so it stays hidden.
+  @State var dismissedStackOfferKey: String?
+  @State var chatPrLinkBusy = false
   /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
   /// keep showing the current PR instead of clearing it first.
   @State var lastResolvedPrLaneId: String?
@@ -917,7 +923,21 @@ struct WorkSessionDestinationView: View {
           onOpenGitHub: openLanePrOnGitHub,
           linkedPrs: laneChatPrs,
           selectedPrId: chatDisplayPr?.id,
-          onSelectPr: { selectChatPr($0) }
+          onSelectPr: { selectChatPr($0) },
+          stackOffer: visibleChatStackOffer,
+          linkablePrs: chatPrLinkableCatalog,
+          canLink: hostReachable && !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          linkBusy: chatPrLinkBusy,
+          onLinkStack: { Task { await linkChatStackOffer() } },
+          onDismissStackOffer: {
+            if let offer = visibleChatStackOffer {
+              dismissedStackOfferKey = "\(sessionId):\(offer.stackNumber)"
+            }
+          },
+          onLinkPr: { prId, allowCrossLane in
+            Task { await linkChatPr(prId: prId, allowCrossLane: allowCrossLane) }
+          },
+          onUnlink: { Task { await unlinkCurrentChatPr() } }
         )
         .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)

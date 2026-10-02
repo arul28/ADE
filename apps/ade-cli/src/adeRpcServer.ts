@@ -1145,6 +1145,7 @@ const TOOL_SPECS: ToolSpec[] = [
         body: { type: "string" },
         draft: { type: "boolean", default: false },
         closeLinearIssueOnMerge: { type: "boolean", default: true },
+        sessionId: { type: "string", minLength: 1 },
       }
     }
   },
@@ -7120,11 +7121,18 @@ async function runTool(args: {
     if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
     if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
+    // The authenticated chat identity is authoritative: an agent must not be
+    // able to forge `sessionId` and link this PR to an unrelated chat. Only
+    // fall back to the tool argument when the caller has no chat identity.
+    const sessionId = asOptionalTrimmedString(session.identity.chatSessionId)
+      ?? asOptionalTrimmedString(toolArgs.sessionId);
     const pr = await prSvc.createFromLane({
       laneId,
       title,
       body,
       draft,
+      source: "agent",
+      ...(sessionId ? { sessionId } : {}),
       ...(baseBranch ? { baseBranch } : {}),
       ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
     });

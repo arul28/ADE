@@ -11,12 +11,13 @@ import {
   GitPullRequest,
   MinusCircle,
   Sparkle,
+  Stack,
   X,
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
+import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
@@ -29,10 +30,11 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, pickPrimaryPr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { prStateTone, selectPrsForChatInLane } from "../../lib/prChatScope";
+import { prStateTone, selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
+import { Banner } from "../ui/notice";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -471,6 +473,12 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [reviews, setReviews] = useState<PrReview[] | null>(null);
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [relay, setRelay] = useState<RelayState>(null);
+  // GitHub stack-link offer for the selected PR (only when this chat can add
+  // unclaimed stack siblings). "Not now" hides it for the session+stack.
+  const [stackOffer, setStackOffer] = useState<StackLinkOffer | null>(null);
+  const [dismissedOfferKey, setDismissedOfferKey] = useState<string | null>(null);
+  const [stackLinkError, setStackLinkError] = useState<string | null>(null);
+  const [stackLinkBusy, setStackLinkBusy] = useState(false);
   // Manual title-bar ↻ sync in flight.
   const [syncing, setSyncing] = useState(false);
   // Backend reconcile-on-focus running (project-scoped); drives the subtle
@@ -696,6 +704,53 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return () => { cancelled = true; };
   }, [pr, runtimePinKey]);
 
+  // GitHub stack siblings this chat could add: offer to link the whole stack.
+  // Only read when the selected PR is stacked and the chat has an identity.
+  useEffect(() => {
+    setStackLinkError(null);
+    if (!sessionId || !pr?.stack || typeof window.ade.prs.getStackLinkOffer !== "function") {
+      setStackOffer(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, runtimePinRef.current)
+      .then((offer) => {
+        if (cancelled) return;
+        const linkable = (offer?.siblings ?? []).filter((sibling) => !sibling.claimedByOtherChat);
+        setStackOffer(linkable.length > 0 ? offer : null);
+      })
+      .catch(() => {
+        if (!cancelled) setStackOffer(null);
+      });
+    return () => { cancelled = true; };
+  }, [pr?.id, pr?.stack, sessionId]);
+
+  const stackOfferKey = stackOffer ? `${stackOffer.sessionId}:${stackOffer.stackNumber}` : null;
+  const visibleStackOffer = stackOffer && stackOfferKey !== dismissedOfferKey ? stackOffer : null;
+
+  const linkStack = useCallback(async () => {
+    if (!visibleStackOffer) return;
+    setStackLinkBusy(true);
+    setStackLinkError(null);
+    try {
+      const result = await window.ade.prs.linkChatStack({
+        sessionId: visibleStackOffer.sessionId,
+        stackNumber: visibleStackOffer.stackNumber,
+        prId: visibleStackOffer.prId,
+      }, runtimePinRef.current);
+      if (!result?.ok) {
+        setStackLinkError("Could not link this GitHub stack.");
+        return;
+      }
+      setDismissedOfferKey(`${visibleStackOffer.sessionId}:${visibleStackOffer.stackNumber}`);
+      await refresh({ live: true });
+    } catch (error) {
+      setStackLinkError(error instanceof Error ? error.message : "Could not link this GitHub stack.");
+    } finally {
+      setStackLinkBusy(false);
+    }
+  }, [refresh, visibleStackOffer]);
+
   // Best-effort: is the webhook relay actually connected for this repo? Drives
   // the live/stale/offline dot so the pane reflects real webhook status.
   const prRepoOwner = pr?.repoOwner ?? null;
@@ -867,6 +922,29 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onOpenGitHub={() => void openInGitHub()}
             onCopy={() => void copyLink()}
           />
+          {visibleStackOffer ? (
+            <div className="pt-2">
+              <Banner
+                layout="inline"
+                model={{
+                  id: `pr-stack-offer:${visibleStackOffer.sessionId}:${visibleStackOffer.stackNumber}`,
+                  tone: "accent",
+                  icon: <Stack size={13} weight="fill" />,
+                  title: `Also in GitHub Stack #${visibleStackOffer.stackNumber}`,
+                  detail: visibleStackOffer.siblings
+                    .filter((sibling) => !sibling.claimedByOtherChat)
+                    .map((sibling) => `#${sibling.githubPrNumber}`)
+                    .join(", "),
+                  actions: [
+                    { label: "Link stack", onClick: () => void linkStack(), disabled: stackLinkBusy },
+                    { label: "Not now", onClick: () => setDismissedOfferKey(stackOfferKey) },
+                  ],
+                  busy: stackLinkBusy,
+                  ...(stackLinkError ? { error: stackLinkError } : {}),
+                }}
+              />
+            </div>
+          ) : null}
           {runtimePin ? null : (
             <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
           )}

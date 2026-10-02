@@ -407,6 +407,11 @@ import type {
   UpdateBranchArgs,
   UpdateBranchResult,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -1769,6 +1774,32 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
     app.getPath("documents"),
     app.getPath("temp"),
   ];
+}
+
+function prChatLinkRecord(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("PR chat-link payload must be an object.");
+  }
+  return raw as Record<string, unknown>;
+}
+
+function requirePrChatLinkString(raw: unknown, field: string): string {
+  const value = prChatLinkRecord(raw)[field];
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) throw new Error(`PR chat-link payload requires ${field}.`);
+  return trimmed;
+}
+
+function prChatLinkOptionalString(raw: unknown, field: string): string | undefined {
+  const value = prChatLinkRecord(raw)[field];
+  if (value == null) return undefined;
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || undefined;
+}
+
+function prChatLinkBoolean(raw: unknown, field: string): boolean | undefined {
+  const value = prChatLinkRecord(raw)[field];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 export function registerIpc({
@@ -11999,6 +12030,71 @@ export function registerIpc({
       ctx.prPollingService.poke();
       return result;
     },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatSession,
+    async (_event, raw: unknown): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const arg: LinkPrChatSessionArgs = {
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        ...(prChatLinkBoolean(raw, "allowCrossLane") === true ? { allowCrossLane: true } : {}),
+      };
+      const result = ctx.prService.linkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsUnlinkChatSession,
+    async (_event, raw: unknown): Promise<{ ok: boolean }> => {
+      const ctx = ensurePrMutationContext();
+      const arg: UnlinkPrChatSessionArgs = {
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        ...(prChatLinkBoolean(raw, "dismiss") === false ? { dismiss: false } : {}),
+      };
+      const result = ctx.prService.unlinkChatSession(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsLinkChatStack,
+    async (_event, raw: unknown): Promise<{ ok: boolean; linked: number }> => {
+      const ctx = ensurePrMutationContext();
+      const stackNumber = prChatLinkRecord(raw).stackNumber;
+      if (typeof stackNumber !== "number" || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+        throw new Error("prs.linkChatStack requires a positive integer stackNumber.");
+      }
+      const prId = prChatLinkOptionalString(raw, "prId");
+      const arg: LinkPrChatStackArgs = {
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        stackNumber,
+        ...(prId ? { prId } : {}),
+      };
+      const result = ctx.prService.linkChatStack(arg);
+      ctx.prPollingService.poke();
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsListChatSessionsForPr,
+    async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
+      ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
+  );
+
+  ipcMain.handle(
+    IPC.prsGetStackLinkOffer,
+    async (_event, raw: unknown): Promise<StackLinkOffer | null> =>
+      ensurePrReadContext().prService.getStackLinkOffer({
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        prId: prChatLinkOptionalString(raw, "prId") ?? null,
+      }),
   );
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> =>

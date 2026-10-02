@@ -5090,6 +5090,10 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var creationStrategy: String? = nil
   /// Native GitHub stack membership. Nil against hosts before stacked PR support.
   var stack: GitHubPrStackMembership? = nil
+  /// Chats that explicitly opened or worked on this PR.
+  var chatSessionIds: [String]? = nil
+  /// Chats that unlinked this PR. Fallback display must not revive these.
+  var dismissedChatSessionIds: [String]? = nil
   /// ADE-135. One sentence explaining a non-obvious checks rollup, e.g. "3 checks
   /// reported, none from a CI provider." Nil when the state speaks for itself, and
   /// on hosts that predate the rollup.
@@ -5142,6 +5146,8 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   /// visible to the chats that own them even once its lane moves branch; a PR
   /// with none is legacy data and falls back to the branch rule.
   var chatSessionIds: [String]? = nil
+  /// Chats that unlinked this PR. Fallback display must not revive these.
+  var dismissedChatSessionIds: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {

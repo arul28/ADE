@@ -36,6 +36,53 @@ func workChatPrBadgeModel(
   )
 }
 
+struct WorkChatStackOffer: Equatable {
+  let stackNumber: Int
+  let siblings: [PullRequestListItem]
+}
+
+/// Siblings of the selected PR's GitHub stack that this chat could adopt. Nil
+/// when the selected PR is not stacked, the session is unknown, or every
+/// sibling is already linked to this or another chat.
+func workChatStackOffer(
+  selected: PullRequestListItem,
+  catalog: [PullRequestListItem],
+  sessionId: String
+) -> WorkChatStackOffer? {
+  guard let stack = selected.stack else { return nil }
+  let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+  let linkedIds = Set(
+    catalog.filter { ($0.chatSessionIds ?? []).contains(trimmed) }.map(\.id)
+  )
+  let siblings = catalog.filter { candidate in
+    guard candidate.id != selected.id else { return false }
+    guard candidate.stack?.number == stack.number else { return false }
+    guard candidate.repoOwner.caseInsensitiveCompare(selected.repoOwner) == .orderedSame else { return false }
+    guard candidate.repoName.caseInsensitiveCompare(selected.repoName) == .orderedSame else { return false }
+    if linkedIds.contains(candidate.id) { return false }
+    let claimedByOther = (candidate.chatSessionIds ?? []).contains { $0 != trimmed }
+    return !claimedByOther
+  }
+  guard !siblings.isEmpty else { return nil }
+  return WorkChatStackOffer(stackNumber: stack.number, siblings: siblings)
+}
+
+/// PRs a chat could link from its picker: everything in the catalog this chat
+/// does not already show and no other chat claims.
+func workChatLinkableCatalog(
+  catalog: [PullRequestListItem],
+  linked: [PullRequestListItem],
+  sessionId: String
+) -> [PullRequestListItem] {
+  let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+  let linkedIds = Set(linked.map(\.id))
+  return catalog.filter { candidate in
+    if linkedIds.contains(candidate.id) { return false }
+    return !((candidate.chatSessionIds ?? []).contains { $0 != trimmed })
+  }
+}
+
 struct WorkChatPrActivePopup: View {
   let badge: WorkChatPrBadgeModel
   let onOpen: () -> Void
@@ -144,6 +191,20 @@ struct WorkChatPrDetailsSheet: View {
   /// which is the first row.
   var selectedPrId: String? = nil
   var onSelectPr: (String) -> Void = { _ in }
+  /// GitHub stack siblings this chat could adopt, when the selected PR is
+  /// stacked and unclaimed siblings remain.
+  var stackOffer: WorkChatStackOffer? = nil
+  /// PRs the "Link another PR" picker may offer.
+  var linkablePrs: [PullRequestListItem] = []
+  /// Whether link/unlink controls are available (host reachable, session known).
+  var canLink: Bool = false
+  var linkBusy: Bool = false
+  var onLinkStack: () -> Void = {}
+  var onDismissStackOffer: () -> Void = {}
+  var onLinkPr: (String, Bool) -> Void = { _, _ in }
+  var onUnlink: () -> Void = {}
+
+  @State private var linkPickerOpen = false
 
   private var sheetTitle: String {
     guard let tag else { return "Pull request" }
@@ -285,6 +346,28 @@ struct WorkChatPrDetailsSheet: View {
     let branchTint = laneColor ?? stateTint
 
     return VStack(alignment: .leading, spacing: 12) {
+      if let stackOffer {
+        VStack(alignment: .leading, spacing: 8) {
+          Label("Also in GitHub Stack #\(stackOffer.stackNumber)", systemImage: "square.stack.3d.up.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(stackOffer.siblings.map { "#\($0.githubPrNumber)" }.joined(separator: ", "))
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(ADEColor.textSecondary)
+          HStack(spacing: 8) {
+            Button("Link stack", action: onLinkStack)
+              .font(.caption.weight(.semibold))
+              .disabled(linkBusy)
+            Button("Not now", action: onDismissStackOffer)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADEColor.tintPRs.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+      }
+
       WorkChatPrSummaryHeader(
         title: tag.title,
         updatedText: "Updated \(prRelativeTime(tag.updatedAt))",
@@ -337,6 +420,58 @@ struct WorkChatPrDetailsSheet: View {
           tint: ADEColor.accent,
           disabled: githubUrl.isEmpty,
           action: onOpenGitHub
+        )
+      }
+
+      if canLink {
+        if linkPickerOpen {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Link another PR")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+            if linkablePrs.isEmpty {
+              Text("No other unclaimed pull requests.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.textMuted)
+            } else {
+              ForEach(Array(linkablePrs.prefix(8))) { candidate in
+                Button {
+                  onLinkPr(candidate.id, candidate.laneId != (pr?.laneId ?? ""))
+                } label: {
+                  HStack {
+                    Text("#\(candidate.githubPrNumber)")
+                      .font(.caption.monospacedDigit())
+                      .foregroundStyle(ADEColor.textSecondary)
+                    Text(candidate.title)
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textPrimary)
+                      .lineLimit(1)
+                  }
+                }
+                .buttonStyle(.plain)
+                .disabled(linkBusy)
+              }
+            }
+            Button("Cancel") { linkPickerOpen = false }
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .padding(12)
+          .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+          WorkChatPrActionButton(
+            title: "Link another PR",
+            symbol: "plus",
+            tint: ADEColor.accent,
+            action: { linkPickerOpen = true }
+          )
+        }
+        WorkChatPrActionButton(
+          title: "Unlink this PR",
+          symbol: "minus.circle",
+          tint: ADEColor.textSecondary,
+          disabled: linkBusy,
+          action: onUnlink
         )
       }
     }

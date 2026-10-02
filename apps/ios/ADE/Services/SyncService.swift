@@ -6521,6 +6521,7 @@ final class SyncService: ObservableObject {
       "pr_groups",
       "pr_group_members",
       "pull_request_chat_sessions",
+      "pull_request_chat_session_dismissals",
       "integration_proposals",
       "lanes",
       "lane_list_snapshots",
@@ -15788,7 +15789,8 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     labels: [String] = [],
     reviewers: [String],
-    strategy: String? = nil
+    strategy: String? = nil,
+    sessionId: String? = nil
   ) async throws {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -15808,7 +15810,94 @@ final class SyncService: ObservableObject {
     if let strategy, !strategy.isEmpty {
       args["strategy"] = strategy
     }
+    if let sessionId, !sessionId.isEmpty {
+      args["sessionId"] = sessionId
+    }
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
+  }
+
+  private func throwIfCommandRefused(_ raw: Any, fallback: String) throws {
+    guard let record = raw as? [String: Any], (record["ok"] as? Bool) == false else { return }
+    let message = (record["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    throw NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? fallback : message]
+    )
+  }
+
+  func linkPullRequestChatSession(prId: String, sessionId: String, allowCrossLane: Bool = false) async throws {
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatSession")
+    }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if allowCrossLane {
+      args["allowCrossLane"] = true
+    }
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.linkChatSession", args: args),
+      fallback: "Could not link this pull request."
+    )
+  }
+
+  func unlinkPullRequestChatSession(prId: String, sessionId: String, dismiss: Bool = true) async throws {
+    guard supportsRemoteAction("prs.unlinkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.unlinkChatSession")
+    }
+    var args: [String: Any] = [
+      "prId": prId,
+      "sessionId": sessionId,
+    ]
+    if !dismiss {
+      args["dismiss"] = false
+    }
+    try throwIfCommandRefused(
+      try await sendCommand(action: "prs.unlinkChatSession", args: args),
+      fallback: "Could not unlink this pull request."
+    )
+  }
+
+  func linkPullRequestChatStack(
+    sessionId: String,
+    stackNumber: Int,
+    prId: String? = nil,
+    siblingPrIds: [String] = []
+  ) async throws {
+    if supportsRemoteAction("prs.linkChatStack") {
+      var args: [String: Any] = [
+        "sessionId": sessionId,
+        "stackNumber": stackNumber,
+      ]
+      if let prId, !prId.isEmpty { args["prId"] = prId }
+      let raw = try await sendCommand(action: "prs.linkChatStack", args: args)
+      try throwIfCommandRefused(raw, fallback: "Could not link this GitHub stack.")
+      return
+    }
+    guard supportsRemoteAction("prs.linkChatSession") else {
+      throw sessionLifecycleUnsupportedError("prs.linkChatStack")
+    }
+    // Old-host shim: a host predating `prs.linkChatStack` has no server-side
+    // stack-link action, so we re-derive "link each unclaimed sibling, roll back
+    // on failure" here. The offer remains the owner of that policy.
+    var linked: [String] = []
+    do {
+      for siblingPrId in siblingPrIds {
+        try await linkPullRequestChatSession(
+          prId: siblingPrId,
+          sessionId: sessionId,
+          allowCrossLane: true
+        )
+        linked.append(siblingPrId)
+      }
+    } catch {
+      for prId in linked.reversed() {
+        try? await unlinkPullRequestChatSession(prId: prId, sessionId: sessionId, dismiss: false)
+      }
+      throw error
+    }
   }
 
   func mergePullRequest(

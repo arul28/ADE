@@ -3874,6 +3874,7 @@ describe("adeRpcServer", () => {
       body: "Body text",
       draft: true,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     const defaulted = await callTool(handler, "create_pr_from_lane", {
@@ -3889,6 +3890,7 @@ describe("adeRpcServer", () => {
       body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
@@ -3930,6 +3932,7 @@ describe("adeRpcServer", () => {
       body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
+      source: "agent",
     });
 
     const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });

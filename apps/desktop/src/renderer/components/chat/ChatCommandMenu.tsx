@@ -44,7 +44,7 @@ import {
 import { composerAtFileRankFields, rankComposerAtMenuItems } from "../../../shared/composerAtMenuRanking";
 import type { ChatMentionKind, ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
-import { prStateTone } from "../../lib/prChatScope";
+import { prStateTone } from "../../../shared/prChatScope";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import type { PrSummary } from "../../../shared/types";
 

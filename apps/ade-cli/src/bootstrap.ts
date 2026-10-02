@@ -231,7 +231,7 @@ import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
-import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
+import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
@@ -283,6 +283,7 @@ export async function emitRuntimePrCardsForChanges(args: {
   dataSource: PrCardDataSource;
   chat: Partial<PrCardChatSink> | null;
   logger: Pick<Logger, "warn">;
+  relatedPrs?: PrSummary[];
 }): Promise<void> {
   const { chat } = args;
   if (
@@ -298,6 +299,7 @@ export async function emitRuntimePrCardsForChanges(args: {
         change,
         dataSource: args.dataSource,
         chat: chat as PrCardChatSink,
+        relatedPrs: args.relatedPrs,
       });
     } catch (error) {
       args.logger.warn("prs.chat_card_emit_failed", {
@@ -2562,7 +2564,7 @@ export async function createAdeRuntime(args: {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementService.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.
@@ -2581,6 +2583,7 @@ export async function createAdeRuntime(args: {
           dataSource: headlessLinearServices.prService,
           chat: agentChatService,
           logger,
+          relatedPrs: prs,
         });
       },
     });

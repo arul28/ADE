@@ -687,6 +687,12 @@ import type {
   GitHubPrSnapshot,
   GitHubPrStack,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  UnlinkPrChatSessionArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -11744,6 +11750,53 @@ const adeBridge = {
         "unstackGithubStack",
         { args },
         () => ipcRenderer.invoke(IPC.prsUnstackGitHubStack, args),
+      ),
+    linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "pr",
+        "linkChatSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLinkChatSession, args),
+      ),
+    unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "pr",
+        "unlinkChatSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsUnlinkChatSession, args),
+      ),
+    linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null): Promise<{ ok: boolean; linked: number }> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "pr",
+        "linkChatStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLinkChatStack, args),
+      ),
+    listChatSessionsForPr: (
+      args: ListPrChatSessionsArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrChatSessionLink[]> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "listChatSessionsForPr",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsListChatSessionsForPr, args),
+      ),
+    getStackLinkOffer: (
+      args: {
+        sessionId: string;
+        prId?: string | null;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<StackLinkOffer | null> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "getStackLinkOffer",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsGetStackLinkOffer, args),
       ),
     listIntegrationWorkflows: (
       args: ListIntegrationWorkflowsArgs = {},

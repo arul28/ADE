@@ -112,6 +112,12 @@ import type {
   GitHubWebhookIngestResult,
   ListGitHubPrStacksArgs,
   UnstackGitHubPrStackArgs,
+  LinkPrChatSessionArgs,
+  UnlinkPrChatSessionArgs,
+  LinkPrChatStackArgs,
+  ListPrChatSessionsArgs,
+  PrChatSessionLink,
+  StackLinkOffer,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -182,11 +188,13 @@ import {
   rowMergedBy,
 } from "./prRowMetadata";
 import { createGithubStackStore } from "./githubStackStore";
+import { createPrChatLinkStore } from "./prChatLinkStore";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { selectStackSiblings } from "../../../shared/prChatScope";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
@@ -1600,141 +1608,25 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
-  type PullRequestChatSessionRow = { pr_id: string; session_id: string };
-
-  const chatSessionIdsByPrId = (prIds: string[]): Map<string, string[]> => {
-    const ids = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
-    const result = new Map<string, string[]>();
-    if (ids.length === 0) return result;
-    try {
-      const placeholders = ids.map(() => "?").join(", ");
-      const rows = db.all<PullRequestChatSessionRow>(
-        `
-          select pr_id, session_id
-            from pull_request_chat_sessions
-           where project_id = ?
-             and pr_id in (${placeholders})
-           order by created_at asc, id asc
-        `,
-        [projectId, ...ids],
-      );
-      for (const row of rows) {
-        const sessionId = String(row.session_id ?? "").trim();
-        if (!sessionId) continue;
-        const current = result.get(row.pr_id) ?? [];
-        if (!current.includes(sessionId)) current.push(sessionId);
-        result.set(row.pr_id, current);
+  const chatLinks = createPrChatLinkStore({
+    db,
+    projectId,
+    logger,
+    knownStackNumberForPr: (repo, prNumber) => {
+      try {
+        return githubStackStore.knownStackNumberForPr(repo, prNumber);
+      } catch {
+        return null;
       }
-    } catch (error) {
-      logger.warn("prs.chat_session_links_read_failed", { error: getErrorMessage(error) });
-    }
-    return result;
-  };
-
-  const withChatSessionLinks = (summaries: PrSummary[]): PrSummary[] => {
-    const links = chatSessionIdsByPrId(summaries.map((summary) => summary.id));
-    return summaries.map((summary) => {
-      const sessionIds = links.get(summary.id);
-      return sessionIds?.length ? { ...summary, chatSessionIds: sessionIds } : summary;
-    });
-  };
-
-  const removeChatSessionLinksFromOtherLanes = (prId: string, laneId: string): void => {
-    try {
-      db.run(
-        `delete from pull_request_chat_sessions
-          where project_id = ? and pr_id = ? and lane_id <> ?`,
-        [projectId, prId, laneId],
-      );
-    } catch {
-      // Older test/embedded databases may predate the optional edge table.
-    }
-  };
-
-  const linkPrToChatSession = (args: {
-    prId: string;
-    laneId: string;
-    sessionId?: string | null;
-  }): void => {
-    const sessionId = String(args.sessionId ?? "").trim();
-    if (!sessionId) return;
-
-    try {
-      // The row only has to EXIST in this project. It deliberately does not
-      // have to belong to `args.laneId`: a chat may reference a pull request
-      // another lane opened ("Link a PR by number or URL"), and `linkToLane`
-      // leaves that row's ownership with the opening lane on purpose. Requiring
-      // equality here made every cross-lane link a silent no-op — the call
-      // reported success, no edge was written, and the PR vanished from the
-      // chat on the next read (`selectPrsForChatInLane` finds a foreign PR only
-      // through this edge). The real protection is the session lookup below,
-      // which still refuses any session that does not belong to `args.laneId`.
-      const pr = db.get<{ id: string }>(
-        "select id from pull_requests where id = ? and project_id = ? limit 1",
-        [args.prId, projectId],
-      );
-      if (!pr) return;
-
-      // Chat surfaces use the terminal-session id. The Claude pointer fallback
-      // keeps imported/older chats addressable when only their provider session
-      // id was persisted.
-      const session = db.get<{ id: string }>(
-        `
-          select id
-            from terminal_sessions
-           where id = ? and lane_id = ?
-          union all
-          select chat_session_id as id
-            from claude_sessions
-           where session_id = ? and lane_id = ? and chat_session_id is not null
-           limit 1
-        `,
-        [sessionId, args.laneId, sessionId, args.laneId],
-      );
-      if (!session) {
-        logger.warn("prs.chat_session_link_session_missing", {
-          prId: args.prId,
-          laneId: args.laneId,
-          sessionId,
-        });
-        return;
-      }
-      const canonicalSessionId = String(session.id ?? "").trim();
-      if (!canonicalSessionId) return;
-      const now = nowIso();
-      const existing = db.get<{ id: string }>(
-        `
-          select id
-            from pull_request_chat_sessions
-           where project_id = ? and pr_id = ? and session_id = ?
-           limit 1
-        `,
-        [projectId, args.prId, canonicalSessionId],
-      );
-      if (existing) {
-        db.run(
-          "update pull_request_chat_sessions set lane_id = ?, updated_at = ? where id = ? and project_id = ?",
-          [args.laneId, now, existing.id, projectId],
-        );
-      } else {
-        db.run(
-          `
-            insert into pull_request_chat_sessions(
-              id, project_id, pr_id, lane_id, session_id, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?)
-          `,
-          [randomUUID(), projectId, args.prId, args.laneId, canonicalSessionId, now, now],
-        );
-      }
-    } catch (error) {
-      logger.warn("prs.chat_session_link_write_failed", {
-        prId: args.prId,
-        laneId: args.laneId,
-        sessionId,
-        error: getErrorMessage(error),
-      });
-    }
-  };
+    },
+  });
+  const withChatSessionLinks = chatLinks.withChatSessionLinks;
+  const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
+  const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
+  const linkPrToChatSession = chatLinks.linkPrToChatSession;
+  const unlinkPrFromChatSession = chatLinks.unlinkPrFromChatSession;
+  const attachNewStackLayerToParentChats = chatLinks.attachNewStackLayerToParentChats;
+  const pendingAgentStackAttaches = chatLinks.pendingAgentStackAttaches;
   const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
     github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
     head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
@@ -7805,8 +7697,15 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
-    removeChatSessionLinksFromOtherLanes(prId, lane.id);
+    // A PR created from a lane links its own lane's chat by default; the
+    // cross-lane relaxation is only for explicit picks (`linkToLane`) and the
+    // internal parent-chat stack attach, not an arbitrary agent-supplied
+    // session id on create.
     linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    if (args.source === "agent") {
+      chatLinks.rememberPendingAttach({ prId, laneId: lane.id });
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
 
     await publishLinearPrCardsForLane({
       lane,
@@ -7840,7 +7739,11 @@ export function createPrService({
     });
 
     const refreshed = await refreshOne(prId);
-    return withGithubStackMembership(refreshed) ?? refreshed;
+    const withStack = withGithubStackMembership(refreshed) ?? refreshed;
+    if (args.source === "agent") {
+      attachNewStackLayerToParentChats({ prId, laneId: lane.id });
+    }
+    return withStack;
   };
 
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
@@ -7951,9 +7854,9 @@ export function createPrService({
     });
     markHotRefresh([prId]);
     // Edges from other lanes survive: one PR can legitimately be referenced by
-    // several chats. Pruning only makes sense when this lane owns the PR.
-    if (!linksToAnotherLane) removeChatSessionLinksFromOtherLanes(prId, lane.id);
-    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId });
+    // several chats. Cross-lane links are allowed for GitHub stack members or
+    // an explicit pick.
+    linkPrToChatSession({ prId, laneId: lane.id, sessionId: args.sessionId, allowCrossLane: true });
 
     if (headMatchesLane) {
       await publishLinearPrCardsForLane({
@@ -10373,7 +10276,30 @@ export function createPrService({
     githubService,
     logger,
     onSnapshotChanged: invalidateGithubSnapshotCache,
-    onReconciled: () => emitPrsUpdated(),
+    onReconciled: () => {
+      emitPrsUpdated();
+      for (const pending of pendingAgentStackAttaches.values()) {
+        attachNewStackLayerToParentChats(pending);
+      }
+      for (const [prId, pending] of [...pendingAgentStackAttaches]) {
+        const row = db.get<{ github_stack_number: number }>(
+          `
+            select entry.github_stack_number as github_stack_number
+              from pull_requests pr
+              join github_pr_stack_entries entry
+                on entry.project_id = pr.project_id
+               and lower(entry.repo_owner) = lower(pr.repo_owner)
+               and lower(entry.repo_name) = lower(pr.repo_name)
+               and entry.github_pr_number = pr.github_pr_number
+             where pr.id = ?
+               and pr.project_id = ?
+             limit 1
+          `,
+          [pending.prId, projectId],
+        );
+        if (row) pendingAgentStackAttaches.delete(prId);
+      }
+    },
   });
   const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
     if (summaries.length === 0) return summaries;
@@ -10384,6 +10310,37 @@ export function createPrService({
         repoPrKey(summary.repoOwner, summary.repoName, summary.githubPrNumber),
       ) ?? null,
     }));
+  };
+
+  const getStackLinkOffer = (args: { sessionId: string; prId?: string | null }): StackLinkOffer | null => {
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return null;
+    const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
+    const focus = args.prId
+      ? summaries.find((pr) => pr.id === args.prId)
+      : summaries.find((pr) => (pr.chatSessionIds ?? []).includes(sessionId) && pr.stack);
+    if (!focus?.stack) return null;
+    const siblings = selectStackSiblings(summaries, focus).filter((pr) => (
+      pr.id !== focus.id
+      && !(pr.chatSessionIds ?? []).includes(sessionId)
+      // A sibling this chat explicitly unlinked stays unlinking: the offer must
+      // not re-propose it, and then a failed stack-link rollback (dismiss:false)
+      // could not restore the tombstone either.
+      && !(pr.dismissedChatSessionIds ?? []).includes(sessionId)
+    ));
+    if (siblings.length === 0) return null;
+    return {
+      sessionId,
+      prId: focus.id,
+      stackNumber: focus.stack.number,
+      siblings: siblings.map((pr) => ({
+        prId: pr.id,
+        githubPrNumber: pr.githubPrNumber,
+        title: pr.title,
+        laneId: pr.laneId,
+        claimedByOtherChat: (pr.chatSessionIds ?? []).some((id) => id !== sessionId),
+      })),
+    };
   };
   const withGithubStackMembership = (summary: PrSummary | null): PrSummary | null =>
     summary ? withGithubStackMemberships([summary])[0] ?? summary : null;
@@ -12525,6 +12482,96 @@ export function createPrService({
       emitPrsUpdated();
       return stack;
     },
+
+    linkChatSession(args: LinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string; lane_id: string }>(
+        "select id, lane_id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      if (!pr) return { ok: false };
+      const ok = linkPrToChatSession({
+        prId: pr.id,
+        laneId: pr.lane_id,
+        sessionId: args.sessionId,
+        allowCrossLane: args.allowCrossLane === true,
+      });
+      if (ok) emitPrsUpdated();
+      return { ok };
+    },
+
+    unlinkChatSession(args: UnlinkPrChatSessionArgs): { ok: boolean } {
+      const pr = db.get<{ id: string }>(
+        "select id from pull_requests where id = ? and project_id = ? limit 1",
+        [args.prId, projectId],
+      );
+      // Refuse a bogus prId up front: otherwise the unlink would still persist a
+      // dismissal tombstone for a non-existent row.
+      if (!pr) return { ok: false };
+      const ok = unlinkPrFromChatSession(args);
+      if (ok) emitPrsUpdated();
+      return { ok };
+    },
+
+    linkChatStack(args: LinkPrChatStackArgs): { ok: boolean; linked: number } {
+      const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
+      if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
+      const unclaimed = offer.siblings.filter((sibling) => !sibling.claimedByOtherChat);
+      if (unclaimed.length === 0) return { ok: false, linked: 0 };
+      const canonicalSessionId = resolveCanonicalChatSessionId(offer.sessionId) ?? offer.sessionId;
+      const restoreDismissals = new Set(
+        unclaimed
+          .filter((sibling) => hasChatSessionDismissal(sibling.prId, canonicalSessionId))
+          .map((sibling) => sibling.prId),
+      );
+      const linkedIds: string[] = [];
+      for (const sibling of unclaimed) {
+        const ok = linkPrToChatSession({
+          prId: sibling.prId,
+          laneId: sibling.laneId,
+          sessionId: offer.sessionId,
+          allowCrossLane: true,
+        });
+        if (!ok) {
+          for (const prId of linkedIds) {
+            unlinkPrFromChatSession({
+              prId,
+              sessionId: offer.sessionId,
+              dismiss: restoreDismissals.has(prId),
+            });
+          }
+          return { ok: false, linked: 0 };
+        }
+        linkedIds.push(sibling.prId);
+      }
+      if (linkedIds.length > 0) emitPrsUpdated();
+      return { ok: true, linked: linkedIds.length };
+    },
+
+    listChatSessionsForPr(args: ListPrChatSessionsArgs): PrChatSessionLink[] {
+      try {
+        return db.all<PrChatSessionLink>(
+          `
+            select pcs.session_id as sessionId,
+                   ts.title as title,
+                   pcs.lane_id as laneId
+              from pull_request_chat_sessions pcs
+              left join terminal_sessions ts on ts.id = pcs.session_id
+             where pcs.project_id = ?
+               and pcs.pr_id = ?
+             order by pcs.created_at asc
+          `,
+          [projectId, args.prId],
+        ).map((row) => ({
+          sessionId: String(row.sessionId ?? "").trim(),
+          title: row.title ?? null,
+          laneId: row.laneId ?? null,
+        })).filter((row) => row.sessionId);
+      } catch {
+        return [];
+      }
+    },
+
+    getStackLinkOffer,
 
     async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
       return await githubStackStore.reconcile(repo, stackNumber);
