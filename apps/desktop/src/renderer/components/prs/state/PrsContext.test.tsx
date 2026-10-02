@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -820,6 +820,63 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(getStatus.mock.calls.filter(([prId]) => prId === "pr-1")).toHaveLength(2);
     });
+  });
+
+  it("pauses the selected PR detail poller while the window is hidden and refreshes on re-show", async () => {
+    let visibilityState: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    const getStatus = vi.fn(async () => ({ state: "open" }));
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus,
+      getChecks: vi.fn(async () => []),
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn(async () => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    // Fake timers must be installed before selecting: the 60s detail interval
+    // is armed on selection, and fake timers only control intervals armed
+    // after they are installed.
+    vi.useFakeTimers();
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "select pr-1" }));
+    });
+    for (let i = 0; i < 10 && getStatus.mock.calls.length === 0; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.resolve();
+      });
+    }
+    const baselineCalls = getStatus.mock.calls.length;
+    expect(baselineCalls).toBeGreaterThan(0);
+
+    visibilityState = "hidden";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(getStatus.mock.calls.length).toBe(baselineCalls);
+
+    visibilityState = "visible";
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getStatus.mock.calls.length).toBeGreaterThan(baselineCalls);
   });
 
   it("ignores stale primary detail settlements after reselecting the same PR", async () => {
