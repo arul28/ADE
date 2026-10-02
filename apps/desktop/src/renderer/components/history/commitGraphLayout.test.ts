@@ -4,6 +4,7 @@ import {
   branchTipKeep,
   buildCommitGraphLayout,
   columnCenterX,
+  computeDividerAfterRow,
   contractCommitGraph,
   toGraphCommits,
 } from "./commitGraphLayout";
@@ -201,6 +202,59 @@ describe("buildCommitGraphLayout lane invariants", () => {
       expect(edge.toCol).toBe(parent.column);
     }
     expect(layout.edges.find((e) => e.toSha === "older")?.open).toBe(true);
+  });
+});
+
+describe("computeDividerAfterRow", () => {
+  // Newest first. main was merged into the lane: base commits sit above the
+  // lane's own older commits, and the lane's own run ends at "own-a".
+  const rows = toGraphCommits([
+    commit("own-c", ["merge"]),
+    commit("merge", ["own-b", "base-2"]),
+    commit("base-2", ["base-1"]),
+    commit("base-1", ["own-a"]),
+    commit("own-b", ["own-a"]),
+    commit("own-a", ["base-0"]),
+    commit("base-0", []),
+  ]);
+  const owners = new Map<string, string>([
+    ["own-c", "L"],
+    ["merge", "L"],
+    ["own-b", "L"],
+    ["own-a", "L"],
+    ["base-2", "main"],
+    ["base-1", "main"],
+    ["base-0", "main"],
+  ]);
+
+  it("sits under the lane's oldest own commit when base was merged in", () => {
+    // The oldest own commit is row 5; base-2/base-1 above it are main's.
+    expect(computeDividerAfterRow({ rows, owners, ownLaneId: "L", searching: false })).toBe(5);
+  });
+
+  it("sits above row 0 for a lane with no commits of its own", () => {
+    expect(computeDividerAfterRow({
+      rows: toGraphCommits([commit("base-1", ["base-0"]), commit("base-0", [])]),
+      owners: new Map([["base-1", "main"], ["base-0", "main"]]),
+      ownLaneId: "L",
+      searching: false,
+    })).toBe(-1);
+  });
+
+  it.each([
+    ["while searching", { ownLaneId: "L", searching: true }],
+    ["in All lanes or on Primary", { ownLaneId: null, searching: false }],
+  ])("draws no divider %s", (_label, overrides) => {
+    expect(computeDividerAfterRow({ rows, owners, ...overrides })).toBeNull();
+  });
+
+  it("draws no divider when the lane's own run reaches the last row", () => {
+    expect(computeDividerAfterRow({
+      rows: toGraphCommits([commit("own-b", ["own-a"]), commit("own-a", [])]),
+      owners: new Map([["own-b", "L"], ["own-a", "L"]]),
+      ownLaneId: "L",
+      searching: false,
+    })).toBeNull();
   });
 });
 

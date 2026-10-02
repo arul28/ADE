@@ -274,6 +274,29 @@ export function buildCommitGraphLayout(
   };
 }
 
+/**
+ * The row the lane/base divider sits under: the lane's oldest own commit, or
+ * -1 (above row 0) when the lane has no commits of its own. Base commits a lane
+ * merged in sit above it and keep the base's colour. Null when there is no
+ * divider to draw — the focused ref is not a lane, the view is searching, or
+ * there are no rows — and when the lane's own run already reaches the bottom.
+ */
+export function computeDividerAfterRow(args: {
+  rows: readonly GraphCommit[];
+  owners: ReadonlyMap<string, string>;
+  /** The focused lane, or null in "All lanes" and on the Primary lane. */
+  ownLaneId: string | null;
+  searching: boolean;
+}): number | null {
+  const { rows, owners, ownLaneId, searching } = args;
+  if (!ownLaneId || searching || rows.length === 0) return null;
+  let last = -1;
+  rows.forEach((row, index) => {
+    if (owners.get(row.commit.sha) === ownLaneId) last = index;
+  });
+  return last < rows.length - 1 ? last : null;
+}
+
 export function columnCenterX(column: number): number {
   return COMMIT_GRAPH_PAD_LEFT + column * COMMIT_GRAPH_COL_WIDTH + COMMIT_GRAPH_COL_WIDTH / 2;
 }

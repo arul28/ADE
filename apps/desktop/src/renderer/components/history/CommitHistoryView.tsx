@@ -21,6 +21,7 @@ import {
   COMMIT_GRAPH_COL_WIDTH,
   COMMIT_GRAPH_PAD_LEFT,
   COMMIT_ROW_HEIGHT,
+  computeDividerAfterRow,
   contractCommitGraph,
   toGraphCommits,
   type CommitGraphLayout,
@@ -421,14 +422,10 @@ export function CommitHistoryView({
   // they are drawn as base. A lane with no commits of its own gets the band
   // on top.
   const ownLaneId = scope === "lane" && focusLane && focusLane.laneType !== "primary" ? focusLane.id : null;
-  const dividerAfterRow = useMemo(() => {
-    if (!ownLaneId || matches || graphRows.length === 0) return null;
-    let last = -1;
-    graphRows.forEach((row, index) => {
-      if (owners.get(row.commit.sha) === ownLaneId) last = index;
-    });
-    return last < graphRows.length - 1 ? last : null;
-  }, [graphRows, matches, owners, ownLaneId]);
+  const dividerAfterRow = useMemo(
+    () => computeDividerAfterRow({ rows: graphRows, owners, ownLaneId, searching: matches != null }),
+    [graphRows, matches, owners, ownLaneId],
+  );
 
   // The base branch keeps column 0 so every lane branches off to its right.
   const layout: CommitGraphLayout = useMemo(
