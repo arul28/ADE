@@ -473,6 +473,8 @@ export type AppNavigationTarget =
       kind: "commit";
       sha: string;
       laneId?: string | null;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }
   | {
@@ -483,6 +485,8 @@ export type AppNavigationTarget =
   | {
       kind: "lane";
       laneId: string;
+      /** The machine that owns `laneId`, when the caller knows it. */
+      machineId?: string | null;
       sessionId?: string | null;
       envelope?: DeeplinkEnvelope | null;
     }

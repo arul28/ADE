@@ -290,18 +290,28 @@ populated at mint time. On open, the desktop resolves in a strict ladder
 
 1. **Local** — the id resolves in the active project → open it exactly,
    anchors included.
-2. **Another known project** — the envelope repo matches a different project
+2. **Another connected machine** — the id resolves nowhere locally, but the
+   cross-machine union (`renderer/lib/otherMachineNavigation.ts`) holds it on a
+   paired machine for the same repo → open it there, no card: a commit in
+   History (`?surface=commits&laneId&machineId&commitSha`), a lane in Lanes
+   (`?laneId&machineId`), a chat in Work. The dispatcher waits up to 3 s for the
+   union when a machine is online, so a link opened before any Work/Lanes/Files
+   surface loaded still resolves. An explicit `machineId` on the target wins
+   over a local lane with the same id, because lane ids are unique per machine,
+   not globally.
+3. **Another known project** — the envelope repo matches a different project
    in the machine catalog (`project.findForRepo` IPC →
    `main/services/projects/repoProjectResolver.ts`, which parses each recent
    project's git origin from `.git/config` without spawning git, cached by
    config mtime) → a card offers "Switch project and open", then re-dispatches
    the original target after the switch.
-3. **Foreign machine** — the id resolves nowhere → a fallback-only card
-   ("This chat/lane lives in `<owner>/<repo>` on another machine") offering
-   only the actions the envelope carries: create a lane from the branch
-   (the existing branch-import flow), open the PR or commit on GitHub, open
-   the Linear issue. There is deliberately no request-access or
-   shared-transcript path.
+4. **Foreign machine** — the id resolves nowhere → a fallback-only card
+   ("This chat/lane lives in `<owner>/<repo>` on another machine", or, with no
+   repo and no connected machine, "ADE cannot find this … on this machine or on
+   a connected machine") offering only the actions the envelope carries: create
+   a lane from the branch (the existing branch-import flow), open the PR or
+   commit on GitHub, open the Linear issue. There is deliberately no
+   request-access or shared-transcript path.
 
 All three cards are the one `InboundDeeplinkModal` (generalized to
 `branch | foreign | switch-project` targets). Envelope parsing is lenient —

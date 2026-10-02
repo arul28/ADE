@@ -44,6 +44,7 @@ function laneChipText(): string {
 function renderInChatScope(
   text: string,
   machine: Partial<Pick<CrossMachineMachineLanes, "lanes" | "sessions">> = {},
+  laneId: string | null = null,
 ) {
   useAppStore.setState({
     crossMachineLanesByMachineId: {
@@ -64,7 +65,7 @@ function renderInChatScope(
     },
   });
   return render(
-    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={laneId} sessionId={null}>
       <ChipText text={text} />
     </ChatRuntimeScopeProvider>,
   );
@@ -234,6 +235,24 @@ describe("ChipText", () => {
       // A PR named by number alone opens through the in-app PR route.
       fireEvent.click(screen.getByRole("button", { name: /#1407/ }));
       expect(navigations).toEqual([{ kind: "pr", prNumber: 1407 }]);
+    } finally {
+      window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    }
+  });
+
+  it("opens a bare commit chip in the chat's lane and machine", () => {
+    // A SHA in an agent reply names a commit of the lane this chat works in, on
+    // the machine this chat runs on. The chip carries neither on its own, so
+    // without the chat scope the click cannot resolve and shows the "lives on
+    // another machine" modal.
+    const sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    const navigations: unknown[] = [];
+    const onNavigate = (event: Event) => navigations.push((event as CustomEvent<{ target: unknown }>).detail.target);
+    window.addEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
+    try {
+      renderInChatScope(`fixed in ade://commit/${sha}`, {}, LANE_ID);
+      fireEvent.click(screen.getByRole("button"));
+      expect(navigations).toEqual([{ kind: "commit", sha, laneId: LANE_ID, machineId: "macbook" }]);
     } finally {
       window.removeEventListener(ADE_NAVIGATE_TARGET_EVENT, onNavigate);
     }
