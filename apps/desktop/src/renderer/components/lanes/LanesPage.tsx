@@ -1432,7 +1432,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           if (result.status === "fulfilled") return;
           const lane = result.lane;
           blockedLaneIds.add(lane.id);
-          errors.push(`${lane.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+          errors.push(`${lane.name}: ${stripElectronErrorWrapper(result.reason instanceof Error ? result.reason.message : String(result.reason))}`);
           setDeleteProgressByLaneId((prev) => {
             const next = { ...prev };
             delete next[lane.id];

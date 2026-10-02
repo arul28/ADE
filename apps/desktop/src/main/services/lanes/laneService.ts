@@ -374,10 +374,27 @@ async function sweepDeletingTrash(parentDir: string, logger: Logger): Promise<vo
     return;
   }
   for (const entry of entries) {
-    if (entry.isDirectory() && DELETING_TRASH_NAME.test(entry.name)) {
-      removeTrashInBackground(path.join(parentDir, entry.name), logger);
-    }
+    if (!entry.isDirectory() || !DELETING_TRASH_NAME.test(entry.name)) continue;
+    const trashPath = path.join(parentDir, entry.name);
+    // A folder Git still has metadata for was never pruned — its move back
+    // failed, or Git kept a locked worktree. That checkout is not trash.
+    if (await gitAdminDirStillExists(trashPath)) continue;
+    removeTrashInBackground(trashPath, logger);
   }
+}
+
+async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
+  let pointer: string;
+  try {
+    pointer = await fs.promises.readFile(path.join(checkoutPath, ".git"), "utf8");
+  } catch (error) {
+    // No `.git` at all is the pruned case. Anything else (a `.git` directory,
+    // an unreadable file) is not something to sweep.
+    return (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
+  }
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
+  if (!gitdir) return true;
+  return fs.existsSync(path.resolve(checkoutPath, gitdir));
 }
 
 async function managedTreeBytes(targetPath: string): Promise<number> {
