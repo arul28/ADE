@@ -2356,6 +2356,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
                       machine={detailForeignRow.pin ? {
                         pin: detailForeignRow.pin,
+                        machineId: detailForeignRow.machineId,
                         machineName: detailForeignRow.machineName,
                         lanes: foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES,
                         prs: allMachineLanes.prsByMachineId.get(detailForeignRow.machineId) ?? EMPTY_PRS,

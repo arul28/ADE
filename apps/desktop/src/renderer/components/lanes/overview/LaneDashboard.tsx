@@ -63,6 +63,8 @@ const EMPTY_SECTION_IDS: string[] = [];
  */
 export type LaneDashboardMachine = {
   pin: OpenProjectBinding;
+  /** Names the machine in links to other tabs (History) that resolve lanes per machine. */
+  machineId?: string;
   machineName: string;
   /** That machine's lanes, as reported by the cross-machine union. */
   lanes: LaneSummary[];
@@ -388,6 +390,12 @@ export function LaneDashboard({
             revealUnavailableReason={machine ? `On ${machine.machineName}` : null}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
+            onOpenHistory={() => {
+              // History resolves a lane on another machine by machine + lane id.
+              const params = new URLSearchParams({ surface: "commits", laneId });
+              if (machine?.machineId) params.set("machineId", machine.machineId);
+              navigate(`/history?${params.toString()}`);
+            }}
             onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             onSelectLane={onSelectLane}

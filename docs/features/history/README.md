@@ -72,8 +72,13 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 | `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`). |
 | `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(limit)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list` and `cto.getState`. Synthetic IDs are namespaced (`chat:`, `cto-session:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
 | `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
-| `commitGraphLayout.ts` | Pure `buildCommitGraphLayout(commitsNewestFirst)` that assigns DAG columns first-parent style, then exposes `commitEdgePath`, `columnCenterX`, `rowCenterY`, and the `COMMIT_ROW_HEIGHT` / `COMMIT_GRAPH_COL_WIDTH` / `COMMIT_GRAPH_PAD_LEFT` constants the SVG layer in `CommitHistoryView` consumes. |
-| `CommitHistoryView.tsx` | Virtualized GitKraken-style commit graph for the focused lane. Loads commits via `git.listRecentCommits` (initial limit 120, expands to 500 on scroll-to-bottom and on non-empty search), `git.listBranches` for ref pills, draws nodes + edges as an SVG layer overlaid on `@tanstack/react-virtual` rows, and dispatches right-click commit actions via `HistoryGitContextMenu`. |
+| `commitGraphLayout.ts` | Pure graph algorithms. `buildCommitGraphLayout(rows, trunkSha?)` assigns columns newest-first (each column waits for one sha; the first parent stays in its column so a trunk stays straight; `trunkSha` pins the base branch to column 0). `contractCommitGraph(commits, keep)` hides commits while keeping the graph connected: kept commits' parents are rewritten to the nearest kept ancestors and each edge records how many commits it folds. `branchTipKeep` is the "fold to branch tips" predicate (refs, merges, roots, fork points). `assignCommitOwners` maps commits to lanes: base history to the base, each lane tip its first-parent run. `commitEdgePathD` draws an edge. |
+| `CommitHistoryView.tsx` | Virtualized commit graph. Pages `git.listRecentCommits` 100 at a time with `skip` (no cap), in `lane` or `lanes` scope; `git.listBranches` for ref badges. Colours nodes and edges by owning lane, folds or filters through `contractCommitGraph`, keeps the scroll anchor by sha across refreshes, and adapts columns to the pane width. Enter / double-click opens the commit's changes full-page. |
+| `CommitGraphLayer.tsx` | The SVG graph, drawn as memoized 40-row tiles above the rows. Hovering a node or edge focuses that lane's path (others fade) through one generated CSS rule, without React renders. |
+| `CommitRefBadges.tsx` | Ref badges: lane-owned branches show the lane name in its colour and its PR; local/remote twins at one sha fold into one badge with a cloud; overflow is `+N`. A badge opens a menu: show this lane's history, open the lane in Lanes, open its PR, copy the branch. |
+| `CommitToolbarControls.tsx` | Commits rail controls: ahead/behind pill (opens the lane in Lanes), expanding search, This lane / All lanes, fold toggle, column menu, fetch. |
+| `commitRowModel.ts` | Pure row helpers: ref badge model, `(#123)` PR suffix, agent co-author → provider, GitHub avatar from a noreply email, commit → chat session match, commit-body reflow. |
+| `commitViewPrefs.ts` | Saved scope / fold / columns (localStorage) and the live search query. |
 | `CommitDetailPanel.tsx` | Right pane for the Commits surface: subject, author, full message (lazy via `git.getCommitMessage`), changed file list (`git.listCommitFiles`), related operations (any `OperationRecord` whose `preHeadSha` or `postHeadSha` matches the commit), and the same git action set the context menu exposes. Destructive lane mutations are disabled when the lane has no worktree or the commit was resolved only through a targeted lookup outside that lane's visible history. |
 | `HistoryGitContextMenu.tsx` | Reusable right-click menu shared by `CommitHistoryView` rows and the `CommitDetailPanel` actions strip; built from `buildCommitContextActions` + `groupCommitContextActions`. |
 | `historyGitActions.ts` | Per-commit action catalogue and dispatcher: `Inspect` (checkout, open in Lanes git pane, compare-with-parent, view files), `Create` (branch, lane, tag), `Apply` (cherry-pick, revert, soft/mixed/hard reset), `Share` (open/copy GitHub link, copy patch via `git.listCommitFiles` + `diff.getFilePatch`, copy SHA, copy subject). Calls `window.ade.git.*` + `window.ade.lanes.create({ startPoint })` and centralizes disabled reasons for missing worktrees or commits not on the focused lane history. |
@@ -98,26 +103,37 @@ Shared types:
 
 ### Commits
 
-GitKraken-style DAG for the focused lane. The user picks a lane from
-the toolbar's lane select; the view runs `git.listRecentCommits` and
-`git.listBranches` against that lane's worktree, builds a column
-assignment with `buildCommitGraphLayout`, and renders a virtualized
-list with an SVG layer for nodes and parent/merge edges.
+The git graph for the focused lane. **This lane** walks the lane's HEAD;
+**All lanes** walks HEAD, the lane's base and every active lane's branch
+(`scope: "lanes"`, `git log --date-order`), so one graph shows where every
+lane sits against its base. Commits are coloured by the lane that owns
+them; base history takes the base lane's colour and other branches are
+neutral. Hovering a node or line focuses that lane's path.
 
-Each commit row shows the short SHA, optional `HEAD` and `merge`
-pills, up to two ref pills (branches whose `lastCommitSha` is this
-commit), the subject, the author name, and a relative timestamp.
-Right-click — or the actions strip in the detail panel — opens
-`HistoryGitContextMenu` with grouped actions; see
-`historyGitActions.ts` for the catalogue.
+Each row: ref badges, the agent logo when a `Co-authored-by` trailer
+names an agent, the subject with its `(#123)` PR number as a link, the
+author avatar, a short age and the SHA (click to copy). Hollow nodes are
+not on any remote yet; the ringed node is HEAD. "Fold to branch tips"
+keeps refs, merges, roots and fork points and draws the folded runs
+dashed. The details pane shows the full message, the agent and the chat
+that was running when it was committed, the lane's PR, push state,
+parents, files (click to open that file's diff) and ADE activity rows
+that link to the Activity view. Enter, double-click or **Changes** opens
+the commit's changes full-page; Esc returns. Right-click — or the
+**⋯** menu in the details pane — opens the grouped git actions; see
+`historyGitActions.ts`.
 
-The search field above the list parses through `filterCommitsForSearch`
+The lane overview in Lanes has a **Commit history** button that opens
+this view on that lane (with its machine for a lane on another machine).
+
+The search field in the rail parses through `filterCommitsForSearch`
 in `historySearch.ts`. Bare text matches subject / SHA / author /
 parent / refs. Prefixed keys narrow the match: `message:`, `author:`
 (or `@`), `commit:` (or `#`), `branch:` / `ref:`, `parent:`, plus
-`is:merge`, `is:local`, `is:pushed`. The view automatically bumps the
-commit limit from 120 to 500 when a search is active so unloaded
-commits do not silently miss.
+`is:merge`, `is:local`, `is:pushed`. Results keep the graph connected
+(`contractCommitGraph`). While searching, the view reads older pages on its
+own until it has 60 matches or has read 3,000 commits, and the footer
+reports "N matches in M commits" with **Search older** to go further.
 
 The Commits toolbar also exposes a `LaneGitActionsMenu` populated by
 `buildHistoryLaneActions` / `groupHistoryLaneActions`. That menu drives
@@ -332,7 +348,7 @@ Defined in `apps/desktop/src/shared/ipc.ts`, handled in
 
 | Channel | Args | Notes |
 |---|---|---|
-| `ade.git.listRecentCommits` | `{ laneId, limit? }` | Limit is clamped to `[1, 500]` (was 200). The Commits view uses 120 by default and bumps to 500 on search or near-bottom scroll. |
+| `ade.git.listRecentCommits` | `{ laneId, limit?, skip?, scope? }` | Limit is clamped to `[1, 500]` per page; `skip` pages older history with no overall cap. `scope: "lanes"` walks HEAD, the base and every active lane branch in `--date-order`, and marks commits on no remote as unpushed. When `scope` or `skip` is given, rows also carry `authorEmail` and `coAuthors`. The Commits view pages 100 at a time. |
 | `ade.git.listBranches` | `{ laneId }` | Used to overlay branch refs on commit rows. |
 | `ade.git.listCommitFiles` | `{ laneId, commitSha }` | Drives the detail panel file list and the "Copy patch" action (capped at 50 files). |
 | `ade.git.getCommitMessage` | `{ laneId, commitSha }` | Full commit message body (lazy). |

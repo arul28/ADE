@@ -1,7 +1,8 @@
 import React, { Suspense, useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
-import { LaneIcon } from "../ui/vcsIcons";
+import { ArrowLeft } from "@phosphor-icons/react";
+import { getLaneAccent } from "../lanes/laneColorPalette";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { cachedCtoHomeResolution } from "../../state/ctoHome";
 import { EmptyState } from "../ui/EmptyState";
@@ -20,7 +21,7 @@ import {
 } from "./useTimelineStore";
 import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import type { TimelineEvent } from "./timelineTypes";
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import {
   createLaneMachineRouter,
   foreignLaneKey,
@@ -40,6 +41,11 @@ const TimelineGraph = React.lazy(async () => {
 const EventDetailPanel = React.lazy(async () => {
   const mod = await import("./EventDetailPanel");
   return { default: mod.EventDetailPanel };
+});
+
+const LaneDiffPane = React.lazy(async () => {
+  const mod = await import("../lanes/LaneDiffPane");
+  return { default: mod.LaneDiffPane };
 });
 
 const CommitDetailPanel = React.lazy(async () => {
@@ -71,6 +77,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   /** False when the selected commit object exists but is not reachable from the lane head. */
   const [commitOnLaneHistory, setCommitOnLaneHistory] = useState(true);
   const [selectedCommitLaneId, setSelectedCommitLaneId] = useState<string | null>(null);
+  /** The lane whose work the selected commit is, when the graph knows. */
+  const [commitOwnerLaneId, setCommitOwnerLaneId] = useState<string | null>(null);
+  /** The selected commit's changes fill the page (Enter / double-click / "Changes"). */
+  const [diffTarget, setDiffTarget] = useState<{ commit: GitCommitSummary; path: string | null } | null>(null);
+  const openCommitChanges = useCallback((commit: GitCommitSummary, path: string | null = null) => {
+    setDiffTarget({ commit, path });
+  }, []);
 
   const events = useTimelineStore((s) => s.events);
   const rawEvents = useTimelineStore((s) => s.rawEvents);
@@ -82,6 +95,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const setFocusLane = useTimelineStore((s) => s.setFocusLane);
   const selectedCommitSha = useTimelineStore((s) => s.selectedCommitSha);
   const selectedCommit = useTimelineStore((s) => s.selectedCommit);
+  const selectedCommitRef = useRef(selectedCommit);
+  selectedCommitRef.current = selectedCommit;
   const selectedEventId = useTimelineStore((s) => s.selectedEventId);
   const hoveredLaneId = useTimelineStore((s) => s.hoveredLaneId);
   const columns = useTimelineStore((s) => s.columns);
@@ -348,14 +363,15 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId: focusLaneId, limit: 500 }, commitPin)
+      .listRecentCommits({ laneId: focusLaneId, limit: 500, scope: "lane" }, commitPin)
       .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
         if (found) {
           setCommitOnLaneHistory(true);
           setSelectedCommitLaneId(focusLaneId);
-          setSelectedCommit(found);
+          // Keep the row the graph handed over: it carries email and co-authors.
+          if (selectedCommitRef.current?.sha !== found.sha) setSelectedCommit(found);
           return;
         }
         // Outside the loaded window — fall back to a targeted single-commit lookup.
@@ -378,7 +394,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
             if (cancelled) return;
             setCommitOnLaneHistory(isOnLane);
             setSelectedCommitLaneId(focusLaneId);
-            if (targeted) setSelectedCommit(targeted);
+            if (targeted && selectedCommitRef.current?.sha !== targeted.sha) setSelectedCommit(targeted);
           }
         } catch {
           if (!cancelled) {
@@ -468,7 +484,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   );
 
   const handleSelectCommit = useCallback(
-    (commit: GitCommitSummary) => {
+    (commit: GitCommitSummary, ownerLaneId: string | null = null) => {
+      setCommitOwnerLaneId(ownerLaneId);
       setSelectedCommit(commit);
       setSelectedEventId(null);
       setSearchParams((prev) => {
@@ -508,6 +525,21 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     [navigate],
   );
 
+  const handleFocusLane = useCallback(
+    (laneId: string) => {
+      // Ref badges name lanes of the machine whose graph is on screen.
+      setFocusLane(laneId, focusLaneMachineId);
+      setSelectedCommit(null);
+      setDiffTarget(null);
+    },
+    [focusLaneMachineId, setFocusLane, setSelectedCommit],
+  );
+
+  // A lane switch closes a full-page diff of the previous lane's commit.
+  useEffect(() => {
+    setDiffTarget(null);
+  }, [focusLaneId, focusLaneMachineId, surface]);
+
   const selectedEvent: TimelineEvent | null = selectedEventId
     ? (events.find((e) => e.id === selectedEventId) ?? null)
     : null;
@@ -531,6 +563,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     ? (focusLaneId ? allMachineLanes.lanesByKey.get(foreignLaneKey(focusLaneMachineId, focusLaneId))?.lane ?? null : null)
     : lanes.find((l) => l.id === focusLaneId) ?? null;
   const focusLaneHasWorktree = !focusLaneMachineId && Boolean(focusLane?.worktreePath?.trim());
+  const machineLanes = useMemo(
+    () => (focusLaneMachineId
+      ? allMachineLanes.lanes.filter((row) => row.machineId === focusLaneMachineId).map((row) => row.lane)
+      : lanes),
+    [allMachineLanes.lanes, focusLaneMachineId, lanes],
+  );
 
   const laneData = useMemo(
     () =>
@@ -541,6 +579,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       })),
     [lanes],
   );
+
+  const commitOwnerLane = commitOwnerLaneId
+    ? machineLanes.find((lane) => lane.id === commitOwnerLaneId) ?? null
+    : focusLane;
+  const commitOwnerLaneColor = commitOwnerLane
+    ? getLaneAccent(commitOwnerLane, Math.max(0, machineLanes.filter((lane) => !lane.archivedAt).indexOf(commitOwnerLane)))
+    : null;
 
   const { layout: splitLayout, loaded: splitLoaded, saveLayout: saveSplitLayout } = useDockLayout(HISTORY_SPLIT_LAYOUT_ID, {});
 
@@ -571,8 +616,11 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         remoteMachineName={focusRemoteMachineName}
         laneName={focusLane?.name ?? null}
         laneHasWorktree={focusLaneHasWorktree}
+        lanes={machineLanes}
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
+        onOpenCommit={openCommitChanges}
+        onFocusLane={handleFocusLane}
         active={active}
         refreshToken={rawEvents.length + commitRefreshToken}
       />
@@ -652,7 +700,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           laneHasWorktree={focusLaneHasWorktree}
           commit={selectedCommit}
           commitOnLaneHistory={commitOnLaneHistory}
+          ownerLane={commitOwnerLane}
           relatedEvents={relatedEventsForCommit}
+          ownerLaneColor={commitOwnerLaneColor}
+          onOpenChanges={openCommitChanges}
+          onSelectSha={setSelectedCommitSha}
+          onOpenEvent={handleSelectEvent}
           onClose={handleCloseDetail}
           onNavigateToLane={handleNavigateToLane}
           navigate={(path) => navigate(path)}
@@ -674,8 +727,19 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       <TimelineToolbar
+        commitListControls={!diffTarget}
         onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
       />
+      {surface === "commits" && diffTarget && focusLaneReadable && focusLaneId ? (
+        <CommitChangesPage
+          laneId={focusLaneId}
+          pin={commitPin}
+          commit={diffTarget.commit}
+          initialPath={diffTarget.path}
+          fallback={panelFallback}
+          onBack={() => setDiffTarget(null)}
+        />
+      ) : (
       <Group
         // Remount once the saved sizes arrive so they apply.
         key={splitLoaded ? "loaded" : "pending"}
@@ -691,20 +755,6 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           minSize="30%"
           className="flex min-h-0 min-w-0 flex-col"
         >
-          {surface === "commits" ? (
-            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
-              <LaneIcon size={14} className="shrink-0 text-accent" weight="bold" />
-              <span className="font-sans text-[11px] font-bold uppercase tracking-[1px] text-muted-fg">
-                Lane
-              </span>
-              <span className="truncate font-mono text-[12px] text-fg">
-                {focusLane?.name ?? (focusLaneId ? focusLaneId : "Select a lane")}
-              </span>
-              {focusRemoteMachineName ? (
-                <span className="shrink-0 font-sans text-[11px] text-muted-fg">on {focusRemoteMachineName}</span>
-              ) : null}
-            </div>
-          ) : null}
           {surface === "activity" ? <MachineLoadNotes loads={machineLoads} /> : null}
           {timelineBody}
         </Panel>
@@ -718,6 +768,61 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           {detailBody}
         </Panel>
       </Group>
+      )}
+    </div>
+  );
+}
+
+/** A commit's files and diffs over the whole page; Esc or Back returns to the list. */
+function CommitChangesPage({
+  laneId,
+  pin,
+  commit,
+  initialPath,
+  fallback,
+  onBack,
+}: {
+  laneId: string;
+  pin: OpenProjectBinding | null;
+  commit: GitCommitSummary;
+  initialPath: string | null;
+  fallback: React.ReactNode;
+  onBack: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("input, textarea, [contenteditable=true], .monaco-editor")) return;
+      onBack();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onBack]);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="history-commit-changes">
+      <Suspense fallback={fallback}>
+        <LaneDiffPane
+          laneId={laneId}
+          selectedPath={null}
+          selectedFileMode={null}
+          selectedCommit={commit}
+          runtimePin={pin}
+          initialCommitFilePath={initialPath}
+          commitHeaderStart={(
+            <button
+              type="button"
+              onClick={onBack}
+              title="Back to commits (Esc)"
+              className="-ml-1.5 mr-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium text-fg/80 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
+              data-testid="history-changes-back"
+            >
+              <ArrowLeft size={13} />
+              Commits
+            </button>
+          )}
+        />
+      </Suspense>
     </div>
   );
 }

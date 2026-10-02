@@ -11,6 +11,7 @@ import {
   Circle,
   Funnel,
   GitBranch,
+  GitCommit,
   Clock,
   Export,
 } from "@phosphor-icons/react";
@@ -35,6 +36,17 @@ import type { TimelineColumn, ViewMode, TimeRange } from "./timelineTypes";
 import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
+import { PaneTooltip } from "../ui/PaneTooltip";
+import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_FOCUS } from "../terminals/workToolChrome";
+import { useCommitViewPrefs } from "./commitViewPrefs";
+import {
+  CommitColumnsMenu,
+  CommitFetchButton,
+  CommitFoldToggle,
+  CommitScopeToggle,
+  CommitSearchField,
+  LaneDriftPill,
+} from "./CommitToolbarControls";
 import type { ScopeLevel } from "./useTimelineStore";
 import { promptDialog } from "../ui/dialog/confirm";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -81,9 +93,9 @@ const SCOPE_OPTIONS: { value: ScopeLevel; label: string; tip: string }[] = [
 
 /* ── Component ──────────────────────────────────────────────── */
 
-const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.ElementType }[] = [
-  { value: "commits", label: "Commits", Icon: GitBranch },
-  { value: "activity", label: "Activity", Icon: Clock },
+const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.ElementType; tip: string }[] = [
+  { value: "commits", label: "Commits", Icon: GitCommit, tip: "The git graph of your lanes" },
+  { value: "activity", label: "Activity", Icon: Clock, tip: "What ADE and your agents did, over time" },
 ];
 
 function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
@@ -96,8 +108,11 @@ function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
 
 export function TimelineToolbar({
   onCommitGitActionComplete,
+  commitListControls = true,
 }: {
   onCommitGitActionComplete?: () => void;
+  /** False while a commit's changes fill the page: search, scope, fold and columns do nothing there. */
+  commitListControls?: boolean;
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
@@ -125,6 +140,7 @@ export function TimelineToolbar({
   const clearSolo = useTimelineStore((s) => s.clearSolo);
   const clearFilters = useTimelineStore((s) => s.clearFilters);
   const toggleColumn = useTimelineStore((s) => s.toggleColumn);
+  const commitScope = useCommitViewPrefs((s) => s.scope);
 
   /* ── Handlers ──────────────────────────────────────────────── */
   const handleSearch = useCallback(
@@ -274,22 +290,25 @@ export function TimelineToolbar({
       {/* ── Row 0: Surface + lane (commits). The page's top rail, the same
           height and hairline as the sidebar tab row. ── */}
       <div className="ade-page-rail gap-2 px-3">
-        <div className="flex items-center gap-0.5">
-          {SURFACE_OPTIONS.map(({ value, label, Icon }) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setSurface(value)}
-              className={cn(
-                "flex h-6 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
-                surface === value
-                  ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
-                  : "border-transparent text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
-              )}
-            >
-              <Icon size={12} weight={surface === value ? "fill" : "regular"} />
-              {label}
-            </button>
+        <div role="tablist" aria-label="History view" className="flex h-7 shrink-0 items-center rounded-[8px] bg-white/[0.04] p-0.5">
+          {SURFACE_OPTIONS.map(({ value, label, Icon, tip }) => (
+            <PaneTooltip key={value} label={tip}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === value}
+                onClick={() => setSurface(value)}
+                className={cn(
+                  "flex h-6 items-center gap-1.5 rounded-[6px] px-2 text-[12px] font-medium transition-colors duration-100",
+                  surface === value ? "bg-white/[0.09] text-fg" : "text-muted-fg hover:text-fg",
+                  WORK_TOOL_CHROME_FOCUS,
+                )}
+                data-testid={`history-surface-${value}`}
+              >
+                <Icon size={13} weight={surface === value ? "bold" : "regular"} />
+                {label}
+              </button>
+            </PaneTooltip>
           ))}
         </div>
         {surface === "commits" ? (
@@ -299,7 +318,22 @@ export function TimelineToolbar({
               groups={laneGroups}
               onChange={pickLane}
               placeholder="Select lane…"
-              className="max-w-[320px]"
+              className="max-w-[260px] min-w-0 shrink"
+            />
+            {commitScope === "lane" ? <LaneDriftPill lane={focusLane} baseName={null} /> : null}
+            <span className="min-w-0 flex-1" />
+            {commitListControls ? (
+              <>
+                <CommitSearchField />
+                <CommitScopeToggle />
+                <CommitFoldToggle />
+                <CommitColumnsMenu />
+              </>
+            ) : null}
+            <CommitFetchButton
+              laneId={focusLaneMachineId ? null : focusLaneId}
+              disabledReason={focusLaneMachineId ? "Fetch runs on the lane's own machine" : focusLane && !focusLaneHasWorktree ? "Lane worktree is missing" : null}
+              onFetched={() => onCommitGitActionComplete?.()}
             />
             {focusLaneMachineId ? null : <LaneGitActionsMenu
               laneId={focusLaneId}
@@ -654,15 +688,12 @@ function LaneGitActionsMenu({
         <button
           type="button"
           disabled={!laneId}
-          title={laneId ? "Lane git actions" : "Select a lane first"}
-          className={cn(
-            "flex h-6 shrink-0 items-center gap-1 rounded-md border px-2",
-            "border-white/[0.06] bg-white/[0.03] font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
-            "text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40",
-          )}
+          title={laneId ? "Fetch, pull, push, undo and more for this lane" : "Select a lane first"}
+          className={cn(WORK_TOOL_CHROME_CHIP, "shrink-0")}
+          data-testid="history-git-actions"
         >
-          <GitBranch size={12} />
-          Git actions
+          <GitBranch size={14} />
+          Git
         </button>
       </Popover.Trigger>
       <Popover.Portal>
