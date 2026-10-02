@@ -271,21 +271,17 @@ export function PrMergeCard({
 
   if (pr.stack) {
     return (
-      <div data-testid="pr-merge-card" data-kind="stack">
-        <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
-        <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
-          <Stack size={16} weight="fill" />
-          <span className="text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
-            GitHub Stack {pr.stack.position} of {pr.stack.size}
-          </span>
-        </div>
-        <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-          GitHub manages this stack&apos;s rebases, reviews, and merge order. Finish the merge on GitHub.
-        </p>
-        <button type="button" onClick={() => void window.ade.app.openExternal(pr.githubUrl)} style={prSolidButton({ height: 32, width: "100%" })}>
-          <ArrowSquareOut size={13} /> Review and merge on GitHub
-        </button>
-      </div>
+      <PrStackMergeCard
+        pr={pr}
+        stack={pr.stack}
+        status={status}
+        mergeMethod={mergeMethod}
+        actionBusy={actionBusy}
+        mergeBlockedReason={mergeBlockedReason}
+        notice={notice ?? null}
+        onMerge={onMerge}
+        onClose={onClose}
+      />
     );
   }
 
@@ -436,6 +432,117 @@ export function PrMergeCard({
           setDialog({ open: false, bypass: false });
         }}
       />
+    </div>
+  );
+}
+
+const STACK_MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
+
+/**
+ * Merge card for a PR in a GitHub Stack. GitHub merges a stack as one unit:
+ * every open PR from the stack base up to this one, all or none. The first
+ * click arms the button and the second one merges, because one click merges
+ * more than this PR.
+ */
+function PrStackMergeCard({
+  pr,
+  stack,
+  status,
+  mergeMethod,
+  actionBusy,
+  mergeBlockedReason,
+  notice,
+  onMerge,
+  onClose,
+}: {
+  pr: PrWithConflicts;
+  stack: NonNullable<PrWithConflicts["stack"]>;
+  status: PrStatus | null;
+  mergeMethod: MergeMethod;
+  actionBusy: boolean;
+  mergeBlockedReason: string | null;
+  notice: { tone: "success" | "error"; text: string } | null;
+  onMerge: (result: PrMergeDialogResult) => void;
+  onClose: () => void;
+}) {
+  const [method, setMethod] = React.useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
+  const [armed, setArmed] = React.useState(false);
+  React.useEffect(() => setArmed(false), [pr.id, status?.headSha]);
+  const canMerge = pr.state === "open";
+  const disabled = actionBusy || Boolean(mergeBlockedReason);
+  const scope = stack.position > 1 ? `PRs 1–${stack.position} of this stack` : "this PR";
+
+  const merge = () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    writeLastMergeMethod(method);
+    onMerge({ method, bypassRules: false, expectedHeadSha: status?.headSha ?? undefined });
+  };
+
+  return (
+    <div data-testid="pr-merge-card" data-kind="stack">
+      <CardHeader icon={GitMerge} title="Merge" onClose={onClose} />
+      <div className="flex items-center gap-2" style={{ color: COLORS.accent }}>
+        <Stack size={16} weight="fill" />
+        <span className="text-[13px] font-semibold" style={{ fontFamily: SANS_FONT }}>
+          GitHub Stack {stack.position} of {stack.size}
+        </span>
+      </div>
+      <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+        {canMerge
+          ? `GitHub merges ${scope} together, or none of them. GitHub checks the rules for each PR during the merge.`
+          : "GitHub manages this stack's rebases, reviews, and merge order."}
+      </p>
+      {canMerge ? (
+        <>
+          <div className="mb-2 flex gap-1" role="radiogroup" aria-label="Merge method">
+            {STACK_MERGE_METHODS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={method === option}
+                onClick={() => { setMethod(option); setArmed(false); }}
+                className="h-7 flex-1 rounded-md text-[11.5px]"
+                style={{
+                  color: method === option ? COLORS.textPrimary : COLORS.textMuted,
+                  background: method === option ? "color-mix(in srgb, var(--color-fg) 10%, transparent)" : "transparent",
+                  border: `1px solid ${COLORS.border}`,
+                  cursor: "pointer",
+                  fontFamily: SANS_FONT,
+                }}
+              >
+                {option === "squash" ? "Squash" : option === "merge" ? "Merge commit" : "Rebase"}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={merge}
+            disabled={disabled}
+            title={mergeBlockedReason ?? undefined}
+            data-testid="pr-stack-merge"
+            data-armed={armed || undefined}
+            className="mb-2 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold disabled:opacity-60"
+            style={{ color: "#fff", background: MERGE_BUTTON_FILL, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+          >
+            {actionBusy ? <CircleNotch size={13} className="animate-spin" /> : <GitMerge size={13} weight="bold" />}
+            {armed ? `Confirm: merge ${scope}` : stack.position > 1 ? `Merge stack up to #${pr.githubPrNumber}` : "Merge"}
+          </button>
+        </>
+      ) : null}
+      <button type="button" onClick={() => void window.ade.app.openExternal(pr.githubUrl)} style={prSolidButton({ height: 30, width: "100%" })}>
+        <ArrowSquareOut size={13} /> Open on GitHub
+      </button>
+      {mergeBlockedReason ? (
+        <div className="mt-2 text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>{mergeBlockedReason}</div>
+      ) : null}
+      {notice ? (
+        <div className="mt-2 text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
+      ) : null}
     </div>
   );
 }

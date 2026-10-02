@@ -1496,22 +1496,41 @@ export function PrDetailPane({
           <button type="button" onClick={() => setActionError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.danger, padding: 4 }}><X size={14} /></button>
         </div>
       )}
-      {actionResult && (
-        <div style={{
-          padding: "10px 20px",
-          background: actionResult.success ? "color-mix(in srgb, var(--color-success) 5%, transparent)" : "color-mix(in srgb, var(--color-error) 5%, transparent)",
-          borderBottom: `1px solid ${actionResult.success ? "color-mix(in srgb, var(--color-success) 20%, transparent)" : "color-mix(in srgb, var(--color-error) 20%, transparent)"}`,
-          fontFamily: SANS_FONT, fontSize: 12,
-          color: actionResult.success ? COLORS.success : COLORS.danger,
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {actionResult.success ? <CheckCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
-            <span>{actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}</span>
+      {actionResult && (() => {
+        // A stack merge that GitHub queued or is still running is not a failure.
+        const inFlight = !actionResult.success
+          && (actionResult.mergeStatus === "pending" || actionResult.mergeStatus === "enqueued");
+        const tone = actionResult.success ? "var(--color-success)" : inFlight ? "var(--color-accent)" : "var(--color-error)";
+        const color = actionResult.success ? COLORS.success : inFlight ? COLORS.accent : COLORS.danger;
+        const stackCount = actionResult.stackPrNumbers?.length ?? 0;
+        const text = actionResult.success
+          ? stackCount > 1
+            ? `Merged ${stackCount} stacked PRs (${actionResult.stackPrNumbers!.map((n) => `#${n}`).join(", ")})`
+            : `Merged PR #${actionResult.prNumber}`
+          : inFlight
+            ? actionResult.error ?? "GitHub is merging the stack."
+            : `Failed: ${actionResult.error ?? "unknown"}`;
+        return (
+          <div style={{
+            padding: "10px 20px",
+            background: `color-mix(in srgb, ${tone} 5%, transparent)`,
+            borderBottom: `1px solid color-mix(in srgb, ${tone} 20%, transparent)`,
+            fontFamily: SANS_FONT, fontSize: 12,
+            color,
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {actionResult.success
+                ? <CheckCircle size={14} weight="fill" />
+                : inFlight
+                  ? <CircleNotch size={14} className="animate-spin" />
+                  : <XCircle size={14} weight="fill" />}
+              <span>{text}</span>
+            </div>
+            <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
           </div>
-          <button type="button" onClick={() => setActionResult(null)} style={{ background: "none", border: "none", cursor: "pointer", color: actionResult.success ? COLORS.success : COLORS.danger, padding: 4 }} aria-label="Dismiss merge result"><X size={14} /></button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>

@@ -603,6 +603,14 @@ export type LandResult = {
   branchDeleted: boolean;
   laneArchived: boolean;
   error: string | null;
+  /**
+   * Set only for a GitHub Stack merge, which GitHub runs in the background.
+   * `enqueued` and `pending` come back with `success: false` and a message in
+   * `error`, so an older client never reads them as merged.
+   */
+  mergeStatus?: "merged" | "enqueued" | "pending" | null;
+  /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
+  stackPrNumbers?: number[] | null;
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";
@@ -727,7 +735,10 @@ export type LandPrArgs = {
    * someone's branch is their call, so the caller has to ask for it.
    */
   deleteRemoteBranch?: boolean;
-  /** When true, retry blocked merges with `gh pr merge --admin`. */
+  /**
+   * When true, retry blocked merges with `gh pr merge --admin`. For a GitHub
+   * Stack, sends `bypass_rules` with the async merge instead.
+   */
   bypassRules?: boolean;
   /** Custom merge commit title (`commit_title`). Ignored for the `rebase` method. */
   commitTitle?: string;

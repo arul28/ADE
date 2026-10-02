@@ -1565,7 +1565,12 @@ export function createGithubService({
         const body = data && typeof data === "object" && !Array.isArray(data)
           ? data as Record<string, unknown>
           : null;
+        // The async merge API puts its reason in `details.message`.
+        const details = body && body.details && typeof body.details === "object" && !Array.isArray(body.details)
+          ? body.details as Record<string, unknown>
+          : null;
         const message = (body ? asString(body.message) : "")
+          || (details ? asString(details.message) : "")
           || `GitHub API request failed (HTTP ${response.status})`;
         const errorMessages = body && Array.isArray(body.errors)
           ? body.errors
