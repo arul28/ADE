@@ -166,4 +166,35 @@ describe("createThreadCommentService", () => {
 
     expect(() => service.list({ sessionId: "s1" })).toThrow();
   });
+
+  it("keeps comments after a failed restore and retries persistence on the next read", () => {
+    const service = makeService();
+    const comment = service.create({
+      sessionId: "s1",
+      messageKey: "message:1",
+      messageExcerpt: "reply",
+      anchor: anchor("restore-me"),
+      body: "back it goes",
+    });
+    const taken = service.takeForSend("s1");
+    expect(taken.count).toBe(1);
+    expect(service.list({ sessionId: "s1" })).toHaveLength(0);
+
+    const fault = injectFsFault({ op: "renameSync", matchPath: (value) => value.includes("thread-comments") });
+    try {
+      taken.restore();
+    } finally {
+      fault.restore();
+    }
+
+    // The write failed, but the comment is still held and the next read retries
+    // persistence, so a fresh service sees it too.
+    expect(service.list({ sessionId: "s1" }).map((entry) => entry.id)).toEqual([comment.id]);
+    const reopened = createThreadCommentService({
+      chatSessionsDir: root!,
+      logger: { warn: vi.fn() },
+      onChanged: vi.fn(),
+    });
+    expect(reopened.list({ sessionId: "s1" }).map((entry) => entry.id)).toEqual([comment.id]);
+  });
 });

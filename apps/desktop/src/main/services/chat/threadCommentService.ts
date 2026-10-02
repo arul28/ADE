@@ -71,6 +71,12 @@ export function createThreadCommentService({
 }) {
   const dir = path.join(chatSessionsDir, "thread-comments");
   const cache = new Map<string, ChatThreadComment[]>();
+  /**
+   * Sessions whose in-memory list is newer than the file: a restore whose write
+   * failed keeps the comments visible here and retries persistence on the next
+   * read or write, so a transient disk failure cannot lose them.
+   */
+  const pendingPersist = new Set<string>();
 
   const fileFor = (sessionId: string): string => {
     if (!isThreadCommentSessionId(sessionId)) {
@@ -84,7 +90,10 @@ export function createThreadCommentService({
 
   const read = (sessionId: string): ChatThreadComment[] => {
     const cached = cache.get(sessionId);
-    if (cached) return cached;
+    if (cached) {
+      flushPendingPersist(sessionId);
+      return cache.get(sessionId) ?? cached;
+    }
     let comments: ChatThreadComment[] = [];
     try {
       const parsed: unknown = JSON.parse(fs.readFileSync(fileFor(sessionId), "utf8"));
@@ -111,7 +120,7 @@ export function createThreadCommentService({
     return comments;
   };
 
-  const write = (sessionId: string, comments: ChatThreadComment[]): void => {
+  const persist = (sessionId: string, comments: ChatThreadComment[]): void => {
     const filePath = fileFor(sessionId);
     if (comments.length === 0) {
       fs.rmSync(filePath, { force: true });
@@ -120,7 +129,28 @@ export function createThreadCommentService({
       const file: ThreadCommentFile = { version: 1, comments };
       writeFileAtomic(filePath, JSON.stringify(file));
     }
+  };
+
+  /** Retries a restore whose write failed, without overwriting newer disk state. */
+  const flushPendingPersist = (sessionId: string): void => {
+    if (!pendingPersist.has(sessionId)) return;
+    const comments = cache.get(sessionId);
+    if (!comments) {
+      pendingPersist.delete(sessionId);
+      return;
+    }
+    try {
+      persist(sessionId, comments);
+      pendingPersist.delete(sessionId);
+    } catch {
+      // Still down; the list stays in memory and is retried on the next call.
+    }
+  };
+
+  const write = (sessionId: string, comments: ChatThreadComment[]): void => {
+    persist(sessionId, comments);
     cache.set(sessionId, comments);
+    pendingPersist.delete(sessionId);
     onChanged(sessionId, comments);
   };
 
@@ -206,7 +236,19 @@ export function createThreadCommentService({
         try {
           const latest = read(sessionId);
           const present = new Set(latest.map((comment) => comment.id));
-          write(sessionId, [...taken.filter((comment) => !present.has(comment.id)), ...latest]);
+          const merged = [...taken.filter((comment) => !present.has(comment.id)), ...latest];
+          try {
+            write(sessionId, merged);
+          } catch (error) {
+            logger.warn("agent_chat.thread_comments_restore_failed", {
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            // A transient write failure must not lose the comments: keep them in
+            // memory and retry persistence on the next read or write.
+            cache.set(sessionId, merged);
+            pendingPersist.add(sessionId);
+          }
         } catch (error) {
           logger.warn("agent_chat.thread_comments_restore_failed", {
             sessionId,
