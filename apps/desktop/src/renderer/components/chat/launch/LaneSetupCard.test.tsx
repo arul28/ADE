@@ -274,6 +274,22 @@ describe("LaneSetupTranscriptCard", () => {
     await waitFor(() => expect(get).toHaveBeenCalledWith({ launchId: "launch-1" }, undefined));
   });
 
+  it("does not ask for a completed launch that only carries a warning", async () => {
+    const get = vi.fn(async () => null);
+    chatLaunchApi.get = get;
+    const warned = snapshot({
+      phase: "completed",
+      agentStarted: true,
+      sessionCreated: true,
+      stages: [stage("fetch", "warning", { detail: "used last-known origin/main" }), stage("checkout", "done"), stage("agent", "done")],
+    });
+    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(warned)} />);
+    await act(async () => { await Promise.resolve(); });
+    // A warning is not a failure; a completed launch has no Retry to offer, so
+    // it must not spend a cross-machine read.
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("reads payload rows by stage key, with warnings and the template from the Template metric", () => {
     const done = snapshot({
       phase: "completed",
