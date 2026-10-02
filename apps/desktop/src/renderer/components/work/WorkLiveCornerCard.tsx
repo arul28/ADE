@@ -131,12 +131,47 @@ const BLANK_FRAME = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAAL
  * its preview stream, which itself emits one. Diffing the parts a human would
  * call activity is what keeps the most-recent-tool clock honest.
  */
-function browserActivitySignature(status: BuiltInBrowserStatus | null): string {
+/**
+ * The tab the card pictures: this chat's own tab when it has one, else the
+ * browser's active tab.
+ *
+ * It used to be the active tab only, so an agent working in a background tab
+ * (`--tab <id>`, or a tab it opened without activating) floated nothing over
+ * its chat while a person's tab sat in front. Among several tabs the chat
+ * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
+ */
+function browserTabForChat(
+  status: BuiltInBrowserStatus | null,
+  chatSessionId: string | null,
+): BuiltInBrowserStatus["tabs"][number] | null {
+  if (!status || !Array.isArray(status.tabs)) return null;
+  const active = status.tabs.find((tab) => tab.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
+  let owned: BuiltInBrowserStatus["tabs"][number] | null = null;
+  let ownedAt = -1;
+  for (const tab of status.tabs) {
+    if (tab.ownerChatSessionId !== chatSessionId) continue;
+    const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
+    if (claimedAt > ownedAt) {
+      owned = tab;
+      ownedAt = claimedAt;
+    }
+  }
+  return owned ?? active;
+}
+
+/**
+ * What counts as browser activity for this chat: a change to the tab the card
+ * pictures. It used to read the active tab only, so an agent navigating its
+ * own background tab (agent opens never take focus) changed nothing here and
+ * the card never woke for it.
+ */
+function browserActivitySignature(status: BuiltInBrowserStatus | null, chatSessionId: string | null): string {
   if (!status || !Array.isArray(status.tabs)) return "";
-  const tab = status.tabs.find((entry) => entry.id === status.activeTabId) ?? status.tabs[0] ?? null;
+  const tab = browserTabForChat(status, chatSessionId);
   if (!tab) return `${status.tabs.length}`;
   return [
-    status.activeTabId ?? "",
+    tab.id,
     status.tabs.length,
     tab.url ?? "",
     tab.title ?? "",
@@ -290,6 +325,9 @@ export function WorkLiveCornerCard({
   const activityCommitRef = useRef<number | null>(null);
   /** Resize gesture state: where the pointer started and how wide the card was. */
   const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  /** The chat on screen, for the feed handlers, which outlive a chat switch. */
+  const chatSessionIdRef = useRef(chatSessionId);
+  chatSessionIdRef.current = chatSessionId;
 
   /**
    * Records that a tool did something.
@@ -334,7 +372,7 @@ export function WorkLiveCornerCard({
 
   const onBrowserEvent = useCallback((event: BuiltInBrowserEventPayload) => {
     if (event.type === "status" || event.type === "open-request") {
-      const signature = browserActivitySignature(event.status);
+      const signature = browserActivitySignature(event.status, chatSessionIdRef.current);
       // An "open-request" is somebody asking for the browser, so it always
       // counts; a plain status only counts when something actually changed.
       if (event.type === "open-request" || signature !== browserSignatureRef.current) {
@@ -372,7 +410,7 @@ export function WorkLiveCornerCard({
    */
   const onBrowserStatusSettled = useCallback((status: BuiltInBrowserStatus | null) => {
     if (!status || !Array.isArray(status.tabs) || status.tabs.length === 0) return;
-    const signature = browserActivitySignature(status);
+    const signature = browserActivitySignature(status, chatSessionIdRef.current);
     if (signature === browserSignatureRef.current) return;
     browserSignatureRef.current = signature;
     bump("browser");
@@ -397,31 +435,10 @@ export function WorkLiveCornerCard({
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
-  /**
-   * The tab the card pictures: this chat's own tab when it has one, else the
-   * browser's active tab.
-   *
-   * It used to be the active tab only, so an agent working in a background tab
-   * (`--tab <id>`, or a tab it opened without activating) floated nothing over
-   * its chat while a person's tab sat in front. Among several tabs the chat
-   * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
-   */
-  const activeBrowserTab = useMemo(() => {
-    if (!browserStatus) return null;
-    const active = browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
-    if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
-    let owned: (typeof browserStatus.tabs)[number] | null = null;
-    let ownedAt = -1;
-    for (const tab of browserStatus.tabs) {
-      if (tab.ownerChatSessionId !== chatSessionId) continue;
-      const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
-      if (claimedAt > ownedAt) {
-        owned = tab;
-        ownedAt = claimedAt;
-      }
-    }
-    return owned ?? active;
-  }, [browserStatus, chatSessionId]);
+  const activeBrowserTab = useMemo(
+    () => browserTabForChat(browserStatus, chatSessionId),
+    [browserStatus, chatSessionId],
+  );
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool

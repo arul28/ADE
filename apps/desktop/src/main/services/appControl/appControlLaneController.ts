@@ -121,6 +121,12 @@ export type CreateAppControlServiceArgs = {
    * no lane. When absent, `resolveLaneId` is asked with the chat id instead.
    */
   resolveChatLaneId?: ((chatSessionId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The worktree of a lane, or null. A launch with no `cwd` runs there, not in
+   * the project root: the project root is the primary checkout, so a lane's
+   * agent used to start the primary checkout's app instead of its own.
+   */
+  resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
   onEvent?: ((payload: AppControlEventPayload) => void) | null;
   /**
    * macOS recording engine. Defaults to a private `ade-desktop-driver` that is

@@ -1311,6 +1311,26 @@ registerAdeProtocolHandler({
   flushLog: flushMachineMainLog,
 });
 
+// A dev app that lost the single-instance lock shares its user-data folder with
+// another running dev app. Electron then never fires `ready`: no window, no
+// error, a process that waits forever. Say so and exit instead.
+if (!app.isPackaged && !app.hasSingleInstanceLock()) {
+  const userData = app.getPath("userData");
+  let holder = "another ADE dev app";
+  try {
+    const target = fs.readlinkSync(path.join(userData, "SingletonLock"));
+    holder = `another ADE dev app (pid ${target.slice(target.lastIndexOf("-") + 1)})`;
+  } catch {
+    // Windows, or no readable lock link: the generic name will do.
+  }
+  const message = `${holder} is already using ${userData}. Close it, or start this one with `
+    + "ADE_DESKTOP_USER_DATA_PATH=<another folder>. `npm run dev:desktop` from a lane worktree picks a folder of its own.";
+  logMachineEvent("error", "desktop.dev_user_data_in_use", { userData, holder });
+  flushMachineMainLog();
+  process.stderr.write(`[ade] ${message}\n`);
+  app.exit(1);
+}
+
 let pendingProjectOpenFiles: string[] = [];
 let handleProjectOpenFile: ((filePath: string) => void) | null = null;
 
@@ -4983,6 +5003,8 @@ app.whenReady().then(async () => {
         const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
         return chatSession?.laneId ?? null;
       },
+      resolveLaneWorktreePath: async (laneId) =>
+        (await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null))?.worktreePath ?? null,
       onEvent: (payload) => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });

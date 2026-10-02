@@ -15702,6 +15702,11 @@ export function createAgentChatService(args: {
     const agent = openCodeAgentFor(permMode);
     const model = openCodeModelRefFor(managed, descriptor);
     const instructions = buildOpenCodeSessionInstructions(managed, runtimeShell.permissionMode);
+    // The session environment below is built once, here. Without this, a
+    // daemon-hosted OpenCode chat got no `ADE_BROWSER_ACTOR_TOKEN` and every
+    // `ade browser` call it made was refused.
+    const browserCapabilityReady = prepareBrowserActorCapability(managed);
+    if (browserCapabilityReady) await browserCapabilityReady;
     let handle: OpenCodeSessionHandle;
     try {
       handle = await startOpenCodeChatSession({
