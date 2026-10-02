@@ -78,7 +78,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const [commitOnLaneHistory, setCommitOnLaneHistory] = useState(true);
   const [selectedCommitLaneId, setSelectedCommitLaneId] = useState<string | null>(null);
   /** The lane whose work the selected commit is, when the graph knows. */
-  const [commitOwnerLaneId, setCommitOwnerLaneId] = useState<string | null>(null);
+  // undefined: not known (deep link) → the focused lane; null: base history, no lane.
+  const [commitOwnerLaneId, setCommitOwnerLaneId] = useState<string | null | undefined>(undefined);
   /** The selected commit's changes fill the page (Enter / double-click / "Changes"). */
   const [diffTarget, setDiffTarget] = useState<{ commit: GitCommitSummary; path: string | null } | null>(null);
   const openCommitChanges = useCallback((commit: GitCommitSummary, path: string | null = null) => {
@@ -484,7 +485,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   );
 
   const handleSelectCommit = useCallback(
-    (commit: GitCommitSummary, ownerLaneId: string | null = null) => {
+    (commit: GitCommitSummary, ownerLaneId?: string | null) => {
       setCommitOwnerLaneId(ownerLaneId);
       setSelectedCommit(commit);
       setSelectedEventId(null);
@@ -538,6 +539,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   // A lane switch closes a full-page diff of the previous lane's commit.
   useEffect(() => {
     setDiffTarget(null);
+    setCommitOwnerLaneId(undefined);
   }, [focusLaneId, focusLaneMachineId, surface]);
 
   const selectedEvent: TimelineEvent | null = selectedEventId
@@ -580,9 +582,11 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     [lanes],
   );
 
-  const commitOwnerLane = commitOwnerLaneId
-    ? machineLanes.find((lane) => lane.id === commitOwnerLaneId) ?? null
-    : focusLane;
+  const commitOwnerLane = commitOwnerLaneId === undefined
+    ? focusLane
+    : commitOwnerLaneId
+      ? machineLanes.find((lane) => lane.id === commitOwnerLaneId) ?? null
+      : null;
   const commitOwnerLaneColor = commitOwnerLane
     ? getLaneAccent(commitOwnerLane, Math.max(0, machineLanes.filter((lane) => !lane.archivedAt).indexOf(commitOwnerLane)))
     : null;
@@ -704,7 +708,10 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           relatedEvents={relatedEventsForCommit}
           ownerLaneColor={commitOwnerLaneColor}
           onOpenChanges={openCommitChanges}
-          onSelectSha={setSelectedCommitSha}
+          onSelectSha={(sha) => {
+            setCommitOwnerLaneId(undefined);
+            setSelectedCommitSha(sha);
+          }}
           onOpenEvent={handleSelectEvent}
           onClose={handleCloseDetail}
           onNavigateToLane={handleNavigateToLane}

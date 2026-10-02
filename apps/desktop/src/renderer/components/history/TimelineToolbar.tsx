@@ -23,11 +23,7 @@ import {
   shouldShowMachineChips,
   useAllMachineLanes,
 } from "../../state/laneMachineRouting";
-import {
-  MachineLaneSelect,
-  laneOptionLabel,
-  type MachineLaneSelectGroup,
-} from "../lanes/MachineLaneSelect";
+import { HistoryLanePicker, type HistoryLanePickerGroup } from "./HistoryLanePicker";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -243,29 +239,23 @@ export function TimelineToolbar({
   // bare id on the tab's machine, `machineId:laneId` elsewhere.
   const allMachineLanes = useAllMachineLanes(surface === "commits");
   const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
-  const laneGroups = useMemo<MachineLaneSelectGroup[]>(() => {
+  const laneGroups = useMemo<HistoryLanePickerGroup[]>(() => {
     if (!multiMachine) {
       return [{
         key: "current",
         machineName: "",
-        online: true,
         disabledReason: null,
-        options: lanes.map((lane) => ({ value: lane.id, label: laneOptionLabel(lane) })),
+        options: lanes.map((lane) => ({ value: lane.id, lane })),
       }];
     }
     return allMachineLanes.machines
       .map((machine) => ({
         key: machine.machineId,
         machineName: machine.machineName,
-        online: machine.online,
         disabledReason: machine.isActiveBinding ? null : machineBlockedReason(machine),
         options: allMachineLanes.lanes
           .filter((row) => row.machineId === machine.machineId)
-          .map((row) => ({
-            value: row.key,
-            label: laneOptionLabel(row.lane),
-            title: `${laneOptionLabel(row.lane)} · ${machine.machineName}`,
-          })),
+          .map((row) => ({ value: row.key, lane: row.lane })),
       }))
       .filter((group) => group.options.length > 0);
   }, [allMachineLanes, lanes, multiMachine]);
@@ -297,6 +287,9 @@ export function TimelineToolbar({
                 type="button"
                 role="tab"
                 aria-selected={surface === value}
+                // A mouse press does not take focus, so no ring is left
+                // behind; the keyboard still focuses and shows it.
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => setSurface(value)}
                 className={cn(
                   "flex h-6 items-center gap-1.5 rounded-[6px] px-2 text-[12px] font-medium transition-colors duration-100",
@@ -313,13 +306,7 @@ export function TimelineToolbar({
         </div>
         {surface === "commits" ? (
           <>
-            <MachineLaneSelect
-              value={laneSelectValue}
-              groups={laneGroups}
-              onChange={pickLane}
-              placeholder="Select lane…"
-              className="max-w-[260px] min-w-0 shrink"
-            />
+            <HistoryLanePicker value={laneSelectValue} groups={laneGroups} onChange={pickLane} />
             {commitScope === "lane" ? <LaneDriftPill lane={focusLane} baseName={null} /> : null}
             <span className="min-w-0 flex-1" />
             {commitListControls ? (

@@ -47,7 +47,26 @@ export type CommitGraphLayout = {
   graphWidth: number;
   totalHeight: number;
   shaToRow: Map<string, number>;
+  /** A divider band below `afterRow` (-1: above the first row), where a lane meets its base; or null. */
+  gap: { afterRow: number; height: number } | null;
+  /** Top y of a row, the gap included. */
+  rowTop: (row: number) => number;
+  /** Centre y of a row, the gap included. */
+  rowCenter: (row: number) => number;
 };
+
+export type CommitGraphLayoutOptions = {
+  /** A commit whose line owns column 0 from the top (the base branch tip), so the trunk stays leftmost. */
+  trunkSha?: string | null;
+  /** Open a band of `gapHeight` px below this row (-1: above the first); lines run through it. */
+  gapAfterRow?: number | null;
+  gapHeight?: number;
+};
+
+function rowGeometry(gap: CommitGraphLayout["gap"]) {
+  const rowTop = (row: number) => row * COMMIT_ROW_HEIGHT + (gap && row > gap.afterRow ? gap.height : 0);
+  return { rowTop, rowCenter: (row: number) => rowTop(row) + COMMIT_ROW_HEIGHT / 2 };
+}
 
 export function toGraphCommits(commits: readonly GitCommitSummary[]): GraphCommit[] {
   return commits.map((commit) => ({
@@ -162,9 +181,9 @@ export function branchTipKeep(
  */
 export function buildCommitGraphLayout(
   input: readonly GitCommitSummary[] | readonly GraphCommit[],
-  /** A commit whose line owns column 0 from the top (the base branch tip), so the trunk stays leftmost. */
-  trunkSha: string | null = null,
+  options: CommitGraphLayoutOptions = {},
 ): CommitGraphLayout {
+  const trunkSha = options.trunkSha ?? null;
   const rows: GraphCommit[] = input.length > 0 && "commit" in (input[0] as object)
     ? (input as GraphCommit[])
     : toGraphCommits(input as GitCommitSummary[]);
@@ -241,13 +260,20 @@ export function buildCommitGraphLayout(
   });
 
   const columnCount = maxCols;
+  const gapAfter = options.gapAfterRow;
+  const gap = gapAfter != null && gapAfter >= -1 && gapAfter < rows.length - 1 && (options.gapHeight ?? 0) > 0
+    ? { afterRow: gapAfter, height: options.gapHeight! }
+    : null;
+  const geometry = rowGeometry(gap);
   return {
     nodes,
     edges,
     columnCount,
     graphWidth: columnCount === 0 ? 0 : COMMIT_GRAPH_PAD_LEFT * 2 + columnCount * COMMIT_GRAPH_COL_WIDTH,
-    totalHeight: rows.length * COMMIT_ROW_HEIGHT,
+    totalHeight: rows.length * COMMIT_ROW_HEIGHT + (gap?.height ?? 0),
     shaToRow,
+    gap,
+    ...geometry,
   };
 }
 
@@ -271,22 +297,25 @@ function bend(x1: number, y1: number, x2: number, y2: number): string {
  * straight down the lane, then into the parent within the last row. An open
  * edge runs to the bottom of the loaded window.
  */
-export function commitEdgePathD(edge: CommitGraphEdge): string {
+export function commitEdgePathD(
+  edge: CommitGraphEdge,
+  geometry: Pick<CommitGraphLayout, "rowTop" | "rowCenter"> = rowGeometry(null),
+): string {
   const x0 = columnCenterX(edge.fromCol);
-  const y0 = rowCenterY(edge.fromRow);
+  const y0 = geometry.rowCenter(edge.fromRow);
   const xl = columnCenterX(edge.laneCol);
   if (edge.open) {
-    const yEnd = edge.toRow * COMMIT_ROW_HEIGHT;
-    const yTurn = Math.min(yEnd, y0 + COMMIT_ROW_HEIGHT);
+    const yEnd = geometry.rowTop(edge.toRow);
+    const yTurn = Math.min(yEnd, geometry.rowCenter(edge.fromRow + 1));
     return `M${x0} ${y0} ${bend(x0, y0, xl, yTurn)} L${xl} ${yEnd}`;
   }
   const xt = columnCenterX(edge.toCol);
-  const yt = rowCenterY(edge.toRow);
+  const yt = geometry.rowCenter(edge.toRow);
   if (edge.toRow === edge.fromRow + 1) {
     return `M${x0} ${y0} ${bend(x0, y0, xt, yt)}`;
   }
-  const yOut = y0 + COMMIT_ROW_HEIGHT;
-  const yIn = yt - COMMIT_ROW_HEIGHT;
+  const yOut = geometry.rowCenter(edge.fromRow + 1);
+  const yIn = geometry.rowCenter(edge.toRow - 1);
   return `M${x0} ${y0} ${bend(x0, y0, xl, yOut)} L${xl} ${yIn} ${bend(xl, yIn, xt, yt)}`;
 }
 

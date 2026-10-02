@@ -11,6 +11,7 @@ import type {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { BranchIcon } from "../ui/vcsIcons";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { lanePrTagRoutePath } from "../lanes/lanePageModel";
 import { boundMachineLanePrs, useLanePrsByLaneId } from "../terminals/useLanePrs";
@@ -52,6 +53,8 @@ const SEARCH_PAGE_SIZE = 500;
 const SEARCH_DEBOUNCE_MS = 70;
 /** Folded to branch tips, older pages are read until this many rows show. */
 const FOLD_TARGET_ROWS = 60;
+/** The band between a lane's own commits and its base history. */
+const DIVIDER_HEIGHT = 30;
 
 /** Below this width the author and SHA columns fold away; above the second they return. */
 const COMPACT_ENTER_PX = 560;
@@ -73,6 +76,11 @@ function formatTimelineError(err: unknown): string {
     return "Lane worktree is missing. Restore or recreate the lane worktree before viewing commits.";
   }
   return message || "Unable to load commit history.";
+}
+
+/** Same person across rows, by email when git has one. */
+function authorKey(commit: GitCommitSummary): string {
+  return (commit.authorEmail || commit.authorName).toLowerCase();
 }
 
 function copyText(text: string): void {
@@ -187,6 +195,10 @@ type RowProps = {
   graphWidth: number;
   owner: string;
   selected: boolean;
+  /** Base history under a lane's own commits: drawn quieter. */
+  muted: boolean;
+  /** "hidden": no author column; "blank": same author as the row above. */
+  author: "shown" | "blank" | "hidden";
   isHead: boolean;
   badges: CommitRefBadge[] | undefined;
   columns: CommitColumns;
@@ -210,6 +222,8 @@ const CommitRow = React.memo(function CommitRow({
   graphWidth,
   owner,
   selected,
+  muted,
+  author,
   isHead,
   badges,
   columns,
@@ -255,7 +269,7 @@ const CommitRow = React.memo(function CommitRow({
     >
       {selected ? <span aria-hidden className="absolute bottom-1 left-0 top-1 w-[2px] rounded-r bg-[var(--color-accent)]" /> : null}
       <span className="shrink-0" style={{ width: graphWidth }} />
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", muted && !selected ? "opacity-[0.62]" : null)}>
         {badges && badges.length > 0 ? (
           <CommitRefBadges
             badges={badges}
@@ -299,18 +313,22 @@ const CommitRow = React.memo(function CommitRow({
           )
         ) : null}
       </span>
-      {columns.author && !compact ? (
+      {columns.author && !compact && author !== "hidden" ? (
         <span
-          className={cn("flex shrink-0 items-center gap-1.5 overflow-hidden", medium ? "w-4" : "w-[132px]")}
+          className={cn("flex shrink-0 items-center gap-1.5 overflow-hidden", medium ? "w-4" : "w-[132px]", muted && !selected ? "opacity-[0.62]" : null)}
           title={commit.authorEmail ? `${commit.authorName} <${commit.authorEmail}>` : commit.authorName}
         >
-          <AuthorAvatar name={commit.authorName} email={commit.authorEmail} />
-          {medium ? null : <span className="min-w-0 truncate text-[12px] text-muted-fg">{commit.authorName}</span>}
+          {author === "shown" ? (
+            <>
+              <AuthorAvatar name={commit.authorName} email={commit.authorEmail} />
+              {medium ? null : <span className="min-w-0 truncate text-[12px] text-muted-fg">{commit.authorName}</span>}
+            </>
+          ) : null}
         </span>
       ) : null}
       {columns.date ? (
         <span
-          className="w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-muted-fg/70"
+          className={cn("w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-muted-fg/70", muted && !selected ? "opacity-[0.62]" : null)}
           title={new Date(commit.authoredAt).toLocaleString()}
         >
           {shortWhen(commit.authoredAt)}
@@ -379,6 +397,10 @@ export function CommitHistoryView({
   commitsRef.current = commits;
   /** Scroll anchor captured before a refresh replaces the rows. */
   const anchorRef = useRef<{ sha: string; delta: number } | null>(null);
+  /** The lane whose newest commit was opened on arrival; cleared when the lane changes. */
+  const autoSelectedRef = useRef<string | null>(null);
+  /** The lane the loaded rows belong to, so a lane switch never acts on the previous lane's rows. */
+  const rowsLaneRef = useRef<string | null>(null);
 
   /* ── Loading ── */
 
@@ -411,11 +433,14 @@ export function CommitHistoryView({
       if (opts.keepAnchor) {
         const el = scrollRef.current;
         if (el) {
-          const topIndex = Math.floor(el.scrollTop / COMMIT_ROW_HEIGHT);
+          const geometry = layoutRef.current;
+          let topIndex = Math.floor(el.scrollTop / COMMIT_ROW_HEIGHT);
+          while (topIndex > 0 && geometry.rowTop(topIndex) > el.scrollTop) topIndex -= 1;
           const sha = graphRowsRef.current[topIndex]?.commit.sha;
-          if (sha) anchorRef.current = { sha, delta: el.scrollTop - topIndex * COMMIT_ROW_HEIGHT };
+          if (sha) anchorRef.current = { sha, delta: el.scrollTop - geometry.rowTop(topIndex) };
         }
       }
+      rowsLaneRef.current = laneId;
       setCommits(rows);
       setBranches(branchRows);
       setHasMore(rows.length >= target);
@@ -461,8 +486,12 @@ export function CommitHistoryView({
     setLoading(false);
     setLoadingMore(false);
     anchorRef.current = null;
+    rowsLaneRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [laneId, scope]);
+  useEffect(() => {
+    autoSelectedRef.current = null;
+  }, [laneId]);
 
   useEffect(() => {
     if (!active || !laneId) return;
@@ -549,14 +578,16 @@ export function CommitHistoryView({
     return assignCommitOwners({ commitsNewestFirst: commits, base, tips });
   }, [baseName, baseSha, branchTip, commits, focusLane, headSha, lanesByBranch, liveLanes]);
 
+  // Colour means "a lane's own work". The base line (main, or the primary
+  // lane) is neutral so no lane colour can be mistaken for it; other branches
+  // are fainter still.
   const colorOf = useCallback((owner: string): string => {
-    const lane = laneColor.get(owner);
-    if (lane) return `color-mix(in srgb, ${lane} 86%, var(--color-bg))`;
-    if (owner.startsWith("base:")) {
-      const primary = primaryLane ? laneColor.get(primaryLane.id) : null;
-      return primary ? `color-mix(in srgb, ${primary} 86%, var(--color-bg))` : "color-mix(in srgb, var(--color-fg) 55%, transparent)";
+    if (owner !== primaryLane?.id) {
+      const lane = laneColor.get(owner);
+      if (lane) return lane;
     }
-    return "color-mix(in srgb, var(--color-fg) 32%, transparent)";
+    if (owner.startsWith("col:")) return "color-mix(in srgb, var(--color-fg) 24%, transparent)";
+    return "color-mix(in srgb, var(--color-fg) 46%, transparent)";
   }, [laneColor, primaryLane]);
 
   /* ── Refs and PRs ── */
@@ -607,11 +638,39 @@ export function CommitHistoryView({
   const graphRowsRef = useRef(graphRows);
   graphRowsRef.current = graphRows;
 
+  // "This lane": a band sits under the lane's oldest own commit, where its
+  // base history starts. Base commits merged into the lane can sit above it;
+  // they are drawn as base. A lane with no commits of its own gets the band
+  // on top.
+  const ownLaneId = scope === "lane" && focusLane && focusLane.laneType !== "primary" ? focusLane.id : null;
+  const dividerAfterRow = useMemo(() => {
+    if (!ownLaneId || matches || graphRows.length === 0) return null;
+    let last = -1;
+    graphRows.forEach((row, index) => {
+      if (owners.get(row.commit.sha) === ownLaneId) last = index;
+    });
+    return last < graphRows.length - 1 ? last : null;
+  }, [graphRows, matches, owners, ownLaneId]);
+
   // The base branch keeps column 0 so every lane branches off to its right.
   const layout: CommitGraphLayout = useMemo(
-    () => buildCommitGraphLayout(graphRows, scope === "lanes" ? baseSha : null),
-    [baseSha, graphRows, scope],
+    () => buildCommitGraphLayout(graphRows, {
+      trunkSha: scope === "lanes" ? baseSha : null,
+      gapAfterRow: dividerAfterRow,
+      gapHeight: DIVIDER_HEIGHT,
+    }),
+    [baseSha, dividerAfterRow, graphRows, scope],
   );
+
+  // One author for everything loaded says nothing per row; with several, a
+  // row names its author only where it changes.
+  const singleAuthor = useMemo(() => {
+    const first = graphRows[0]?.commit;
+    return first ? graphRows.every((row) => authorKey(row.commit) === authorKey(first)) : true;
+  }, [graphRows]);
+
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
 
   const graphWidth = Math.min(layout.graphWidth, COMMIT_GRAPH_PAD_LEFT * 2 + MAX_GRAPH_COLUMNS * COMMIT_GRAPH_COL_WIDTH);
 
@@ -644,13 +703,32 @@ export function CommitHistoryView({
   /* ── Virtual rows ── */
 
   const rowCount = graphRows.length;
+  const gapAfter = layout.gap?.afterRow ?? null;
+  /** Virtual index → commit row, the divider band, or the footer. */
+  const itemAt = useCallback((index: number): { kind: "row"; row: number } | { kind: "divider" } | { kind: "footer" } => {
+    if (gapAfter != null) {
+      if (index === gapAfter + 1) return { kind: "divider" };
+      if (index > gapAfter + 1) index -= 1;
+    }
+    return index < rowCount ? { kind: "row", row: index } : { kind: "footer" };
+  }, [gapAfter, rowCount]);
+  const virtualIndexOf = useCallback(
+    (row: number) => (gapAfter != null && row > gapAfter ? row + 1 : row),
+    [gapAfter],
+  );
   const virtualizer = useVirtualizer({
-    count: rowCount + 1,
+    count: rowCount + 1 + (gapAfter != null ? 1 : 0),
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => COMMIT_ROW_HEIGHT,
-    getItemKey: (index) => graphRows[index]?.commit.sha ?? "__footer__",
+    estimateSize: (index) => (itemAt(index).kind === "divider" ? DIVIDER_HEIGHT : COMMIT_ROW_HEIGHT),
+    getItemKey: (index) => {
+      const item = itemAt(index);
+      return item.kind === "row" ? graphRows[item.row]!.commit.sha : `__${item.kind}__`;
+    },
     overscan: 16,
   });
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [gapAfter, virtualizer]);
   const virtualItems = virtualizer.getVirtualItems();
 
   // Put the anchored commit back where it was after a refresh.
@@ -659,8 +737,8 @@ export function CommitHistoryView({
     if (!anchor) return;
     anchorRef.current = null;
     const index = graphRows.findIndex((row) => row.commit.sha === anchor.sha);
-    if (index >= 0 && scrollRef.current) scrollRef.current.scrollTop = index * COMMIT_ROW_HEIGHT + anchor.delta;
-  }, [graphRows]);
+    if (index >= 0 && scrollRef.current) scrollRef.current.scrollTop = layout.rowTop(index) + anchor.delta;
+  }, [graphRows, layout]);
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -702,12 +780,12 @@ export function CommitHistoryView({
         ? 0
         : Math.max(0, Math.min(count - 1, selectedIndex + (event.key === "ArrowDown" ? 1 : -1)));
       selectIndex(next);
-      virtualizer.scrollToIndex(next, { align: "auto" });
+      virtualizer.scrollToIndex(virtualIndexOf(next), { align: "auto" });
     } else if (event.key === "Enter" && selectedIndex >= 0) {
       event.preventDefault();
       openIndex(selectedIndex);
     }
-  }, [openIndex, selectIndex, selectedIndex, virtualizer]);
+  }, [openIndex, selectIndex, selectedIndex, virtualIndexOf, virtualizer]);
 
   const focusOwner = useCallback((owner: string | null) => {
     applyGraphFocus(rootRef.current, focusStyleRef.current, owner);
@@ -725,10 +803,10 @@ export function CommitHistoryView({
     if (row != null) selectIndex(Number(row));
   }, [selectIndex]);
 
-  // The first load of a lane opens its newest commit, so the details pane is never blank.
-  const autoSelectedRef = useRef<string | null>(null);
+  // Arriving on a lane opens its newest commit, so the details pane is never blank.
   useEffect(() => {
     if (!laneId || selectedSha || graphRows.length === 0 || autoSelectedRef.current === laneId) return;
+    if (rowsLaneRef.current !== laneId) return;
     autoSelectedRef.current = laneId;
     const index = Math.max(0, headSha ? graphRows.findIndex((row) => row.commit.sha === headSha) : 0);
     selectIndex(index);
@@ -790,8 +868,11 @@ export function CommitHistoryView({
 
   if (!laneId) return <div className="flex-1" />;
 
-  const firstRow = virtualItems[0]?.index ?? 0;
-  const lastRow = Math.min(rowCount - 1, virtualItems[virtualItems.length - 1]?.index ?? 0);
+  const firstItem = virtualItems[0] ? itemAt(virtualItems[0].index) : null;
+  const lastItem = virtualItems.length ? itemAt(virtualItems[virtualItems.length - 1]!.index) : null;
+  const firstRow = firstItem?.kind === "row" ? firstItem.row : Math.max(0, (gapAfter ?? 0));
+  const lastRow = lastItem?.kind === "row" ? lastItem.row : rowCount - 1;
+  const behind = Math.max(0, focusLane?.status?.behind ?? 0);
   const initialLoading = loading && commits.length === 0 && !error;
 
   let footer: React.ReactNode;
@@ -895,7 +976,27 @@ export function CommitHistoryView({
           <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
             <CommitGraphLayer layout={layout} paint={paint} firstRow={firstRow} lastRow={lastRow} width={graphWidth} />
             {virtualItems.map((item) => {
-              if (item.index >= rowCount) {
+              const kind = itemAt(item.index);
+              if (kind.kind === "divider") {
+                return (
+                  <div
+                    key="__divider__"
+                    className="absolute left-0 right-0 flex items-center gap-2 pr-3 text-[11.5px]"
+                    style={{ height: DIVIDER_HEIGHT, transform: `translateY(${item.start}px)`, paddingLeft: graphWidth + 8 }}
+                    data-testid="history-base-divider"
+                  >
+                    <span className="inline-flex shrink-0 items-center gap-1 font-medium text-fg/75">
+                      <BranchIcon size={11} className="opacity-70" />
+                      {baseName || "base"}
+                    </span>
+                    {behind > 0 ? (
+                      <span className="shrink-0 tabular-nums text-muted-fg/70">{behind.toLocaleString()} behind</span>
+                    ) : null}
+                    <span aria-hidden className="h-px min-w-0 flex-1 bg-white/[0.07]" />
+                  </div>
+                );
+              }
+              if (kind.kind === "footer") {
                 return (
                   <div
                     key="__footer__"
@@ -906,17 +1007,22 @@ export function CommitHistoryView({
                   </div>
                 );
               }
-              const row = graphRows[item.index]!;
+              const rowIndex = kind.row;
+              const row = graphRows[rowIndex]!;
               const commit = row.commit;
+              // The first row under the divider starts a new run of authors.
+              const prevCommit = rowIndex > 0 && rowIndex !== (gapAfter ?? -2) + 1 ? graphRows[rowIndex - 1]!.commit : null;
               return (
                   <CommitRow
                     key={commit.sha}
                     commit={commit}
-                    index={item.index}
+                    index={rowIndex}
                     start={item.start}
                     graphWidth={graphWidth}
                     owner={paint.ownerOf(commit.sha)}
-                    selected={item.index === selectedIndex}
+                    selected={rowIndex === selectedIndex}
+                    muted={ownLaneId != null && owners.get(commit.sha) !== ownLaneId}
+                    author={singleAuthor ? "hidden" : !prevCommit || authorKey(prevCommit) !== authorKey(commit) ? "shown" : "blank"}
                     isHead={commit.sha === headSha}
                     badges={badgesBySha.get(commit.sha)}
                     columns={columns}

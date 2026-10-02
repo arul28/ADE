@@ -128,6 +128,7 @@ export function CommitScopeToggle() {
             type="button"
             role="radio"
             aria-checked={scope === option.value}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => setScope(option.value)}
             className={cn(
               "h-6 rounded-[6px] px-2 text-[12px] font-medium transition-colors duration-100",

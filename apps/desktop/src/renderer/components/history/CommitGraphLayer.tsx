@@ -1,9 +1,7 @@
 import React, { useMemo } from "react";
 import {
-  COMMIT_ROW_HEIGHT,
   columnCenterX,
   commitEdgePathD,
-  rowCenterY,
   type CommitGraphEdge,
   type CommitGraphLayout,
 } from "./commitGraphLayout";
@@ -18,9 +16,13 @@ export type GraphPaint = {
   headSha: string | null;
 };
 
-function edgeOwner(edge: CommitGraphEdge, paint: GraphPaint): string {
-  // A merge edge belongs to the branch being merged in.
-  return edge.kind === "merge" ? paint.ownerOf(edge.toSha) : paint.ownerOf(edge.fromSha);
+function edgeOwner(edge: CommitGraphEdge, paint: GraphPaint, gap: CommitGraphLayout["gap"]): string {
+  // A merge edge belongs to the branch being merged in. An edge that crosses
+  // the lane/base divider belongs to the base below it, so the lane's colour
+  // stops at the lane's oldest commit.
+  if (edge.kind === "merge") return paint.ownerOf(edge.toSha);
+  if (gap && edge.fromRow <= gap.afterRow && edge.toRow > gap.afterRow) return paint.ownerOf(edge.toSha);
+  return paint.ownerOf(edge.fromSha);
 }
 
 type Tile = { index: number; edges: CommitGraphEdge[] };
@@ -46,21 +48,22 @@ const GraphTile = React.memo(function GraphTile({
   layout: CommitGraphLayout;
   paint: GraphPaint;
 }) {
-  const top = tile.index * TILE_ROWS * COMMIT_ROW_HEIGHT;
   const firstRow = tile.index * TILE_ROWS;
   const nodes = layout.nodes.slice(firstRow, firstRow + TILE_ROWS);
+  const top = layout.rowTop(firstRow);
+  const height = layout.rowTop(firstRow + TILE_ROWS) - top;
   return (
     <svg
       className="chv-tile pointer-events-none absolute left-0"
       style={{ top }}
       width={layout.graphWidth}
-      height={TILE_ROWS * COMMIT_ROW_HEIGHT}
+      height={height}
       aria-hidden
     >
       <g transform={`translate(0 ${-top})`}>
         {tile.edges.map((edge) => {
-          const owner = edgeOwner(edge, paint);
-          const d = commitEdgePathD(edge);
+          const owner = edgeOwner(edge, paint, layout.gap);
+          const d = commitEdgePathD(edge, layout);
           return (
             <g key={edge.id} data-owner={owner}>
               <path
@@ -90,7 +93,7 @@ const GraphTile = React.memo(function GraphTile({
           const owner = paint.ownerOf(node.sha);
           const color = paint.colorOf(owner);
           const cx = columnCenterX(node.column);
-          const cy = rowCenterY(node.rowIndex);
+          const cy = layout.rowCenter(node.rowIndex);
           const isHead = node.sha === paint.headSha;
           const local = !node.commit.pushed;
           return (
@@ -177,6 +180,6 @@ export function applyGraphFocus(root: HTMLElement | null, styleEl: HTMLStyleElem
   styleEl.textContent = [
     `.chv[data-focus] .chv-tile [data-owner]:not([data-owner="${key}"]) { opacity: 0.24; }`,
     `.chv[data-focus] .chv-tile g[data-owner="${key}"] > .chv-edge { stroke-width: 2.25px; }`,
-    `.chv[data-focus] .chv-row:not([data-owner="${key}"]) { opacity: 0.6; }`,
+    `.chv[data-focus] .chv-row:not([data-owner="${key}"]) { opacity: 0.45; }`,
   ].join("\n");
 }
