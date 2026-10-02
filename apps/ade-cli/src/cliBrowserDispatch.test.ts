@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCliPlan } from "./cli";
+import { buildCliPlan, parseCliArgs } from "./cli";
 
 /**
  * Behavioral tests for how `ade browser` argv DISPATCHES — which subcommand a
@@ -168,5 +168,51 @@ describe("browser positional grammar", () => {
     expect(
       buildCliPlan(["lanes", "reparent", "lane-child", "--stack-base-branch", "develop", "--help"]).kind,
     ).toBe("help");
+  });
+});
+
+describe("browser screenshot --out", () => {
+  // The global `--text` / `--json` switches are stripped by `parseCliArgs`
+  // before the browser plan is built (exactly as `runCli` does), so build
+  // through that pair rather than feeding raw argv to `buildCliPlan`.
+  function screenshotPlan(argv: string[]) {
+    const parsed = parseCliArgs(argv);
+    const plan = buildCliPlan(parsed.command, parsed.options);
+    if (plan.kind !== "execute") throw new Error(`Expected execute plan, got ${plan.kind}`);
+    return plan as typeof plan & { saveScreenshot?: { outPath: string | null } };
+  }
+
+  it("refuses an empty --out instead of exiting 0 without writing", () => {
+    for (const argv of [
+      ["browser", "screenshot", "--tab", "t1", "--out", ""],
+      ["browser", "screenshot", "--tab", "t1", "--output", "   "],
+    ]) {
+      expect(() => screenshotPlan(argv), argv.join(" ")).toThrow(/--out needs a file path/);
+    }
+  });
+
+  it("refuses a flag it does not know instead of silently dropping it", () => {
+    // `ade browser screenshot --bogus x` used to exit 0 and write nothing: the
+    // leftover flag was dropped without a word.
+    expect(() => screenshotPlan(["browser", "screenshot", "--tab", "t1", "--bogus"]))
+      .toThrow(/does not accept --bogus/);
+    expect(() => screenshotPlan(["browser", "screenshot", "--tab", "t1", "--bogus", "x"]))
+      .toThrow(/does not accept --bogus/);
+  });
+
+  it("plans the capture and records where the PNG goes", () => {
+    const withOut = screenshotPlan(["browser", "screenshot", "--tab", "t1", "--out", "shot.png"]);
+    expect(withOut.saveScreenshot).toEqual({ outPath: "shot.png" });
+    expect(actionArgs(withOut)).toMatchObject({ tabId: "t1" });
+
+    // Text mode without --out saves a temp file, so the plan still carries the
+    // save step with a null path.
+    const text = screenshotPlan(["browser", "screenshot", "--tab", "t1", "--text"]);
+    expect(text.saveScreenshot).toEqual({ outPath: null });
+
+    // JSON without --out is unchanged: runCli only saves when a path is given
+    // or text output was requested.
+    const json = screenshotPlan(["browser", "screenshot", "--tab", "t1", "--json"]);
+    expect(json.saveScreenshot).toEqual({ outPath: null });
   });
 });

@@ -765,6 +765,21 @@ describe("browser actor capability on a daemon-hosted chat", () => {
       await vi.waitFor(() => expect(acquireCalls.length).toBeGreaterThan(0));
       return acquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
     }],
+    ["OpenCode chat", async (issuer) => {
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      await sendAndDispose(service, session.id);
+      // The OpenCode session's shell environment is applied through the SDK,
+      // not handed to a spawn, so this is the equivalent of the launch env the
+      // other rows read.
+      await vi.waitFor(() => expect(mockState.openCodeEnvironmentCalls.length).toBeGreaterThan(0));
+      return mockState.openCodeEnvironmentCalls.at(-1)?.variables as NodeJS.ProcessEnv | undefined;
+    }],
   ];
 
   it.each(launchPaths)("hands the %s launch the token issued for it", async (_label, launch) => {

@@ -334,6 +334,70 @@ describe("appControlService", () => {
     }
   });
 
+  it("runs a launch with no cwd in the caller's lane worktree, not the project root", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-lane-root-"));
+    const laneWorktree = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-lane",
+      ptyId: "pty-lane",
+      pid: 42,
+    }));
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      resolveLaneWorktreePath: () => laneWorktree,
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev" });
+      // The project root is the primary checkout; a lane's agent must start its
+      // own worktree's app.
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: laneWorktree }));
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the project root when the lane worktree sits outside it", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-outside-root-"));
+    const outsideWorktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-outside-lane-"));
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-outside",
+      ptyId: "pty-outside",
+      pid: 42,
+    }));
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      resolveLaneWorktreePath: () => outsideWorktree,
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev" });
+      // The launch guard refuses anything outside the project root, so the
+      // service must not hand it a cwd it would then reject.
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: projectRoot }));
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideWorktree, { recursive: true, force: true });
+    }
+  });
+
   it("lets manual target switches win over an in-flight health poll", async () => {
     const targetA = target("a");
     const targetB = target("b");

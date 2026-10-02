@@ -13,6 +13,7 @@ import {
   type ProcessEntry,
   type RunResult,
 } from "./machineReset";
+import { desktopDataDirCandidates } from "./machineResetInventory";
 
 const GIT_ENV: NodeJS.ProcessEnv = {
   ...process.env,
@@ -416,5 +417,27 @@ describe("findAdeAncestor", () => {
     expect(findAdeAncestor(findDeps(), { allowPid: 200 })).toBeNull();
     // An allow for an unrelated pid changes nothing.
     expect(findAdeAncestor(findDeps(), { allowPid: 999 })?.pid).toBe(200);
+  });
+});
+
+describe("machine reset desktop data dirs", () => {
+  it("includes per-lane dev user-data folders", () => {
+    const sb = fs.mkdtempSync(path.join(os.tmpdir(), "ade-reset-desktop-"));
+    sandboxes.push(sb);
+    const home = path.join(sb, "home");
+    const appData = path.join(home, "Library", "Application Support");
+    for (const name of ["ade-desktop", "ade-desktop-dev", "ade-desktop-dev-lane-1"]) {
+      fs.mkdirSync(path.join(appData, name), { recursive: true });
+    }
+    // A file, not a folder: an `ade-desktop-dev-` prefix is not enough.
+    fs.writeFileSync(path.join(appData, "ade-desktop-dev-not-a-folder"), "x");
+
+    const deps = defaultMachineResetDeps({ platform: "darwin", homeDir: home, env: {} });
+    const candidates = desktopDataDirCandidates(deps);
+
+    expect(candidates).toContain(path.join(appData, "ade-desktop"));
+    expect(candidates).toContain(path.join(appData, "ade-desktop-dev"));
+    expect(candidates).toContain(path.join(appData, "ade-desktop-dev-lane-1"));
+    expect(candidates).not.toContain(path.join(appData, "ade-desktop-dev-not-a-folder"));
   });
 });
