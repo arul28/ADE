@@ -119,19 +119,34 @@ the directory first:
    then run any lane-environment cleanup supplied by the runtime.
 5. Enter the shared worktree-mutation guard and run
    `git worktree remove --force <path>`. This runs for **every** lane that has
-   a worktree, wherever it lives — there is no lane type that opts out. What
-   differs is the fallback. Inside `.ade/worktrees`, the storage ADE owns: if
+   a worktree, wherever it lives — there is no lane type that opts out. Windows
+   first tries a fast path: when Git still lists the folder as this worktree,
+   the uncommitted-changes check has already passed (the dirty check runs for
+   every delete, but a forced delete of a dirty tree still takes this path),
+   and there are no submodules unless forced, ADE renames it aside to
+   `.<name>.ade-deleting-<8 hex>` in the same parent directory, runs
+   `git worktree prune`, and hands the folder to a background removal — so
+   a huge `node_modules` does not hold the queue while the virus scanner
+   inspects every file. A rename that fails moved nothing and falls straight
+   through; a worktree Git still lists after the prune is moved back and
+   falls through to `git worktree remove`;
+   renamed folders earlier runs left behind are swept from the same parent
+   unless Git still owns their admin directory. What differs after that is the
+   fallback. Inside `.ade/worktrees`, the storage ADE owns: if
    Git reports success but residual files remain, ADE removes the directory
-   with `fs.promises.rm` and runs `git worktree prune` before continuing; if
-   Git already considers the path unregistered, ADE still prunes the registry
-   and attempts manual residual cleanup; and if manual cleanup or prune fails,
-   the delete completes with warnings so the stale row and lane-owned metadata
-   are still removed, with the warning naming what could not be cleaned up.
-   Failed residual-directory cleanup is recorded in the machine-local
-   `local_worktree_residual_cleanups` table so later `lanes.list` calls can
-   retry it. Outside `.ade/worktrees` there is no filesystem fallback and
-   nothing is queued: if git refuses, the git error is the delete failure, and
-   ADE's own `rm` never touches files it did not create.
+   with the lock-retry removal (`removeWorktreeDirectoryWithRecovery`) and runs
+   `git worktree prune` before continuing; if Git already considers the path
+   unregistered, ADE still prunes the registry and attempts manual residual
+   cleanup; and if manual cleanup or prune fails, the delete completes with
+   warnings so the stale row and lane-owned metadata are still removed, with
+   the warning naming what could not be cleaned up. Failed residual-directory
+   cleanup is recorded in the machine-local `local_worktree_residual_cleanups`
+   table so later `lanes.list` calls can retry it. Outside `.ade/worktrees`
+   nothing is queued, and ADE's own `rm` never touches files it did not create:
+   if Git refuses while still registering the worktree, that is the delete
+   failure — unless Git unregistered it and then failed, in which case the
+   folder is no longer a worktree and is offered through
+   `DeleteLaneResult.leftoverWorktree` instead.
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.
