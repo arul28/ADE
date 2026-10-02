@@ -1,4 +1,5 @@
 import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
+import { isThreadCommentsOnlyMetaEvent } from "../../shared/threadComments";
 import { invalidateAgentChatSessionListCache } from "./agentChatSessionListCache";
 import { invalidateSessionListCache } from "./sessionListCache";
 
@@ -119,9 +120,4 @@ export function getChatSessionLocalTouchTimestampForEvent(
 
 export function shouldRefreshSessionListForChatEvent(envelope: AgentChatEventEnvelope): boolean {
   return getChatSessionLocalTouchTimestampForEvent(envelope) != null;
-}
-
-function isThreadCommentsOnlyMetaEvent(event: AgentChatEventEnvelope["event"]): boolean {
-  if (event.type !== "session_meta_updated" || event.threadComments === undefined) return false;
-  return Object.keys(event).every((key) => key === "type" || key === "threadComments" || key === "turnId");
 }

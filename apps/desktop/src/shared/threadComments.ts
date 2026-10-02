@@ -6,11 +6,24 @@
  * renderer (which shows the sent card) and the tests share one format.
  */
 
-export const THREAD_REVIEW_OPEN = "<ade-review>";
-export const THREAD_REVIEW_CLOSE = "</ade-review>";
-export const MAX_THREAD_COMMENT_QUOTE_CHARS = 4_000;
-export const MAX_THREAD_COMMENT_BODY_CHARS = 8_000;
-export const MAX_THREAD_COMMENTS_PER_SESSION = 100;
+/** The comment actions, in every list that must name them (policy, preload, RPC guard, mobile). */
+export const THREAD_COMMENT_ACTION_NAMES = [
+  "listThreadComments",
+  "createThreadComment",
+  "updateThreadComment",
+  "deleteThreadComment",
+] as const;
+
+const THREAD_REVIEW_OPEN = "<ade-review>";
+const THREAD_REVIEW_CLOSE = "</ade-review>";
+// Every change sends the whole list to every client of the chat, so these
+// bound one update: 50 x (2k quote + 4k note) stays well under a megabyte.
+export const MAX_THREAD_COMMENT_QUOTE_CHARS = 2_000;
+export const MAX_THREAD_COMMENT_BODY_CHARS = 4_000;
+export const MAX_THREAD_COMMENT_EXCERPT_CHARS = 120;
+export const MAX_THREAD_COMMENTS_PER_SESSION = 50;
+const MAX_TABLE_ROW_CELLS = 16;
+const MAX_TABLE_CELL_CHARS = 200;
 /** Characters of text kept on each side of a quote to find it again. */
 export const THREAD_COMMENT_CONTEXT_CHARS = 32;
 
@@ -79,12 +92,17 @@ export function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function clip(value: string, max: number): string {
+/** Cuts to `max` chars without splitting a surrogate pair. No ellipsis: a cut quote must still be found in the reply. */
+function cut(value: string, max: number): string {
   if (value.length <= max) return value;
   let end = max;
   const last = value.charCodeAt(end - 1);
   if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-  return `${value.slice(0, end).trimEnd()}…`;
+  return value.slice(0, end);
+}
+
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${cut(value, max).trimEnd()}\u2026`;
 }
 
 /** Stop text from closing or opening the block early. */
@@ -158,11 +176,9 @@ export type ParsedThreadReview = {
 
 /** Reads a leading review block back for display; null when the text has none. */
 export function parseThreadReviewBlock(text: string): ParsedThreadReview | null {
-  const start = text.indexOf(THREAD_REVIEW_OPEN);
-  if (start < 0 || text.slice(0, start).trim()) return null;
-  const end = text.indexOf(THREAD_REVIEW_CLOSE, start);
-  if (end < 0) return null;
-  const inner = text.slice(start + THREAD_REVIEW_OPEN.length, end);
+  const { block, rest } = splitLeadingThreadReview(text);
+  if (!block) return null;
+  const inner = block.slice(THREAD_REVIEW_OPEN.length, block.length - THREAD_REVIEW_CLOSE.length);
   const comments: ParsedThreadReviewComment[] = [];
   const pattern = /<comment n="(\d+)" source="([^"]*)">\n<quote>([\s\S]*?)<\/quote>\n<note>([\s\S]*?)<\/note>\n<\/comment>/g;
   // Undo `neutralize` for display: the guard is for the agent, not the user.
@@ -176,13 +192,22 @@ export function parseThreadReviewBlock(text: string): ParsedThreadReview | null 
     });
   }
   if (!comments.length) return null;
-  const rest = text.slice(end + THREAD_REVIEW_CLOSE.length).replace(/^\s+/, "");
   return { comments, rest };
 }
 
 /** How a send that carried only comments reads: "1 comment", "3 comments". */
 export function threadReviewCountLabel(count: number): string {
   return `${count} comment${count === 1 ? "" : "s"}`;
+}
+
+/** Splits a leading review block off a message: `{ block, rest }`, block null when there is none. */
+export function splitLeadingThreadReview(text: string): { block: string | null; rest: string } {
+  const start = text.indexOf(THREAD_REVIEW_OPEN);
+  if (start < 0 || text.slice(0, start).trim()) return { block: null, rest: text };
+  const end = text.indexOf(THREAD_REVIEW_CLOSE, start);
+  if (end < 0) return { block: null, rest: text };
+  const close = end + THREAD_REVIEW_CLOSE.length;
+  return { block: text.slice(start, close), rest: text.slice(close).replace(/^\s+/, "") };
 }
 
 /** Prefixes the review block to what the user typed. */
@@ -196,7 +221,7 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
   if (!anchor || typeof anchor !== "object") return null;
   const value = anchor as Record<string, unknown>;
   if (value.kind === "text") {
-    const quote = typeof value.quote === "string" ? clip(collapseWhitespace(value.quote), MAX_THREAD_COMMENT_QUOTE_CHARS) : "";
+    const quote = typeof value.quote === "string" ? cut(collapseWhitespace(value.quote), MAX_THREAD_COMMENT_QUOTE_CHARS) : "";
     if (!quote) return null;
     const side = (raw: unknown, fromEnd: boolean) => {
       if (typeof raw !== "string") return "";
@@ -209,10 +234,21 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
     const tableIndex = Number(value.tableIndex);
     const rowIndex = Number(value.rowIndex);
     if (!Number.isInteger(tableIndex) || tableIndex < 0 || !Number.isInteger(rowIndex) || rowIndex < 0) return null;
-    const strings = (raw: unknown) => (Array.isArray(raw) ? raw.slice(0, 32).map((cell) => clip(collapseWhitespace(String(cell ?? "")), 400)) : []);
+    const strings = (raw: unknown) => (Array.isArray(raw)
+      ? raw.slice(0, MAX_TABLE_ROW_CELLS).map((cell) => cut(collapseWhitespace(String(cell ?? "")), MAX_TABLE_CELL_CHARS))
+      : []);
     const cells = strings(value.cells);
     if (!cells.some(Boolean)) return null;
     return { kind: "table_row", tableIndex, rowIndex, headers: strings(value.headers), cells };
   }
   return null;
+}
+
+/**
+ * True for a `session_meta_updated` event that only carries the comment list.
+ * It is not chat activity: no recency bump, no session-list or roster refresh.
+ */
+export function isThreadCommentsOnlyMetaEvent(event: { type: string }): boolean {
+  if (event.type !== "session_meta_updated" || (event as { threadComments?: unknown }).threadComments === undefined) return false;
+  return Object.keys(event).every((key) => key === "type" || key === "threadComments" || key === "turnId");
 }

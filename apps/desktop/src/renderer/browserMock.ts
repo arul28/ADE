@@ -86,6 +86,7 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
+  type AgentChatSendArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
@@ -6158,7 +6159,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       validateCrossMachineSource: resolvedArg(undefined),
       markCrossMachineHandoff: resolvedArg(undefined),
-      send: async (args: import("../shared/types").AgentChatSendArgs) => {
+      send: async (args: AgentChatSendArgs) => {
         let text = args.text;
         if (args.includeThreadComments) {
           const current = browserMockThreadComments.get(args.sessionId) ?? [];

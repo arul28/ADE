@@ -1394,12 +1394,9 @@ struct WorkSessionDestinationView: View {
       continueUsageLimitOnAlternateAction = nil
     }
     let canWriteSpawnKind = syncService.supportsSpawnKindUpdate
-    // Thread comments need list + edit + delete on the host; an older brain
-    // advertises none of them and the chip never appears.
+    // An older brain advertises no comment commands and the chip never appears.
     let threadCommentsAvailable = syncService.supportsThreadComments(sessionId: session.id)
-      && syncService.supportsChatRemoteAction("chat.updateThreadComment", sessionId: session.id)
-      && syncService.supportsChatRemoteAction("chat.deleteThreadComment", sessionId: session.id)
-    let threadCommentsForView: [ChatThreadComment] = threadCommentsAvailable ? sendableThreadComments : []
+    let threadCommentsForView = sendableThreadComments
     let updateThreadCommentAction: (@MainActor (String, String?, Bool?) async throws -> Void)?
     let deleteThreadCommentAction: (@MainActor (String) async throws -> Void)?
     if threadCommentsAvailable {

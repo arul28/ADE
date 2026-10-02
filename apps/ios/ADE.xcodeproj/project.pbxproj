@@ -398,6 +398,7 @@
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
 		E20000000000000000000F01 /* MachineConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F01 /* MachineConnection.swift */; };
 		E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F07 /* SyncService+Fleet.swift */; };
+		7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */; };
 		E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F10 /* SyncService+RemoteLanes.swift */; };
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
@@ -823,6 +824,7 @@
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000F01 /* MachineConnection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineConnection.swift; path = ADE/Services/MachineConnection.swift; sourceTree = "<group>"; };
 		D20000000000000000000F07 /* SyncService+Fleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Fleet.swift"; path = "ADE/Services/SyncService+Fleet.swift"; sourceTree = "<group>"; };
+		7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ThreadComments.swift"; path = "ADE/Services/SyncService+ThreadComments.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F10 /* SyncService+RemoteLanes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+RemoteLanes.swift"; path = "ADE/Services/SyncService+RemoteLanes.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
@@ -1245,6 +1247,7 @@
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
+				7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */,
 				D20000000000000000000F10 /* SyncService+RemoteLanes.swift */,
 				D20000000000000000000F33 /* SyncService+CtoHome.swift */,
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
@@ -1847,6 +1850,7 @@
 				E20000000000000000000F02 /* MachineFleet.swift in Sources */,
 				E20000000000000000000F01 /* MachineConnection.swift in Sources */,
 				E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */,
+				7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */,
 				E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */,
 				E20000000000000000000F33 /* SyncService+CtoHome.swift in Sources */,
 				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,

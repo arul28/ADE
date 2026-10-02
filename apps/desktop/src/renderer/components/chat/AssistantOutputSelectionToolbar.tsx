@@ -1,9 +1,9 @@
 import React, { useLayoutEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { ChatTeardropText, Quotes } from "@phosphor-icons/react";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 import { cn } from "../ui/cn";
-import { Z_LAYERS } from "../ui/zLayers";
+import { cssZoomOf } from "../../lib/webZoom";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { readAssistantOutputSelection, type AssistantOutputSelection } from "./assistantOutputSelection";
 
 type ToolbarState = {
@@ -42,10 +42,9 @@ export function AssistantOutputSelectionToolbar({
         return;
       }
       const width = onComment ? 196 : 118;
-      // The hosted web client zooms <body>: rects are zoomed, style px are
-      // zoomed again, so convert back to layout px first. 1 in Electron.
-      const body = document.body;
-      const zoom = body.offsetWidth ? body.getBoundingClientRect().width / body.offsetWidth || 1 : 1;
+      // Rects are zoomed under the hosted web client's body zoom; styles are
+      // not (see `cssZoomOf`).
+      const zoom = cssZoomOf();
       setState({
         selection: next,
         left: Math.min(Math.max(8, next.rect.right / zoom + 8), Math.max(8, window.innerWidth / zoom - width - 8)),
@@ -85,59 +84,58 @@ export function AssistantOutputSelectionToolbar({
     event.stopPropagation();
   };
 
-  return createPortal(
-    <div
-      data-testid="assistant-output-selection-toolbar"
-      className="ade-assistant-add-to-chat fixed inline-flex items-stretch overflow-hidden rounded-md border border-white/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
-      style={{ left: state.left, top: state.top, zIndex: Z_LAYERS.popover }}
-      onMouseDown={keepSelection}
-    >
-      {onAddToChat ? (
-        <button
-          type="button"
-          data-testid="assistant-output-add-to-chat"
-          className={cn(BUTTON_CLASS, "hover:bg-white/[0.07]")}
-          title="Quote this in your message"
-          onMouseDown={keepSelection}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            const block = formatChatOutputContextBlock(state.selection.text);
-            if (block) onAddToChat(block);
-            window.getSelection()?.removeAllRanges();
-            setState(null);
-          }}
-        >
-          <Quotes size={13} weight="fill" className="text-[var(--chat-accent)]" aria-hidden />
-          Add to chat
-        </button>
-      ) : null}
-      {onComment ? (
-        <button
-          type="button"
-          data-testid="assistant-output-comment"
-          disabled={!state.canComment}
-          className={cn(
-            BUTTON_CLASS,
-            onAddToChat && "border-l border-white/[0.08]",
-            state.canComment ? "hover:bg-white/[0.07]" : "cursor-not-allowed text-fg/35",
-          )}
-          title={state.canComment ? "Leave a comment here. It goes with your next message." : "Wait for the turn to end to comment on this reply."}
-          onMouseDown={keepSelection}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (!state.canComment) return;
-            onComment(state.selection);
-            window.getSelection()?.removeAllRanges();
-            setState(null);
-          }}
-        >
-          <ChatTeardropText size={13} weight="fill" className={state.canComment ? "text-[var(--chat-accent)]" : undefined} aria-hidden />
-          {state.canComment ? "Comment" : "Wait for turn"}
-        </button>
-      ) : null}
-    </div>,
-    document.body,
+  return (
+    <ViewportOverlayPortal layer="popover">
+      <div
+        data-testid="assistant-output-selection-toolbar"
+        className="ade-assistant-add-to-chat pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-white/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+        style={{ left: state.left, top: state.top }}
+        onMouseDown={keepSelection}
+      >
+        {onAddToChat ? (
+          <button
+            type="button"
+            data-testid="assistant-output-add-to-chat"
+            className={cn(BUTTON_CLASS, "hover:bg-white/[0.07]")}
+            title="Quote this in your message"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const block = formatChatOutputContextBlock(state.selection.text);
+              if (block) onAddToChat(block);
+              window.getSelection()?.removeAllRanges();
+              setState(null);
+            }}
+          >
+            <Quotes size={13} weight="fill" className="text-[var(--chat-accent)]" aria-hidden />
+            Add to chat
+          </button>
+        ) : null}
+        {onComment ? (
+          <button
+            type="button"
+            data-testid="assistant-output-comment"
+            disabled={!state.canComment}
+            className={cn(
+              BUTTON_CLASS,
+              onAddToChat && "border-l border-white/[0.08]",
+              state.canComment ? "hover:bg-white/[0.07]" : "cursor-not-allowed text-fg/35",
+            )}
+            title={state.canComment ? "Leave a comment here. It goes with your next message." : "Wait for the turn to end to comment on this reply."}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!state.canComment) return;
+              onComment(state.selection);
+              window.getSelection()?.removeAllRanges();
+              setState(null);
+            }}
+          >
+            <ChatTeardropText size={13} weight="fill" className={state.canComment ? "text-[var(--chat-accent)]" : undefined} aria-hidden />
+            {state.canComment ? "Comment" : "Wait for turn"}
+          </button>
+        ) : null}
+      </div>
+    </ViewportOverlayPortal>
   );
 }

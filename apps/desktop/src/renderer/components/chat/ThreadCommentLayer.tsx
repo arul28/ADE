@@ -3,8 +3,10 @@ import { createPortal } from "react-dom";
 import { ChatTeardropText } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatThreadComment, ChatThreadCommentAnchor } from "../../../shared/threadComments";
+import { cssZoomOf } from "../../lib/webZoom";
 import { cn } from "../ui/cn";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
+import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import type { AssistantOutputSelection } from "./assistantOutputSelection";
 import {
   THREAD_COMMENT_MESSAGE_SELECTOR,
@@ -13,7 +15,12 @@ import {
   messageExcerptOf,
   resolveThreadCommentRange,
 } from "./threadCommentAnchors";
-import { ThreadCommentEditor, ThreadCommentListItem, useThreadCommentActions } from "./ThreadCommentControls";
+import {
+  ThreadCommentEditor,
+  ThreadCommentListItem,
+  threadCommentErrorText,
+  useThreadCommentActions,
+} from "./ThreadCommentControls";
 import { THREAD_COMMENT_FOCUS_EVENT, threadCommentsApi } from "./threadCommentsStore";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
@@ -78,55 +85,39 @@ function messageElement(root: HTMLElement, messageKey: string): HTMLElement | nu
   return null;
 }
 
-/**
- * The CSS zoom between `el`'s layout pixels and the rects it reports. The
- * hosted web client zooms <body>; rects come back zoomed, but a `top` or
- * `left` written in a style is zoomed again, so every measured value is
- * divided by this before it goes into a style. 1 in Electron.
- */
-function cssZoomOf(el: HTMLElement | null): number {
-  if (!el || !el.offsetWidth) return 1;
-  const zoom = el.getBoundingClientRect().width / el.offsetWidth;
-  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-}
-
-function popoverPosition(rect: DOMRect): { left: number; top: number } {
-  const zoom = cssZoomOf(document.body);
-  const viewportWidth = window.innerWidth / zoom;
-  const viewportHeight = window.innerHeight / zoom;
-  const left = Math.min(Math.max(8, rect.left / zoom), Math.max(8, viewportWidth - POPOVER_WIDTH_PX - 8));
-  const below = rect.bottom / zoom + 8;
-  const top = below + 180 > viewportHeight ? Math.max(8, rect.top / zoom - 188) : below;
-  return { left, top };
-}
-
-/** Height of a fresh comment box, for placing it before it has rendered. */
-const DRAFT_BOX_HEIGHT_PX = 112;
+/** Height of a fresh comment box or an open comment, for placing it before it renders. */
+const BOX_HEIGHT_PX = 120;
 
 /**
- * Places the new-comment box right on the text it is about: just above the
- * highlight, starting where the highlight starts, so the highlight stays in
- * view under it. Flips below when there is no room above.
+ * Places a box of `POPOVER_WIDTH_PX` next to an anchor rect, in layout pixels
+ * (see `cssZoomOf`). `above` puts it on the text, starting where the text
+ * starts, so the highlight stays in view under it; either side flips when the
+ * viewport has no room.
  */
-function calloutPosition(rect: DOMRect): { left: number; top: number } {
-  const zoom = cssZoomOf(document.body);
+function placeNear(rect: DOMRect, prefer: "above" | "below"): { left: number; top: number } {
+  const zoom = cssZoomOf();
   const viewportWidth = window.innerWidth / zoom;
   const viewportHeight = window.innerHeight / zoom;
   const left = Math.min(Math.max(8, rect.left / zoom - 6), Math.max(8, viewportWidth - POPOVER_WIDTH_PX - 8));
-  const above = rect.top / zoom - DRAFT_BOX_HEIGHT_PX - 6;
-  const top = above >= 8 ? above : Math.min(rect.bottom / zoom + 6, viewportHeight - DRAFT_BOX_HEIGHT_PX - 8);
+  const above = rect.top / zoom - BOX_HEIGHT_PX - 6;
+  const below = rect.bottom / zoom + 6;
+  const fitsAbove = above >= 8;
+  const fitsBelow = below + BOX_HEIGHT_PX <= viewportHeight - 8;
+  const useAbove = prefer === "above" ? fitsAbove || !fitsBelow : fitsAbove && !fitsBelow;
+  const top = useAbove ? Math.max(8, above) : Math.min(below, viewportHeight - BOX_HEIGHT_PX - 8);
   return { left, top };
 }
 
 /**
  * Thread comments on the transcript: highlights on the text they hang off,
  * margin cards when the window leaves room for them, a row button on agent
- * tables, and the popover that writes or edits a comment.
+ * tables, the selection toolbar, and the popovers that write or edit a comment.
  *
- * Nothing here paints on top of the thread. Highlights use the CSS Custom
- * Highlight API (no DOM changes, so markdown re-renders and the virtualized
- * list are untouched), and cards live in the column's own scroll content, so
- * they scroll with the message they belong to.
+ * The highlights and cards never change the reply's DOM. Highlights use the
+ * CSS Custom Highlight API, so markdown re-renders and the virtualized list
+ * are untouched, and cards live in the column's own scroll content, so they
+ * scroll with the message they belong to. Only the transient popovers and the
+ * row button float, in a viewport overlay layer.
  */
 export function ThreadCommentLayer({
   rootRef,
@@ -136,7 +127,7 @@ export function ThreadCommentLayer({
   pin,
   comments,
   layoutVersion,
-  registerCommentHandler,
+  onAddToChat,
 }: {
   rootRef: { current: HTMLElement | null };
   contentRef: { current: HTMLElement | null };
@@ -146,15 +137,15 @@ export function ThreadCommentLayer({
   comments: readonly ChatThreadComment[];
   /** Changes whenever the rendered rows change, so anchors are found again. */
   layoutVersion: unknown;
-  /** Hands the selection toolbar its "Comment" action. */
-  registerCommentHandler: (handler: ((selection: AssistantOutputSelection) => void) | null) => void;
+  /** The selection toolbar's "Add to chat" action. */
+  onAddToChat?: (text: string) => void;
 }) {
-  const actions = useThreadCommentActions(sessionId, pin);
+  const actions = useThreadCommentActions(sessionId, pin, comments);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const { editingId, stopEditing } = actions;
   const [resolved, setResolved] = useState<Resolved[]>([]);
   const [geometryTick, setGeometryTick] = useState(0);
   const [marginWidth, setMarginWidth] = useState(0);
@@ -163,6 +154,8 @@ export function ThreadCommentLayer({
   const [cardHeightsVersion, setCardHeightsVersion] = useState(0);
 
   const marginMode = marginWidth >= MIN_MARGIN_PX;
+  const marginModeRef = useRef(marginMode);
+  marginModeRef.current = marginMode;
   const commentsRef = useRef(comments);
   commentsRef.current = comments;
 
@@ -176,11 +169,6 @@ export function ThreadCommentLayer({
     setOpenCommentId(null);
     setDraft({ messageKey, messageExcerpt: messageExcerptOf(selection.output), anchor, rect: selection.rect, range: selection.range });
   }, []);
-
-  useEffect(() => {
-    registerCommentHandler(startFromSelection);
-    return () => registerCommentHandler(null);
-  }, [registerCommentHandler, startFromSelection]);
 
   // ── Find every comment's text again ──
   const resolvedRef = useRef<Resolved[]>([]);
@@ -230,7 +218,9 @@ export function ThreadCommentLayer({
       frame = requestAnimationFrame(() => {
         frame = 0;
         resolveAll();
-        setGeometryTick((tick) => tick + 1);
+        // Only margin cards read geometry; without them a streaming reply
+        // elsewhere must not force a layout read every frame.
+        if (marginModeRef.current && resolvedRef.current.length) setGeometryTick((tick) => tick + 1);
       });
     };
     const mutations = new MutationObserver(schedule);
@@ -384,8 +374,8 @@ export function ThreadCommentLayer({
   // A comment that went with a send, or was deleted elsewhere, closes.
   useEffect(() => {
     if (openCommentId && !comments.some((comment) => comment.id === openCommentId)) setOpenCommentId(null);
-    if (editingId && !comments.some((comment) => comment.id === editingId)) setEditingId(null);
-  }, [comments, editingId, openCommentId]);
+    if (editingId && !comments.some((comment) => comment.id === editingId)) stopEditing();
+  }, [comments, editingId, openCommentId, stopEditing]);
 
   const saveDraft = async (body: string) => {
     if (!draft) return;
@@ -406,7 +396,7 @@ export function ThreadCommentLayer({
       }, pin ?? null);
       setDraft(null);
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error));
+      setDraftError(threadCommentErrorText(error));
     } finally {
       setDraftBusy(false);
     }
@@ -473,23 +463,7 @@ export function ThreadCommentLayer({
                     if (!editingId) setOpenCommentId((current) => (current === comment.id ? null : current));
                   }}
                 >
-                  <ThreadCommentListItem
-                    comment={comment}
-                    editing={editingId === comment.id}
-                    error={editingId === comment.id ? actions.error : null}
-                    onStartEdit={() => {
-                      actions.clearError();
-                      setEditingId(comment.id);
-                    }}
-                    onCancelEdit={() => setEditingId(null)}
-                    onSaveEdit={(body) => {
-                      void actions.update(comment.id, { body }).then((saved) => {
-                        if (saved) setEditingId(null);
-                      });
-                    }}
-                    onToggleSend={(next) => void actions.update(comment.id, { includeInNextSend: next })}
-                    onDelete={() => void actions.remove(comment.id, comments)}
-                  />
+                  <ThreadCommentListItem {...actions.itemProps(comment)} />
                 </div>
               );
             })}
@@ -500,99 +474,87 @@ export function ThreadCommentLayer({
 
       {/* Narrow thread: a clicked highlight opens its comment here instead. */}
       {!marginMode && openComment && openRange
-        ? createPortal(
-          <div
-            data-thread-comment-ignore=""
-            data-testid="thread-comment-popover"
-            className="fixed rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-            style={{ ...popoverPosition(openRange.getBoundingClientRect()), width: POPOVER_WIDTH_PX, zIndex: Z_LAYERS.popover }}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <ThreadCommentListItem
-              comment={openComment}
-              editing={editingId === openComment.id}
-              error={editingId === openComment.id ? actions.error : null}
-              onStartEdit={() => {
-                actions.clearError();
-                setEditingId(openComment.id);
-              }}
-              onCancelEdit={() => setEditingId(null)}
-              onSaveEdit={(body) => {
-                void actions.update(openComment.id, { body }).then((saved) => {
-                  if (saved) setEditingId(null);
-                });
-              }}
-              onToggleSend={(next) => void actions.update(openComment.id, { includeInNextSend: next })}
-              onDelete={() => void actions.remove(openComment.id, comments)}
-            />
-            <div className="flex justify-end px-1 pb-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingId(null);
-                  setOpenCommentId(null);
-                }}
-                className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-white/[0.06] hover:text-fg/85"
-              >
-                Close
-              </button>
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <div
+              data-thread-comment-ignore=""
+              data-testid="thread-comment-popover"
+              className="pointer-events-auto absolute rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={{ ...placeNear(openRange.getBoundingClientRect(), "below"), width: POPOVER_WIDTH_PX }}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <ThreadCommentListItem {...actions.itemProps(openComment)} />
+              <div className="flex justify-end px-1 pb-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopEditing();
+                    setOpenCommentId(null);
+                  }}
+                  className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-white/[0.06] hover:text-fg/85"
+                >
+                  Close
+                </button>
+              </div>
             </div>
-          </div>,
-          document.body,
+          </ViewportOverlayPortal>
         )
         : null}
 
       {/* New comment. */}
       {draft
-        ? createPortal(
-          <div
-            data-thread-comment-ignore=""
-            data-testid="thread-comment-draft"
-            className="fixed rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-[#13111A]/95 p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-            style={{ ...calloutPosition(draft.rect), width: POPOVER_WIDTH_PX, zIndex: Z_LAYERS.popover }}
-          >
-            <ThreadCommentEditor
-              busy={draftBusy}
-              error={draftError}
-              placeholder="Comment for the agent. It goes with your next message."
-              onSave={(body) => void saveDraft(body)}
-              onCancel={() => setDraft(null)}
-            />
-          </div>,
-          document.body,
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <div
+              data-thread-comment-ignore=""
+              data-testid="thread-comment-draft"
+              className="pointer-events-auto absolute rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-[#13111A]/95 p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={{ ...placeNear(draft.rect, "above"), width: POPOVER_WIDTH_PX }}
+            >
+              <ThreadCommentEditor
+                busy={draftBusy}
+                error={draftError}
+                placeholder="Comment for the agent. It goes with your next message."
+                onSave={(body) => void saveDraft(body)}
+                onCancel={() => setDraft(null)}
+              />
+            </div>
+          </ViewportOverlayPortal>
         )
         : null}
 
       {/* Table row button. */}
       {rowButton && !draft
-        ? createPortal(
-          <button
-            type="button"
-            data-thread-comment-row-button=""
-            data-testid="thread-comment-row-button"
-            aria-label="Comment on this row"
-            title="Comment on this row"
-            className="fixed inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/[0.1] bg-[#15131c]/95 text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-[#1d1a26]"
-            style={(() => {
-              const zoom = cssZoomOf(document.body);
-              return {
-                left: Math.min(rowButton.rect.right / zoom - 30, window.innerWidth / zoom - 30),
-                top: rowButton.rect.top / zoom + Math.max(0, Math.min(rowButton.rect.height / zoom / 2 - 12, 6)),
-                zIndex: Z_LAYERS.popover,
-              };
-            })()}
-            onPointerLeave={(event) => {
-              const next = event.relatedTarget as Element | null;
-              if (!next?.closest("tbody tr")) setRowButton(null);
-            }}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => startFromRow(rowButton.row)}
-          >
-            <ChatTeardropText size={13} weight="fill" aria-hidden />
-          </button>,
-          document.body,
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <button
+              type="button"
+              data-thread-comment-row-button=""
+              data-testid="thread-comment-row-button"
+              aria-label="Comment on this row"
+              title="Comment on this row"
+              className="pointer-events-auto absolute inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/[0.1] bg-[#15131c]/95 text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-[#1d1a26]"
+              style={(() => {
+                const zoom = cssZoomOf();
+                return {
+                  left: Math.min(rowButton.rect.right / zoom - 30, window.innerWidth / zoom - 30),
+                  top: rowButton.rect.top / zoom + Math.max(0, Math.min(rowButton.rect.height / zoom / 2 - 12, 6)),
+                };
+              })()}
+              onPointerLeave={(event) => {
+                const next = event.relatedTarget as Element | null;
+                if (!next?.closest("tbody tr")) setRowButton(null);
+              }}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => startFromRow(rowButton.row)}
+            >
+              <ChatTeardropText size={13} weight="fill" aria-hidden />
+            </button>
+          </ViewportOverlayPortal>
         )
         : null}
+
+      <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} />
     </>
   );
 }

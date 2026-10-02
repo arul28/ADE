@@ -6,6 +6,7 @@ import { writeFileAtomic } from "../state/durableFile";
 import {
   MAX_THREAD_COMMENTS_PER_SESSION,
   MAX_THREAD_COMMENT_BODY_CHARS,
+  MAX_THREAD_COMMENT_EXCERPT_CHARS,
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
@@ -28,7 +29,33 @@ export type ThreadCommentService = ReturnType<typeof createThreadCommentService>
 
 type ThreadCommentFile = { version: 1; comments: ChatThreadComment[] };
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** The one rule for a chat id that may name a comment file. */
+export function isThreadCommentSessionId(sessionId: string): boolean {
+  return /^[A-Za-z0-9_.:-]{1,200}$/.test(sessionId) && !sessionId.includes("..");
+}
+
+/**
+ * A comment read back from disk, with every field the send path relies on
+ * checked and the anchor normalized; null for an entry that is not one.
+ */
+function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadComment | null {
+  if (!entry || typeof entry !== "object") return null;
+  const value = entry as Record<string, unknown>;
+  const anchor = normalizeThreadCommentAnchor(value.anchor);
+  if (!anchor || typeof value.id !== "string" || typeof value.messageKey !== "string" || typeof value.body !== "string") return null;
+  const at = typeof value.createdAt === "string" ? value.createdAt : new Date(0).toISOString();
+  return {
+    id: value.id,
+    sessionId,
+    messageKey: value.messageKey,
+    messageExcerpt: typeof value.messageExcerpt === "string" ? value.messageExcerpt : "",
+    anchor,
+    body: value.body,
+    includeInNextSend: value.includeInNextSend !== false,
+    createdAt: at,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : at,
+  };
+}
 
 export function createThreadCommentService({
   chatSessionsDir,
@@ -46,7 +73,7 @@ export function createThreadCommentService({
   const cache = new Map<string, ChatThreadComment[]>();
 
   const fileFor = (sessionId: string): string => {
-    if (!SESSION_ID_PATTERN.test(sessionId) || sessionId.includes("..")) {
+    if (!isThreadCommentSessionId(sessionId)) {
       throw new Error("Invalid chat session id.");
     }
     return path.join(dir, `${sessionId.replace(/:/g, "_")}.json`);
@@ -57,14 +84,13 @@ export function createThreadCommentService({
     if (cached) return cached;
     let comments: ChatThreadComment[] = [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(fileFor(sessionId), "utf8")) as Partial<ThreadCommentFile>;
-      if (Array.isArray(parsed.comments)) {
-        comments = parsed.comments.filter((comment): comment is ChatThreadComment => (
-          Boolean(comment)
-          && typeof comment.id === "string"
-          && typeof comment.messageKey === "string"
-          && normalizeThreadCommentAnchor(comment.anchor) !== null
-        ));
+      const parsed: unknown = JSON.parse(fs.readFileSync(fileFor(sessionId), "utf8"));
+      const stored = parsed && typeof parsed === "object" ? (parsed as { comments?: unknown }).comments : null;
+      if (Array.isArray(stored)) {
+        comments = stored.flatMap((entry) => {
+          const comment = normalizeStoredComment(entry, sessionId);
+          return comment ? [comment] : [];
+        });
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
@@ -114,7 +140,7 @@ export function createThreadCommentService({
       id: randomUUID(),
       sessionId: args.sessionId,
       messageKey,
-      messageExcerpt: collapseWhitespace(typeof args.messageExcerpt === "string" ? args.messageExcerpt : "").slice(0, 120),
+      messageExcerpt: collapseWhitespace(typeof args.messageExcerpt === "string" ? args.messageExcerpt : "").slice(0, MAX_THREAD_COMMENT_EXCERPT_CHARS),
       anchor,
       body,
       includeInNextSend: true,
@@ -184,6 +210,10 @@ export function createThreadCommentService({
     };
   };
 
+  /** True when a send with `includeThreadComments` would carry at least one comment. */
+  const hasCommentsForSend = (sessionId: string): boolean =>
+    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => comment.includeInNextSend);
+
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {
     cache.delete(sessionId);
@@ -194,5 +224,5 @@ export function createThreadCommentService({
     }
   };
 
-  return { list, create, update, delete: remove, takeForSend, forgetSession };
+  return { list, create, update, delete: remove, takeForSend, hasCommentsForSend, forgetSession };
 }

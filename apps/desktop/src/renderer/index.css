@@ -3370,21 +3370,22 @@ button, [role="button"] {
 }
 
 /* Send, merged with the pending-comments pill (ComposerThreadCommentsButton).
-   The Send controls are shared with every composer state, so the merged look
-   is applied here instead of threading a prop through each one: square the
-   left edge where the comments half meets it, and take the accent fill. */
-.ade-send-cluster[data-carrying-comments="true"] :not([data-testid="composer-thread-comments-button"]):not([data-testid="composer-thread-comments-button"] *) {
+   Every Send variant marks its round wrapper `data-send-control` and its
+   buttons `data-send-part`, so one rule set covers all of them: square the
+   left edge where the comments half meets Send, and take the accent fill. */
+.ade-send-cluster[data-carrying-comments="true"] [data-send-control],
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part] {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
 
-.ade-send-cluster[data-carrying-comments="true"] button.bg-white\/90 {
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled) {
   background-color: var(--chat-accent, #8b5cf6);
   border-color: rgb(0 0 0 / 0.15);
   color: #fff;
 }
 
-.ade-send-cluster[data-carrying-comments="true"] button.bg-white\/90:hover {
+.ade-send-cluster[data-carrying-comments="true"] [data-send-part]:not(:disabled):hover {
   filter: brightness(1.1);
 }
 

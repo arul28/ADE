@@ -42,7 +42,6 @@ import {
   GitDiff,
   Wrench,
   SteeringWheel,
-  ChatTeardropText,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -79,14 +78,15 @@ import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
 import { splitChatOutputContextSegments } from "../../../shared/chatOutputContext";
-import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
-import type { AssistantOutputSelection } from "./assistantOutputSelection";
-import { ThreadCommentLayer } from "./ThreadCommentLayer";
 import {
-  parseThreadReviewBlock,
-  type ChatThreadComment,
-  type ParsedThreadReviewComment,
-} from "../../../shared/threadComments";
+  ChatContextSegments,
+  ThreadReviewSentCard,
+  UserTypedText,
+  userTextLooksLikeMarkdown,
+} from "./chatUserMessageCards";
+import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
+import { ThreadCommentLayer } from "./ThreadCommentLayer";
+import { parseThreadReviewBlock, type ChatThreadComment } from "../../../shared/threadComments";
 import {
   ChatWorkspacePathProvider,
   useWorkspacePathOpener,
@@ -731,21 +731,6 @@ export function deriveAssistantTurnCopyMap(
   return result;
 }
 
-const MARKDOWN_HEADING_LINE = /^#{1,6}\s+\S/m;
-const MARKDOWN_FENCE_LINE = /^\s*(```|~~~)/m;
-const MARKDOWN_LIST_LINE = /^\s*(?:[-*+]|\d+[.)])\s+\S/gm;
-
-/**
- * True when a user message is a markdown DOCUMENT (a handoff brief, a pasted
- * spec), not a chat line that happens to contain an asterisk. Such a message
- * renders as formatted markdown; everything else keeps its exact text.
- */
-export function userTextLooksLikeMarkdown(text: string): boolean {
-  if (text.length < 80) return false;
-  if (MARKDOWN_HEADING_LINE.test(text) || MARKDOWN_FENCE_LINE.test(text)) return true;
-  return (text.match(MARKDOWN_LIST_LINE)?.length ?? 0) >= 3;
-}
-
 function basenamePathLabel(value: string): string {
   const normalized = normalizePath(value);
   const basename = normalized.split("/").pop()?.trim();
@@ -1037,113 +1022,6 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
     break;
   }
   return { chips, rest: text.slice(i) };
-}
-
-/**
- * A quote the user pulled from an agent reply with "Add to chat", shown as a
- * quote card rather than an opaque chip, so the sent message reads as
- * "about this: my reply". Long quotes clamp to a few lines and open on click.
- */
-function ChatOutputContextQuoteCard({ quote }: { quote: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const long = quote.length > 240 || quote.split("\n").length > 4;
-  return (
-    <div
-      className="my-1 flex min-w-0 gap-2 rounded-md bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] py-1.5 pl-2 pr-2.5 font-sans"
-      data-testid="user-message-chat-context-chip"
-      title={long && !expanded ? quote : undefined}
-    >
-      <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-[var(--chat-accent)] opacity-70" />
-      <div className="min-w-0 flex-1">
-        <div
-          className={cn(
-            "whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12.5/14)] italic leading-[1.55] text-white/70",
-            long && !expanded && "line-clamp-4",
-          )}
-        >
-          {quote}
-        </div>
-        {long ? (
-          <button
-            type="button"
-            className="mt-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_70%,white)] hover:underline"
-            onClick={() => setExpanded((value) => !value)}
-          >
-            {expanded ? "Show less" : "Show all"}
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/** What the user typed, with any "Add to chat" quotes shown as quote cards. */
-function UserTypedText({
-  text,
-  onOpenWorkspacePath,
-}: {
-  text: string;
-  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
-}) {
-  const segments = splitChatOutputContextSegments(text);
-  if (!segments.some((segment) => segment.kind === "context")) {
-    return userTextLooksLikeMarkdown(text) ? (
-      <MarkdownBlock markdown={text} tone="bubble" onOpenWorkspacePath={onOpenWorkspacePath} />
-    ) : (
-      <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white" text={text} />
-    );
-  }
-  return (
-    <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-      {segments.map((segment, idx) => {
-        if (segment.kind === "context") return <ChatOutputContextQuoteCard key={`typed-context-${idx}`} quote={segment.quote} />;
-        const part = segment.text.replace(/^\s*\n/, "").replace(/\n\s*$/, "");
-        return part.trim() ? <React.Fragment key={`typed-text-${idx}`}>{part}</React.Fragment> : null;
-      })}
-    </div>
-  );
-}
-
-/**
- * The thread comments a send carried, as the user sees them in their own
- * message: each quote with its note. The raw review block stays in `text`
- * for the agent; this is only how it reads back.
- */
-function ThreadReviewSentCard({ comments }: { comments: ParsedThreadReviewComment[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? comments : comments.slice(0, 3);
-  return (
-    <div className="min-w-0 rounded-md bg-black/15 px-2.5 py-2 font-sans" data-testid="user-message-thread-review">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-[color:color-mix(in_srgb,var(--chat-accent)_55%,white)]">
-        <ChatTeardropText size={13} weight="fill" aria-hidden />
-        {comments.length} comment{comments.length === 1 ? "" : "s"}
-      </div>
-      <ol className="flex flex-col gap-2">
-        {shown.map((comment) => (
-          <li key={comment.n} className="flex min-w-0 gap-2">
-            <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-[var(--chat-accent)] opacity-60" />
-            <div className="min-w-0 flex-1">
-              <div className="line-clamp-2 text-[length:calc(var(--chat-font-size)*11.5/14)] italic leading-[1.5] text-white/55" title={comment.quote}>
-                {comment.quote}
-              </div>
-              <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-white/90">
-                {comment.note}
-              </div>
-            </div>
-          </li>
-        ))}
-      </ol>
-      {comments.length > 3 ? (
-        <button
-          type="button"
-          className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_70%,white)] hover:underline"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "Show less" : `Show all ${comments.length}`}
-        </button>
-      ) : null}
-    </div>
-  );
 }
 
 function UserMessageSendConfirmations({
@@ -2824,17 +2702,7 @@ function renderEvent(
                     ))}
                   </span>
                 ) : null}
-                {hasOutputContext
-                  ? contextSegments.map((segment, idx) => {
-                    if (segment.kind === "context") {
-                      return <ChatOutputContextQuoteCard key={`chat-context-chip-${idx}`} quote={segment.quote} />;
-                    }
-                    // The quote card is a block, so the blank lines the composer
-                    // put around it would only add empty rows.
-                    const text = segment.text.replace(/^\s*\n/, "").replace(/\n\s*$/, "");
-                    return text.trim() ? <React.Fragment key={`chat-context-text-${idx}`}>{text}</React.Fragment> : null;
-                  })
-                  : parsed.rest}
+                {hasOutputContext ? <ChatContextSegments segments={contextSegments} /> : parsed.rest}
               </div>
             );
             // Prompts render in full, however long. The hidden-prompt brief
@@ -5603,12 +5471,6 @@ function AgentChatMessageListMain({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
-  // The thread layer hands the selection toolbar its "Comment" action. Held
-  // in state (not a ref) so the toolbar shows the button once the layer mounts.
-  const [threadCommentStarter, setThreadCommentStarter] = useState<((selection: AssistantOutputSelection) => void) | null>(null);
-  const registerThreadCommentStarter = useCallback((handler: ((selection: AssistantOutputSelection) => void) | null) => {
-    setThreadCommentStarter(() => handler);
-  }, []);
   const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
   const lastHandledPromptHistoryRequestIdRef = useRef<number | null>(null);
@@ -8081,11 +7943,7 @@ function AgentChatMessageListMain({
           <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
         </button>
       ) : null}
-      <AssistantOutputSelectionToolbar
-        rootRef={listRootRef}
-        onAddToChat={onInsertDraft}
-        onComment={threadComments ? threadCommentStarter ?? undefined : undefined}
-      />
+      {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer
           rootRef={listRootRef}
@@ -8095,9 +7953,11 @@ function AgentChatMessageListMain({
           pin={threadComments.pin}
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
-          registerCommentHandler={registerThreadCommentStarter}
+          onAddToChat={onInsertDraft}
         />
-      ) : null}
+      ) : (
+        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
+      )}
     </div>
     </ProofCitationProvider>
     </ChatWorkspacePathProvider>

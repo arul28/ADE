@@ -12638,7 +12638,8 @@ export function AgentChatPane({
     const threadCommentCountForSend = selectedSessionId && selectedSessionId === threadCommentsSessionIdRef.current
       ? threadCommentSendCountRef.current
       : 0;
-    const includeThreadComments = threadCommentCountForSend > 0 && !isWorkCliLaunchDraft;
+    // A slash command must reach the provider as typed, so comments wait.
+    const includeThreadComments = threadCommentCountForSend > 0 && !isWorkCliLaunchDraft && !isProviderSlashCommandInput(text);
     if (
       (!text.length
         && !includeThreadComments
@@ -16132,9 +16133,7 @@ export function AgentChatPane({
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
-                        threadComments={!subagentView && threadCommentsSessionId
-                          ? threadCommentsProp
-                          : null}
+                        threadComments={subagentView ? null : threadCommentsProp}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
                         chatSources={subagentView ? null : selectedChatSources}
                         showStreamingIndicator={subagentView

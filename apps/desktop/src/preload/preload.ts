@@ -152,6 +152,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
+import { THREAD_COMMENT_ACTION_NAMES } from "../shared/threadComments";
 import type {
   ChatThreadComment,
   ChatThreadCommentCreateArgs,
@@ -1905,10 +1906,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "deletePromptStash",
   // Thread comments live on the chat's host; a write that fell through to this
   // window's process during a project switch would land on the wrong machine.
-  "listThreadComments",
-  "createThreadComment",
-  "updateThreadComment",
-  "deleteThreadComment",
+  ...THREAD_COMMENT_ACTION_NAMES,
 ]);
 
 // Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts

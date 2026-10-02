@@ -1,3 +1,4 @@
+import { THREAD_COMMENT_ACTION_NAMES } from "./threadComments";
 import type { SyncFileRequest, SyncRemoteCommandAction } from "./types";
 
 export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
@@ -122,10 +123,7 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.createPromptStash",
   "chat.deletePromptStash",
   // Thread comments. An older brain omits them, and the phone hides the chip.
-  "chat.listThreadComments",
-  "chat.createThreadComment",
-  "chat.updateThreadComment",
-  "chat.deleteThreadComment",
+  ...THREAD_COMMENT_ACTION_NAMES.map((action) => `chat.${action}` as const),
   // Sources favicons improve the compact phone Sources list; older hosts keep
   // working with the domain-initial fallback.
   "chat.resolveSourceFavicons",

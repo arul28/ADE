@@ -2,6 +2,7 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
@@ -178,10 +179,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // Thread comments are the user's unsent review of an agent's reply. An
       // agent that could write or delete them could edit what the user is
       // about to tell it.
-      "listThreadComments",
-      "createThreadComment",
-      "updateThreadComment",
-      "deleteThreadComment",
+      ...THREAD_COMMENT_ACTION_NAMES,
       "startCodexRealtime",
       "stopCodexRealtime",
       "getCodexRealtimeState",
@@ -678,10 +676,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listPromptStashes",
     "createPromptStash",
     "deletePromptStash",
-    "listThreadComments",
-    "createThreadComment",
-    "updateThreadComment",
-    "deleteThreadComment",
+    ...THREAD_COMMENT_ACTION_NAMES,
     "messageSession",
     "modelCatalog",
     "approveToolUse",

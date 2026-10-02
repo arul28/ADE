@@ -1,4 +1,5 @@
 import {
+  MAX_THREAD_COMMENT_EXCERPT_CHARS,
   THREAD_COMMENT_CONTEXT_CHARS,
   collapseWhitespace,
   type ChatThreadCommentAnchor,
@@ -58,7 +59,7 @@ function collapsedTextOf(root: HTMLElement): CollapsedText {
   return { text, positions };
 }
 
-function collapsedIndexOf(collapsed: CollapsedText, node: Node, offset: number, root: HTMLElement): number {
+function collapsedIndexOf(collapsed: CollapsedText, node: Node, offset: number): number {
   // Find the first collapsed char at or after (node, offset) in document order.
   const probe = document.createRange();
   for (let index = 0; index < collapsed.positions.length; index += 1) {
@@ -66,18 +67,20 @@ function collapsedIndexOf(collapsed: CollapsedText, node: Node, offset: number, 
     probe.setStart(position.node, Math.min(position.offset, position.node.data.length));
     if (probe.comparePoint(node, offset) <= 0) return index;
   }
-  void root;
   return collapsed.text.length;
 }
 
 /** Captures a text anchor for the current selection inside one reply. */
 export function captureTextAnchor(root: HTMLElement, range: Range): ChatThreadCommentAnchor | null {
   const collapsed = collapsedTextOf(root);
-  const start = collapsedIndexOf(collapsed, range.startContainer, range.startOffset, root);
-  const end = collapsedIndexOf(collapsed, range.endContainer, range.endOffset, root);
+  let start = collapsedIndexOf(collapsed, range.startContainer, range.startOffset);
+  let end = collapsedIndexOf(collapsed, range.endContainer, range.endOffset);
+  // Trim the selection itself, so the stored context sits right against the
+  // quote and still tells repeated quotes apart.
+  while (start < end && collapsed.text[start] === " ") start += 1;
+  while (end > start && collapsed.text[end - 1] === " ") end -= 1;
   if (end <= start) return null;
-  const quote = collapsed.text.slice(start, end).trim();
-  if (!quote) return null;
+  const quote = collapsed.text.slice(start, end);
   return {
     kind: "text",
     quote,
@@ -154,5 +157,5 @@ export function captureTableRowAnchor(root: HTMLElement, row: HTMLTableRowElemen
 
 /** The first words of a reply, for the agent-facing source label. */
 export function messageExcerptOf(root: HTMLElement): string {
-  return collapseWhitespace(root.textContent ?? "").slice(0, 120);
+  return collapseWhitespace(root.textContent ?? "").slice(0, MAX_THREAD_COMMENT_EXCERPT_CHARS);
 }

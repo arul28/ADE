@@ -12,6 +12,8 @@ import type { ChatThreadComment } from "../../../shared/threadComments";
  */
 const EMPTY: ChatThreadComment[] = [];
 const bySession = new Map<string, ChatThreadComment[]>();
+/** Bumped on every write, so a list that started before a live update cannot overwrite it. */
+const writeVersion = new Map<string, number>();
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -20,10 +22,25 @@ function notify(): void {
 
 export function setThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
   bySession.set(sessionId, comments);
+  writeVersion.set(sessionId, (writeVersion.get(sessionId) ?? 0) + 1);
   notify();
 }
 
-export function getThreadComments(sessionId: string | null | undefined): ChatThreadComment[] {
+/** Loads the host's list, unless a live update lands while the call is out. */
+export function refreshThreadComments(sessionId: string, pin: OpenProjectBinding | null | undefined): Promise<void> {
+  const api = threadCommentsApi();
+  if (!api) return Promise.resolve();
+  const startedAt = writeVersion.get(sessionId) ?? 0;
+  return api.list({ sessionId }, pin ?? null)
+    .then((list) => {
+      if (Array.isArray(list) && (writeVersion.get(sessionId) ?? 0) === startedAt) setThreadComments(sessionId, list);
+    })
+    .catch(() => {
+      // An older host has no comment actions; the chat simply has none.
+    });
+}
+
+function getThreadComments(sessionId: string | null | undefined): ChatThreadComment[] {
   return sessionId ? bySession.get(sessionId) ?? EMPTY : EMPTY;
 }
 
@@ -47,19 +64,7 @@ export function useThreadComments(
 ): ChatThreadComment[] {
   const comments = useSyncExternalStore(subscribe, () => getThreadComments(sessionId), () => EMPTY);
   useEffect(() => {
-    const api = threadCommentsApi();
-    if (!sessionId || !api) return undefined;
-    let cancelled = false;
-    api.list({ sessionId }, pin ?? null)
-      .then((list) => {
-        if (!cancelled && Array.isArray(list)) setThreadComments(sessionId, list);
-      })
-      .catch(() => {
-        // An older host has no comment actions; the chat simply has none.
-      });
-    return () => {
-      cancelled = true;
-    };
+    if (sessionId) void refreshThreadComments(sessionId, pin);
   }, [pin, sessionId]);
   return comments;
 }

@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
@@ -162,8 +161,7 @@ import type { ChatThreadComment } from "../../../shared/threadComments";
 import { ComposerThreadCommentsButton } from "./ThreadCommentControls";
 import { countCommentsForNextSend } from "./threadCommentsStore";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
-import type { ZLayer } from "../ui/zLayers";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { CodexVoiceBar, CodexVoiceButton, useCodexVoice } from "./CodexVoice";
 import { useProviderAuthStatus } from "../shared/ModelPicker/useProviderAuthStatus";
@@ -939,9 +937,10 @@ function ComposerIdleSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div data-composer-idle-send-control className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
+      <div data-composer-idle-send-control data-send-control="" className="inline-flex shrink-0 items-center overflow-hidden rounded-full">
         <SmartTooltip forceEnabled content={{ label, description, ...(effect ? { effect } : {}) }}>
           <button
+            data-send-part=""
             type="button"
             disabled={!sendEnabled}
             onClick={onSend}
@@ -964,6 +963,7 @@ function ComposerIdleSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             data-testid="composer-send-mode-button"
@@ -988,7 +988,7 @@ function ComposerIdleSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -1031,7 +1031,7 @@ function ComposerIdleSendButton({
                 </button>
               ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1161,7 +1161,7 @@ function ComposerOverflowMenu({
       </SmartTooltip>
       {open && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1205,7 +1205,7 @@ function ComposerOverflowMenu({
                   </button>
                 ))}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1527,14 +1527,6 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
   });
 }
 
-/**
- * Portal a composer menu into a viewport overlay layer. The layer is the
- * viewport, so the menu's `absolute` left/top are viewport coordinates, the
- * same numbers `fixedMenuAboveAnchorStyle` computes for a fixed element.
- */
-function ComposerMenuLayer({ layer, children }: { layer: ZLayer; children: React.ReactNode }) {
-  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
-}
 
 function ActiveTurnSendButton({
   enabled,
@@ -1569,7 +1561,7 @@ function ActiveTurnSendButton({
 
   return (
     <div className="relative inline-flex items-center">
-      <div className="inline-flex items-center overflow-hidden rounded-full">
+      <div data-send-control="" className="inline-flex items-center overflow-hidden rounded-full">
         <SmartTooltip
           forceEnabled
           content={{
@@ -1579,6 +1571,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             type="button"
             disabled={!enabled}
             onClick={onSend}
@@ -1601,6 +1594,7 @@ function ActiveTurnSendButton({
           }}
         >
           <button
+            data-send-part=""
             ref={caretRef}
             type="button"
             aria-haspopup="menu"
@@ -1622,7 +1616,7 @@ function ActiveTurnSendButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-send-menu
               role="menu"
@@ -1675,7 +1669,7 @@ function ActiveTurnSendButton({
                 </div>
               ) : null}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -1744,7 +1738,7 @@ function ActiveTurnStopButton({
       </div>
       {menuOpen && caretRef.current
         ? (
-          <ComposerMenuLayer layer="popover">
+          <ViewportOverlayPortal layer="popover">
             <div
               data-active-stop-menu
               role="menu"
@@ -1784,7 +1778,7 @@ function ActiveTurnStopButton({
                 );
               })}
             </div>
-          </ComposerMenuLayer>
+          </ViewportOverlayPortal>
           )
         : null}
     </div>
@@ -5883,7 +5877,7 @@ export function AgentChatComposer({
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
   const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
-    <ComposerMenuLayer layer="contextMenu">
+    <ViewportOverlayPortal layer="contextMenu">
       <div
         className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
         data-issue-context-menu="true"
@@ -5946,7 +5940,7 @@ export function AgentChatComposer({
           ) : null}
         </div>
       </div>
-    </ComposerMenuLayer>
+    </ViewportOverlayPortal>
   ) : null;
 
   const selectedLinearContextIssue = (
@@ -6989,6 +6983,8 @@ export function AgentChatComposer({
                     // queue affordance; it still explains itself on hover.
                     <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         disabled={!activeSteerEnabled}
                         className={cn(
@@ -7041,6 +7037,8 @@ export function AgentChatComposer({
                   return withThreadComments(
                     <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
                       <button
+                        data-send-part=""
+                        data-send-control=""
                         type="button"
                         className={cn(
                           "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",

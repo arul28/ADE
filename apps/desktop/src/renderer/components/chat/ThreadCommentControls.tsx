@@ -1,47 +1,75 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { ArrowSquareOut, ChatTeardropText, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { threadCommentQuoteText, type ChatThreadComment } from "../../../shared/threadComments";
+import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
+import { cssZoomOf } from "../../lib/webZoom";
 import { cn } from "../ui/cn";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { countCommentsForNextSend, setThreadComments, threadCommentsApi } from "./threadCommentsStore";
+import { countCommentsForNextSend, refreshThreadComments, setThreadComments, threadCommentsApi } from "./threadCommentsStore";
 
-function errorText(error: unknown): string {
+/** An error from a comment write, without Electron's IPC wrapper text. */
+export function threadCommentErrorText(error: unknown): string {
   return error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
 }
 
 /**
- * Comment writes for one chat. Each call returns the host's answer; the list
- * itself refreshes from the host's change event, so nothing is patched here
- * except a delete, which also removes the row at once.
+ * Comment writes for one chat, plus the one comment being edited. Each write
+ * returns the host's answer; the list itself refreshes from the host's change
+ * event, so nothing is patched here except a delete, which also removes the
+ * row at once. `itemProps` wires a `ThreadCommentListItem` to all of it.
  */
-export function useThreadCommentActions(sessionId: string | null | undefined, pin: OpenProjectBinding | null | undefined) {
+export function useThreadCommentActions(
+  sessionId: string | null | undefined,
+  pin: OpenProjectBinding | null | undefined,
+  comments: readonly ChatThreadComment[],
+) {
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const stopEditing = useCallback(() => setEditingId(null), []);
   const run = async <T,>(action: () => Promise<T> | undefined): Promise<T | null> => {
     setError(null);
     try {
       const result = await action();
       return result ?? null;
     } catch (cause) {
-      setError(errorText(cause));
+      setError(threadCommentErrorText(cause));
       return null;
     }
   };
+  const update = (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) =>
+    run(() => (sessionId ? threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null) : undefined));
+  const remove = async (commentId: string) => {
+    if (!sessionId) return null;
+    setThreadComments(sessionId, comments.filter((comment) => comment.id !== commentId));
+    const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null));
+    // The row went early; if the host kept it, show the host's list again.
+    if (!result) void refreshThreadComments(sessionId, pin);
+    return result;
+  };
   return {
     error,
-    clearError: () => setError(null),
-    update: (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) =>
-      run(() => (sessionId ? threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null) : undefined)),
-    remove: (commentId: string, comments: readonly ChatThreadComment[]) =>
-      run(async () => {
-        if (!sessionId) return undefined;
-        setThreadComments(sessionId, comments.filter((comment) => comment.id !== commentId));
-        return await threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null);
-      }),
+    editingId,
+    stopEditing,
+    itemProps: (comment: ChatThreadComment) => ({
+      comment,
+      editing: editingId === comment.id,
+      error: editingId === comment.id ? error : null,
+      onStartEdit: () => {
+        setError(null);
+        setEditingId(comment.id);
+      },
+      onCancelEdit: stopEditing,
+      onSaveEdit: (body: string) => {
+        void update(comment.id, { body }).then((saved) => {
+          if (saved) setEditingId(null);
+        });
+      },
+      onToggleSend: (next: boolean) => void update(comment.id, { includeInNextSend: next }),
+      onDelete: () => void remove(comment.id),
+    }),
   };
 }
 
@@ -203,13 +231,9 @@ export function ThreadCommentListItem({
   );
 }
 
-/**
- * Places the list above its button. The hosted web client zooms <body>, so
- * the rect is converted to layout pixels first; it is 1 in Electron.
- */
+/** Places the list above its button, in layout pixels (see `cssZoomOf`). */
 function menuStyleAbove(rect: DOMRect) {
-  const body = document.body;
-  const zoom = body.offsetWidth ? body.getBoundingClientRect().width / body.offsetWidth || 1 : 1;
+  const zoom = cssZoomOf();
   return fixedMenuAboveAnchorStyle(
     { left: rect.left / zoom, top: rect.top / zoom, right: rect.right / zoom },
     { width: 340, align: "end", viewportWidth: window.innerWidth / zoom },
@@ -236,10 +260,9 @@ export function ComposerThreadCommentsButton({
   children?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const actions = useThreadCommentActions(sessionId, pin);
+  const actions = useThreadCommentActions(sessionId, pin, comments);
   const sendCount = countCommentsForNextSend(comments);
 
   useEffect(() => {
@@ -254,7 +277,7 @@ export function ComposerThreadCommentsButton({
       setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !editingId) setOpen(false);
+      if (event.key === "Escape" && !actions.editingId) setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKey);
@@ -262,13 +285,13 @@ export function ComposerThreadCommentsButton({
       document.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKey);
     };
-  }, [editingId, open]);
+  }, [actions.editingId, open]);
 
   if (!sessionId || comments.length === 0) return <>{children}</>;
   const carrying = sendCount > 0;
 
   const label = sendCount === comments.length
-    ? `${comments.length} comment${comments.length === 1 ? "" : "s"}`
+    ? threadReviewCountLabel(comments.length)
     : `${sendCount} of ${comments.length} comments`;
   const rect = open ? buttonRef.current?.getBoundingClientRect() : null;
 
@@ -325,52 +348,39 @@ export function ComposerThreadCommentsButton({
         </>
       )}
       {open && rect
-        ? createPortal(
-          <div
-            ref={menuRef}
-            role="dialog"
-            aria-label="Thread comments"
-            data-testid="composer-thread-comments-menu"
-            className="fixed flex max-h-[min(60vh,520px)] flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-            style={{ ...menuStyleAbove(rect), zIndex: Z_LAYERS.popover }}
-          >
-            <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
-              <span className="font-sans text-[12px] font-semibold text-fg/85">Comments</span>
-              <span className="font-sans text-[10.5px] text-fg/45">
-                {sendCount > 0 ? `${sendCount} go with your next message` : "None go with your next message"}
-              </span>
+        ? (
+          <ViewportOverlayPortal layer="popover">
+            <div
+              ref={menuRef}
+              role="dialog"
+              aria-label="Thread comments"
+              data-testid="composer-thread-comments-menu"
+              className="pointer-events-auto absolute flex max-h-[min(60vh,520px)] flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={menuStyleAbove(rect)}
+            >
+              <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
+                <span className="font-sans text-[12px] font-semibold text-fg/85">Comments</span>
+                <span className="font-sans text-[10.5px] text-fg/45">
+                  {sendCount > 0 ? `${sendCount} go with your next message` : "None go with your next message"}
+                </span>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-1">
+                {comments.map((comment) => (
+                  <ThreadCommentListItem
+                    key={comment.id}
+                    {...actions.itemProps(comment)}
+                    onJump={onJumpToComment ? () => {
+                      setOpen(false);
+                      onJumpToComment(comment);
+                    } : undefined}
+                  />
+                ))}
+              </div>
+              {actions.error && !actions.editingId ? (
+                <div className="border-t border-white/[0.06] px-3 py-1.5 font-sans text-[11px] text-red-300/85">{actions.error}</div>
+              ) : null}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {comments.map((comment) => (
-                <ThreadCommentListItem
-                  key={comment.id}
-                  comment={comment}
-                  editing={editingId === comment.id}
-                  error={editingId === comment.id ? actions.error : null}
-                  onStartEdit={() => {
-                    actions.clearError();
-                    setEditingId(comment.id);
-                  }}
-                  onCancelEdit={() => setEditingId(null)}
-                  onSaveEdit={(body) => {
-                    void actions.update(comment.id, { body }).then((saved) => {
-                      if (saved) setEditingId(null);
-                    });
-                  }}
-                  onToggleSend={(next) => void actions.update(comment.id, { includeInNextSend: next })}
-                  onDelete={() => void actions.remove(comment.id, comments)}
-                  onJump={onJumpToComment ? () => {
-                    setOpen(false);
-                    onJumpToComment(comment);
-                  } : undefined}
-                />
-              ))}
-            </div>
-            {actions.error && !editingId ? (
-              <div className="border-t border-white/[0.06] px-3 py-1.5 font-sans text-[11px] text-red-300/85">{actions.error}</div>
-            ) : null}
-          </div>,
-          document.body,
+          </ViewportOverlayPortal>
         )
         : null}
     </>

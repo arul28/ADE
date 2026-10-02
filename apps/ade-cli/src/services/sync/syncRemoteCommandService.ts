@@ -1,4 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -4982,14 +4983,17 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
       sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
     }));
-  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) => {
+    const anchor = normalizeThreadCommentAnchor(payload.anchor);
+    if (!anchor) throw new Error("chat.createThreadComment requires the text or table row the comment is about.");
+    return requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
       sessionId: requireString(payload.sessionId, "chat.createThreadComment requires sessionId."),
       messageKey: requireString(payload.messageKey, "chat.createThreadComment requires messageKey."),
       messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
-      anchor: payload.anchor as never,
+      anchor,
       body: typeof payload.body === "string" ? payload.body : "",
-    }));
+    });
+  });
   register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
       sessionId: requireString(payload.sessionId, "chat.updateThreadComment requires sessionId."),

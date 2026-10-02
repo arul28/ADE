@@ -25,7 +25,7 @@ func workThreadCommentsHaveSendable(_ comments: [ChatThreadComment]) -> Bool {
 func workThreadCommentsHeaderText(_ comments: [ChatThreadComment]) -> String {
   let total = comments.count
   let included = comments.filter(\.includeInNextSend).count
-  let countText = "\(total) comment\(total == 1 ? "" : "s")"
+  let countText = workThreadCommentCountLabel(total)
   if included == 0 { return "\(countText) · none go with your next message" }
   if included == total {
     return total == 1
@@ -70,6 +70,11 @@ private func workRestoreThreadReviewText(_ value: String) -> String {
   )
 }
 
+/// "1 comment", "3 comments" — the same label the desktop uses.
+func workThreadCommentCountLabel(_ count: Int) -> String {
+  "\(count) comment\(count == 1 ? "" : "s")"
+}
+
 /// Cheap test, safe on every transcript row: the block must lead the text.
 func workTextStartsWithThreadReview(_ text: String) -> Bool {
   text.drop(while: { $0.isWhitespace }).hasPrefix(workThreadReviewOpenTag)
@@ -112,10 +117,7 @@ func workParseThreadReviewBlock(_ text: String) -> WorkParsedThreadReview? {
 
 /// The typed words of a message whose text may lead with a review block.
 func workTextWithoutLeadingThreadReview(_ text: String) -> String {
-  guard workTextStartsWithThreadReview(text),
-        let review = workParseThreadReviewBlock(text)
-  else { return text }
-  return review.rest
+  workParseThreadReviewBlock(text)?.rest ?? text
 }
 
 /// What a `user_message` row shows. The host sets `displayText` to what the
@@ -125,8 +127,7 @@ func workTextWithoutLeadingThreadReview(_ text: String) -> String {
 /// echo key (`normalizedWorkLocalEchoText`) strips it again.
 func workUserMessageShownText(text: String, displayText: String?) -> String {
   guard let typed = displayText, !typed.isEmpty else { return text }
-  guard workTextStartsWithThreadReview(text),
-        !workTextStartsWithThreadReview(typed),
+  guard !workTextStartsWithThreadReview(typed),
         let review = workParseThreadReviewBlock(text)
   else { return typed }
   return review.block + "\n\n" + typed
@@ -160,6 +161,24 @@ private func workChatContextQuote(fromInner rawInner: String) -> String {
 /// Splits a user message into its comment card, quotes and typed text, in
 /// order. Nil when it has neither a review block nor a quote, so ordinary
 /// messages keep their usual rendering.
+/// What VoiceOver reads for a user message: comment cards and quotes as
+/// words, never their raw tags; nil for a message with neither.
+func workUserMessageAccessibilityText(_ text: String) -> String? {
+  guard let parts = workUserMessageParts(text) else { return nil }
+  return parts.map { part -> String in
+    switch part {
+    case .text(let value):
+      return value
+    case .quote(let quote):
+      return "Quote: \(quote)."
+    case .review(let comments):
+      let items = comments.map { "On \"\($0.quote)\": \($0.note)" }
+      return "\(workThreadCommentCountLabel(comments.count)). " + items.joined(separator: ". ") + "."
+    }
+  }
+  .joined(separator: " ")
+}
+
 func workUserMessageParts(_ text: String) -> [WorkUserMessagePart]? {
   guard workUserMessageHasStructuredBlocks(text) else { return nil }
   var parts: [WorkUserMessagePart] = []
@@ -200,7 +219,7 @@ struct WorkThreadCommentsChip: View {
 
   private var accessibilityText: String {
     let total = comments.count
-    let base = "\(total) comment\(total == 1 ? "" : "s")"
+    let base = workThreadCommentCountLabel(total)
     if allHeld { return "\(base), all held. Tap to review." }
     return "\(base), \(includedCount) go\(includedCount == 1 ? "es" : "") with your next message. Tap to review."
   }
@@ -389,7 +408,8 @@ struct WorkThreadCommentsSheet: View {
     guard let onUpdate else { return }
     let draft = editDraft
     let saved = await run(comment.id) { try await onUpdate(comment.id, draft, nil) }
-    if saved, editingId == comment.id { editingId = nil }
+    // Typing that went on while the save ran keeps the editor open.
+    if saved, editingId == comment.id, editDraft == draft { editingId = nil }
   }
 
   @MainActor
@@ -471,7 +491,7 @@ private struct WorkSentThreadReviewCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Label(
-        "\(comments.count) comment\(comments.count == 1 ? "" : "s")",
+        workThreadCommentCountLabel(comments.count),
         systemImage: "text.bubble.fill"
       )
       .font(.caption.weight(.semibold))

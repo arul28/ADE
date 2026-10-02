@@ -4154,7 +4154,11 @@ final class SyncService: ObservableObject {
   /// Pending thread comments per chat session. Filled by
   /// `chat.listThreadComments` when a chat opens and replaced whole by each
   /// `session_meta_updated.threadComments` the host emits after a change.
-  @Published private(set) var threadCommentsBySession: [String: [ChatThreadComment]] = [:]
+  /// Written only by `SyncService+ThreadComments.swift`.
+  @Published var threadCommentsBySession: [String: [ChatThreadComment]] = [:]
+  /// Bumped on every change, so a list request that started before a live
+  /// update cannot overwrite it with older data.
+  var threadCommentsWriteVersion: [String: Int] = [:]
   /// Chat launches (instant new-lane chats) this device knows about: host
   /// snapshots plus the per-launch local state (retry request, in-flight start,
   /// deferred messages). Its own observable so a transcript card re-renders on
@@ -12576,7 +12580,7 @@ final class SyncService: ObservableObject {
 
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
-  private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+  func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
     // A chat on another machine carries a machine marker in its project id.
     // `sendCommand` strips it and forwards to that machine; it never reaches
     // a host (see `syncFleetRoute`).
@@ -12594,7 +12598,7 @@ final class SyncService: ObservableObject {
     return (projectId, projectRootPath)
   }
 
-  private func chatActionName(_ projectAction: String, sessionId: String) -> String {
+  func chatActionName(_ projectAction: String, sessionId: String) -> String {
     guard isPersonalChatScope(sessionId: sessionId), projectAction.hasPrefix("chat.") else {
       return projectAction
     }
@@ -14400,11 +14404,10 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
-    let delivery = syncChatMessageDelivery(from: response)
-    if includeThreadComments {
-      dropSentThreadComments(sessionId: sessionId, delivery: delivery)
-    }
-    return delivery
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
+    return syncChatMessageDelivery(from: response)
   }
 
   func interruptChatSession(
@@ -14617,11 +14620,10 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
-    let delivery = syncChatMessageDelivery(from: response)
-    if includeThreadComments {
-      dropSentThreadComments(sessionId: sessionId, delivery: delivery)
-    }
-    return delivery
+    // The host takes the comments it sends and publishes the new list; the
+    // phone mirrors that update rather than guessing (a slash command or a
+    // dropped send leaves them pending there).
+    return syncChatMessageDelivery(from: response)
   }
 
   func saveChatTempAttachment(
@@ -14686,150 +14688,6 @@ final class SyncService: ObservableObject {
       as: PersonalChatImageData.self
     )
     return payload.dataUrl
-  }
-
-  // MARK: Thread comments
-
-  /// Whether this chat's host can list thread comments. An older brain omits
-  /// the optional command, and the phone then shows nothing new. Personal
-  /// chats map to a `personalChats.` action no host registers, so they read
-  /// false too.
-  func supportsThreadComments(sessionId: String) -> Bool {
-    supportsChatRemoteAction("chat.listThreadComments", sessionId: sessionId)
-  }
-
-  func threadComments(sessionId: String) -> [ChatThreadComment] {
-    threadCommentsBySession[sessionId] ?? []
-  }
-
-  /// Lossy list decode: a comment with an anchor kind this build does not know
-  /// is skipped instead of failing the whole list.
-  func decodeThreadComments(_ raw: Any) -> [ChatThreadComment] {
-    guard let items = raw as? [Any] else { return [] }
-    return items.compactMap { try? decode($0, as: ChatThreadComment.self) }
-  }
-
-  func setThreadComments(_ comments: [ChatThreadComment], sessionId: String) {
-    if comments.isEmpty {
-      guard threadCommentsBySession[sessionId] != nil else { return }
-      threadCommentsBySession.removeValue(forKey: sessionId)
-      return
-    }
-    guard threadCommentsBySession[sessionId] != comments else { return }
-    threadCommentsBySession[sessionId] = comments
-  }
-
-  func refreshThreadComments(sessionId: String) async throws {
-    let action = chatActionName("chat.listThreadComments", sessionId: sessionId)
-    guard supportsThreadComments(sessionId: sessionId) else { return }
-    let scope = chatCommandScope(for: sessionId)
-    let response = try await sendCommand(
-      action: action,
-      args: ["sessionId": sessionId],
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
-    )
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: action)
-    }
-    setThreadComments(decodeThreadComments(response), sessionId: sessionId)
-  }
-
-  /// Edits a comment's note and/or its send-with-next-message flag. Applied
-  /// locally first so the toggle answers the tap; a failure puts the old
-  /// comment back.
-  func updateThreadComment(
-    sessionId: String,
-    commentId: String,
-    body: String? = nil,
-    includeInNextSend: Bool? = nil
-  ) async throws {
-    let action = chatActionName("chat.updateThreadComment", sessionId: sessionId)
-    guard supportsChatRemoteAction("chat.updateThreadComment", sessionId: sessionId) else {
-      throw NSError(
-        domain: "ADE",
-        code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot edit comments. Update it to edit them here."]
-      )
-    }
-    let previous = threadComments(sessionId: sessionId).first { $0.id == commentId }
-    if var optimistic = previous {
-      if let body { optimistic.body = body }
-      if let includeInNextSend { optimistic.includeInNextSend = includeInNextSend }
-      replaceThreadComment(optimistic, sessionId: sessionId)
-    }
-    var args: [String: Any] = ["sessionId": sessionId, "commentId": commentId]
-    if let body { args["body"] = body }
-    if let includeInNextSend { args["includeInNextSend"] = includeInNextSend }
-    let scope = chatCommandScope(for: sessionId)
-    do {
-      let updated = try await sendDecodableCommand(
-        action: action,
-        args: args,
-        targetProjectId: scope.projectId,
-        targetProjectRootPath: scope.rootPath,
-        as: ChatThreadComment.self
-      )
-      replaceThreadComment(updated, sessionId: sessionId)
-    } catch {
-      if let previous { replaceThreadComment(previous, sessionId: sessionId) }
-      throw error
-    }
-  }
-
-  /// Removes the comment from the phone at once, then from the host. A failed
-  /// delete puts it back where it was.
-  func deleteThreadComment(sessionId: String, commentId: String) async throws {
-    let action = chatActionName("chat.deleteThreadComment", sessionId: sessionId)
-    guard supportsChatRemoteAction("chat.deleteThreadComment", sessionId: sessionId) else {
-      throw NSError(
-        domain: "ADE",
-        code: 15,
-        userInfo: [NSLocalizedDescriptionKey: "This computer’s ADE cannot delete comments. Update it to delete them here."]
-      )
-    }
-    let before = threadComments(sessionId: sessionId)
-    setThreadComments(before.filter { $0.id != commentId }, sessionId: sessionId)
-    let scope = chatCommandScope(for: sessionId)
-    do {
-      let response = try await sendCommand(
-        action: action,
-        args: ["sessionId": sessionId, "commentId": commentId],
-        targetProjectId: scope.projectId,
-        targetProjectRootPath: scope.rootPath
-      )
-      if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-        throw QueuedRemoteCommandError(action: action)
-      }
-    } catch {
-      // Only restore while the list still lacks it: a live update that landed
-      // meanwhile is newer than our snapshot.
-      let current = threadComments(sessionId: sessionId)
-      if let removed = before.first(where: { $0.id == commentId }),
-         !current.contains(where: { $0.id == commentId }) {
-        var restored = current
-        let index = before.firstIndex(where: { $0.id == commentId }) ?? restored.count
-        restored.insert(removed, at: min(index, restored.count))
-        setThreadComments(restored, sessionId: sessionId)
-      }
-      throw error
-    }
-  }
-
-  private func replaceThreadComment(_ comment: ChatThreadComment, sessionId: String) {
-    var list = threadComments(sessionId: sessionId)
-    guard let index = list.firstIndex(where: { $0.id == comment.id }) else { return }
-    list[index] = comment
-    setThreadComments(list, sessionId: sessionId)
-  }
-
-  /// The host took every comment marked for the next send. Mirror that now
-  /// rather than waiting for its `session_meta_updated`; a dropped send kept
-  /// them on the host, so it keeps them here too.
-  private func dropSentThreadComments(sessionId: String, delivery: SyncChatMessageDelivery) {
-    if case .dropped = delivery { return }
-    let remaining = threadComments(sessionId: sessionId).filter { !$0.includeInNextSend }
-    setThreadComments(remaining, sessionId: sessionId)
   }
 
   func listPromptStashes(
