@@ -1,7 +1,32 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppNavigationRequest } from "../../../shared/types";
-import { deeplinkToNavigationTarget, handleDeeplinkUrl } from "./protocolHandler";
+import { deeplinkToNavigationTarget, handleDeeplinkUrl, registerAdeProtocolHandler } from "./protocolHandler";
+
+/**
+ * The single-instance branch of `registerAdeProtocolHandler` reads Electron's
+ * `app`. Everything else in this file is pure, so the mock only has to carry
+ * the lock answer and the lifecycle calls the branch uses.
+ */
+const electronMock = vi.hoisted(() => ({
+  lockAcquired: true,
+  quit: vi.fn(),
+  on: vi.fn(),
+  whenReady: vi.fn(async () => {}),
+  setAsDefaultProtocolClient: vi.fn(),
+  getAllWindows: vi.fn(() => []),
+}));
+
+vi.mock("electron", () => ({
+  app: {
+    setAsDefaultProtocolClient: electronMock.setAsDefaultProtocolClient,
+    requestSingleInstanceLock: () => electronMock.lockAcquired,
+    on: electronMock.on,
+    whenReady: electronMock.whenReady,
+    quit: electronMock.quit,
+  },
+  BrowserWindow: { getAllWindows: electronMock.getAllWindows },
+}));
 import { selectWindowForProjectNavigation } from "./projectNavigationWindowSelection";
 import { appNavigationOwnership } from "./ownerAwareNavigation";
 
@@ -341,5 +366,57 @@ describe("project-scoped deeplink dispatch contract", () => {
     await expect(deliverToProject("/projects/beta")).resolves.toBe(1);
     expect(activateProjectTab).toHaveBeenCalledWith(1, "/projects/beta");
     expect(openWindow).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A dev app that loses the single-instance lock never reaches `ready`; the
+ * lock-lost callback is how it explains and exits. It must fire only when the
+ * process has no deeplink to forward.
+ */
+describe("registerAdeProtocolHandler single-instance lock", () => {
+  const originalArgv = process.argv;
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    electronMock.lockAcquired = true;
+    electronMock.quit.mockClear();
+    electronMock.on.mockClear();
+    electronMock.whenReady.mockClear();
+    electronMock.setAsDefaultProtocolClient.mockClear();
+  });
+
+  it("runs the lock-lost callback when there is no deeplink to forward", () => {
+    electronMock.lockAcquired = false;
+    process.argv = ["/path/electron", "/path/app"];
+    const onLockLostWithoutForward = vi.fn();
+    registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
+    expect(onLockLostWithoutForward).toHaveBeenCalledTimes(1);
+    expect(electronMock.quit).not.toHaveBeenCalled();
+  });
+
+  it("forwards a cold-start deeplink to the lock holder instead of running the callback", () => {
+    electronMock.lockAcquired = false;
+    process.argv = [
+      "/path/electron",
+      "/path/app",
+      "ade://lane/550e8400-e29b-41d4-a716-446655440000",
+    ];
+    const onLockLostWithoutForward = vi.fn();
+    registerAdeProtocolHandler({
+      dispatch: vi.fn(),
+      flushLog: vi.fn(),
+      onLockLostWithoutForward,
+    });
+    expect(electronMock.quit).toHaveBeenCalledTimes(1);
+    expect(onLockLostWithoutForward).not.toHaveBeenCalled();
+  });
+
+  it("does not run the callback when this process acquired the lock", () => {
+    electronMock.lockAcquired = true;
+    process.argv = ["/path/electron", "/path/app"];
+    const onLockLostWithoutForward = vi.fn();
+    registerAdeProtocolHandler({ dispatch: vi.fn(), onLockLostWithoutForward });
+    expect(onLockLostWithoutForward).not.toHaveBeenCalled();
   });
 });

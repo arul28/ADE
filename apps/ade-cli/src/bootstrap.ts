@@ -1676,6 +1676,10 @@ export async function createAdeRuntime(args: {
           const lane = await laneService.getSummary(laneId).catch(() => null);
           return lane?.name ?? null;
         },
+        resolveLaneWorktreePath: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
+          return lane?.worktreePath ?? null;
+        },
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
           laneId,

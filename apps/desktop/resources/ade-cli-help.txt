@@ -1677,6 +1677,7 @@ _    ____  _____
 
   Capture and context:
     $ ade --socket browser screenshot --tab <tab-id> --text
+    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode

@@ -156,6 +156,12 @@ const mockState = vi.hoisted(() => ({
   openCodePromptAsyncBarrier: null as Promise<void> | null,
   /** v2 `session.prompt({ delivery: "steer" })` calls, in call order. */
   openCodeV2SteerCalls: [] as any[],
+  /**
+   * `client.session.environment(...)` calls, in call order. The OpenCode launch
+   * hands the agent its shell environment here, so this is where a browser
+   * actor token (or its absence) is observable from a test.
+   */
+  openCodeEnvironmentCalls: [] as Array<{ sessionID: string; variables: Record<string, string> }>,
   /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
   openCodeV2SteerError: null as Error | null,
   /** When set, the mocked v2 steer waits on this before answering. */
@@ -503,7 +509,10 @@ vi.mock("@opencode/client", () => ({
             mockState.openCodeV2SteerCalls.push(args);
             return {};
           }),
-          environment: vi.fn(async () => ({})),
+          environment: vi.fn(async (args: any) => {
+            mockState.openCodeEnvironmentCalls.push(args);
+            return {};
+          }),
           instructions: { entry: { put: vi.fn(async () => ({})) } },
         },
       };
@@ -2105,6 +2114,7 @@ beforeEach(() => {
   mockState.openCodeSessions.clear();
   mockState.openCodePromptAsyncBarrier = null;
   mockState.openCodeV2SteerCalls = [];
+  mockState.openCodeEnvironmentCalls = [];
   mockState.openCodeV2SteerError = null;
   mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;

@@ -5982,6 +5982,105 @@ describe("ADE CLI", () => {
     }
   });
 
+  posixIt("writes the captured screenshot to --out and reports where it landed", async () => {
+    // Regression: `browser screenshot --out shot.png` exited 0 and wrote
+    // nothing, because the CLI dropped the flag and never copied the daemon's
+    // dataUrl to the caller's machine.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-browser-shot-"));
+    const projectRoot = path.join(root, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const runtimeSocketPath = path.join(root, "runtime.sock");
+    const desktopSocketPath = path.join(root, "desktop.sock");
+    const outPath = path.join(root, "shot.png");
+    const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const stopRuntime = await startHeadlessRpcSocketServer({
+      socketPath: runtimeSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") {
+          return {
+            runtimeInfo: {
+              version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+              defaultRole: "evaluator",
+              projectRoot: null,
+              pid: process.pid,
+            },
+          };
+        }
+        throw new Error(`Unexpected runtime method: ${request.method}`);
+      }) as any,
+    });
+    const stopDesktop = await startHeadlessRpcSocketServer({
+      socketPath: desktopSocketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") {
+          return { projectId: "project-42", rootPath: request.params?.rootPath };
+        }
+        if (request.method === "ade/actions/call") {
+          return {
+            domain: "built_in_browser",
+            action: "captureScreenshot",
+            result: {
+              dataUrl: `data:image/png;base64,${image.toString("base64")}`,
+              width: 2,
+              height: 3,
+            },
+          };
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "screenshot", "--tab", "t1", "--out", outPath, "--text"]),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain(outPath);
+      expect(fs.readFileSync(outPath)).toEqual(image);
+
+      // Text mode without --out saves a private temp file instead of writing to
+      // the caller's cwd.
+      const textResult = await withEnvAsync(
+        {
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: desktopSocketPath,
+          ADE_RPC_URL: undefined,
+          ADE_PROJECT_ROOT: projectRoot,
+          ADE_WORKSPACE_ROOT: projectRoot,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+        () => runCli(["--socket", "browser", "screenshot", "--tab", "t1", "--text"]),
+      );
+      expect(textResult.exitCode).toBe(0);
+      const savedMatch = /saved\s+(\S+)/.exec(textResult.output);
+      expect(savedMatch).toBeTruthy();
+      const tempPath = savedMatch![1]!;
+      try {
+        expect(fs.readFileSync(tempPath)).toEqual(image);
+      } finally {
+        fs.rmSync(path.dirname(tempPath), { recursive: true, force: true });
+      }
+    } finally {
+      stopDesktop?.();
+      stopRuntime?.();
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // Unix sockets can outlive the server handle on macOS.
+      }
+    }
+  });
+
   it("filters the typed chat model inventory by provider", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",

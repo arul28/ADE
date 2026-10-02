@@ -632,6 +632,12 @@ export type CliPlan =
         status?: string;
       };
       writeResultPath?: string;
+      /**
+       * Write the screenshot's `dataUrl` to a PNG on the caller's machine. A
+       * null `outPath` saves to a temp file in text mode and leaves `--json`
+       * output untouched.
+       */
+      saveScreenshot?: { outPath: string | null };
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
       laneCreationNudge?: { newLaneName: string };
@@ -2772,6 +2778,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Capture and context:
     $ ade --socket browser screenshot --tab <tab-id> --text
+    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
     $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
     $ ade --socket browser inspect-start           Start DOM inspect mode
     $ ade --socket browser inspect-stop            Stop DOM inspect mode
@@ -14651,19 +14658,30 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         ),
       ],
     };
-  if (isBrowserSubcommand(sub, "screenshot"))
+  if (isBrowserSubcommand(sub, "screenshot")) {
+    const outPath = readValue(args, ["--out", "--output", "--path"]);
+    // `readValue` accepts a flag-shaped next token, so `--out --tab t1` used to
+    // set outPath to "--tab" and drop `t1` from the tab target. A real path
+    // never starts with "-".
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
+      throw new CliUsageError("browser screenshot --out needs a file path.");
+    }
+    const screenshotArgs = collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args));
+    // Every option this branch knows is read by now. A leftover flag used to be
+    // dropped without a word, so `--out x.png` exited 0 and wrote nothing.
+    const unknownFlag = args.find((token) => token.startsWith("--"));
+    if (unknownFlag) {
+      throw new CliUsageError(`browser screenshot does not accept ${unknownFlag}. Use --out <file.png> to save the image.`);
+    }
     return {
       kind: "execute",
       label: "browser screenshot",
       steps: [
-        actionStep(
-          "result",
-          "built_in_browser",
-          "captureScreenshot",
-          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
-        ),
+        actionStep("result", "built_in_browser", "captureScreenshot", screenshotArgs),
       ],
+      saveScreenshot: { outPath },
     };
+  }
   if (isBrowserSubcommand(sub, "selectPoint")) {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
@@ -26776,6 +26794,7 @@ function formatAppControlStatus(value: unknown): string {
       ["pty", session.terminalPtyId],
       ["chat session", session.chatSessionId],
       ["pid", session.pid],
+      ["cwd", session.cwd],
       ["command", session.command],
       ["error", session.lastError],
     ]),
@@ -26842,6 +26861,79 @@ function formatAppControlRecording(value: unknown): string {
   ]);
 }
 
+const TEMP_SCREENSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TEMP_SCREENSHOT_DIR_PREFIX = "ade-browser-screenshot-";
+
+/**
+ * A private directory for one screenshot saved without `--out`. A shared,
+ * predictable folder under `os.tmpdir()` exposes the bytes to another local
+ * user on a multi-user host, so each capture gets its own `mkdtemp` folder
+ * (mode 0700). Folders older than a day are removed here, so repeated captures
+ * do not pile up; only folders owned by this user are touched.
+ */
+function nextTempScreenshotPath(): string {
+  const root = os.tmpdir();
+  const cutoff = Date.now() - TEMP_SCREENSHOT_MAX_AGE_MS;
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    // No temp root to clean: `mkdtempSync` below surfaces the real failure.
+  }
+  for (const name of names) {
+    if (!name.startsWith(TEMP_SCREENSHOT_DIR_PREFIX)) continue;
+    const stale = path.join(root, name);
+    try {
+      const stat = fs.lstatSync(stale);
+      const mine = typeof process.getuid !== "function" || stat.uid === process.getuid();
+      if (!stat.isDirectory() || !mine) continue;
+      if (stat.mtimeMs < cutoff) fs.rmSync(stale, { recursive: true, force: true });
+    } catch {
+      // Another capture removed it first.
+    }
+  }
+  const dir = fs.mkdtempSync(path.join(root, TEMP_SCREENSHOT_DIR_PREFIX));
+  fs.chmodSync(dir, 0o700);
+  return path.join(dir, "screenshot.png");
+}
+
+/**
+ * Write a `browser screenshot` result's PNG on the caller's machine. The
+ * desktop that captured it may be another machine, so the CLI writes the file,
+ * not the service. A relative path resolves against the caller's cwd.
+ */
+function saveScreenshotResult(
+  result: unknown,
+  outPath: string | null,
+): { savedPath: string; width: number | null; height: number | null; bytes: number } {
+  const unwrapped = unwrapActionEnvelope(result);
+  const shot = isRecord(unwrapped) ? unwrapped : {};
+  const dataUrl = asString(shot.dataUrl);
+  const match = dataUrl ? /^data:image\/[a-z+]+;base64,(.*)$/s.exec(dataUrl) : null;
+  if (!match) {
+    // The desktop can also answer `{ ok: false, reason }`; a plain Error would
+    // reach the fallback and print a stack trace instead of one clear line.
+    const reason = asString(shot.reason);
+    throw new CliToolError(
+      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      undefined,
+    );
+  }
+  const bytes = Buffer.from(match[1]!, "base64");
+  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  fs.mkdirSync(path.dirname(savedPath), { recursive: true });
+  // A temp screenshot stays private: exclusive create, owner-only. An explicit
+  // `--out` is the caller's own path and keeps the default mode.
+  if (outPath) fs.writeFileSync(savedPath, bytes);
+  else fs.writeFileSync(savedPath, bytes, { flag: "wx", mode: 0o600 });
+  return {
+    savedPath,
+    width: typeof shot.width === "number" ? shot.width : null,
+    height: typeof shot.height === "number" ? shot.height : null,
+    bytes: bytes.length,
+  };
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   // This machine has no desktop attached, so there is no browser here to
@@ -26896,8 +26988,23 @@ function formatBrowserStatus(value: unknown): string {
       asString(targetTab?.url) ? ` ${asString(targetTab?.url)}` : ""
     }`
     : null;
+  // `open` / `new-tab` report only the tab they drove. The panel state and every
+  // other chat's tab are `browser status`'s job; printing them here buried the
+  // one line the caller needed under twenty lines of tabs it may not touch.
+  if (targetLine) {
+    const otherTabs = tabs.length - (targetTab ? 1 : 0);
+    return [
+      targetLine,
+      "",
+      renderKeyValues("ADE browser", [
+        ["title", targetTab?.title],
+        ["loading", targetTab?.isLoading ?? targetTab?.loading],
+        ["owner", targetTab ? ownerForTab(targetTab) : null],
+        ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
+      ]),
+    ].join("\n");
+  }
   return [
-    ...(targetLine ? [targetLine, ""] : []),
     renderKeyValues("ADE browser", [
       ["visible", status.visible],
       ["attached", status.attached],
@@ -30442,6 +30549,19 @@ async function runCli(
       };
       return {
         output: formatOutput(saved, parsed.options, undefined),
+        exitCode: 0,
+      };
+    }
+    if (plan.saveScreenshot && (plan.saveScreenshot.outPath || parsed.options.text)) {
+      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
+      return {
+        output: parsed.options.text
+          ? `${renderKeyValues("ADE browser screenshot", [
+            ["saved", saved.savedPath],
+            ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
+            ["bytes", saved.bytes],
+          ])}\n`
+          : formatOutput(saved, parsed.options, undefined),
         exitCode: 0,
       };
     }

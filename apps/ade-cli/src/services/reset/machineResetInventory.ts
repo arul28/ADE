@@ -249,10 +249,22 @@ function localAppDataRoot(deps: MachineResetDeps): string {
   return deps.env.LOCALAPPDATA?.trim() || path.join(deps.homeDir, "AppData", "Local");
 }
 
+/** `ade-desktop-dev-<lane>`: one per lane worktree that ran `npm run dev:desktop`. */
+function laneDevDataDirs(root: string): string[] {
+  try {
+    return fs.readdirSync(root)
+      .filter((name) => name.startsWith("ade-desktop-dev-"))
+      .map((name) => path.join(root, name));
+  } catch {
+    return [];
+  }
+}
+
 export function desktopDataDirCandidates(deps: MachineResetDeps): string[] {
   const root = appDataRoot(deps);
   return uniquePaths([
     ...DESKTOP_DATA_DIR_NAMES.map((name) => path.join(root, name)),
+    ...laneDevDataDirs(root),
     ...deps.extraDesktopDataDirs,
   ]).filter(isDirectory);
 }

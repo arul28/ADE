@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { isPathInside } from "../shared/pathCompare";
 import { WebSocket, type RawData } from "ws";
 import type {
   AppControlClaimArgs,
@@ -121,6 +122,12 @@ export type CreateAppControlServiceArgs = {
    * no lane. When absent, `resolveLaneId` is asked with the chat id instead.
    */
   resolveChatLaneId?: ((chatSessionId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The worktree of a lane, or null. A launch with no `cwd` runs there, not in
+   * the project root: the project root is the primary checkout, so a lane's
+   * agent used to start the primary checkout's app instead of its own.
+   */
+  resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
   onEvent?: ((payload: AppControlEventPayload) => void) | null;
   /**
    * macOS recording engine. Defaults to a private `ade-desktop-driver` that is
@@ -300,7 +307,9 @@ export function normalizeCwd(cwd: string | null | undefined, projectRoot: string
 
 function ensureCwdInsideRoot(cwd: string, projectRoot: string): void {
   const root = path.resolve(projectRoot);
-  if (cwd === root || cwd.startsWith(`${root}${path.sep}`)) return;
+  // The same check `resolveLaneLaunchCwd` uses, so a lane cwd it accepts is
+  // never refused here over drive-letter or folded case.
+  if (isPathInside(cwd, root)) return;
   throw new Error(
     `App Control launch must run inside the current lane. cwd ${cwd} is outside ${root}.`,
   );
@@ -1934,7 +1943,9 @@ export function createAppControlLaneController(context: AppControlLaneController
         if (!target) continue;
         const resolvedTarget = path.resolve(cwd, target);
         const laneRoot = path.resolve(projectRoot);
-        if (resolvedTarget !== laneRoot && !resolvedTarget.startsWith(`${laneRoot}${path.sep}`)) {
+        // Same case-aware check as `ensureCwdInsideRoot`: a lane cwd on a
+        // case-insensitive platform must not be refused over folded case.
+        if (!isPathInside(resolvedTarget, laneRoot)) {
           throw new Error(
             `App Control launch must run inside the current lane. The command tried to \`cd\` to ${resolvedTarget}, which is outside ${laneRoot}. Run the app from this lane instead.`,
           );

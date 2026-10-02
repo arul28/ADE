@@ -1300,6 +1300,26 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 // Register the user-facing `ade://` deeplink scheme + single-instance lock so a
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
+// A dev app that lost the single-instance lock shares its user-data folder with
+// another running dev app. Electron then never fires `ready`: no window, no
+// error, a process that waits forever. Say so and exit instead.
+function exitDevAppSharingUserData(): void {
+  const userData = app.getPath("userData");
+  let holder = "another ADE dev app";
+  try {
+    const target = fs.readlinkSync(path.join(userData, "SingletonLock"));
+    holder = `another ADE dev app (pid ${target.slice(target.lastIndexOf("-") + 1)})`;
+  } catch {
+    // Windows, or no readable lock link: the generic name will do.
+  }
+  const message = `${holder} is already using ${userData}. Close it, or start this one with `
+    + "ADE_DESKTOP_USER_DATA_PATH=<another folder>. `npm run dev:desktop` from a lane worktree picks a folder of its own.";
+  logMachineEvent("error", "desktop.dev_user_data_in_use", { userData, holder });
+  flushMachineMainLog();
+  process.stderr.write(`[ade] ${message}\n`);
+  app.exit(1);
+}
+
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
@@ -1309,6 +1329,7 @@ registerAdeProtocolHandler({
   // structured logger existed this early; the machine log does.
   log: (event, fields) => logMachineEvent("info", event, fields),
   flushLog: flushMachineMainLog,
+  ...(app.isPackaged ? {} : { onLockLostWithoutForward: exitDevAppSharingUserData }),
 });
 
 let pendingProjectOpenFiles: string[] = [];
@@ -4983,6 +5004,8 @@ app.whenReady().then(async () => {
         const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
         return chatSession?.laneId ?? null;
       },
+      resolveLaneWorktreePath: async (laneId) =>
+        (await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null))?.worktreePath ?? null,
       onEvent: (payload) => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
