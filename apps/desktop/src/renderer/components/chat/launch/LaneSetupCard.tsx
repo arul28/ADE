@@ -51,7 +51,8 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
-import { getChatLaunchEntry, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { CHAT_LAUNCH_HYDRATE_RETRY_MS, getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import { extractError } from "../../../lib/format";
 import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { showToast } from "../../app/toast/toastStore";
@@ -397,6 +398,20 @@ function StageLine({
   );
 }
 
+/** The full error a failed or warned stage shows under its row (live card and payload fallback). */
+function StageErrorCallout({ error, className }: { error: string; className?: string }) {
+  return (
+    <p
+      className={cn(
+        "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
+        className,
+      )}
+    >
+      {error}
+    </p>
+  );
+}
+
 const StageRow = React.memo(function StageRow({
   stage,
   kind,
@@ -425,14 +440,10 @@ const StageRow = React.memo(function StageRow({
         trailing={<StageDuration stage={stage} className="min-w-[3rem] shrink-0 text-right text-fg/35" />}
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
-        <p
-          className={cn(
-            "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
-            compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]",
-          )}
-        >
-          {stage.error}
-        </p>
+        <StageErrorCallout
+          error={stage.error}
+          className={compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]"}
+        />
       ) : null}
       {stage.id === "environment" && showSteps && stage.steps?.length ? (
         <EnvironmentSteps steps={stage.steps} compact={compact} />
@@ -874,9 +885,13 @@ function CollapsedSummary({
   );
 }
 
+/** Bounded background re-asks for a launch a transcript-only card is waiting on. */
+const HYDRATE_ATTEMPT_LIMIT = 3;
+
 export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   const launchId = laneSetupLaunchIdFromCardId(card.cardId);
   const storeSnapshot = useChatLaunchSnapshot(launchId);
+  const { binding } = useChatRuntimeScope();
   const [expanded, setExpanded] = useState(false);
   // The host writes the finished card into the transcript. When the store
   // still holds a running snapshot, a live update was lost: trust the
@@ -887,9 +902,27 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   useEffect(() => {
     if (storeBehindTranscript) refreshChatLaunch(launchId);
   }, [storeBehindTranscript, launchId]);
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
+  // A failed launch this window never started — a chat opened on another
+  // device. The payload card can only show a truncated row and no actions;
+  // ask the chat's own machine for the launch so the live, actionable card
+  // takes over. Only a failed stage: a running card already streams through
+  // sync, and a warning (a completed launch) has no Retry to offer.
+  const payloadFailed = (card.rows ?? []).some((row) => row.icon === "fail");
+  useEffect(() => {
+    if (storeSnapshot || !launchId || !payloadFailed) return;
+    hydrateChatLaunchFromHost(launchId, binding);
+    // The store's cooldown stops rapid re-asks, but a static failed card never
+    // re-renders on its own: without a timed nudge a host that was offline when
+    // the card mounted would never be asked again. A few bounded tries, then
+    // the payload stays (its full error is shown either way).
+    if (hydrateAttempt >= HYDRATE_ATTEMPT_LIMIT) return;
+    const timer = setTimeout(() => setHydrateAttempt((attempt) => attempt + 1), CHAT_LAUNCH_HYDRATE_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [binding, hydrateAttempt, launchId, payloadFailed, storeSnapshot]);
   const live = storeBehindTranscript ? null : storeSnapshot;
 
-  if (live && (isChatLaunchPending(live) || live.phase === "running")) {
+  if (live && (isChatLaunchPending(live) || live.phase === "running" || live.phase === "failed")) {
     return <LaneSetupCard snapshot={live} variant="thread" />;
   }
   if (live && live.phase === "completed") {
@@ -927,9 +960,14 @@ function LaneSetupCardFromPayload({
         const status = stageStatusFromCardRow(row);
         const id = stageIdForCardRow(row);
         const icon = id ? launchStageIcon(id, { kind, templateName }) : Wrench;
+        // The host folds a stage's error into the row detail. Show it in full
+        // under the row, the way the live card does, instead of truncating the
+        // only explanation to one line.
+        const error = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
-            <StageLine icon={icon} status={status} label={row.text} detail={row.detail ?? null} compact />
+            <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />
+            {error ? <StageErrorCallout error={error} className="text-[10.5px]" /> : null}
           </li>
         );
       })}

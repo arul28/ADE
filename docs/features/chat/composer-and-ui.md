@@ -406,7 +406,13 @@ and expands to the stage list. A reload with no live launch renders the
 transcript payload's rows, identified by each row's `key` (its stage id —
 labels are never matched), with the card's own `title`, the template name
 from the card's `Template` metric, the CLI-vs-chat icon from the `agent`
-row, and a pass row in the warning tone shown as a warning.
+row, and a pass row in the warning tone shown as a warning. A failed launch
+this window never started — a chat opened from another device — asks the
+chat's own machine for the launch once (`chat.getLaunch` on the chat's
+binding; failed records do not expire), so the live card with the full error
+and Retry/Delete replaces the payload. Until that lands, the payload's failed
+row shows its error in full under the row instead of clipping it to one
+truncated line.
 
 **Sidebar row.** While the launch is pending, the row's preview line shows
 the status line ("Checking out files · 62%", or "Fetch base branch failed" in amber)
