@@ -843,7 +843,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                               subscription, a pay-per-use account, an API key);
                               the route says which one this row bills. */}
                           {item.model.routeLabel || item.model.subtitle ? (
-                            <span className="shrink-0 truncate text-[11px] text-fg/40">
+                            <span className="shrink-0 text-[11px] text-fg/40">
                               via {item.model.routeLabel ?? item.model.subtitle}
                             </span>
                           ) : null}
