@@ -987,7 +987,10 @@ async function resolveTrackedFileCount(
 function remoteTrackingBaseRef(baseRef: string): string | null {
   const base = baseRef.trim();
   if (!base || base.startsWith("refs/") || base.startsWith("origin/")) return null;
-  if (/^[0-9a-f]{7,64}$/i.test(base)) return null;
+  // Only a full commit id (SHA-1 40, SHA-256 64) is a commit id. An
+  // abbreviated one is not a valid ref anyway, and a hex-looking branch name
+  // (e.g. "deadbeef") is a branch, so it still deserves the remote retry.
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return null;
   return `refs/remotes/origin/${base}`;
 }
 
