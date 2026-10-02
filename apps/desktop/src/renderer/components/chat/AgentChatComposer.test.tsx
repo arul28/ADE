@@ -397,7 +397,7 @@ describe("AgentChatComposer", () => {
     expect(icon.textContent ?? "").not.toContain("GH");
   });
 
-  it("hydrates highlighted assistant output as an inline Chat context chip", async () => {
+  it("hydrates highlighted assistant output as an inline quote chip", async () => {
     const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     (window as any).ade = { app: { writeClipboardText } };
     const block = formatChatOutputContextBlock("retry the lane checkout")!;
@@ -411,7 +411,8 @@ describe("AgentChatComposer", () => {
       if (!el) throw new Error("chat context chip not rendered");
       return el;
     });
-    expect(chip.textContent).toContain("Chat context");
+    expect(chip.textContent).toContain("retry the lane checkout");
+    expect(chip.getAttribute("aria-label")).toContain("Quote");
     fireEvent.click(chip);
     fireEvent.click(screen.getByRole("menuitem", { name: /Copy/ }));
     expect(writeClipboardText).toHaveBeenCalledWith("retry the lane checkout");

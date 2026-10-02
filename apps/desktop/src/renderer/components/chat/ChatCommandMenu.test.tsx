@@ -105,6 +105,45 @@ describe("ChatCommandMenu @ ranking", () => {
     expect(await screen.findByText("chatMentions.ts")).toBeTruthy();
     expect(screen.getByText("apps\\desktop\\src\\shared\\")).toBeTruthy();
   });
+
+  it("labels the same model with the route each row would bill", async () => {
+    render(
+      <ChatCommandMenu
+        trigger={{ type: "at", query: "deepseek", start: 0 }}
+        slashCommands={[]}
+        modelOptions={[
+          {
+            modelId: "opencode/opencode-zen/deepseek-v4.1-flash",
+            title: "DeepSeek V4.1 Flash",
+            subtitle: "OpenCode · OpenCode Zen",
+            reasoningTiers: [],
+            defaultEffort: null,
+            routeLabel: "OpenCode Zen",
+          },
+          {
+            modelId: "opencode/opencode-go/deepseek-v4.1-flash",
+            title: "DeepSeek V4.1 Flash",
+            subtitle: "OpenCode · OpenCode Go",
+            reasoningTiers: [],
+            defaultEffort: null,
+            routeLabel: "OpenCode Go",
+          },
+        ]}
+        anchor={{ top: 200, left: 20, bottom: 220 }}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-menu-index]").length).toBeGreaterThanOrEqual(2);
+    });
+    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-menu-index]"))
+      .map((row) => row.textContent ?? "");
+    expect(rows.filter((text) => text.includes("DeepSeek V4.1 Flash"))).toHaveLength(2);
+    expect(rows.some((text) => text.includes("via OpenCode Zen"))).toBe(true);
+    expect(rows.some((text) => text.includes("via OpenCode Go"))).toBe(true);
+  });
 });
 
 describe("ChatCommandMenu / ranking", () => {

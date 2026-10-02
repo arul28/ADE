@@ -1260,10 +1260,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(add);
     expect(onInsertDraft).toHaveBeenCalledTimes(1);
     expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("Retry the lane checkout.");
-    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("added it as context");
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("quoted this from your earlier output");
   });
 
-  it("renders sent chat-context tags as Chat context chips", () => {
+  it("renders sent chat-context tags as quote cards", () => {
     renderMessageList([{
       sessionId: "session-1",
       timestamp: "2026-03-17T10:00:00.000Z",
@@ -1273,7 +1273,9 @@ describe("AgentChatMessageList transcript rendering", () => {
         deliveryState: "delivered",
       },
     }]);
-    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Chat context");
+    // The legacy "added it as context" preamble still parses; the card shows
+    // the quote itself, not a generic label.
+    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Retry the lane checkout.");
     expect(screen.getByText(/please/)).toBeTruthy();
     expect(screen.getByText(/thanks/)).toBeTruthy();
   });
