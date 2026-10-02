@@ -27230,15 +27230,20 @@ export function formatActionAnswerLines(
   const effect = isRecord(result.effect) ? result.effect : options.fallbackEffect ?? null;
   const status = asString(effect?.status);
   const reason = asString(effect?.reason) ?? "";
+  const next = isRecord(result.effect) && isRecord(result.effect.next) ? result.effect.next : null;
+  const nextReason = asString(next?.reason);
   let effectLine: string;
   if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
   else if (status === "unconfirmed") {
-    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+    // A `next:` line replaces the generic advice with the specific step.
+    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}${nextReason ? "" : "; observe again before you continue"}`;
   } else if (status === "waiting_for_approval") {
     effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
   } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
   else effectLine = "effect: not checked — this ADE did not report an effect";
-  return [hit, effectLine];
+  if (!nextReason) return [hit, effectLine];
+  const nextCommand = asString(next?.command);
+  return [hit, effectLine, `next: ${nextReason}${nextCommand ? ` — run: ${nextCommand}` : ""}`];
 }
 
 /** The rows of a DOM element list, shared by the browser and App Control. */

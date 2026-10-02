@@ -14,6 +14,7 @@
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { macDesktopNextStep, macDesktopRefusedNextStep } from "./macDesktopNextStep";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
@@ -266,6 +267,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   };
 
   /**
+   * A click's button and count, so the next-step advice reproduces the click.
+   * Empty for every other action, whose payload carries neither field.
+   */
+  const clickShape = (payload: Record<string, unknown>): { button?: string; count?: number } => ({
+    ...(typeof payload.button === "string" ? { button: payload.button } : {}),
+    ...(typeof payload.count === "number" ? { count: payload.count } : {}),
+  });
+
+  /**
    * Notes one action on the lane's running recording, in the display's own
    * frame: element frames and points are global screen points, the recording
    * is the lane's display. A lane that is not recording notes nothing.
@@ -408,7 +418,21 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
-    if (failure) throw failure;
+    if (failure) {
+      const refused = macDesktopRefusedNextStep({
+        action: args.action,
+        mode: args.mode,
+        message: failure.message,
+        resolved: args.resolved,
+        before: resolvedAgainst,
+        ...clickShape(args.payload),
+        lease: leases.checkRealInput({ laneId, holderId }),
+      });
+      if (!refused) throw failure;
+      const code = (failure as { code?: unknown }).code;
+      const message = `${failure.message.replace(/^[A-Za-z_]+: /, "")} Next: ${refused.reason}${refused.command ? ` — run: ${refused.command}` : ""}`;
+      throw typeof code === "string" ? deps.serviceError(code, message) : new Error(message);
+    }
     if (args.demo) {
       const element = args.resolved
         ?? (resolvedIndex != null ? resolvedAgainst?.elements.find((entry) => entry.index === resolvedIndex) ?? null : null);
@@ -441,13 +465,23 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       ?? (resolvedIndex != null
         ? resolvedAgainst?.elements.find((element) => element.index === resolvedIndex) ?? null
         : null);
+    const compared = macDesktopActionEffect(resolvedAgainst, observation);
+    const next = macDesktopNextStep({
+      action: args.action,
+      mode: args.mode,
+      effect: compared,
+      resolved,
+      before: resolvedAgainst,
+      ...clickShape(args.payload),
+      lease: leases.checkRealInput({ laneId, holderId }),
+    });
     return {
       ok: true,
       action: args.action,
       mode: args.mode,
       resolved,
       observation,
-      effect: macDesktopActionEffect(resolvedAgainst, observation),
+      effect: next ? { ...compared, next } : compared,
       trace: {
         id: `${observation.id}:${args.action}`,
         sessionId: args.chatSessionId?.trim() || null,
