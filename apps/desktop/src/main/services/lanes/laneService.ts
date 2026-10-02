@@ -335,6 +335,51 @@ export async function removeWorktreeDirectoryWithRecovery(targetPath: string): P
   }
 }
 
+/**
+ * A lane folder renamed aside so its files can be removed after the delete
+ * returns: `.<name>.ade-deleting-<8 hex>`, next to where it lived. The name is
+ * ADE's own, which is what makes sweeping a forgotten one safe.
+ */
+const DELETING_TRASH_SUFFIX = ".ade-deleting-";
+const DELETING_TRASH_NAME = /^\..+\.ade-deleting-[0-9a-f]{8}$/;
+const trashRemovalsInFlight = new Set<string>();
+
+function removeTrashInBackground(trashPath: string, logger: Logger): void {
+  const key = normAbs(trashPath);
+  if (trashRemovalsInFlight.has(key)) return;
+  trashRemovalsInFlight.add(key);
+  const t0 = Date.now();
+  void removeWorktreeDirectoryWithRecovery(key)
+    .then(() => {
+      logger.info("lane.delete.background_remove_done", { path: key, durationMs: Date.now() - t0 });
+    })
+    .catch((error) => {
+      // Left for the next sweep of this folder.
+      logger.warn("lane.delete.background_remove_failed", {
+        path: key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      trashRemovalsInFlight.delete(key);
+    });
+}
+
+/** Finish removing renamed-aside lane folders an earlier run did not get to. */
+async function sweepDeletingTrash(parentDir: string, logger: Logger): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && DELETING_TRASH_NAME.test(entry.name)) {
+      removeTrashInBackground(path.join(parentDir, entry.name), logger);
+    }
+  }
+}
+
 async function managedTreeBytes(targetPath: string): Promise<number> {
   let total = 0;
   const pending = [targetPath];
@@ -8151,6 +8196,67 @@ export function createLaneService({
                 }
                 return { detail };
               };
+              // Windows: deleting a few hundred thousand node_modules files
+              // one at a time (each scanned by Defender) takes minutes, and
+              // every other lane delete in the project waits behind it in
+              // this queue. Renaming the checkout aside is instant on the
+              // same volume; once Git prunes the now-missing worktree the
+              // lane is gone, and the files are removed after the queue moves
+              // on. The git_status step already refused a dirty tree without
+              // `force`, which is the check `git worktree remove` would make.
+              const renameAsideWorktree = async (): Promise<{ detail: string } | null> => {
+                if (process.platform !== "win32") return null;
+                const target = normAbs(row.worktree_path);
+                if (!fs.existsSync(target) || !(await isExpectedGitWorktreeRoot(target))) return null;
+                // Git refuses to remove a worktree with submodules unless forced.
+                if (!force && fs.existsSync(path.join(target, ".gitmodules"))) return null;
+                const isRegistered = () => listGitWorktrees().then(
+                  (worktrees) => worktrees.some((worktree) =>
+                    !worktree.isBare
+                    && (worktree.path === target || canonicalPath(worktree.path) === canonicalPath(target))),
+                  () => null,
+                );
+                // Only a folder Git lists as this worktree is renamed: pruning
+                // the missing entry is what makes the rename a removal.
+                if ((await isRegistered()) !== true) return null;
+                const trashPath = path.join(
+                  path.dirname(target),
+                  `.${path.basename(target)}${DELETING_TRASH_SUFFIX}${randomUUID().replace(/-/g, "").slice(0, 8)}`,
+                );
+                try {
+                  await fs.promises.rename(target, trashPath);
+                } catch (error) {
+                  // A handle still open inside the tree blocks the rename;
+                  // `git worktree remove` gets its usual chance below.
+                  logger.info("lane.delete.rename_aside_skipped", {
+                    laneId,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                  return null;
+                }
+                const pruneFailure = await pruneWorktreesBestEffort();
+                // Unknown counts as registered: the folder goes back.
+                if (pruneFailure !== null || (await isRegistered()) !== false) {
+                  // Git kept the worktree (it is locked, or prune failed). Put
+                  // the folder back and let `git worktree remove` decide.
+                  try {
+                    await fs.promises.rename(trashPath, target);
+                  } catch (restoreError) {
+                    throw new Error(
+                      `ADE moved the lane folder to ${trashPath} and could not move it back: ${
+                        restoreError instanceof Error ? restoreError.message : String(restoreError)
+                      }`,
+                    );
+                  }
+                  return null;
+                }
+                residualWorktreeCleanup.deleteRow(target);
+                removeTrashInBackground(trashPath, logger);
+                void sweepDeletingTrash(path.dirname(target), logger);
+                return { detail: `${target} (removing files in the background)` };
+              };
+              const renamedAside = await renameAsideWorktree();
+              if (renamedAside) return renamedAside;
               // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
               // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
               // state that blocks future deletes.
@@ -8174,6 +8280,24 @@ export function createLaneService({
               }
               const original = (removeRes.stderr || removeRes.stdout || "").trim();
               if (!managedWorktreePath) {
+                // Git can give up partway: it unregisters the worktree and
+                // deletes `.git`, then fails on a file Windows still holds open
+                // (an AV scan, an indexer) somewhere in a huge node_modules.
+                // The lane is gone as far as Git knows, so finish deleting it
+                // and offer the remaining files the same way as above.
+                if (
+                  fs.existsSync(row.worktree_path)
+                  && !(await isStillRegisteredWorktree())
+                  && !(await isExpectedGitWorktreeRoot(row.worktree_path))
+                ) {
+                  logger.warn("lane.delete.git_worktree_remove_partial", { laneId, error: original });
+                  progress.leftoverWorktree = {
+                    path: normAbs(row.worktree_path),
+                    canDelete: true,
+                    laneName: row.name,
+                  };
+                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
+                }
                 // No filesystem escalation for a folder ADE does not own: the
                 // git failure is the answer the user gets.
                 throw new Error(original || `git worktree remove exited ${removeRes.exitCode}`);
@@ -8443,7 +8567,9 @@ export function createLaneService({
           throw new Error("That folder was replaced after the lane was deleted.");
         }
       }
-      await fs.promises.rm(targetPath, { recursive: true, force: false });
+      // Same Windows lock retries as a lane delete: the files left behind are
+      // often the ones an AV scan or indexer was holding a moment ago.
+      await removeWorktreeDirectoryWithRecovery(targetPath);
       leftoverWorktreeByLaneId.delete(laneId);
       persistLeftoverWorktrees();
       return { removed: true };
