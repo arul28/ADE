@@ -161,6 +161,15 @@ function realClickCommand(
   return `ade mac-desktop click --x ${Math.round(resolved.center.x)} --y ${Math.round(resolved.center.y)}${button}${repeat} --real --text`;
 }
 
+/** The step for an element that is disabled: wait, do not change method. */
+function disabledObserveStep(): ComputerUseActionNextStep {
+  return {
+    method: "observe",
+    reason: "the element is disabled; something else must happen first, so do not change input method",
+    command: null,
+  };
+}
+
 /**
  * The one next step for this action, or null when there is no advice: the
  * effect was observed, the action was not compared, or it is not on the ladder.
@@ -171,13 +180,7 @@ export function macDesktopNextStep(args: MacDesktopNextStepInput): ComputerUseAc
   const { resolved, before } = args;
 
   // Strict: an older driver may omit the field, and absent is not disabled.
-  if (resolved && resolved.enabled === false) {
-    return {
-      method: "observe",
-      reason: "the element is disabled; something else must happen first, so do not change input method",
-      command: null,
-    };
-  }
+  if (resolved && resolved.enabled === false) return disabledObserveStep();
 
   const webContent = resolved ? isWebContent(resolved, before) : false;
   const browserStep = browserPageStep(resolved, before);
@@ -223,5 +226,8 @@ export function macDesktopRefusedNextStep(args: {
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
   if (!/answered no press action/i.test(args.message)) return null;
+  // The driver refuses a disabled element with the same message, but real
+  // input cannot enable it; waiting is the only honest advice.
+  if (args.resolved && args.resolved.enabled === false) return disabledObserveStep();
   return browserPageStep(args.resolved, args.before) ?? realInputStep(args, "the element has no press action");
 }
