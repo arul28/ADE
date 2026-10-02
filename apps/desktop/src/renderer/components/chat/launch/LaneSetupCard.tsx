@@ -51,7 +51,7 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
-import { getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { CHAT_LAUNCH_HYDRATE_RETRY_MS, getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import { extractError } from "../../../lib/format";
 import { stripElectronErrorWrapper } from "../../../../shared/codedError";
@@ -885,6 +885,9 @@ function CollapsedSummary({
   );
 }
 
+/** Bounded background re-asks for a launch a transcript-only card is waiting on. */
+const HYDRATE_ATTEMPT_LIMIT = 3;
+
 export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   const launchId = laneSetupLaunchIdFromCardId(card.cardId);
   const storeSnapshot = useChatLaunchSnapshot(launchId);
@@ -899,6 +902,7 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   useEffect(() => {
     if (storeBehindTranscript) refreshChatLaunch(launchId);
   }, [storeBehindTranscript, launchId]);
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
   // A failed launch this window never started — a chat opened on another
   // device. The payload card can only show a truncated row and no actions;
   // ask the chat's own machine for the launch so the live, actionable card
@@ -908,10 +912,17 @@ export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   useEffect(() => {
     if (storeSnapshot || !launchId || !payloadFailed) return;
     hydrateChatLaunchFromHost(launchId, binding);
-  }, [binding, launchId, payloadFailed, storeSnapshot]);
+    // The store's cooldown stops rapid re-asks, but a static failed card never
+    // re-renders on its own: without a timed nudge a host that was offline when
+    // the card mounted would never be asked again. A few bounded tries, then
+    // the payload stays (its full error is shown either way).
+    if (hydrateAttempt >= HYDRATE_ATTEMPT_LIMIT) return;
+    const timer = setTimeout(() => setHydrateAttempt((attempt) => attempt + 1), CHAT_LAUNCH_HYDRATE_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [binding, hydrateAttempt, launchId, payloadFailed, storeSnapshot]);
   const live = storeBehindTranscript ? null : storeSnapshot;
 
-  if (live && (isChatLaunchPending(live) || live.phase === "running")) {
+  if (live && (isChatLaunchPending(live) || live.phase === "running" || live.phase === "failed")) {
     return <LaneSetupCard snapshot={live} variant="thread" />;
   }
   if (live && live.phase === "completed") {

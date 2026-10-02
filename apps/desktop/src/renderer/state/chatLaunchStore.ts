@@ -455,7 +455,8 @@ export function refreshChatLaunch(launchId: string | null | undefined): void {
 const hydratingLaunchIds = new Set<string>();
 /** Last `get` attempt per launch, so an unreachable machine is retried, not hammered. */
 const hydrateAttemptedAt = new Map<string, number>();
-const HYDRATE_RETRY_MS = 20_000;
+/** Minimum gap between `chat.getLaunch` asks for one launch (store and card both use it). */
+export const CHAT_LAUNCH_HYDRATE_RETRY_MS = 20_000;
 
 /**
  * Learn about a launch this window did not start — a chat opened from another
@@ -474,7 +475,7 @@ export function hydrateChatLaunchFromHost(launchId: string | null | undefined, b
   const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
   if (!api?.get) return;
   const last = hydrateAttemptedAt.get(launchId);
-  if (last != null && Date.now() - last < HYDRATE_RETRY_MS) return;
+  if (last != null && Date.now() - last < CHAT_LAUNCH_HYDRATE_RETRY_MS) return;
   hydratingLaunchIds.add(launchId);
   hydrateAttemptedAt.set(launchId, Date.now());
   let request: Promise<ChatLaunchSnapshot | null>;
