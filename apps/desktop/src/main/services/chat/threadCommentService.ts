@@ -76,7 +76,10 @@ export function createThreadCommentService({
     if (!isThreadCommentSessionId(sessionId)) {
       throw new Error("Invalid chat session id.");
     }
-    return path.join(dir, `${sessionId.replace(/:/g, "_")}.json`);
+    // Reversible: `a:b` and `a_b` must never share a file. `encodeURIComponent`
+    // maps every accepted id to a distinct, path-safe name (the charset check
+    // above already rejects `..` and path separators).
+    return path.join(dir, `${encodeURIComponent(sessionId)}.json`);
   };
 
   const read = (sessionId: string): ChatThreadComment[] => {
@@ -98,6 +101,10 @@ export function createThreadCommentService({
           sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
+        // A transient failure (EACCES, EBUSY, a torn file) must not be cached
+        // as "no comments": a later create would then overwrite the file and
+        // erase comments that were never read. Propagate instead.
+        throw error;
       }
     }
     cache.set(sessionId, comments);

@@ -78,6 +78,10 @@ extension SyncService {
       if let includeInNextSend { optimistic.includeInNextSend = includeInNextSend }
       replaceThreadComment(optimistic, sessionId: sessionId)
     }
+    // Snapshot after the optimistic apply: if this changes while the command is
+    // out, a live update or another caller rewrote the list, and neither this
+    // response nor our rollback snapshot is authoritative any more.
+    let startedAt = threadCommentsWriteVersion[sessionId, default: 0]
     var args: [String: Any] = ["sessionId": sessionId, "commentId": commentId]
     if let body { args["body"] = body }
     if let includeInNextSend { args["includeInNextSend"] = includeInNextSend }
@@ -90,9 +94,17 @@ extension SyncService {
         targetProjectRootPath: scope.rootPath,
         as: ChatThreadComment.self
       )
-      replaceThreadComment(updated, sessionId: sessionId)
+      if threadCommentsWriteVersion[sessionId, default: 0] == startedAt {
+        replaceThreadComment(updated, sessionId: sessionId)
+      } else {
+        try? await refreshThreadComments(sessionId: sessionId)
+      }
     } catch {
-      if let previous { replaceThreadComment(previous, sessionId: sessionId) }
+      if threadCommentsWriteVersion[sessionId, default: 0] == startedAt {
+        if let previous { replaceThreadComment(previous, sessionId: sessionId) }
+      } else {
+        try? await refreshThreadComments(sessionId: sessionId)
+      }
       throw error
     }
   }
@@ -110,6 +122,8 @@ extension SyncService {
     }
     let before = threadComments(sessionId: sessionId)
     setThreadComments(before.filter { $0.id != commentId }, sessionId: sessionId)
+    // Snapshot after the optimistic delete; see `updateThreadComment`.
+    let startedAt = threadCommentsWriteVersion[sessionId, default: 0]
     let scope = chatCommandScope(for: sessionId)
     do {
       let response = try await sendCommand(
@@ -122,12 +136,15 @@ extension SyncService {
         throw QueuedRemoteCommandError(action: action)
       }
     } catch {
-      // Only restore while the list still lacks it: a live update that landed
-      // meanwhile is newer than our snapshot.
-      let current = threadComments(sessionId: sessionId)
-      if let removed = before.first(where: { $0.id == commentId }),
-         !current.contains(where: { $0.id == commentId }) {
-        var restored = current
+      if threadCommentsWriteVersion[sessionId, default: 0] != startedAt {
+        // A live update landed while the delete was out; it is newer than our
+        // snapshot, so reconcile with the host instead of restoring it.
+        try? await refreshThreadComments(sessionId: sessionId)
+      } else if let removed = before.first(where: { $0.id == commentId }),
+                !threadComments(sessionId: sessionId).contains(where: { $0.id == commentId }) {
+        // Only restore while the list still lacks it: a live update that landed
+        // meanwhile is newer than our snapshot.
+        var restored = threadComments(sessionId: sessionId)
         let index = before.firstIndex(where: { $0.id == commentId }) ?? restored.count
         restored.insert(removed, at: min(index, restored.count))
         setThreadComments(restored, sessionId: sessionId)

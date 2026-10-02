@@ -133,4 +133,37 @@ describe("createThreadCommentService", () => {
       fault.restore();
     }
   });
+
+  it("keeps session ids that differ only by an encoded character in separate files", () => {
+    const service = makeService();
+    service.create({
+      sessionId: "s:a",
+      messageKey: "message:1",
+      messageExcerpt: "reply",
+      anchor: anchor("colon-quote"),
+      body: "colon session",
+    });
+    service.create({
+      sessionId: "s_a",
+      messageKey: "message:1",
+      messageExcerpt: "reply",
+      anchor: anchor("underscore-quote"),
+      body: "underscore session",
+    });
+
+    const colon = service.list({ sessionId: "s:a" });
+    const underscore = service.list({ sessionId: "s_a" });
+    expect(colon).toHaveLength(1);
+    expect(underscore).toHaveLength(1);
+    expect(colon[0]!.anchor).toMatchObject({ quote: "colon-quote" });
+    expect(underscore[0]!.anchor).toMatchObject({ quote: "underscore-quote" });
+  });
+
+  it("propagates a real read failure instead of caching an empty list", () => {
+    const service = makeService();
+    // A directory where the session file belongs reads as EISDIR, not ENOENT.
+    fs.mkdirSync(path.join(root!, "thread-comments", "s1.json"), { recursive: true });
+
+    expect(() => service.list({ sessionId: "s1" })).toThrow();
+  });
 });
