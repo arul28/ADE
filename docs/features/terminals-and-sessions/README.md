@@ -2922,8 +2922,9 @@ deleted, only hidden.
 Chats and shells list with archived rows hidden by default. `ade chat list` and
 `ade terminal list` take `--include-archived`, and `ade archive list` shows every
 archived item across lanes, chats, and shells. A chat's shell and subagent
-drawers start collapsed behind one small mark (count plus failed/needs-you/
-running); a selection that lands inside a collapsed drawer opens it once so the
+drawers start collapsed behind their full header strip — kind icon, kind label
+and count, plus failed/needs-you/running — and collapsing only hides the child
+rows; a selection that lands inside a collapsed drawer opens it once so the
 selected row is on screen.
 
 ## Cross-links
