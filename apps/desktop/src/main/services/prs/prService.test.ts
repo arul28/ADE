@@ -6320,6 +6320,28 @@ describe("prService.land", () => {
     }));
   });
 
+  it("finishes the stack merge as failed when the background poll runs out still pending", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // The PUT is accepted, but every poll stays pending past the 15-minute
+    // background wait, and the fresh PR read still shows it unmerged.
+    const { service, operationService } = buildStackLand([{ status: 202, body: pending() }]);
+
+    const result = await landWithTimers(() => service.land({ prId: "pr-stacked", method: "squash" }));
+
+    expect(result).toEqual(expect.objectContaining({ success: false, mergeStatus: "pending" }));
+    expect(result.error).toMatch(/still merging/);
+    expect(operationService.finish).not.toHaveBeenCalled();
+
+    // The foreground answered; the background poll gives up without a merge.
+    // The operation must not be finished as a success the merge never reached.
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    expect(operationService.finish).toHaveBeenCalledTimes(1);
+    expect(operationService.finish).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      metadataPatch: expect.objectContaining({ mergeStatus: "pending", stackPrNumbers: [90, 91] }),
+    }));
+  });
+
   it("refuses auto-merge for a stacked PR", async () => {
     const { service } = buildStackLand([{ body: merged }]);
     await expect(service.setAutoMerge({ prId: "pr-stacked", enabled: true, method: "squash" }))

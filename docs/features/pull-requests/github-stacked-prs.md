@@ -13,9 +13,11 @@ number as the remote identity.
 
 - Stacks live in the existing PRs tab. There is no separate top-level Stacks
   tab.
-- GitHub remains the final review and merge surface. ADE opens that surface in
-  the built-in browser and does not recreate GitHub's merge box.
-- ADE may create, extend, unstack, rebase, adopt, and locally repair stacks.
+- GitHub remains the authority for reviews, branch rules, and the merge. ADE
+  starts a stack merge through GitHub's async merge API and follows the result;
+  it does not recreate GitHub's merge box.
+- ADE may create, extend, merge, unstack, rebase, adopt, and locally repair
+  stacks.
 - Existing integration PR workflows remain independent from stacked PRs.
 - Users do not need to install `gh-stack`; ADE uses GitHub's API directly.
 - Authorizing the ADE GitHub App is sufficient for desktop and headless CLI
@@ -88,6 +90,7 @@ sync local and remote state
 request a clean GitHub rebase
 resolve conflicts locally with ADE
 unstack with a consequence preview
+merge the stack through GitHub's async merge API
 open the GitHub review/merge surface
 ```
 
@@ -117,8 +120,12 @@ snapshot. Opening the tab never performs per-row stack requests.
 - Empty, loading, stale, permission, unsupported-host, conflict, queued,
   partially merged, and completed states have distinct copy and actions.
 
-The primary final action is `Review and merge on GitHub`. Mutating ADE actions
-open the inspector and require confirmation.
+The Merge card for a stacked PR merges the stack from ADE. GitHub merges every
+open PR from the stack base up to the selected one, all or none, and runs branch
+rules during the merge; ADE starts it, polls the result, and reports the outcome
+in a result banner. The first click arms the button because one merge covers more
+than this PR. `GitHub` still opens the review and merge surface in the built-in
+browser, and mutating ADE actions open the inspector and require confirmation.
 
 ## Work card
 

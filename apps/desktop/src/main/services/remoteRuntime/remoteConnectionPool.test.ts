@@ -1529,6 +1529,35 @@ describe("RemoteConnectionPool", () => {
     }])).toBeGreaterThan(callOptions?.timeoutMs ?? 0);
   });
 
+  // The remote daemon runs the same async Stack merge the local one does, so a
+  // remote pr.land needs the long-running transport budget instead of the
+  // client default while GitHub keeps polling the merge.
+  it("gives a remote stack merge the long-running transport budget", async () => {
+    const client = createClient();
+    client.call.mockResolvedValue({
+      ok: true,
+      domain: "pr",
+      action: "land",
+      result: null,
+      statusHints: {},
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await pool.callActionForTarget(target, "project-1", {
+      domain: "pr",
+      action: "land",
+      args: { prId: "pr-1", method: "squash" },
+    });
+
+    const callOptions = client.call.mock.calls[0]?.[2] as { timeoutMs?: number } | undefined;
+    expect(callOptions?.timeoutMs).toBe(120_000);
+  });
+
   // A remote Mac runtime runs the same xcodebuild a local one does, and
   // xcodebuild alone is allowed 600s. Without a transport budget these actions
   // fell back to RuntimeRpcClient's 600s default and reported "Remote ADE
