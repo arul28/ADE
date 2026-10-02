@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.86] - 2026-10-02
+
+### Desktop
+
+- Merge GitHub Stacks from ADE with the async merge API, and link a stack to one Work card (#1428, #1419).
+- Thread comments on agent replies and a better Add to chat (#1422).
+- Resume interrupted agents after an update install (#1418); stalled-turn banner (#1420).
+- Claude Agent SDK 0.3.287 with human-origin interrupts (#1423); OpenCode fixes (#1416, #1421).
+- Theme overhaul with VS Code import and per-computer appearance (#1414).
+- Fixes for lane setup, Windows lane deletes, thread chips, subagent rows, and stale viewer drafts (#1413, #1417, #1424-#1427).
+
 ## [1.2.85] - 2026-10-01
 
 ### Desktop
@@ -2257,6 +2268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.86]: https://github.com/arul28/ADE/compare/v1.2.85...v1.2.86
 [1.2.85]: https://github.com/arul28/ADE/compare/v1.2.84...v1.2.85
 [1.2.84]: https://github.com/arul28/ADE/compare/v1.2.83...v1.2.84
 [1.2.83]: https://github.com/arul28/ADE/compare/v1.2.82...v1.2.83
