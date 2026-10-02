@@ -1924,6 +1924,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    */
   let laneStatusReadAt: { projectKey: string | null; atMs: number } | null = null;
   let laneStatusReadTimer: number | null = null;
+  /**
+   * The strictest freshness the pending timer was asked for. A later, stricter
+   * request (`maxAgeMs: 0` from a commit-list reload) lowers it, so a forced
+   * re-read is never swallowed by a timer armed for the default window.
+   */
+  let laneStatusReadThresholdMs = LANE_STATUS_MAX_AGE_MS;
 
   const laneStatusAgeMs = (projectKey: string | null): number =>
     laneStatusReadAt && laneStatusReadAt.projectKey === projectKey
@@ -1938,11 +1944,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     if (laneStatusAgeMs(projectKey) >= LANE_STATUS_MAX_AGE_MS && !get().laneStatusStale) {
       set({ laneStatusStale: true });
     }
-    if (laneStatusReadTimer != null) return;
+    if (laneStatusReadTimer != null) {
+      laneStatusReadThresholdMs = Math.min(laneStatusReadThresholdMs, maxAgeMs);
+      return;
+    }
+    laneStatusReadThresholdMs = maxAgeMs;
     laneStatusReadTimer = window.setTimeout(() => {
       laneStatusReadTimer = null;
+      const threshold = laneStatusReadThresholdMs;
       const currentKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
-      if (!currentKey || laneStatusAgeMs(currentKey) < maxAgeMs) return;
+      if (!currentKey || laneStatusAgeMs(currentKey) < threshold) return;
       void get().refreshLanes({ includeStatus: true, includeSnapshots: false }).catch((err) => {
         console.debug("Lane status read failed:", err);
       });
