@@ -10,7 +10,8 @@ let runner: ProviderLoginRunner | null = null;
  * page calls, so a sign-in started through one is readable through the other.
  */
 export function getMachineProviderLoginRunner(): ProviderLoginRunner {
-  runner ??= createProviderLoginRunner({
+  if (runner) return runner;
+  runner = createProviderLoginRunner({
     getInstance: (id) => getMachineProviderInstanceStore().get(id),
     loginCommand: (id) => getMachineProviderInstanceStore().loginCommand(id),
     verify: async (instance) => {
@@ -22,5 +23,9 @@ export function getMachineProviderLoginRunner(): ProviderLoginRunner {
       return store.get(instance.id);
     },
   });
+  // A sign-in still open when the process ends would leave its CLI running.
+  // The desktop app and the headless runtime both exit through here.
+  const created = runner;
+  process.once("exit", () => created.disposeAll());
   return runner;
 }

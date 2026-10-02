@@ -208,6 +208,8 @@ export type ProviderLoginStatus = {
   url: string | null;
   /** The CLI is asking for a code pasted from the browser. */
   awaitingCode: boolean;
+  /** A device sign-in's one-time code, typed into the sign-in page. */
+  deviceCode?: string;
   /** The CLI's output so far, without terminal escapes; the last few KB. */
   output: string;
   /** The account's email once the login is verified. */
@@ -218,7 +220,21 @@ export type ProviderLoginStatus = {
   endedAt?: string;
 };
 
-export type ProviderLoginStartArgs = { id: string };
+/** A sign-in that has not ended: its CLI still runs, or its result is being checked. */
+export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | null | undefined): boolean {
+  return login?.state === "running" || login?.state === "verifying";
+}
+
+export type ProviderLoginStartArgs = {
+  id: string;
+  /**
+   * Sign in with a one-time code typed into the sign-in page (Codex
+   * `--device-auth`), for a machine other than the one with the browser:
+   * Codex's normal sign-in returns to a localhost port on the account's
+   * machine, which a browser on another computer cannot reach.
+   */
+  deviceAuth?: boolean;
+};
 export type ProviderLoginRefArgs = { loginId: string };
 export type ProviderLoginSubmitCodeArgs = { loginId: string; code: string };
 

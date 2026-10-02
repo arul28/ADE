@@ -140,18 +140,19 @@ function accountRoom(windows: readonly UsageWindow[], nowMs: number): AccountRoo
 type RankedRoom = Extract<AccountRoom, { kind: "room" }>;
 
 /**
- * Whether `a` should take a new chat before `b`: an unconstrained account
- * first, then the sooner weekly reset, then more five-hour room.
+ * Orders two accounts for a new chat; negative means `a` goes first. An
+ * unconstrained account first, then the sooner weekly reset, then more
+ * five-hour room. Zero is a tie.
  */
-function ranksBefore(a: RankedRoom, b: RankedRoom): boolean | null {
-  if (a.constrained !== b.constrained) return !a.constrained;
+function compareRoom(a: RankedRoom, b: RankedRoom): number {
+  if (a.constrained !== b.constrained) return a.constrained ? 1 : -1;
   if (Math.abs(a.hoursToWeeklyReset - b.hoursToWeeklyReset) > SCORE_EPSILON) {
-    return a.hoursToWeeklyReset < b.hoursToWeeklyReset;
+    return a.hoursToWeeklyReset - b.hoursToWeeklyReset;
   }
   if (Math.abs(a.fiveHourHeadroom - b.fiveHourHeadroom) > SCORE_EPSILON) {
-    return a.fiveHourHeadroom > b.fiveHourHeadroom;
+    return b.fiveHourHeadroom - a.fiveHourHeadroom;
   }
-  return null;
+  return 0;
 }
 
 /**
@@ -196,8 +197,9 @@ export function pickInstanceForNewChat({
       continue;
     }
     if (room.kind === "full") continue;
-    const order = best ? ranksBefore(room, best.room) : true;
-    if (order === true || (order === null && instance.id === defaultId)) best = { instance, room };
+    const order = best ? compareRoom(room, best.room) : -1;
+    // A tie goes to the default account.
+    if (order < 0 || (order === 0 && instance.id === defaultId)) best = { instance, room };
   }
 
   const signedOut = signedOutInstanceIds.length > 0 ? { signedOutInstanceIds } : {};
@@ -264,7 +266,7 @@ export function pickAlternateInstanceForLimitedChat({
     // any room beats a stopped chat.
     const ranked = room.kind === "room" ? room : null;
     const better = !chosen
-      || (ranked !== null && (chosen.room === null || ranksBefore(ranked, chosen.room) === true));
+      || (ranked !== null && (chosen.room === null || compareRoom(ranked, chosen.room) < 0));
     if (better) chosen = { instance, room: ranked };
   }
   if (!chosen) return null;

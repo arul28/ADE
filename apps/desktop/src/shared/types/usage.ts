@@ -1,3 +1,5 @@
+import type { ProviderInstanceProvider } from "./providerInstances";
+
 // ---------------------------------------------------------------------------
 // Usage dashboard types
 // ---------------------------------------------------------------------------
@@ -793,7 +795,7 @@ export type AccountBalanceSkipReason =
  * Present only while smart balance is on for the provider.
  */
 export type AccountBalanceIssue = {
-  provider: "claude" | "codex";
+  provider: ProviderInstanceProvider;
   kind: "signed_out" | "no_usage_data" | "error";
   /** Short text for the pill, e.g. "Claude account 90 signed out". */
   title: string;
@@ -842,7 +844,7 @@ export type UsageSnapshot = {
    * Where smart balance would send a new chat right now, per provider with it
    * on and a real choice to make. Omitted when no provider has one.
    */
-  balanceNext?: Array<{ provider: "claude" | "codex"; instanceId: string }>;
+  balanceNext?: Array<{ provider: ProviderInstanceProvider; instanceId: string }>;
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];

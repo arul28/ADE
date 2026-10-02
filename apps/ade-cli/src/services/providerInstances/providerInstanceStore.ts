@@ -179,12 +179,14 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     }
     : undefined;
   const accentColor = normalizeProviderInstanceAccent(value.accentColor);
-  const replacedEmail = isRecord(value.replacedAccount) ? trimmedString(value.replacedAccount.email) : null;
-  const replacedAccount: ProviderInstanceReplacedAccount | undefined = replacedEmail && isRecord(value.replacedAccount)
+  const replaced = isRecord(value.replacedAccount) ? value.replacedAccount : null;
+  const replacedEmail = trimmedString(replaced?.email);
+  const replacedPlan = trimmedString(replaced?.plan);
+  const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
     ? {
       email: replacedEmail,
-      ...(trimmedString(value.replacedAccount.plan) ? { plan: trimmedString(value.replacedAccount.plan)! } : {}),
-      replacedAt: trimmedString(value.replacedAccount.replacedAt) ?? DEFAULT_INSTANCE_CREATED_AT,
+      ...(replacedPlan ? { plan: replacedPlan } : {}),
+      replacedAt: trimmedString(replaced.replacedAt) ?? DEFAULT_INSTANCE_CREATED_AT,
     }
     : undefined;
   return {
@@ -345,10 +347,13 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
     // Two config homes signed in to one email are one login and one quota. The
-    // first in list order (the base identity, then creation order) owns it.
-    const owner = stored.account?.email
-      ? siblings.find((record) => sameEmail(record.account?.email, stored.account?.email))
-      : undefined;
+    // first working login in list order (the base identity, then creation
+    // order) owns it: a broken login has no quota to share. With no working
+    // login, the first in list order owns it.
+    const holders = stored.account?.email
+      ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
+      : [];
+    const owner = holders.find((record) => !brokenLogins.has(record.id)) ?? holders[0];
     const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
     // A replaced login another account holds again is not lost.
     const replacedAccount = stored.replacedAccount

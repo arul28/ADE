@@ -144,75 +144,47 @@ function latestTurnAccount(events: readonly AgentChatEventEnvelope[]): AgentChat
 }
 
 /**
- * Last registry read per machine and provider. A chat switch renders the
- * previous answer at once and refreshes behind it, so the note does not blink.
+ * Last answer per key (machine plus provider, or machine plus key id). A chat
+ * switch renders the previous answer at once and reads again behind it, so
+ * the note does not blink.
  */
-const registryCache = new Map<string, ProviderInstance[]>();
-const credentialLabelCache = new Map<string, string | null>();
+const readCache = new Map<string, unknown>();
 
 function pinScopeKey(pin: OpenProjectBinding | null): string {
   return pin?.key ?? "bound";
 }
 
 /**
- * This provider's accounts on the chat's machine. The registry emits no change
- * event, so it is read when the chat, its bound account or its machine
- * changes — never polled.
+ * One cached read for the note. It runs when `cacheKey` or `rereadToken`
+ * changes; `once` skips the read when the cache already holds an answer.
+ * Nothing here emits change events, so nothing is polled. A failed read
+ * leaves the last answer (or nothing) on screen: the note is decoration on a
+ * working chat.
  */
-function useProviderRegistry(
-  provider: ProviderInstanceProvider | null,
-  boundInstanceId: string | null,
-  pin: OpenProjectBinding | null,
-): ProviderInstance[] | null {
-  const cacheKey = provider ? `${pinScopeKey(pin)}|${provider}` : null;
-  const [read, setRead] = useState<{ key: string; instances: ProviderInstance[] } | null>(null);
+function useCachedRead<T>(
+  cacheKey: string | null,
+  read: () => Promise<T> | null,
+  options: { rereadToken?: string | null; once?: boolean } = {},
+): T | null {
+  const [answer, setAnswer] = useState<{ key: string; value: T } | null>(null);
   useEffect(() => {
-    if (!provider || !cacheKey) return;
-    const api = typeof window === "undefined" ? null : window.ade?.providerInstances ?? null;
-    if (!api) return;
+    if (!cacheKey || (options.once && readCache.has(cacheKey))) return;
+    const pending = read();
+    if (!pending) return;
     let cancelled = false;
-    api.list({ provider }, pin).then((instances) => {
-      registryCache.set(cacheKey, instances);
-      if (!cancelled) setRead({ key: cacheKey, instances });
-    }).catch(() => {
-      // The note is decoration on a working chat; an unreadable registry
-      // leaves the turn's own report (or nothing) on screen.
-    });
+    pending.then((value) => {
+      readCache.set(cacheKey, value);
+      if (!cancelled) setAnswer({ key: cacheKey, value });
+    }).catch(() => undefined);
     return () => {
       cancelled = true;
     };
-    // `pin` is covered by `cacheKey`; `boundInstanceId` re-reads after a move.
+    // `read` is rebuilt each render; the key and token say when to call it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, cacheKey, boundInstanceId]);
+  }, [cacheKey, options.rereadToken]);
   if (!cacheKey) return null;
-  if (read?.key === cacheKey) return read.instances;
-  return registryCache.get(cacheKey) ?? null;
-}
-
-/** The stored key's label, read once per key and machine. */
-function useCredentialLabel(credentialId: string | null, pin: OpenProjectBinding | null): string | null {
-  const cacheKey = credentialId ? `${pinScopeKey(pin)}|${credentialId}` : null;
-  const [read, setRead] = useState<{ key: string; label: string | null } | null>(null);
-  useEffect(() => {
-    if (!credentialId || !cacheKey || credentialLabelCache.has(cacheKey)) return;
-    const api = typeof window === "undefined" ? null : window.ade?.apiCredentials ?? null;
-    if (!api) return;
-    let cancelled = false;
-    api.list({}, pin).then((rows) => {
-      const label = clean(rows.find((row) => row.credentialId === credentialId)?.label);
-      credentialLabelCache.set(cacheKey, label);
-      if (!cancelled) setRead({ key: cacheKey, label });
-    }).catch(() => {
-      // Without the label the row still says "API key".
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [credentialId, cacheKey]);
-  if (!cacheKey) return null;
-  if (read?.key === cacheKey) return read.label;
-  return credentialLabelCache.get(cacheKey) ?? null;
+  if (answer?.key === cacheKey) return answer.value;
+  return (readCache.get(cacheKey) as T | undefined) ?? null;
 }
 
 export function ChatAccountNote({
@@ -234,9 +206,19 @@ export function ChatAccountNote({
   const turnAccount = useMemo(() => latestTurnAccount(events), [events]);
   const multi = isProviderInstanceProvider(provider) ? provider : null;
   const boundInstanceId = multi ? (clean(instanceId) ?? multi) : null;
-  const instances = useProviderRegistry(multi, boundInstanceId, runtimePin);
-  const wantsKeyLabel = !preset && clean(credentialId) != null;
-  const credentialLabel = useCredentialLabel(wantsKeyLabel ? clean(credentialId) : null, runtimePin);
+  // The registry is read again when the bound account changes (a move).
+  const instances = useCachedRead<ProviderInstance[]>(
+    multi ? `accounts|${pinScopeKey(runtimePin)}|${multi}` : null,
+    () => (multi ? window.ade?.providerInstances?.list({ provider: multi }, runtimePin) ?? null : null),
+    { rereadToken: boundInstanceId },
+  );
+  const keyId = !preset ? clean(credentialId) : null;
+  const credentialLabel = useCachedRead<string | null>(
+    keyId ? `key|${pinScopeKey(runtimePin)}|${keyId}` : null,
+    () => window.ade?.apiCredentials?.list({}, runtimePin)
+      .then((rows) => clean(rows.find((row) => row.credentialId === keyId)?.label)) ?? null,
+    { once: true },
+  );
   const model = useMemo(
     () => resolveChatAccountNote({
       provider,

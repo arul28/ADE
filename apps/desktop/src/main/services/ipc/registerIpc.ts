@@ -138,8 +138,9 @@ import {
   createAccountMachineInventoryFetcher,
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
-import { isUsageSnapshot, recheckSignedOutLogins, type AccountRollupFetcher } from "../usage/usageTrackingService";
+import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
+import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
   parseProductAnalyticsCapture,
@@ -6768,7 +6769,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
-    return getMachineProviderLoginRunner().start(providerInstanceId(arg));
+    return getMachineProviderLoginRunner().start(providerInstanceId(arg), {
+      deviceAuth: providerInstanceArgs(arg).deviceAuth === true,
+    });
   });
 
   ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
@@ -6813,13 +6816,7 @@ export function registerIpc({
     const args = providerInstanceArgs(arg);
     const provider = args.provider == null ? undefined : providerInstanceProvider(args.provider);
     const instanceId = typeof args.instanceId === "string" ? args.instanceId : undefined;
-    const restored = await recheckSignedOutLogins({ provider, instanceId }).catch(() => []);
-    // The quota rows and smart balance still carry the old signed-out reading
-    // until a poll; a restored login asks for one now.
-    // A sign-in that just finished names its account: its first quota reading
-    // should not wait for the next idle poll either.
-    if (restored.length > 0 || instanceId) void getCtx().usageTrackingService?.forceRefresh().catch(() => undefined);
-    return getMachineProviderInstanceStore().refreshAccounts(provider);
+    return refreshProviderAccounts({ provider, instanceId }, getCtx().usageTrackingService);
   });
 
 

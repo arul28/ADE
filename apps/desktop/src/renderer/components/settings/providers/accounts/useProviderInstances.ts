@@ -171,6 +171,49 @@ export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvi
 }
 
 /**
+ * The provider's default account on the Settings page's machine, for the
+ * provider card's sign-in button. Reads the list only, never the settings.
+ * `bridgeMissing` is true when the host has no account bridge.
+ */
+export function useDefaultProviderInstance(provider: ProviderInstanceProvider): {
+  instance: ProviderInstance | null;
+  bridgeMissing: boolean;
+  reload: () => Promise<void>;
+} {
+  const { pin } = useSettingsMachineScope();
+  const [instance, setInstance] = useState<ProviderInstance | null>(null);
+  const [bridgeMissing, setBridgeMissing] = useState(false);
+  const aliveRef = useRef(true);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const reload = useCallback(async () => {
+    const api = pinnedProviderInstances(pin);
+    if (!api) {
+      setBridgeMissing(true);
+      return;
+    }
+    try {
+      const list = await api.list({ provider });
+      if (aliveRef.current) setInstance(list.find((entry) => entry.isDefault) ?? null);
+    } catch {
+      // The card falls back to the login command.
+    }
+  }, [pin, provider]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return { instance, bridgeMissing, reload };
+}
+
+/**
  * The providers currently balancing new chats across accounts.
  *
  * Read once per mount and never polled: the picker is a transient surface, and

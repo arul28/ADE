@@ -16,7 +16,7 @@
  * proxy's sign-in uses the same shape), so it works the same for a Settings
  * page pinned to another machine.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowSquareOut,
   CaretRight,
@@ -30,16 +30,20 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../../lanes/lane
 import { Dialog, type DialogAction } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { ProviderLogo } from "../../../shared/ProviderLogos";
-import type {
-  ProviderInstance,
-  ProviderInstanceProvider,
-  ProviderLoginStatus,
+import {
+  isProviderLoginLive,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+  type ProviderLoginStatus,
 } from "../../../../../shared/types/providerInstances";
+import { isUnsupportedAdeActionError } from "../../../../../shared/codedError";
 import { AccentSwatchRow } from "./AccentSwatchRow";
 import { accountIdentityLine } from "./accountPresentation";
 import { providerActionMessage } from "../providerErrorMessage";
 import { pinnedProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { providerColor } from "../../../usage/providerColors";
+import { useAppStore } from "../../../../state/appStore";
 
 /** How long the success state stays up before the sheet closes itself. */
 const SUCCESS_HOLD_MS = 1_800;
@@ -61,8 +65,13 @@ export type AddProviderAccountSheetProps = {
   onClose: (changed: boolean) => void;
 };
 
-function isLive(login: ProviderLoginStatus | null): boolean {
-  return login?.state === "running" || login?.state === "verifying";
+/** The sentence for a sign-in that could not start. */
+function startFailureMessage(err: unknown): string {
+  // A pinned machine on an ADE from before in-app sign-in has no login actions.
+  if (isUnsupportedAdeActionError(err)) {
+    return "That machine runs an older ADE that cannot sign in from Settings. Update ADE there, then sign in to this account again.";
+  }
+  return providerActionMessage(err, "That sign-in could not be started.");
 }
 
 /** `claude.ai`, `auth.openai.com` — the host a sign-in link points at. */
@@ -85,7 +94,7 @@ export function AddProviderAccountSheet({
 }: AddProviderAccountSheetProps) {
   // The account, its sign-in and its config home all live on the machine the
   // Settings page is showing.
-  const { pin } = useSettingsMachineScope();
+  const { pin, isThisMachine } = useSettingsMachineScope();
   const resuming = Boolean(existingInstance);
   const [phase, setPhase] = useState<Phase>(resuming ? "signing" : "form");
   const [label, setLabel] = useState(initialLabel ?? "");
@@ -107,7 +116,11 @@ export function AddProviderAccountSheet({
   const labelInputRef = useRef<HTMLInputElement | null>(null);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
 
-  const api = pinnedProviderInstances(pin);
+  // One bridge per machine, so the poll and success effects do not restart on
+  // every parent render.
+  const api = useMemo(() => pinnedProviderInstances(pin), [pin]);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     aliveRef.current = true;
@@ -118,7 +131,12 @@ export function AddProviderAccountSheet({
 
   const applyLogin = useCallback((next: ProviderLoginStatus) => {
     loginRef.current = next;
-    if (!aliveRef.current) return;
+    if (!aliveRef.current) {
+      // Closed while the start was in flight: the unmount cleanup had no
+      // login to stop yet, so stop this one now.
+      if (isProviderLoginLive(next)) void pinnedProviderInstances(pin)?.loginCancel?.({ loginId: next.loginId }).catch(() => undefined);
+      return;
+    }
     setLogin(next);
     if (next.state === "succeeded") {
       changedRef.current = true;
@@ -128,20 +146,20 @@ export function AddProviderAccountSheet({
       changedRef.current = true;
       setPhase("failed");
     }
-  }, []);
+  }, [pin]);
 
   // A sign-in left running behind a closed sheet would hold the CLI open on
   // the account's machine until its timeout. Stop it.
   useEffect(() => () => {
     const open = loginRef.current;
-    if (open && isLive(open)) void pinnedProviderInstances(pin)?.loginCancel?.({ loginId: open.loginId }).catch(() => undefined);
+    if (open && isProviderLoginLive(open)) void pinnedProviderInstances(pin)?.loginCancel?.({ loginId: open.loginId }).catch(() => undefined);
   }, [pin]);
 
   const close = useCallback(() => {
     if (closedRef.current) return;
     closedRef.current = true;
-    onClose(changedRef.current);
-  }, [onClose]);
+    onCloseRef.current(changedRef.current);
+  }, []);
 
   const startLogin = useCallback(async (id: string) => {
     if (!api?.loginStart) throw new Error("This ADE host cannot run a sign-in from Settings. Update ADE on that machine.");
@@ -149,12 +167,22 @@ export function AddProviderAccountSheet({
     setCode("");
     setShowOutput(false);
     setPhase("signing");
-    applyLogin(await api.loginStart({ id }));
-  }, [api, applyLogin]);
+    // On another machine the browser is on this computer, not the account's.
+    applyLogin(await api.loginStart({ id, ...(isThisMachine ? {} : { deviceAuth: true }) }));
+  }, [api, applyLogin, isThisMachine]);
+
+  /** Start (or restart) a sign-in for an account that exists; a failure ends the sheet's attempt. */
+  const runLogin = useCallback((id: string) => {
+    void startLogin(id).catch((err) => {
+      if (!aliveRef.current) return;
+      setError(startFailureMessage(err));
+      setPhase("failed");
+    });
+  }, [startLogin]);
 
   // ── Poll the host's sign-in while it runs ──
   useEffect(() => {
-    if (!api?.loginStatus || !login || !isLive(login)) return;
+    if (!api?.loginStatus || !login || !isProviderLoginLive(login)) return;
     const loginId = login.loginId;
     const timer = window.setTimeout(() => {
       void api.loginStatus({ loginId })
@@ -170,10 +198,16 @@ export function AddProviderAccountSheet({
 
   // The account list reads the new login on close; the usage poll is asked for
   // its first reading by naming the account.
+  const refreshedRef = useRef(false);
   useEffect(() => {
     if (phase !== "success") return;
     const id = instanceIdRef.current;
-    if (api && id) void api.refresh({ provider, instanceId: id }).catch(() => undefined);
+    // Once: the refresh publishes a new usage snapshot, and that re-renders
+    // the parent.
+    if (api && id && !refreshedRef.current) {
+      refreshedRef.current = true;
+      void api.refresh({ provider, instanceId: id }).catch(() => undefined);
+    }
     const timer = window.setTimeout(close, SUCCESS_HOLD_MS);
     return () => window.clearTimeout(timer);
   }, [api, close, phase, provider]);
@@ -203,7 +237,7 @@ export function AddProviderAccountSheet({
       await startLogin(created.instance.id);
     } catch (err) {
       if (!aliveRef.current) return;
-      setError(providerActionMessage(err, "That sign-in could not be started."));
+      setError(startFailureMessage(err));
       setPhase(instanceIdRef.current ? "failed" : "form");
     } finally {
       if (aliveRef.current) setBusy(false);
@@ -215,22 +249,13 @@ export function AddProviderAccountSheet({
   useEffect(() => {
     if (!resuming || startedRef.current || !instanceIdRef.current) return;
     startedRef.current = true;
-    void startLogin(instanceIdRef.current).catch((err) => {
-      if (!aliveRef.current) return;
-      setError(providerActionMessage(err, "That sign-in could not be started."));
-      setPhase("failed");
-    });
-  }, [resuming, startLogin]);
+    runLogin(instanceIdRef.current);
+  }, [resuming, runLogin]);
 
   const tryAgain = useCallback(() => {
     const id = instanceIdRef.current;
-    if (!id) return;
-    void startLogin(id).catch((err) => {
-      if (!aliveRef.current) return;
-      setError(providerActionMessage(err, "That sign-in could not be started."));
-      setPhase("failed");
-    });
-  }, [startLogin]);
+    if (id) runLogin(id);
+  }, [runLogin]);
 
   const submitCode = useCallback(async () => {
     const current = loginRef.current;
@@ -347,10 +372,16 @@ export function AddProviderAccountSheet({
 
           <AccentSwatchRow value={accent} onChange={setAccent} />
 
-          <Callout icon={<ShieldCheck size={15} />}>
-            Next, {providerLabel} opens its sign-in page in your browser. Pick the account you want there before you
-            approve. The login is saved for this account only; your other accounts stay signed in.
-          </Callout>
+          <Banner
+            layout="inline"
+            model={{
+              id: "account-sign-in-hint",
+              tone: "neutral",
+              icon: <ShieldCheck size={15} />,
+              title: "Your other accounts stay signed in",
+              detail: `Next, ${providerLabel} opens its sign-in page in your browser. Pick the account you want there before you approve. The login is saved for this account only.`,
+            }}
+          />
         </div>
       ) : null}
 
@@ -390,8 +421,29 @@ export function AddProviderAccountSheet({
             <span style={{ maxWidth: 400, fontSize: 12, lineHeight: 1.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
               {verifying
                 ? `${providerLabel} finished. ADE is reading the saved login for ${accountName}.`
-                : `${host ?? providerLabel} should be open in your browser. Choose the account for ${accountName} and approve.`}
+                : login?.deviceCode
+                  ? `Open the sign-in page, choose the account for ${accountName}, and enter this code:`
+                  : `${host ?? providerLabel} should be open in your browser. Choose the account for ${accountName} and approve.`}
             </span>
+            {login?.deviceCode && !verifying ? (
+              <span
+                aria-label="One-time sign-in code"
+                style={{
+                  padding: "6px 14px",
+                  fontSize: 18,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  fontFamily: MONO_FONT,
+                  color: COLORS.textPrimary,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  borderRadius: 8,
+                  userSelect: "all",
+                }}
+              >
+                {login.deviceCode}
+              </span>
+            ) : null}
             {login?.url && !verifying ? (
               <span style={{ display: "inline-flex", gap: 8, marginTop: 4 }}>
                 <button
@@ -545,28 +597,6 @@ function OutputDisclosure({ output, open, onToggle }: { output: string; open: bo
   );
 }
 
-function Callout({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 10,
-        padding: "10px 12px",
-        borderRadius: 8,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        fontSize: 11,
-        lineHeight: 1.5,
-        fontFamily: SANS_FONT,
-        color: COLORS.textMuted,
-      }}
-    >
-      <span style={{ color: COLORS.textSecondary, flexShrink: 0, marginTop: 1, display: "inline-flex" }}>{icon}</span>
-      <span>{children}</span>
-    </div>
-  );
-}
-
 const FIELD_LABEL_STYLE: React.CSSProperties = {
   fontSize: 11,
   fontWeight: 500,
@@ -632,4 +662,41 @@ function SheetSteps({ current }: { current: number }) {
       })}
     </ol>
   );
+}
+
+/** What the sign-in sheet opens on: an existing account, or a new one with an optional starting label. */
+export type AccountSignInTarget = { existing: ProviderInstance | null; label?: string };
+
+/**
+ * Hosts the sign-in sheet for one provider: `open` shows it, `element` goes
+ * anywhere in the tree (outside a folded panel, so the sheet still opens).
+ * `onChanged` runs after a close that wrote something.
+ */
+export function useAccountSignInSheet({
+  provider,
+  providerLabel,
+  onChanged,
+}: {
+  provider: ProviderInstanceProvider;
+  providerLabel: string;
+  onChanged: () => void;
+}): { open: (target: AccountSignInTarget) => void; element: React.ReactNode } {
+  const theme = useAppStore((state) => state.theme);
+  const [target, setTarget] = useState<AccountSignInTarget | null>(null);
+  const element = target ? (
+    <AddProviderAccountSheet
+      // A new target is a new sheet, never the old one's state.
+      key={target.existing?.id ?? `new:${target.label ?? ""}`}
+      provider={provider}
+      providerLabel={providerLabel}
+      existingInstance={target.existing}
+      initialLabel={target.label}
+      defaultAccent={providerColor(provider, theme)}
+      onClose={(changed) => {
+        setTarget(null);
+        if (changed) onChanged();
+      }}
+    />
+  ) : null;
+  return { open: setTarget, element };
 }

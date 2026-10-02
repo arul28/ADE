@@ -4624,24 +4624,32 @@ export function createUsageTrackingService({
   }
 
   /**
+   * Smart balance's pick for a provider on one snapshot, or `null` when the
+   * provider has balance off. Chat creation and the Settings preview both use
+   * it, so the account marked "Next chat" is the one a new chat gets.
+   */
+  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    return pickInstanceForNewChat({
+      provider,
+      instances: providerInstanceStore.list(provider),
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs: Date.now(),
+    });
+  }
+
+  /**
    * The account each balancing provider would give a new chat now, so
-   * Settings can mark it. The same pure pick chat creation runs, on the same
-   * snapshot; a pick that skipped balancing is not a decision and is left out.
+   * Settings can mark it. A pick that skipped balancing is not a decision and
+   * is left out.
    */
   function computeBalanceNext(snapshot: UsageSnapshot): NonNullable<UsageSnapshot["balanceNext"]> {
     const next: NonNullable<UsageSnapshot["balanceNext"]> = [];
-    const byAccount = windowsByAccount(snapshot.windows);
     for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
       try {
-        if (!providerInstanceStore.getProviderSettings(provider).smartBalance) continue;
-        const result = pickInstanceForNewChat({
-          provider,
-          instances: providerInstanceStore.list(provider),
-          accounts: snapshot.accounts ?? [],
-          windowsByAccountId: byAccount,
-          nowMs: Date.now(),
-        });
-        if (!result.skip) next.push({ provider, instanceId: result.instanceId });
+        const result = balancedPick(provider, snapshot);
+        if (result && !result.skip) next.push({ provider, instanceId: result.instanceId });
       } catch {
         // A preview that cannot run leaves the mark off; chat creation reports
         // its own failure through `balanceIssues`.
@@ -5638,18 +5646,13 @@ export function createUsageTrackingService({
    */
   function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
-      const settings = providerInstanceStore.getProviderSettings(provider);
-      if (!settings.smartBalance) return null;
-      const instances = providerInstanceStore.list(provider);
-      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
-      const windowsByAccountId = windowsByAccount(lastSnapshot.windows);
-      const result = pickInstanceForNewChat({
-        provider,
-        instances,
-        accounts: lastSnapshot.accounts ?? [],
-        windowsByAccountId,
-        nowMs: Date.now(),
-      });
+      const result = balancedPick(provider, lastSnapshot);
+      if (!result) return null;
+      if (result.skip === "one_account") {
+        // Nothing to balance; an issue from an earlier pick no longer applies.
+        setBalancePickIssue(provider, null);
+        return null;
+      }
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
         setBalancePickIssue(provider, {
