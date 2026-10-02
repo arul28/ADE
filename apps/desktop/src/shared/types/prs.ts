@@ -302,6 +302,12 @@ export type GitHubPrStackMembership = {
   /** One-based position, where 1 is closest to the stack base. */
   position: number;
   baseBranch: string;
+  /**
+   * How many open PRs a merge of this PR covers: this one and every open PR
+   * below it. 1 means it is the bottom open PR, the only one GitHub lets a
+   * merge bypass rules from. 0 when this PR is not open.
+   */
+  openThroughHere?: number;
 };
 
 export type GitHubPrStackEntry = {
@@ -603,6 +609,14 @@ export type LandResult = {
   branchDeleted: boolean;
   laneArchived: boolean;
   error: string | null;
+  /**
+   * Set only for a GitHub Stack merge, which GitHub runs in the background.
+   * `enqueued` and `pending` come back with `success: false` and a message in
+   * `error`, so an older client never reads them as merged.
+   */
+  mergeStatus?: "merged" | "enqueued" | "pending";
+  /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
+  stackPrNumbers?: number[];
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";
@@ -727,7 +741,10 @@ export type LandPrArgs = {
    * someone's branch is their call, so the caller has to ask for it.
    */
   deleteRemoteBranch?: boolean;
-  /** When true, retry blocked merges with `gh pr merge --admin`. */
+  /**
+   * When true, retry blocked merges with `gh pr merge --admin`. For a GitHub
+   * Stack, sends `bypass_rules` with the async merge instead.
+   */
   bypassRules?: boolean;
   /** Custom merge commit title (`commit_title`). Ignored for the `rebase` method. */
   commitTitle?: string;

@@ -3608,6 +3608,55 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+/** A PR's stack membership, the way the host's githubStackStore builds it. */
+function mockStackMembership(stack: any, entry: any): any {
+  const isOpen = (candidate: any) => candidate.state === "open" && !candidate.mergedAt;
+  return {
+    id: stack.id,
+    number: stack.number,
+    size: stack.entries.length,
+    position: entry.position,
+    baseBranch: stack.baseBranch,
+    openThroughHere: isOpen(entry)
+      ? stack.entries.filter((candidate: any) => candidate.position <= entry.position && isOpen(candidate)).length
+      : 0,
+  };
+}
+
+// A demo GitHub Stack: #151 sits on #142, so previews can show the stack UI.
+{
+  const stackPrs = [142, 151];
+  const pulls = stackPrs.map((number) =>
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.repoPullRequests.find((pull: any) => pull.githubPrNumber === number));
+  if (pulls.every(Boolean)) {
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks = [{
+      id: "mock-stack-7",
+      number: 7,
+      nodeId: "MOCK_STACK_7",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      open: true,
+      createdAt: now,
+      syncedAt: now,
+      lastError: null,
+      entries: pulls.map((pull: any, index: number) => ({
+        githubPrNumber: pull.githubPrNumber,
+        position: index + 1,
+        state: "open",
+        isDraft: false,
+        mergedAt: null,
+        headBranch: pull.headBranch,
+        headSha: `mock-sha-${pull.githubPrNumber}`,
+      })),
+    }];
+    const stack = BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks[0];
+    pulls.forEach((pull: any, index: number) => {
+      pull.stack = mockStackMembership(stack, stack.entries[index]);
+    });
+  }
+}
+
 const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
     ? ADE_DB_SNAPSHOT.githubSnapshot
@@ -7733,7 +7782,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         title: "AI-drafted title",
         body: "AI-drafted body",
       }),
-      land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
+      land: async (args: { prId?: string }) => {
+        const pr = ALL_PRS.find((item: any) => item.id === args?.prId) ?? null;
+        const stack = pr ? browserMockPrSummaryWithStack(pr).stack : null;
+        // A stacked PR merges with every open PR below it, as the host's async stack merge does.
+        const stackPrNumbers = stack
+          ? (MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries ?? [])
+              .filter((entry: any) => entry.position <= stack.position && entry.state === "open" && !entry.mergedAt)
+              .map((entry: any) => entry.githubPrNumber)
+          : null;
+        // Record the merge, so the next list read shows it as the host would.
+        const mergedAt = new Date().toISOString();
+        for (const number of stackPrNumbers ?? (pr ? [pr.githubPrNumber] : [])) {
+          for (const item of [...ALL_PRS, ...MOCK_GITHUB_SNAPSHOT.repoPullRequests]) {
+            if (item.githubPrNumber !== number) continue;
+            Object.assign(item, { state: "merged", mergedAt });
+            if (item.id && MOCK_STATUS_BY_PR[item.id]) MOCK_STATUS_BY_PR[item.id].state = "merged";
+          }
+          const entry = stack
+            ? MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries
+                ?.find((candidate: any) => candidate.githubPrNumber === number)
+            : null;
+          if (entry) Object.assign(entry, { state: "closed", mergedAt });
+        }
+        return {
+          prId: args?.prId ?? "",
+          prNumber: pr?.githubPrNumber ?? 142,
+          success: true,
+          mergeCommitSha: "abc123",
+          branchDeleted: false,
+          laneArchived: false,
+          error: null,
+          ...(stack ? { mergeStatus: "merged", stackPrNumbers } : {}),
+        };
+      },
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
       createIntegration: resolvedArg({}),
@@ -7771,7 +7853,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
           ]),
         ),
-      listWithConflicts: resolved(ALL_PRS),
+      // Fresh copies, so a refresh after a mock merge re-renders the rows.
+      listWithConflicts: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
         let snapshots = ADE_DB_PR_SNAPSHOTS;
         const prId = args?.prId?.trim();
@@ -7823,6 +7906,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           }),
         };
         MOCK_GITHUB_SNAPSHOT.stacks = [...MOCK_GITHUB_SNAPSHOT.stacks, stack];
+        // Mark each PR as stacked, as the host's stack membership does.
+        for (const entry of stack.entries) {
+          const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+            (item: any) => item.githubPrNumber === entry.githubPrNumber,
+          );
+          if (!pull) continue;
+          pull.stack = mockStackMembership(stack, entry);
+        }
         return stack;
       },
       addGitHubStackPullRequests: async (args: {

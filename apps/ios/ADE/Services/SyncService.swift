@@ -15929,7 +15929,7 @@ final class SyncService: ObservableObject {
     commitTitle: String? = nil,
     commitBody: String? = nil,
     expectedHeadSha: String? = nil
-  ) async throws {
+  ) async throws -> LandResult {
     var args: [String: Any] = [
       "prId": prId,
       "method": method,
@@ -15940,7 +15940,32 @@ final class SyncService: ObservableObject {
     if let commitTitle, !commitTitle.isEmpty { args["commitTitle"] = commitTitle }
     if let commitBody, !commitBody.isEmpty { args["commitBody"] = commitBody }
     if let expectedHeadSha, !expectedHeadSha.isEmpty { args["expectedHeadSha"] = expectedHeadSha }
-    _ = try await sendCommand(action: "prs.land", args: args)
+    // A GitHub Stack merge can wait up to 45 s on the host before it answers.
+    // A timeout here does not mean the merge failed, so keep the connection.
+    let raw = try await sendCommand(
+      action: "prs.land",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 90_000_000_000
+    )
+    if let queued = raw as? [String: Any], (queued["queued"] as? Bool) == true {
+      return LandResult(
+        prId: prId,
+        success: false,
+        // Queued after a send failure or a timeout: the computer may already be
+        // merging, so say only what the phone knows.
+        error: "Still waiting for the computer. The merge result shows when it answers.",
+        mergeStatus: "pending"
+      )
+    }
+    let result = try decode(raw, as: LandResult.self)
+    // The host reports a refused merge in the result, not as an error.
+    if !result.success && !result.isInFlight {
+      throw NSError(domain: "ADE", code: 40, userInfo: [
+        NSLocalizedDescriptionKey: result.error ?? "GitHub did not merge the pull request.",
+      ])
+    }
+    return result
   }
 
   func closePullRequest(prId: String) async throws {

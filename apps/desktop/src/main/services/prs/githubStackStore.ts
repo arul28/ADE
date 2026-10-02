@@ -4,6 +4,7 @@ import { asNumber, asString, getErrorMessage, isRecord, nowIso } from "../shared
 import type { GitHubRepoRef } from "../../../shared/types/git";
 import type {
   GitHubPrStack,
+  GitHubPrStackEntry,
   GitHubPrStackMembership,
 } from "../../../shared/types/prs";
 
@@ -83,6 +84,22 @@ function stackFromRows(
         headSha: entry.head_sha,
       })),
   };
+}
+
+function isOpenStackEntry(entry: GitHubPrStackEntry): boolean {
+  return entry.state === "open" && !entry.mergedAt;
+}
+
+/**
+ * The open PRs at or below `prNumber`, bottom first: what one merge of that PR
+ * covers, since GitHub merges a stack from its base up to the PR you merge.
+ */
+export function openStackEntriesThrough(stack: GitHubPrStack, prNumber: number): GitHubPrStackEntry[] {
+  const self = stack.entries.find((entry) => entry.githubPrNumber === prNumber);
+  if (!self) return [];
+  return stack.entries
+    .filter((entry) => entry.position <= self.position && isOpenStackEntry(entry))
+    .sort((a, b) => a.position - b.position);
 }
 
 export function createGithubStackStore(args: {
@@ -187,6 +204,9 @@ export function createGithubStackStore(args: {
             size,
             position: entry.position,
             baseBranch: stack.baseBranch,
+            openThroughHere: isOpenStackEntry(entry)
+              ? openStackEntriesThrough(stack, entry.githubPrNumber).length
+              : 0,
           },
         );
       }

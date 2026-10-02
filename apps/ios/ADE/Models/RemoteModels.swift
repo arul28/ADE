@@ -5116,6 +5116,9 @@ struct GitHubPrStackMembership: Codable, Equatable {
   var size: Int
   var position: Int
   var baseBranch: String
+  /// How many open PRs a merge of this PR covers. 1 = the bottom open PR.
+  /// Nil from an older host.
+  var openThroughHere: Int? = nil
 }
 
 struct GitHubPrStackEntry: Codable, Identifiable, Equatable {
@@ -6712,6 +6715,15 @@ struct LandResult: Codable, Equatable {
   var branchDeleted: Bool?
   var laneArchived: Bool?
   var error: String?
+  /// Set for a GitHub Stack merge: "merged", "enqueued", or "pending".
+  var mergeStatus: String? = nil
+  /// For a GitHub Stack merge: every PR the merge covers.
+  var stackPrNumbers: [Int]? = nil
+
+  /// GitHub queued the stack or still runs the merge. Not a failure.
+  var isInFlight: Bool {
+    !success && (mergeStatus == "pending" || mergeStatus == "enqueued")
+  }
 }
 
 struct PrMobileSnapshot: Codable, Equatable {

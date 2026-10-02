@@ -233,6 +233,22 @@ describe("ipcInvokeTimeoutMs", () => {
     }
   });
 
+  // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
+  // merged PR. The 30s default fired a false timeout while the merge went on,
+  // so the direct channel and both runtime-action routes need the same 120s
+  // budget; the local route composes the daemon action budget with cold setup.
+  it("keeps a stack merge alive on the direct, local, and remote runtime paths", () => {
+    expect(ipcInvokeTimeoutMs(IPC.prsLand)).toBe(120_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "pr", action: "land", args: { prId: "pr-1", method: "squash" } },
+    }])).toBe(405_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "pr", action: "land", args: { prId: "pr-1", method: "squash" } },
+    }])).toBe(120_000);
+  });
+
   it("lets transcription run longer than the default invoke ceiling", () => {
     expect(ipcInvokeTimeoutMs(IPC.transcriptionTranscribe)).toBe(6 * 60_000);
   });

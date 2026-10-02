@@ -234,7 +234,7 @@ export function GitHubStackInspector({
                 <Plus size={12} /> Manage stack
               </button>
               <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>
-                GitHub manages rebases, review requirements, and merging.
+                GitHub keeps the stack rebased. Merge it from the Merge card.
               </span>
             </div>
 

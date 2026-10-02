@@ -177,7 +177,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
-import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -188,6 +188,7 @@ import {
   rowMergedBy,
 } from "./prRowMetadata";
 import { createGithubStackStore } from "./githubStackStore";
+import { createGithubStackMerge } from "./githubStackMerge";
 import { createPrChatLinkStore } from "./prChatLinkStore";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
@@ -987,14 +988,6 @@ function toPrState(args: { state: string; draft: boolean; mergedAt: string | nul
   if (state === "open" && args.draft) return "draft";
   if (state === "open") return "open";
   return "closed";
-}
-
-function toChecksStatus(state: string | null | undefined): PrChecksStatus {
-  const value = (state ?? "").toLowerCase();
-  if (value === "success") return "passing";
-  if (value === "failure" || value === "error") return "failing";
-  if (value === "pending") return "pending";
-  return "none";
 }
 
 /** Row storage for `checksMissingRequired` is JSON; tolerate anything else. */
@@ -8277,28 +8270,14 @@ export function createPrService({
     return { success: true, mergeCommitSha: null };
   };
 
-  /**
-   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
-   * how the PR shipped, then run the local bookkeeping.
-   *
-   * An unmapped PR has no row to record against and nothing local to clean up,
-   * so it only drops the read memos and invalidates the snapshot cache — that is
-   * what makes the next list read show it as merged.
-   */
-  /**
-   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
-   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
-   * someone else's repository, and deleting it here would delete an unrelated
-   * same-named branch out of the base repo.
-   */
-  const deleteMergedHeadBranchByCoords = async (
-    repo: GitHubRepoRef,
-    prNumber: number,
-  ): Promise<boolean> => {
-    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
-    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return false;
+  /** A fetched PR's head branch when it lives in `repo` itself; null for a fork. */
+  const sameRepoHeadBranch = (pull: any, repo: GitHubRepoRef): string | null => {
+    if (!pull || !rawPullHasSameRepoHead(pull, repo)) return null;
     const headBranch = branchNameFromRef(asString(pull?.head?.ref));
-    if (!headBranch || headBranch === "HEAD") return false;
+    return headBranch && headBranch !== "HEAD" ? headBranch : null;
+  };
+
+  const deleteRemoteHeadBranch = async (repo: GitHubRepoRef, prNumber: number, headBranch: string): Promise<boolean> => {
     try {
       await githubService.apiRequest({
         method: "DELETE",
@@ -8315,6 +8294,29 @@ export function createPrService({
     }
   };
 
+  /**
+   * Delete a just-merged PR's head branch on the remote, for a PR ADE holds no
+   * row for. Guarded on a same-repo head: a fork PR's branch name belongs to
+   * someone else's repository, and deleting it here would delete an unrelated
+   * same-named branch out of the base repo.
+   */
+  const deleteMergedHeadBranchByCoords = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<boolean> => {
+    const pull = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
+    const headBranch = sameRepoHeadBranch(pull, repo);
+    return headBranch ? await deleteRemoteHeadBranch(repo, prNumber, headBranch) : false;
+  };
+
+  /**
+   * Shared tail of both merge paths (REST and the `gh --admin` fallback): record
+   * how the PR shipped, then run the local bookkeeping.
+   *
+   * An unmapped PR has no row to record against and nothing local to clean up,
+   * so it only drops the read memos and invalidates the snapshot cache — that is
+   * what makes the next list read show it as merged.
+   */
   const finishSuccessfulMerge = async (
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
     args: LandPrArgs,
@@ -8359,6 +8361,26 @@ export function createPrService({
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
 
+  const githubStackMerge = createGithubStackMerge({
+    githubService,
+    // Declared further down; read at call time.
+    githubStackStore: { reconcile: (repo, stackNumber) => githubStackStore.reconcile(repo, stackNumber) },
+    operationService,
+    laneService,
+    logger,
+    fetchPr,
+    sameRepoHeadBranch,
+    deleteRemoteHeadBranch,
+    getRowForRepoPr,
+    recordMergeOutcome: (prId, outcome) => recordMergeOutcome(prId, outcome),
+    resolveViewerLoginForMerge: () => resolveViewerLoginForMerge(),
+    forgetActivityInputs,
+    markHotRefresh: (prIds) => markHotRefresh(prIds),
+    refreshOne,
+    invalidateGithubSnapshotCache,
+    delay,
+  });
+
   const land = async (args: LandPrArgs): Promise<LandResult> => {
     // A merge is a GitHub API call. It never needed a local row, so this
     // resolves a synthetic `gh:owner/repo#num` id too. Only the *local*
@@ -8395,30 +8417,10 @@ export function createPrService({
     };
     const githubStackNumber = githubStackStore.knownStackNumberForPr(repo, prNumber);
     if (githubStackNumber) {
-      return finishFailure(
-        "github_stack_requires_github_merge",
-        `PR #${prNumber} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
-      );
+      return await githubStackMerge.land(target, args, githubStackNumber, op.operationId);
     }
 
-    const formatMergeError = (rawMsg: string): string => {
-      if (rawMsg.includes("Resource not accessible by personal access token")) {
-        return "GitHub auth lacks permission to merge PRs. For gh auth or classic PATs, enable the repo scope. For fine-grained PATs, enable Contents: write and Pull requests: write.";
-      }
-      if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
-        return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
-      }
-      // A 409 from the merge API with an explicit `sha` we supplied means the
-      // head advanced since the merge dialog was opened (`Head branch was
-      // modified`). Distinguish it from a generic conflict.
-      if (args.expectedHeadSha && (rawMsg.includes("409") || /head branch was modified/i.test(rawMsg))) {
-        return "PR head changed since you opened the merge dialog — refresh and retry.";
-      }
-      if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
-        return "PR has merge conflicts. Rebase or resolve conflicts before merging.";
-      }
-      return rawMsg;
-    };
+    const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
 
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
@@ -13210,6 +13212,10 @@ export function createPrService({
 
     async setAutoMerge(args: SetPrAutoMergeArgs): Promise<void> {
       const target = resolvePrTarget(args.prId);
+      const stackNumber = args.enabled ? githubStackStore.knownStackNumberForPr(target.repo, target.prNumber) : null;
+      if (stackNumber) {
+        throw new Error(`GitHub does not support auto-merge for stacked PRs. Merge Stack #${stackNumber} instead.`);
+      }
       const pullRequestId = await fetchPullRequestNodeId(target);
       const method = (args.method ?? "squash").toUpperCase();
       const mutation = args.enabled

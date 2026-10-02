@@ -241,6 +241,9 @@ class GithubCredentialAttemptError extends Error {
     message: string,
     readonly authFailure: GitHubAuthFailure,
     readonly rateLimit: GitHubRateLimitState | null,
+    /** The HTTP status and parsed body of a REST failure, when there was one. */
+    readonly status: number | null = null,
+    readonly responseBody: unknown = null,
   ) {
     super(message);
     this.name = "GithubCredentialAttemptError";
@@ -1565,7 +1568,12 @@ export function createGithubService({
         const body = data && typeof data === "object" && !Array.isArray(data)
           ? data as Record<string, unknown>
           : null;
+        // The async merge API puts its reason in `details.message`.
+        const details = body && body.details && typeof body.details === "object" && !Array.isArray(body.details)
+          ? body.details as Record<string, unknown>
+          : null;
         const message = (body ? asString(body.message) : "")
+          || (details ? asString(details.message) : "")
           || `GitHub API request failed (HTTP ${response.status})`;
         const errorMessages = body && Array.isArray(body.errors)
           ? body.errors
@@ -1589,6 +1597,8 @@ export function createGithubService({
           message + detail,
           failure.authFailure,
           failure.rateLimit,
+          response.status,
+          data,
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
