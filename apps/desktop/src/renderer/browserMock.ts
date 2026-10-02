@@ -1574,7 +1574,12 @@ function mockCommitsForLane(lane: any, count: number): any[] {
   for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
   const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
-  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, total)));
+  // A stable denominator (not the request-dependent row count), so a commit's
+  // timestamp does not shift between pages and reorder the union.
+  const timestampSlots = lane.laneType === "primary"
+    ? Math.max(1, MOCK_COMMIT_POOL.length)
+    : Math.max(1, lane.status?.ahead ?? 0);
+  const step = Math.max(12 * 60_000, (end - start) / timestampSlots);
   const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
   return Array.from({ length: total }, (_, index) => {
     const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];

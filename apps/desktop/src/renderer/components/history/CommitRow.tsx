@@ -55,8 +55,7 @@ function ShaCell({ commit }: { commit: GitCommitSummary }) {
       title={copied ? "Copied" : `Copy ${commit.sha}`}
       onClick={(event) => {
         event.stopPropagation();
-        copyText(commit.sha);
-        setCopied(true);
+        void copyText(commit.sha).then(() => setCopied(true)).catch(() => {});
       }}
       onDoubleClick={(event) => event.stopPropagation()}
       className={cn(

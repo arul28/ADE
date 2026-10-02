@@ -610,8 +610,9 @@ export function CommitHistoryView({
       openPr({ number: badge.pr.githubPrNumber, linkedPrId: badge.pr.unmapped ? null : badge.pr.id, owner: badge.pr.repoOwner, name: badge.pr.repoName });
     },
     onCopy: (text) => {
-      copyText(text);
-      notify("Branch name copied", false);
+      void copyText(text)
+        .then(() => notify("Branch name copied", false))
+        .catch(() => notify("Could not copy branch name", true));
     },
     onFocusOwner: focusOwner,
   }), [focusOwner, navigate, notify, onFocusLane, openPr]);

@@ -3,10 +3,16 @@
  * or branch name, and the user-facing half of an IPC error.
  */
 
-export function copyText(text: string): void {
-  void window.ade.app.writeClipboardText(text).catch(() => {
-    void navigator.clipboard?.writeText(text).catch(() => {});
-  });
+/** Resolves only when a clipboard write succeeded; rejects when neither path did. */
+export async function copyText(text: string): Promise<void> {
+  try {
+    await window.ade.app.writeClipboardText(text);
+    return;
+  } catch {
+    // Fall through to the browser clipboard.
+  }
+  if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+  await navigator.clipboard.writeText(text);
 }
 
 /** Drops Electron's "Error invoking remote method 'x':" prefix. */

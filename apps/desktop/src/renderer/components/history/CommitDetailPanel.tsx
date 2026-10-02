@@ -270,8 +270,9 @@ export function CommitDetailPanel({
           type="button"
           title={`Copy ${resolvedCommit.sha}`}
           onClick={() => {
-            copyText(resolvedCommit.sha);
-            setNotice({ text: "SHA copied", error: false });
+            void copyText(resolvedCommit.sha)
+              .then(() => setNotice({ text: "SHA copied", error: false }))
+              .catch(() => setNotice({ text: "Could not copy SHA", error: true }));
           }}
           className="inline-flex shrink-0 items-center gap-1 rounded-[5px] px-1 font-mono text-[12px] text-fg/85 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
         >
