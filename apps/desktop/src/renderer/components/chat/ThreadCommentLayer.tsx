@@ -246,6 +246,8 @@ export function ThreadCommentLayer({
       setMarginWidth(Math.max(0, Math.floor((scrollRect.right - contentRect.right) / cssZoomOf(content) - 28)));
     };
     measure();
+    // jsdom has no ResizeObserver; the margin is measured once above.
+    if (typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver(measure);
     observer.observe(scroll);
     observer.observe(content);
