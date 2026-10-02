@@ -3,12 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { getLaneAccent } from "../lanes/laneColorPalette";
-import {
-  readForeignLaneSelection,
-  setForeignLaneSelection,
-  useForeignLaneSelection,
-} from "../lanes/useLanesPageMachines";
-import { selectActiveProjectStateKey, useAppStore, useAppStoreApi } from "../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { cachedCtoHomeResolution } from "../../state/ctoHome";
 import { EmptyState } from "../ui/EmptyState";
 import { Group, Panel } from "react-resizable-panels";
@@ -27,6 +22,7 @@ import {
 } from "./useTimelineStore";
 import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import { useCommitViewPrefs } from "./commitViewPrefs";
+import { useHistoryLaneSync } from "./useHistoryLaneSync";
 import type { TimelineEvent } from "./timelineTypes";
 import type { GitCommitSummary, OpenProjectBinding, OperationRecord } from "../../../shared/types";
 import {
@@ -339,70 +335,18 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   ]);
 
   // History and the lane list beside it (the Lanes or Work sidebar held under
-  // History) show one lane. The list's selection is the store's lane on this
-  // machine, or the Lanes list's row key (`machineId:laneId`) for a lane on
-  // another machine. `sidebarLaneRef` is the selection the two last agreed on,
-  // so each side only reacts to a change the other did not make.
-  const appStoreApi = useAppStoreApi();
-  const selectLane = useAppStore((s) => s.selectLane);
-  const foreignListKey = useForeignLaneSelection(projectStateKey);
-  const readListSelection = useCallback(
-    () => readForeignLaneSelection(projectStateKey) ?? appStoreApi.getState().selectedLaneId,
-    [appStoreApi, projectStateKey],
-  );
-  const sidebarLaneRef = useRef<string | null>(null);
-  if (sidebarLaneRef.current === null) sidebarLaneRef.current = foreignListKey ?? selectedLaneId ?? "";
-
-  // History's lane → the list's highlight.
-  useEffect(() => {
-    if (!active || !focusLaneId) return;
-    if (focusLaneMachineId) {
-      const key = foreignLaneKey(focusLaneMachineId, focusLaneId);
-      sidebarLaneRef.current = key;
-      setForeignLaneSelection(projectStateKey, key);
-      return;
-    }
-    sidebarLaneRef.current = focusLaneId;
-    setForeignLaneSelection(projectStateKey, null);
-    if (appStoreApi.getState().selectedLaneId !== focusLaneId) selectLane(focusLaneId);
-  }, [active, appStoreApi, focusLaneId, focusLaneMachineId, projectStateKey, selectLane]);
-
-  // A lane picked in the list → History shows it (and the URL follows).
-  useEffect(() => {
-    if (!active) return;
-    // Read live: the effect above may have just moved the selection to the
-    // lane a URL focused, and this render's value is the one it replaced.
-    const picked = readListSelection();
-    if ((picked ?? "") === sidebarLaneRef.current) return;
-    if (!picked) {
-      sidebarLaneRef.current = "";
-      return;
-    }
-    let target: { laneId: string; machineId: string | null } | null = null;
-    if (lanes.some((lane) => lane.id === picked)) {
-      target = { laneId: picked, machineId: null };
-    } else {
-      const row = allMachineLanes.lanesByKey.get(picked);
-      if (row) target = { laneId: row.lane.id, machineId: row.isActiveBinding ? null : row.machineId };
-    }
-    // Not listed yet (another machine still reporting): retried when it is.
-    if (!target) return;
-    sidebarLaneRef.current = picked;
-    if (target.laneId !== focusLaneId || target.machineId !== focusLaneMachineId) {
-      setFocusLane(target.laneId, target.machineId);
-      setDiffTarget(null);
-    }
-  }, [
+  // History) show one lane, in both directions.
+  const handleLanePicked = useCallback(() => setDiffTarget(null), []);
+  useHistoryLaneSync({
     active,
-    allMachineLanes.lanesByKey,
+    projectStateKey,
     focusLaneId,
     focusLaneMachineId,
-    foreignListKey,
-    lanes,
-    readListSelection,
-    selectedLaneId,
     setFocusLane,
-  ]);
+    onLanePicked: handleLanePicked,
+    lanes,
+    lanesByKey: allMachineLanes.lanesByKey,
+  });
 
   useEffect(() => {
     if (!active || surface === "commits") return;
