@@ -5570,10 +5570,13 @@ export function AgentChatPane({
   const stalledTurnSilenceMs = turnSilenceMs !== null && !selectedTurnHasOpenWork
     ? turnSilenceMs
     : null;
-  // Dismissal is per turn: the next turn must be able to raise the alarm again.
-  const [stalledTurnDismissedAt, setStalledTurnDismissedAt] = useState<string | null>(null);
+  // Dismissal is per turn: the next turn must be able to raise the alarm again,
+  // and dismissing one chat's turn must not hide another chat's. The key carries
+  // both so a session switch always re-evaluates against the new chat.
+  const [stalledTurnDismissedKey, setStalledTurnDismissedKey] = useState<string | null>(null);
+  const stalledTurnKey = `${composerSessionId ?? ""}\u0000${selectedSession?.currentTurnStartedAt ?? ""}`;
   const stalledTurnVisible = stalledTurnSilenceMs !== null
-    && stalledTurnDismissedAt !== (selectedSession?.currentTurnStartedAt ?? null);
+    && stalledTurnDismissedKey !== stalledTurnKey;
   const selectedCodexGoalPending = composerSessionId ? (codexGoalPendingBySession[composerSessionId] === true) : false;
   const setCodexGoalFromPanel = useCallback(async (sessionId: string, nextObjective: string) => {
     const objective = nextObjective.replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -15623,7 +15626,7 @@ export function AgentChatPane({
         detail: "Nothing has come back from the provider. Interrupt to stop this turn, or dismiss and keep waiting.",
         actions: [{ label: "Interrupt", onClick: () => { void interrupt("stop_and_clear"); } }],
         dismiss: {
-          onDismiss: () => setStalledTurnDismissedAt(selectedSession?.currentTurnStartedAt ?? null),
+          onDismiss: () => setStalledTurnDismissedKey(stalledTurnKey),
           label: "Dismiss",
         },
       }}

@@ -54,6 +54,18 @@ export function trackTurnInFlight(inFlight: Set<string>, event: AgentChatEvent):
  */
 export function turnHasOpenWork(events: Iterable<AgentChatEvent>): boolean {
   const inFlight = new Set<string>();
-  for (const event of events) trackTurnInFlight(inFlight, event);
+  for (const event of events) {
+    // A turn boundary resets the fold. This caller folds the session's whole
+    // resident window, so a tool or command from an earlier turn that never
+    // received its result — exactly what an interrupt leaves behind — would
+    // otherwise stay open forever and keep every later turn looking busy. The
+    // main-process watchdogs fold one turn already, so this reset is only for
+    // the whole-history fold.
+    if (event.type === "status" && event.turnStatus === "started") {
+      inFlight.clear();
+      continue;
+    }
+    trackTurnInFlight(inFlight, event);
+  }
   return inFlight.size > 0;
 }

@@ -2458,6 +2458,19 @@ resume per session before exposing manual recovery. After useful progress,
 stall warning. Pending approvals and user input suspend reconciliation, and
 answering them re-arms the 10-minute progress window.
 
+The composer also raises a provider-neutral notice for the case the watchdog
+cannot see: a provider that accepts a request and then goes silent. When a live
+turn has produced no event for five minutes (`TURN_STALL_AFTER_MS`) and owns no
+open tool, command, foreground subagent, or approval, an inline warning banner
+appears above the composer — "No output for 5m" — with **Interrupt** and a
+dismiss ×. It never stops the turn. Open work suppresses it, so a long
+foreground command is never mistaken for a stall, and a turn-start `status`
+event resets the open-work fold so a dangling tool from an earlier interrupted
+turn cannot keep the notice hidden. Dismissal lasts for the current turn only,
+and the fold runs only once a turn is already past the bar.
+`shared/turnInFlight.ts` owns the fold; `shared/sessionStatusPresentation.ts`
+owns the threshold and `turnStallSilenceMs`.
+
 ### When the host machine sleeps
 
 A closed lid is not a provider failure, and the transcript says so. When the
@@ -3493,6 +3506,12 @@ For chat, three things matter.
   `{ unsupported: "<reason>" }`, and the chat then runs on the harness's own
   sign-in with a notice. A deleted preset, a removed key, a proxy with no login,
   and a harness that cannot take an outside key all take that path.
+- **The create path records the preset's harness.** A caller that supplies only
+  `presetId` — the CLI, an action bus, a scheduled wake — reads the preset's own
+  harness in `createSessionInternal` (and its model when the caller sent none)
+  before launch, so the session row, the Work provider filter, provider notices,
+  and permission labels all name the harness that actually runs instead of the
+  caller's default.
 
 ### Capability gate
 

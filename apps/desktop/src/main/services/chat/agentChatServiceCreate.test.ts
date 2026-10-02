@@ -46,6 +46,8 @@ import {
   waitForEvent,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function settleDirectiveBookkeeping(): Promise<void> {
@@ -1071,6 +1073,46 @@ describe("createAgentChatService", () => {
       expect(session.provider).toBe("claude");
       expect(session.modelId).toBe("anthropic/claude-sonnet-5");
       expect(session.model).toBe("claude-sonnet-5");
+    });
+
+    it("adopts a preset's harness and model when the caller sends only a presetId", async () => {
+      // A caller that names only a preset — the CLI, an action bus, a scheduled
+      // wake — must record the harness that will actually launch. Before, the
+      // row kept the caller's default provider (codex) and an empty model while
+      // the runtime launched the preset's Claude Code, so every provider-gated
+      // surface read the wrong provider.
+      const adeHome = path.join(tmpHomeRoot, ".ade");
+      fs.mkdirSync(adeHome, { recursive: true });
+      const savedPreset: HarnessPreset = {
+        id: "hp_create_preset",
+        name: "Opus on work",
+        harness: "claude",
+        source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
+        model: "claude-opus-4-5",
+        subagentModel: "inherit",
+        agentOverrides: {},
+        agentEfforts: {},
+        accentColor: "#7c5ce0",
+        logo: { kind: "ade" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const settings = createAccountSettingsStore({
+        adeDir: adeHome,
+        relay: null,
+        getAccountUserId: () => "user_create_preset",
+      });
+      settings.set("all", "harnessPresets", [savedPreset]);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        presetId: savedPreset.id,
+      } as any);
+
+      expect(session.provider).toBe("claude");
+      expect(session.model).toBe("claude-opus-4-5");
+      service.forceDisposeAll();
     });
 
     it("maps retired Claude Opus 4.7 1M aliases onto Opus 5", async () => {
