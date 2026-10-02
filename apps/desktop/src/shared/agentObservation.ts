@@ -522,6 +522,53 @@ function(inputArg) {
     node.textContent,
     valueFor(node)
   ].filter(Boolean).join(" "));
+  // Interactive controls plus the clickable roles a text match must reach when
+  // the text sits inside a row rather than a form control. A listbox option is
+  // clickable but is not in interactiveSelector (its tabindex is -1), so
+  // without these a --text-match "lane name" resolved to the list container
+  // whose combined text merely included the string, and the click landed on
+  // whatever row sat under the container's center.
+  const clickableSelector = interactiveSelector
+    + ",[role='option'],[role='row'],[role='treeitem'],[role='gridcell'],[role='menuitemcheckbox'],[role='menuitemradio']";
+  const ownText = (node) => lowerText(node.innerText || node.textContent || "");
+  const elementDepth = (node) => {
+    let depth = 0;
+    let current = node;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      depth += 1;
+      current = current.parentElement;
+    }
+    return depth;
+  };
+  const elementArea = (node, ctx) => {
+    const rect = rectFor(node, ctx);
+    return rect ? Math.max(1, rect.width * rect.height) : Number.MAX_SAFE_INTEGER;
+  };
+  // The closest ancestor a pointer could actually click: an interactive control
+  // or clickable role, else the outermost element the app styles as a pointer
+  // target. Cursor is inherited, so every span inside a clickable row reports
+  // pointer; the outermost such ancestor is the row that set it, and the
+  // semantic selector is preferred over it.
+  const closestClickable = (node, ctx) => {
+    let current = node;
+    let cursorMatch = null;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      if (current.matches(clickableSelector)) return current;
+      const style = (ctx.win || window).getComputedStyle(current);
+      if (style && style.cursor === "pointer") cursorMatch = current;
+      if (current === ctx.root || current === document.body || current === document.documentElement) break;
+      current = current.parentElement;
+    }
+    return cursorMatch;
+  };
+  // Exact match wins; then the smaller own text (a row beats the list holding
+  // it); then the smaller box; then the deeper element.
+  const betterTextMatch = (candidate, incumbent) => {
+    if (candidate.exact !== incumbent.exact) return candidate.exact;
+    if (candidate.length !== incumbent.length) return candidate.length < incumbent.length;
+    if (candidate.area !== incumbent.area) return candidate.area < incumbent.area;
+    return candidate.depth > incumbent.depth;
+  };
   const findByText = (text) => {
     const needle = lowerText(text);
     if (!needle) return null;
@@ -529,31 +576,57 @@ function(inputArg) {
     const seen = new Set();
     for (const ctx of contexts) {
       if (!contextMatches(ctx)) continue;
-      for (const raw of Array.from(ctx.root.querySelectorAll(interactiveSelector))) {
-        const node = actionableElement(raw);
-        if (!node || seen.has(node) || !isDisplayed(node, ctx)) continue;
-        seen.add(node);
-        candidates.push({ node, ctx });
+      for (const raw of Array.from(ctx.root.querySelectorAll(clickableSelector))) {
+        if (!raw || seen.has(raw) || !isDisplayed(raw, ctx)) continue;
+        seen.add(raw);
+        candidates.push({ node: raw, ctx });
       }
     }
-    const exact = candidates.find((entry) => searchableText(entry.node) === needle);
-    const interactive = exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
-    if (interactive) return interactive;
-    // No control carries the text: it may be a heading or a status line
-    // ("Count: 3"), which a wait or an assert must still find. Take the
-    // smallest visible element whose own text contains it.
-    let best = null;
+    // An exact match is the most specific signal there is: a control whose own
+    // accessible name or text equals the needle, not a container that merely
+    // contains it.
+    let exactBest = null;
+    for (const entry of candidates) {
+      const hay = searchableText(entry.node);
+      if (hay !== needle) continue;
+      const score = { exact: true, length: ownText(entry.node).length, depth: elementDepth(entry.node), area: elementArea(entry.node, entry.ctx) };
+      if (!exactBest || betterTextMatch(score, exactBest.score)) exactBest = { entry, score };
+    }
+    if (exactBest) return exactBest.entry;
+    // The smallest visible element whose own text carries the needle, then the
+    // closest clickable ancestor of that text. This is the row case: the lane
+    // name sits in a span inside a clickable role=option row, and the row
+    // must win over the list container whose combined text includes the name.
+    let textBest = null;
     for (const ctx of contexts) {
       if (!contextMatches(ctx)) continue;
-      const walker = ctx.root.querySelectorAll("body *");
-      for (const node of Array.from(walker)) {
+      for (const node of Array.from(ctx.root.querySelectorAll("body *"))) {
         if (!(node instanceof Element) || !isDisplayed(node, ctx)) continue;
-        const text = lowerText(node.innerText || node.textContent || "");
+        const text = ownText(node);
         if (!text.includes(needle)) continue;
-        if (!best || text.length < best.length) best = { entry: { node, ctx }, length: text.length };
+        const depth = elementDepth(node);
+        if (!textBest || text.length < textBest.length || (text.length === textBest.length && depth > textBest.depth)) {
+          textBest = { node, ctx, length: text.length, depth };
+        }
       }
     }
-    return best ? best.entry : null;
+    if (textBest) {
+      const clickable = closestClickable(textBest.node, textBest.ctx);
+      if (clickable) return { node: clickable, ctx: textBest.ctx };
+    }
+    // No clickable element carries the text: fall back to a control whose
+    // accessible name (aria-label, placeholder, value) matches even though its
+    // visible text does not. Prefer the smallest such control.
+    let includesBest = null;
+    for (const entry of candidates) {
+      const hay = searchableText(entry.node);
+      if (!hay.includes(needle)) continue;
+      const score = { exact: false, length: ownText(entry.node).length, depth: elementDepth(entry.node), area: elementArea(entry.node, entry.ctx) };
+      if (!includesBest || betterTextMatch(score, includesBest.score)) includesBest = { entry, score };
+    }
+    if (includesBest) return includesBest.entry;
+    // A heading or status line ("Count: 3") that a wait or an assert must find.
+    return textBest ? { node: textBest.node, ctx: textBest.ctx } : null;
   };
   const targetFromLocate = () => {
     if (!locate) return null;

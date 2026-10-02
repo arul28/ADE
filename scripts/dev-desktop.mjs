@@ -42,6 +42,8 @@ function parseArgs(argv) {
     socketPath: null,
     clean: false,
     skipRuntimeBuild: false,
+    remoteDebuggingPort: null,
+    forwardedDebugFlags: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -59,6 +61,32 @@ function parseArgs(argv) {
     }
     if (arg === "--skip-runtime-build") {
       options.skipRuntimeBuild = true;
+      continue;
+    }
+    // App Control hands a custom launcher its debug flags on the command line
+    // when the caller uses the `{ADE_APP_CONTROL_DEBUG_FLAGS}` placeholder, and
+    // exports the same set in the environment. Consume them here and pass the
+    // CDP port to the desktop dev script through the env var it already reads
+    // (`ADE_ELECTRON_REMOTE_DEBUGGING_PORT`); rejecting them made
+    // `ade app-control launch --command "npm run dev:desktop -- ... {ADE_APP_CONTROL_DEBUG_FLAGS}"`
+    // fail with "Unknown option: --remote-debugging-port=…".
+    if (arg.startsWith("--remote-debugging-port=")) {
+      const port = Number.parseInt(arg.slice("--remote-debugging-port=".length), 10);
+      if (Number.isFinite(port) && port > 0) options.remoteDebuggingPort = port;
+      continue;
+    }
+    if (arg === "--remote-debugging-port") {
+      const port = Number.parseInt(argv[++i] ?? "", 10);
+      if (Number.isFinite(port) && port > 0) options.remoteDebuggingPort = port;
+      continue;
+    }
+    if (arg.startsWith("--remote-debugging-address=")) continue;
+    if (arg === "--remote-debugging-address") {
+      i += 1;
+      continue;
+    }
+    if (arg === "--disable-backgrounding-occluded-windows" || arg === "--disable-renderer-backgrounding") {
+      options.forwardedDebugFlags.push(arg);
       continue;
     }
     if (arg === "--project-root") {
@@ -178,9 +206,21 @@ async function main() {
       ownsRuntime: runtimeStartedByLauncher,
     });
     const desktopScript = options.clean ? "dev:clean" : "dev";
+    // The desktop dev script reads its Electron CDP port from the environment
+    // (ADE_APP_CONTROL_CDP_PORT / ADE_ELECTRON_REMOTE_DEBUGGING_PORT). An
+    // explicit `--remote-debugging-port` from an App Control launch wins over
+    // the inherited App Control port; the render flags ride along so an
+    // occluded window keeps painting.
+    const appControlDebugEnv = {};
+    if (options.remoteDebuggingPort) {
+      appControlDebugEnv.ADE_ELECTRON_REMOTE_DEBUGGING_PORT = String(options.remoteDebuggingPort);
+    }
+    if (options.forwardedDebugFlags.length) {
+      appControlDebugEnv.ADE_APP_CONTROL_DEBUG_FLAGS = options.forwardedDebugFlags.join(" ");
+    }
     await runNpm(
       ["--prefix", "apps/desktop", "run", desktopScript],
-      { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv() },
+      { ...devRuntimeEnv(options.socketPath, options.projectRoot), ...laneUserDataEnv(), ...appControlDebugEnv },
     );
   } finally {
     process.off("SIGINT", handleSignal);
