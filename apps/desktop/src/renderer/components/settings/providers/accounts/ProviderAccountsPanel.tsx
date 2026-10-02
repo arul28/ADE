@@ -8,40 +8,46 @@
  * each has left, and how to add another without disturbing the ones already
  * signed in.
  *
- * It sits above Models on purpose. Which account a chat runs as decides what
- * quota it spends and what it is allowed to see, so it is a more consequential
- * answer than which model it picks.
+ * Layout: one slim routing strip (smart balance, auto-start), then one card per
+ * account in a responsive grid, so a wide window shows accounts side by side
+ * instead of stretching one row across it. Each card's usage IS the top-bar
+ * popover's `UsageAccountRow` (email, pace pill, reset credit, meters), so the
+ * two surfaces draw one account the same way.
  *
- * The two header switches are about the whole set, not one account, which is
- * why they live in the header and not in a row menu. Each is gated on the fact
- * that makes it meaningful — smart balance on there being more than one account
- * to balance, auto-start on the provider actually reporting a five-hour window
- * — because a switch that cannot do anything still reads as a promise.
+ * The routing switches are gated on the fact that makes them meaningful —
+ * smart balance on there being more than one account, auto-start on the
+ * provider reporting a five-hour window — because an inert switch still reads
+ * as a promise.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, Circle, DotsThree, Plus, Question } from "@phosphor-icons/react";
+import { ArrowsClockwise, DotsThree, Info, Plus, Question, WarningCircle } from "@phosphor-icons/react";
 import {
   COLORS,
-  MONO_FONT,
   SANS_FONT,
   outlineButton,
 } from "../../../lanes/laneDesignTokens";
 import { ProviderPanel } from "../../providerSectionPrimitives";
+import { SettingsToggle } from "../../primitives/SettingsControls";
 import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { providerColor } from "../../../usage/providerColors";
 import { useAppStore } from "../../../../state/appStore";
 import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
-import type {
-  ProviderInstance,
-  ProviderInstanceProvider,
+import { UsageAccountRow } from "../../../usage/UsageAccountRow";
+import type { AccountLimitRow } from "../../../usage/usageLimitModel";
+import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
+import {
+  isBaseProviderInstance,
+  providerInstanceHasAccount,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
 } from "../../../../../shared/types/providerInstances";
 import {
   accountAccent,
   accountIdentityLine,
+  accountLimitRow,
   accountSignedOut,
-  accountUsageLine,
   accentTint,
   providerHasFiveHourWindow,
 } from "./accountPresentation";
@@ -52,11 +58,11 @@ import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
 
 const SMART_BALANCE_HINT =
-  "On: new chats use all your signed-in accounts. Each chat goes to the account whose room would go unused first, and a chat that hits a usage limit continues on another account that still has room. Off: new chats use the account with the check. Click an account to use it.";
+  "On: each new chat goes to the account whose weekly room resets soonest, so no account's room expires unused. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
 const AUTO_START_HINT =
   "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
 
-const HINT_TOOLTIP_WIDTH = 260;
+const HINT_TOOLTIP_WIDTH = 280;
 
 /** A (?) that explains a switch without spending a line of the panel on it. */
 function HintDot({ label, text }: { label: string; text: string }) {
@@ -64,9 +70,9 @@ function HintDot({ label, text }: { label: string; text: string }) {
   const [alignRight, setAlignRight] = useState(false);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
 
-  // Both dots sit in a right-aligned header, so a tooltip hung from their left
-  // edge runs past the window and the sentence it exists to show is cut off.
-  // Measure at open time and hang it from whichever edge keeps it on screen.
+  // A tooltip hung from the dot's left edge can run past the window and cut
+  // off the sentence it exists to show. Measure at open time and hang it from
+  // whichever edge keeps it on screen.
   const show = useCallback(() => {
     const rect = anchorRef.current?.getBoundingClientRect();
     setAlignRight(rect ? rect.left + HINT_TOOLTIP_WIDTH > window.innerWidth - 8 : false);
@@ -87,10 +93,11 @@ function HintDot({ label, text }: { label: string; text: string }) {
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 14,
-          height: 14,
+          width: 16,
+          height: 16,
           padding: 0,
           border: "none",
+          borderRadius: 999,
           background: "transparent",
           color: COLORS.textDim,
           cursor: "help",
@@ -107,13 +114,14 @@ function HintDot({ label, text }: { label: string; text: string }) {
             ...(alignRight ? { right: 0 } : { left: 0 }),
             zIndex: 20,
             width: HINT_TOOLTIP_WIDTH,
-            padding: "8px 10px",
-            fontSize: 10,
+            padding: "9px 11px",
+            fontSize: 11,
             fontFamily: SANS_FONT,
             lineHeight: 1.5,
             color: COLORS.textSecondary,
             background: COLORS.cardBgSolid,
             border: `1px solid ${COLORS.outlineBorder}`,
+            borderRadius: 8,
             boxShadow: "0 12px 32px -18px rgba(0,0,0,0.85)",
           }}
         >
@@ -124,7 +132,8 @@ function HintDot({ label, text }: { label: string; text: string }) {
   );
 }
 
-function HeaderToggle({
+/** One routing switch in the strip: switch, name, (?). */
+function RoutingSwitch({
   label,
   hint,
   checked,
@@ -136,56 +145,162 @@ function HeaderToggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          height: 20,
-          padding: "0 6px 0 4px",
-          border: `1px solid ${checked ? COLORS.accentBorder : COLORS.borderMuted}`,
-          background: checked ? COLORS.accentSubtle : "transparent",
-          borderRadius: 6,
-          fontSize: 10,
-          fontFamily: SANS_FONT,
-          color: checked ? COLORS.textPrimary : COLORS.textMuted,
-          cursor: "pointer",
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: 999,
-            background: checked ? COLORS.accent : "transparent",
-            border: `1px solid ${checked ? COLORS.accent : COLORS.border}`,
-          }}
-        />
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <SettingsToggle checked={checked} onChange={onChange} label={label} />
+      <span style={{ fontSize: 12, fontWeight: 500, fontFamily: SANS_FONT, color: checked ? COLORS.textPrimary : COLORS.textSecondary }}>
         {label}
-      </button>
+      </span>
       <HintDot label={label} text={hint} />
     </span>
   );
 }
 
-type RowMenuAction = "rename" | "accent" | "remove";
+type BadgeTone = "accent" | "warning" | "neutral";
 
-function AccountRow({
+function Badge({ tone, children }: { tone: BadgeTone; children: React.ReactNode }) {
+  const color = tone === "accent" ? COLORS.accent : tone === "warning" ? COLORS.warning : COLORS.textMuted;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        height: 18,
+        padding: "0 7px",
+        borderRadius: 999,
+        fontSize: 10,
+        fontWeight: 500,
+        fontFamily: SANS_FONT,
+        color,
+        background: `color-mix(in srgb, ${color} 13%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 26%, transparent)`,
+        flexShrink: 0,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** The account's accent as a small dot, so cards read apart at a glance. */
+function AccentDot({ accent, dim }: { accent: string; dim: boolean }) {
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: 999,
+        flexShrink: 0,
+        background: accent,
+        boxShadow: `0 0 0 3px ${accentTint(accent, 18)}`,
+        opacity: dim ? 0.45 : 1,
+      }}
+    />
+  );
+}
+
+const CARD_MIN_WIDTH = 290;
+const CARD_GAP = 10;
+
+/**
+ * How many card columns the grid uses. As many as fit, then evened out over
+ * the rows: four cards that fit three across go two by two instead of three
+ * and a widow, and two cards never leave an empty column beside them.
+ */
+function balancedColumns(count: number, width: number): number {
+  if (count <= 1 || width <= 0) return 1;
+  const fit = Math.max(1, Math.floor((width + CARD_GAP) / (CARD_MIN_WIDTH + CARD_GAP)));
+  const rows = Math.ceil(count / Math.min(fit, count));
+  return Math.ceil(count / rows);
+}
+
+/** The grid's content width, kept current as the window resizes. */
+function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    setWidth(node.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width;
+      if (next !== undefined) setWidth(next);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
+
+/** A quiet sentence inside a card, with its actions under it. */
+function CardNote({
+  tone,
+  children,
+  actions,
+}: {
+  tone: "warning" | "neutral";
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  const color = tone === "warning" ? COLORS.warning : COLORS.textMuted;
+  const Icon = tone === "warning" ? WarningCircle : Info;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+        padding: "8px 10px",
+        borderRadius: 8,
+        background: `color-mix(in srgb, ${color} 7%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 18%, transparent)`,
+      }}
+    >
+      <Icon size={13} weight="fill" style={{ color, flexShrink: 0, marginTop: 2 }} />
+      <span style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 11, lineHeight: 1.5, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+          {children}
+        </span>
+        {actions ? <span style={{ display: "inline-flex", alignItems: "center", gap: 14 }}>{actions}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+const linkButtonStyle: React.CSSProperties = {
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  fontSize: 11,
+  fontWeight: 500,
+  fontFamily: SANS_FONT,
+  color: COLORS.textSecondary,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+type RowMenuAction = "rename" | "accent" | "signIn" | "remove";
+
+/** Why a card is shown the way it is; one state per card, decided by the panel. */
+type CardState =
+  | { kind: "ok" }
+  | { kind: "signedOut" }
+  | { kind: "copy"; ownerLabel: string };
+
+function AccountCard({
   instance,
   brandColor,
-  usageLine,
-  signedOut,
-  inUse,
+  limitRow,
+  state,
+  badge,
+  selectable,
+  nowMs,
+  reducedMotion,
   onSelect,
   onAction,
   onSignIn,
+  replacedNote,
   renaming,
   accenting,
   onCommitRename,
@@ -194,15 +309,18 @@ function AccountRow({
 }: {
   instance: ProviderInstance;
   brandColor: string;
-  usageLine: string | null;
-  /** The saved login no longer works, even when the config home names an email. */
-  signedOut: boolean;
-  /** New chats use this account: the checked one, or every one under smart balance. */
-  inUse: boolean;
-  /** Makes this the account for new chats. Absent when it cannot be chosen. */
-  onSelect: (() => void) | null;
+  limitRow: AccountLimitRow | null;
+  state: CardState;
+  /** "New chats" / "Next chat": where new chats go. Absent for every other card. */
+  badge: string | null;
+  /** The card picks the account on click (smart balance off, a working login). */
+  selectable: boolean;
+  nowMs: number;
+  reducedMotion: boolean;
+  onSelect: () => void;
   onAction: (action: RowMenuAction, instance: ProviderInstance) => void;
   onSignIn: (instance: ProviderInstance) => void;
+  replacedNote: React.ReactNode;
   renaming: boolean;
   accenting: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
@@ -210,15 +328,19 @@ function AccountRow({
   onCommitAccent: (instance: ProviderInstance, accent: string | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const accent = accountAccent(instance, brandColor);
-
   const closeMenu = useCallback(() => setMenuOpen(false), []);
-
-  // A row menu is a popover, so it has to answer the two gestures every popover
-  // answers: click somewhere else, or press Escape. `AnchoredMenu` handles both,
-  // and portals the menu so the settings scroll pane cannot clip it.
+  const signedOut = state.kind === "signedOut";
+  const isCopy = state.kind === "copy";
+  const inUse = badge !== null;
+  const email = instance.account?.email ?? null;
+  // The usage row carries its own "Signed out" pill when the poller saw the
+  // broken login; the header says it only when the row cannot.
+  const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
 
   const item = (action: RowMenuAction, text: string, danger = false) => (
     <button
@@ -233,10 +355,10 @@ function AccountRow({
         display: "block",
         width: "100%",
         textAlign: "left",
-        padding: "6px 10px",
+        padding: "7px 12px",
         border: "none",
         background: "transparent",
-        fontSize: 11,
+        fontSize: 12,
         fontFamily: SANS_FONT,
         color: danger ? COLORS.danger : COLORS.textSecondary,
         cursor: "pointer",
@@ -251,8 +373,14 @@ function AccountRow({
       role="group"
       aria-label={`${instance.label} account`}
       data-in-use={inUse ? "true" : undefined}
-      // The whole row picks the account, except its own controls.
-      onClick={onSelect
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocusWithin(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+      }}
+      // The whole card picks the account, except its own controls.
+      onClick={selectable
         ? (event) => {
           if ((event.target as HTMLElement).closest("button, input, [role='menu']")) return;
           onSelect();
@@ -261,160 +389,183 @@ function AccountRow({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 4,
-        padding: "8px 10px",
-        marginTop: 6,
-        borderRadius: 8,
-        border: `1px solid ${inUse ? `color-mix(in srgb, ${COLORS.success} 55%, transparent)` : COLORS.borderMuted}`,
-        background: inUse ? `color-mix(in srgb, ${COLORS.success} 9%, transparent)` : "transparent",
-        cursor: onSelect ? "pointer" : "default",
+        gap: 12,
+        padding: 14,
+        borderRadius: 12,
+        border: `1px solid ${inUse ? "color-mix(in srgb, var(--color-accent) 38%, transparent)" : COLORS.borderMuted}`,
+        background: inUse
+          ? "color-mix(in srgb, var(--color-accent) 5%, transparent)"
+          : hovered && selectable
+            ? COLORS.hoverBg
+            : COLORS.cardBg,
+        cursor: selectable ? "pointer" : "default",
+        transition: "background 120ms ease, border-color 120ms ease",
         minWidth: 0,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <button
-          type="button"
-          aria-pressed={inUse}
-          aria-label={inUse ? `New chats use ${instance.label}` : `Use ${instance.label} for new chats`}
-          disabled={!onSelect}
-          onClick={() => onSelect?.()}
-          style={{
-            display: "inline-flex",
-            padding: 0,
-            border: "none",
-            background: "transparent",
-            color: inUse ? COLORS.success : COLORS.textDim,
-            cursor: onSelect ? "pointer" : "default",
-            flexShrink: 0,
-          }}
-        >
-          {inUse ? <CheckCircle size={16} weight="fill" /> : <Circle size={16} />}
-        </button>
-        <span
-          aria-hidden
-          style={{
-            width: 8,
-            height: 8,
-            flexShrink: 0,
-            borderRadius: 999,
-            background: accent,
-            border: `1px solid ${accentTint(accent, 60)}`,
-          }}
-        />
-        {renaming ? (
-          <input
-            aria-label={`Rename ${instance.label}`}
-            autoFocus
-            value={draftLabel}
-            onChange={(event) => setDraftLabel(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onCommitRename(instance, draftLabel);
-              if (event.key === "Escape") onCancelRename();
-            }}
-            onBlur={() => onCommitRename(instance, draftLabel)}
-            style={{
-              height: 22,
-              padding: "0 6px",
-              fontSize: 12,
-              fontFamily: SANS_FONT,
-              color: COLORS.textPrimary,
-              background: COLORS.cardBg,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 6,
-              outline: "none",
-            }}
-          />
-        ) : (
-          <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, flexShrink: 0 }}>
-            {instance.label}
-          </span>
-        )}
-        <span
-          style={{
-            fontSize: 10,
-            fontFamily: SANS_FONT,
-            color: COLORS.textMuted,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {accountIdentityLine(instance, signedOut)}
-        </span>
-        {!signedOut ? null : (
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, minHeight: 26 }}>
+        <AccentDot accent={accent} dim={signedOut || isCopy} />
+        <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
+          {renaming ? (
+            <input
+              aria-label={`Rename ${instance.label}`}
+              autoFocus
+              value={draftLabel}
+              onChange={(event) => setDraftLabel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onCommitRename(instance, draftLabel);
+                if (event.key === "Escape") onCancelRename();
+              }}
+              onBlur={() => onCommitRename(instance, draftLabel)}
+              style={{
+                height: 24,
+                minWidth: 0,
+                padding: "0 8px",
+                fontSize: 13,
+                fontFamily: SANS_FONT,
+                color: COLORS.textPrimary,
+                background: COLORS.cardBg,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                borderRadius: 6,
+                outline: "none",
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
+                color: COLORS.textPrimary,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {instance.label}
+            </span>
+          )}
+          {badge ? <Badge tone="accent">{badge}</Badge> : null}
+          {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <Badge tone="warning">Signed out</Badge> : null}
+          {isCopy ? <Badge tone="neutral">Copy</Badge> : null}
+        </div>
+        {signedOut ? (
           <button
             type="button"
             onClick={() => onSignIn(instance)}
-            style={{ ...outlineButton({ height: 20, padding: "0 8px", fontSize: 12 }), marginLeft: 4, flexShrink: 0 }}
+            style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
           >
             Sign in
           </button>
-        )}
+        ) : selectable && !inUse && (hovered || focusWithin) ? (
+          // Only while the card is pointed at or focused: a reserved invisible
+          // button would squeeze every card's header.
+          <button
+            type="button"
+            aria-pressed={false}
+            aria-label={`Use ${instance.label} for new chats`}
+            onClick={onSelect}
+            style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
+          >
+            Use
+          </button>
+        ) : null}
+        <span style={{ position: "relative", display: "inline-flex" }}>
+          <button
+            ref={menuButtonRef}
+            type="button"
+            aria-label={`${instance.label} account actions`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 26,
+              height: 26,
+              padding: 0,
+              border: "none",
+              borderRadius: 6,
+              background: menuOpen ? COLORS.hoverBg : "transparent",
+              color: COLORS.textMuted,
+              cursor: "pointer",
+            }}
+          >
+            <DotsThree size={16} weight="bold" />
+          </button>
+          <AnchoredMenu
+            open={menuOpen}
+            anchorRef={menuButtonRef}
+            onClose={closeMenu}
+            placement="bottom-end"
+            role="menu"
+            aria-label={`${instance.label} account actions`}
+            style={{
+              minWidth: 170,
+              padding: "4px 0",
+              background: COLORS.cardBgSolid,
+              border: `1px solid ${COLORS.outlineBorder}`,
+              borderRadius: 8,
+              boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
+            }}
+          >
+            {item("rename", "Rename")}
+            {item("accent", "Change accent")}
+            {item("signIn", signedOut ? "Sign in" : "Sign in again")}
+            {/* The store refuses both: the default, and the machine's own login. */}
+            {instance.isDefault || isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
+          </AnchoredMenu>
+        </span>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, minWidth: 0 }}>
-          {usageLine ?? (instance.signedIn ? "No usage yet" : "")}
-        </span>
-        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span style={{ position: "relative", display: "inline-flex" }}>
-            <button
-              ref={menuButtonRef}
-              type="button"
-              aria-label={`${instance.label} account actions`}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((open) => !open)}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 20,
-                height: 20,
-                padding: 0,
-                border: "none",
-                background: "transparent",
-                color: COLORS.textMuted,
-                cursor: "pointer",
-              }}
-            >
-              <DotsThree size={14} weight="bold" />
+      {isCopy ? (
+        <CardNote
+          tone="neutral"
+          actions={
+            <button type="button" onClick={() => onSignIn(instance)} style={linkButtonStyle}>
+              Sign in to another account
             </button>
-            <AnchoredMenu
-              open={menuOpen}
-              anchorRef={menuButtonRef}
-              onClose={closeMenu}
-              placement="bottom-end"
-              role="menu"
-              aria-label={`${instance.label} account actions`}
-              style={{
-                minWidth: 150,
-                padding: "4px 0",
-                background: COLORS.cardBgSolid,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
-              }}
-            >
-              {item("rename", "Rename")}
-              {item("accent", "Change accent")}
-              {item("remove", "Remove", true)}
-            </AnchoredMenu>
+          }
+        >
+          Same login as {state.ownerLabel}{email ? ` (${email})` : ""}, so it adds no quota. Smart balance skips it.
+        </CardNote>
+      ) : limitRow && providerInstanceHasAccount(instance) ? (
+        <UsageAccountRow
+          row={limitRow}
+          fallbackEmail={email}
+          nowMs={nowMs}
+          reducedMotion={reducedMotion}
+          dim={signedOut}
+        />
+      ) : (
+        <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+          {/* The header badge already says "Signed out". */}
+          <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {accountIdentityLine(instance, false)}
           </span>
+          {instance.signedIn ? (
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>No usage yet</span>
+          ) : null}
         </span>
-      </div>
+      )}
+
+      {replacedNote}
 
       {accenting ? (
-        <div style={{ paddingTop: 4 }}>
-          <AccentSwatchRow
-            label={`${instance.label} accent`}
-            value={instance.accentColor ?? null}
-            onChange={(next) => onCommitAccent(instance, next)}
-          />
-        </div>
+        <AccentSwatchRow
+          label={`${instance.label} accent`}
+          value={instance.accentColor ?? null}
+          onChange={(next) => onCommitAccent(instance, next)}
+        />
       ) : null}
     </div>
   );
+}
+
+/** `name@host` → `name`, the label a re-added account starts with. */
+function labelFromEmail(email: string): string {
+  return email.split("@")[0]?.slice(0, 32) || email;
 }
 
 export function ProviderAccountsPanel({
@@ -431,23 +582,22 @@ export function ProviderAccountsPanel({
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
   const { snapshot } = useUsageSnapshot();
+  const reducedMotion = usePrefersReducedMotion();
+  const nowMs = Date.now();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [accentingId, setAccentingId] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<{ existing: ProviderInstance | null } | null>(null);
+  const [sheet, setSheet] = useState<{ existing: ProviderInstance | null; label?: string } | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
-
-  const usageByInstance = useMemo(() => {
-    const out = new Map<string, string | null>();
-    for (const instance of instances) {
-      out.set(instance.id, accountUsageLine(snapshot, provider, instance));
-    }
-    return out;
-  }, [instances, provider, snapshot]);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const gridWidth = useElementWidth(gridRef);
+  const columns = balancedColumns(instances.length, gridWidth);
 
   const showSmartBalance = instances.length >= 2;
   const showAutoStart = providerHasFiveHourWindow(snapshot, provider);
+  const labelById = useMemo(() => new Map(instances.map((instance) => [instance.id, instance.label])), [instances]);
+  const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
 
   const run = useCallback(
     async (work: () => Promise<unknown>) => {
@@ -456,9 +606,8 @@ export function ProviderAccountsPanel({
         await work();
         await reload();
       } catch (err) {
-        // The store is the authority on what is allowed — it refuses to remove
-        // the default account, for one — so its sentence is shown verbatim
-        // rather than replaced with a guess about why.
+        // The store is the authority on what is allowed, so its sentence is
+        // shown verbatim rather than replaced with a guess about why.
         setActionError(providerActionMessage(err, "That account change did not go through."));
       }
     },
@@ -477,6 +626,10 @@ export function ProviderAccountsPanel({
       if (action === "accent") {
         setRenamingId(null);
         setAccentingId((current) => (current === instance.id ? null : instance.id));
+        return;
+      }
+      if (action === "signIn") {
+        setSheet({ existing: instance });
         return;
       }
       void confirmDialog({
@@ -533,8 +686,31 @@ export function ProviderAccountsPanel({
     [pin, run],
   );
 
+  /**
+   * Bring a replaced login back. A copy is the natural slot: signing it in to
+   * the replaced email turns two cards of one login back into two accounts.
+   * Without one, a new account is added, named after the email.
+   */
+  const restoreReplaced = useCallback(
+    (email: string) => {
+      const slot = instances.find((instance) => instance.sameLoginAs);
+      if (slot) setSheet({ existing: slot });
+      else setSheet({ existing: null, label: labelFromEmail(email) });
+    },
+    [instances],
+  );
+
+  const dismissReplaced = useCallback(
+    (instance: ProviderInstance) => {
+      const api = pinnedProviderInstances(pin);
+      if (!api?.dismissReplaced) return;
+      void run(() => api.dismissReplaced({ id: instance.id }));
+    },
+    [pin, run],
+  );
+
   // A refusal is filed at the top of the panel, which on a machine with ten
-  // accounts is far above the row whose menu you just used. Scrolled out of
+  // accounts is far above the card whose menu you just used. Scrolled out of
   // sight it reads as "nothing happened", so the alert brings itself into view.
   useEffect(() => {
     const node = errorRef.current;
@@ -549,77 +725,152 @@ export function ProviderAccountsPanel({
   const shownError = actionError ?? error;
 
   return (
-    <ProviderPanel
-      title="Accounts"
-      count={instances.length}
-      actions={
-        <>
-          {showSmartBalance ? (
-            <HeaderToggle
-              label="Smart balance"
-              hint={SMART_BALANCE_HINT}
-              checked={settings.smartBalance}
-              onChange={(next) => void saveSettings({ smartBalance: next })}
-            />
-          ) : null}
-          {showAutoStart ? (
-            <HeaderToggle
-              label="Auto-start 5-hour windows"
-              hint={AUTO_START_HINT}
-              checked={settings.autoStartWindows}
-              onChange={(next) => void saveSettings({ autoStartWindows: next })}
-            />
-          ) : null}
-          {/* Top right, like every other panel's primary action. It used to sit
-              alone at the bottom of the list, which is the one place the eye
-              does not look for "add". */}
+    <>
+      <ProviderPanel
+        title="Accounts"
+        count={instances.length}
+        bodyStyle={{ gap: 12 }}
+        actions={
           <button
             type="button"
-            style={outlineButton({ height: 26, padding: "0 9px", fontSize: 12 })}
+            style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
             onClick={() => setSheet({ existing: null })}
           >
             <Plus size={11} weight="bold" /> Add account
           </button>
-        </>
-      }
-    >
-      {shownError ? (
-        <div ref={errorRef} tabIndex={-1}>
-          <Banner
-            layout="inline"
-            model={{ id: "provider-accounts-error", tone: "error", title: shownError }}
-          />
+        }
+      >
+        {shownError ? (
+          <div ref={errorRef} tabIndex={-1}>
+            <Banner
+              layout="inline"
+              model={{ id: "provider-accounts-error", tone: "error", title: shownError }}
+            />
+          </div>
+        ) : null}
+
+        {showSmartBalance || showAutoStart ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              columnGap: 22,
+              rowGap: 8,
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: `1px solid ${COLORS.borderMuted}`,
+              background: COLORS.recessedBg,
+            }}
+          >
+            {showSmartBalance ? (
+              <RoutingSwitch
+                label="Smart balance"
+                hint={SMART_BALANCE_HINT}
+                checked={settings.smartBalance}
+                onChange={(next) => void saveSettings({ smartBalance: next })}
+              />
+            ) : null}
+            {showAutoStart ? (
+              <RoutingSwitch
+                label="Auto-start 5-hour windows"
+                hint={AUTO_START_HINT}
+                checked={settings.autoStartWindows}
+                onChange={(next) => void saveSettings({ autoStartWindows: next })}
+              />
+            ) : null}
+            {showSmartBalance ? (
+              <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+                {settings.smartBalance
+                  ? "New chats go to the account whose weekly room resets soonest."
+                  : "New chats use the account marked New chats."}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {loading && instances.length === 0 ? (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+            <ArrowsClockwise size={12} className="animate-spin motion-reduce:animate-none" />
+            Reading accounts…
+          </div>
+        ) : null}
+
+        <div
+          ref={gridRef}
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+            gap: CARD_GAP,
+            // Cards in one row share a height, so the grid's edges line up.
+            alignItems: "stretch",
+          }}
+        >
+          {instances.map((instance) => {
+            const signedOut = signedOutById.get(instance.id) === true;
+            const ownerLabel = instance.sameLoginAs ? labelById.get(instance.sameLoginAs) ?? instance.sameLoginAs : null;
+            const state: CardState = signedOut
+              ? { kind: "signedOut" }
+              : ownerLabel
+                ? { kind: "copy", ownerLabel }
+                : { kind: "ok" };
+            const usable = state.kind === "ok";
+            const badge = !usable
+              ? null
+              : settings.smartBalance && showSmartBalance
+                ? (nextPickId === instance.id ? "Next chat" : null)
+                : instance.isDefault ? "New chats" : null;
+            const replaced = instance.replacedAccount;
+            const replacedNote = replaced ? (
+              <CardNote
+                tone="warning"
+                actions={
+                  <>
+                    <button type="button" onClick={() => restoreReplaced(replaced.email)} style={{ ...linkButtonStyle, color: COLORS.textPrimary }}>
+                      Sign it back in
+                    </button>
+                    <button type="button" onClick={() => dismissReplaced(instance)} style={linkButtonStyle}>
+                      Dismiss
+                    </button>
+                  </>
+                }
+              >
+                {replaced.email} was replaced here by a sign-in outside ADE.
+              </CardNote>
+            ) : null;
+            return (
+              <AccountCard
+                key={instance.id}
+                instance={instance}
+                brandColor={brandColor}
+                limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
+                state={state}
+                badge={badge}
+                selectable={usable && !(!settings.smartBalance && instance.isDefault)}
+                nowMs={nowMs}
+                reducedMotion={reducedMotion}
+                onSelect={() => void selectAccount(instance)}
+                onAction={onAction}
+                onSignIn={(target) => setSheet({ existing: target })}
+                replacedNote={replacedNote}
+                renaming={renamingId === instance.id}
+                accenting={accentingId === instance.id}
+                onCommitRename={onCommitRename}
+                onCancelRename={() => setRenamingId(null)}
+                onCommitAccent={onCommitAccent}
+              />
+            );
+          })}
         </div>
-      ) : null}
+      </ProviderPanel>
 
-      {loading && instances.length === 0 ? (
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading accounts…</div>
-      ) : null}
-
-      {instances.map((instance) => (
-        <AccountRow
-          key={instance.id}
-          instance={instance}
-          brandColor={brandColor}
-          usageLine={usageByInstance.get(instance.id) ?? null}
-          signedOut={signedOutById.get(instance.id) === true}
-          inUse={!signedOutById.get(instance.id) && (settings.smartBalance || instance.isDefault)}
-          onSelect={signedOutById.get(instance.id) ? null : () => void selectAccount(instance)}
-          onAction={onAction}
-          onSignIn={(target) => setSheet({ existing: target })}
-          renaming={renamingId === instance.id}
-          accenting={accentingId === instance.id}
-          onCommitRename={onCommitRename}
-          onCancelRename={() => setRenamingId(null)}
-          onCommitAccent={onCommitAccent}
-        />
-      ))}
-
+      {/* Outside the panel: a folded panel must still open its own sheet. */}
       {sheet ? (
         <AddProviderAccountSheet
           provider={provider}
           providerLabel={providerLabel}
           existingInstance={sheet.existing}
+          initialLabel={sheet.label}
           defaultAccent={brandColor}
           onClose={(changed) => {
             setSheet(null);
@@ -627,6 +878,6 @@ export function ProviderAccountsPanel({
           }}
         />
       ) : null}
-    </ProviderPanel>
+    </>
   );
 }

@@ -175,6 +175,8 @@ import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { recheckSignedOutLogins } from "../usage/usageTrackingService";
+import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
   getSessionLifecycleSettings,
@@ -3417,6 +3419,22 @@ function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService
       capture("default_selected", "completed", instance.provider);
       return { instance };
     },
+    loginStart(args: unknown) {
+      return { login: getMachineProviderLoginRunner().start(String((isRecord(args) ? args.id : "") ?? "")) };
+    },
+    loginStatus(args: unknown) {
+      return { login: getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? "")) };
+    },
+    loginSubmitCode(args: unknown) {
+      const input = isRecord(args) ? args : {};
+      return { login: getMachineProviderLoginRunner().submitCode(String(input.loginId ?? ""), String(input.code ?? "")) };
+    },
+    loginCancel(args: unknown) {
+      return { login: getMachineProviderLoginRunner().cancel(String((isRecord(args) ? args.loginId : "") ?? "")) };
+    },
+    dismissReplaced(args: unknown) {
+      return { instance: store.dismissReplaced(String((isRecord(args) ? args.id : "") ?? "")) };
+    },
     setAccent(args: unknown) {
       const input = isRecord(args) ? args : {};
       const accent = input.accentColor;
@@ -3459,6 +3477,11 @@ function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService
     },
     async refresh(args: unknown) {
       const provider = isRecord(args) && isProviderInstanceProvider(args.provider) ? args.provider : undefined;
+      const instanceId = isRecord(args) && typeof args.instanceId === "string" ? args.instanceId : undefined;
+      const restored = await recheckSignedOutLogins({ provider, instanceId }).catch(() => []);
+      // Same as the IPC handler: a restored login needs a poll before the
+      // quota rows and smart balance stop treating it as signed out.
+      if (restored.length > 0 || instanceId) void runtime.usageTrackingService?.forceRefresh().catch(() => undefined);
       return { instances: await store.refreshAccounts(provider) };
     },
   } as OpaqueService;

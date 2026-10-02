@@ -265,6 +265,7 @@ import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
+import { ChatAccountNote } from "./ChatAccountNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
@@ -14524,8 +14525,26 @@ export function AgentChatPane({
       </div>
     </div>
   );
+  // Which login, key or endpoint this chat runs on. Only for the chat the
+  // transcript shows, so a chat switch never pairs one chat's turns with
+  // another chat's bound account.
+  const selectedSessionPreset = selectedSession?.presetId
+    ? harnessPresets.find((preset) => preset.id === selectedSession.presetId) ?? null
+    : null;
+  const chatAccountNote = selectedSession && selectedSession.sessionId === renderedSessionId ? (
+    <ChatAccountNote
+      key={selectedSession.sessionId}
+      provider={selectedSession.provider}
+      instanceId={selectedSession.instanceId}
+      credentialId={selectedSession.credentialId}
+      preset={selectedSessionPreset}
+      events={selectedEvents}
+      runtimePin={chatRuntimePin}
+    />
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
+      footer={chatAccountNote}
       sections={[
         { key: "agents", content: agentsTabContent },
         (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },

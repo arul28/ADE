@@ -838,6 +838,11 @@ export type UsageSnapshot = {
   providerMessages?: UsageProviderMessage[];
   /** Problems that stop smart balance from spreading chats. Omitted when there are none. */
   balanceIssues?: AccountBalanceIssue[];
+  /**
+   * Where smart balance would send a new chat right now, per provider with it
+   * on and a real choice to make. Omitted when no provider has one.
+   */
+  balanceNext?: Array<{ provider: "claude" | "codex"; instanceId: string }>;
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];

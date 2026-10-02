@@ -41,16 +41,16 @@ export type PickInstanceForNewChatArgs = {
 const MIN_FIVE_HOUR_HEADROOM = 10;
 const MIN_WEEKLY_HEADROOM = 5;
 /**
- * Below this much five-hour room, the account's score shrinks in step. A chat
- * on an account with 20% of its five-hour window left stops within the hour,
- * even when its weekly room is the most urgent to use.
+ * An account with this little five-hour room, and more than
+ * {@link FIVE_HOUR_RESET_SOON_HOURS} until that window resets, takes a new chat
+ * only when no account has more: the chat would stop on the five-hour limit
+ * within the hour, however soon the weekly room expires.
  */
-const FULL_FIVE_HOUR_HEADROOM = 50;
-/** An unreadable reset time counts as a full week away: the slowest urgency. */
+const LOW_FIVE_HOUR_HEADROOM = 25;
+const FIVE_HOUR_RESET_SOON_HOURS = 1;
+/** An unreadable reset time counts as a full week away: the latest deadline. */
 const DEFAULT_WEEKLY_DURATION_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_FIVE_HOUR_DURATION_MS = 5 * 60 * 60_000;
-/** A reset closer than this counts as this far, so the rate stays finite. */
-const MIN_HOURS_TO_RESET = 0.25;
 const SCORE_EPSILON = 1e-9;
 
 function windowsForAccount(
@@ -78,7 +78,7 @@ function hoursToReset(window: UsageWindow, fallbackDurationMs: number, nowMs: nu
   const remainingMs = Number.isFinite(resetsAtMs) && Number.isFinite(nowMs)
     ? resetsAtMs - nowMs
     : window.windowDurationMs ?? fallbackDurationMs;
-  return Math.max(MIN_HOURS_TO_RESET, remainingMs / 3_600_000);
+  return Math.max(0, remainingMs / 3_600_000);
 }
 
 function defaultInstanceId(provider: ProviderInstanceProvider, instances: readonly ProviderInstance[]): string {
@@ -101,21 +101,23 @@ function readingFor(
 type AccountRoom =
   | { kind: "unknown" }
   | { kind: "full" }
-  | { kind: "room"; urgency: number; fiveHourHeadroom: number };
+  | { kind: "room"; constrained: boolean; hoursToWeeklyReset: number; fiveHourHeadroom: number };
 
 /**
- * How much one account can take now, and how soon its room expires.
+ * How much one account can take now, and when its weekly room expires.
  *
- * `urgency` is the burn rate the account needs to use its remaining room
- * before the reset: headroom percent per hour until the reset. Room that
- * resets tomorrow is worth more now than the same room that resets in six
- * days, because the first is lost if no chat uses it. The weekly window sets
- * the rate when it is known. The five-hour window gates the account and scales
- * the rate down when less than half of it is left.
+ * Weekly room that is not used before its reset is lost, so the account whose
+ * weekly window resets soonest is the one to spend first: every turn it takes
+ * is one a later-resetting account keeps for after that reset. Ranking by
+ * room per hour instead sent new chats to a fresh account resetting in three
+ * days while two accounts resetting within the day let their room expire.
+ *
+ * The five-hour window gates the account, and marks it `constrained` when
+ * little is left and that window is not about to reset.
  *
  * A missing five-hour window is an idle account: Claude and Codex show that
  * window only after the account's first request in it, so it has all its
- * five-hour room.
+ * five-hour room. A missing weekly window counts as a full week away.
  */
 function accountRoom(windows: readonly UsageWindow[], nowMs: number): AccountRoom {
   const fiveHour = windowForType(windows, "five_hour");
@@ -125,12 +127,31 @@ function accountRoom(windows: readonly UsageWindow[], nowMs: number): AccountRoo
   if (fiveHourHeadroom === undefined && weeklyHeadroom === undefined) return { kind: "unknown" };
   if (fiveHourHeadroom !== undefined && fiveHourHeadroom <= MIN_FIVE_HOUR_HEADROOM) return { kind: "full" };
   if (weeklyHeadroom !== undefined && weeklyHeadroom <= MIN_WEEKLY_HEADROOM) return { kind: "full" };
-  const rate = weekly && weeklyHeadroom !== undefined
-    ? weeklyHeadroom / hoursToReset(weekly, DEFAULT_WEEKLY_DURATION_MS, nowMs)
-    : fiveHourHeadroom! / hoursToReset(fiveHour!, DEFAULT_FIVE_HOUR_DURATION_MS, nowMs);
-  const fiveHourRoom = fiveHourHeadroom ?? 100;
-  const urgency = rate * Math.min(1, fiveHourRoom / FULL_FIVE_HOUR_HEADROOM);
-  return { kind: "room", urgency, fiveHourHeadroom: fiveHourRoom };
+  const hoursToWeeklyReset = weekly
+    ? hoursToReset(weekly, DEFAULT_WEEKLY_DURATION_MS, nowMs)
+    : DEFAULT_WEEKLY_DURATION_MS / 3_600_000;
+  const constrained = fiveHour !== undefined
+    && fiveHourHeadroom !== undefined
+    && fiveHourHeadroom < LOW_FIVE_HOUR_HEADROOM
+    && hoursToReset(fiveHour, DEFAULT_FIVE_HOUR_DURATION_MS, nowMs) > FIVE_HOUR_RESET_SOON_HOURS;
+  return { kind: "room", constrained, hoursToWeeklyReset, fiveHourHeadroom: fiveHourHeadroom ?? 100 };
+}
+
+type RankedRoom = Extract<AccountRoom, { kind: "room" }>;
+
+/**
+ * Whether `a` should take a new chat before `b`: an unconstrained account
+ * first, then the sooner weekly reset, then more five-hour room.
+ */
+function ranksBefore(a: RankedRoom, b: RankedRoom): boolean | null {
+  if (a.constrained !== b.constrained) return !a.constrained;
+  if (Math.abs(a.hoursToWeeklyReset - b.hoursToWeeklyReset) > SCORE_EPSILON) {
+    return a.hoursToWeeklyReset < b.hoursToWeeklyReset;
+  }
+  if (Math.abs(a.fiveHourHeadroom - b.fiveHourHeadroom) > SCORE_EPSILON) {
+    return a.fiveHourHeadroom > b.fiveHourHeadroom;
+  }
+  return null;
 }
 
 /**
@@ -151,13 +172,16 @@ export function pickInstanceForNewChat({
   nowMs,
 }: PickInstanceForNewChatArgs): AccountBalanceResult {
   const defaultId = defaultInstanceId(provider, instances);
-  const signedIn = instances.filter((instance) => instance.provider === provider && instance.signedIn);
+  // A copy of another account's login is that account's quota, counted once.
+  const signedIn = instances.filter((instance) => (
+    instance.provider === provider && instance.signedIn && !instance.sameLoginAs
+  ));
   if (signedIn.length < 2) {
     return { instanceId: defaultId, reason: "one signed-in account", skip: "one_account" };
   }
 
   const signedOutInstanceIds: string[] = [];
-  let best: { instance: ProviderInstance; urgency: number; fiveHourHeadroom: number } | null = null;
+  let best: { instance: ProviderInstance; room: RankedRoom } | null = null;
   let unknownCount = 0;
   for (const instance of signedIn) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
@@ -172,18 +196,13 @@ export function pickInstanceForNewChat({
       continue;
     }
     if (room.kind === "full") continue;
-    const better = !best
-      || room.urgency > best.urgency + SCORE_EPSILON
-      || (Math.abs(room.urgency - best.urgency) <= SCORE_EPSILON
-        && (room.fiveHourHeadroom > best.fiveHourHeadroom + SCORE_EPSILON
-          || (Math.abs(room.fiveHourHeadroom - best.fiveHourHeadroom) <= SCORE_EPSILON
-            && instance.id === defaultId)));
-    if (better) best = { instance, urgency: room.urgency, fiveHourHeadroom: room.fiveHourHeadroom };
+    const order = best ? ranksBefore(room, best.room) : true;
+    if (order === true || (order === null && instance.id === defaultId)) best = { instance, room };
   }
 
   const signedOut = signedOutInstanceIds.length > 0 ? { signedOutInstanceIds } : {};
   if (best) {
-    return { instanceId: best.instance.id, reason: "use-before-reset rate", ...signedOut };
+    return { instanceId: best.instance.id, reason: "soonest weekly reset", ...signedOut };
   }
   if (signedOutInstanceIds.length === signedIn.length) {
     return { instanceId: defaultId, reason: "every login is signed out", skip: "all_signed_out", ...signedOut };
@@ -234,18 +253,21 @@ export function pickAlternateInstanceForLimitedChat({
 }: PickInstanceForNewChatArgs & { currentInstanceId: string }): UsageLimitAlternatePick | null {
   const blockedId = currentInstanceId.trim() || defaultInstanceId(provider, instances);
   const candidates = instances.filter((instance) => (
-    instance.provider === provider && instance.signedIn && instance.id !== blockedId
+    instance.provider === provider && instance.signedIn && !instance.sameLoginAs && instance.id !== blockedId
   ));
-  let chosen: { instance: ProviderInstance; urgency: number } | null = null;
+  let chosen: { instance: ProviderInstance; room: RankedRoom | null } | null = null;
   for (const instance of candidates) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
     if (account?.login === "signed_out" || !hasImmediateRoom(windows)) continue;
     const room = accountRoom(windows, nowMs);
-    // Near-full accounts still count here: any room beats a stopped chat.
-    const urgency = room.kind === "room" ? room.urgency : 0;
-    if (!chosen || urgency > chosen.urgency + SCORE_EPSILON) chosen = { instance, urgency };
+    // Near-full accounts still count here, after every account with real room:
+    // any room beats a stopped chat.
+    const ranked = room.kind === "room" ? room : null;
+    const better = !chosen
+      || (ranked !== null && (chosen.room === null || ranksBefore(ranked, chosen.room) === true));
+    if (better) chosen = { instance, room: ranked };
   }
   if (!chosen) return null;
   const label = chosen.instance.label.trim() || chosen.instance.id;
-  return { instanceId: chosen.instance.id, label, reason: "use-before-reset rate" };
+  return { instanceId: chosen.instance.id, label, reason: "soonest weekly reset" };
 }

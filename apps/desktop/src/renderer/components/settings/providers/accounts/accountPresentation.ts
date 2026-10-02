@@ -15,7 +15,12 @@ import {
   type ProviderInstanceProvider,
 } from "../../../../../shared/types/providerInstances";
 import type { UsageAccount, UsageSnapshot } from "../../../../../shared/types";
-import { accountNoticeLine } from "../../../usage/usageLimitModel";
+import {
+  accountNoticeLine,
+  buildAccountRows,
+  poolAccounts,
+  type AccountLimitRow,
+} from "../../../usage/usageLimitModel";
 
 /**
  * Eight accents that stay legible on both themes and do not collide with the
@@ -65,6 +70,39 @@ function usageAccountFor(
   return unattributed.length === 1 ? unattributed[0]! : null;
 }
 
+/** The windows that belong to this instance, by the same rule as the usage line. */
+function instanceWindows(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+  account: UsageAccount | null,
+) {
+  return (snapshot?.windows ?? []).filter((window) => {
+    if (window.provider !== provider) return false;
+    if (window.accountId) return window.accountId === account?.id;
+    return instance.isDefault;
+  });
+}
+
+/**
+ * This instance's usage as the usage popover draws it: one meter per window,
+ * built by the same model so Settings and the popover cannot disagree about a
+ * number. `null` when the snapshot has neither windows nor an account for it.
+ */
+export function accountLimitRow(
+  snapshot: UsageSnapshot | null,
+  provider: ProviderInstanceProvider,
+  instance: ProviderInstance,
+  nowMs: number,
+): AccountLimitRow | null {
+  const account = usageAccountFor(snapshot, provider, instance);
+  const windows = instanceWindows(snapshot, provider, instance, account);
+  // An account with no windows yet is still a row (it says why it has none).
+  if (windows.length === 0 && !account) return null;
+  const views = poolAccounts(account ? [account] : []);
+  return buildAccountRows(provider, windows, views, nowMs)[0] ?? null;
+}
+
 /**
  * `5h NN% · wk NN%` for one instance.
  *
@@ -78,11 +116,7 @@ function accountUsagePercents(
   instance: ProviderInstance,
 ): AccountUsagePercents {
   const account = usageAccountFor(snapshot, provider, instance);
-  const windows = (snapshot?.windows ?? []).filter((window) => {
-    if (window.provider !== provider) return false;
-    if (window.accountId) return window.accountId === account?.id;
-    return instance.isDefault;
-  });
+  const windows = instanceWindows(snapshot, provider, instance, account);
   const pick = (type: "five_hour" | "weekly"): number | null => {
     const found = windows.find((window) => window.windowType === type);
     return found ? Math.round(found.percentUsed) : null;

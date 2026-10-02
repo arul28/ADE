@@ -27739,6 +27739,8 @@ function formatProviderAccounts(value: unknown): string {
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
       ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
+      ["same login as", instance.sameLoginAs],
+      ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
@@ -27802,7 +27804,9 @@ function formatProviderAccounts(value: unknown): string {
       instance.label,
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? (isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes")
+        ? `${isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes"}${
+          typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""
+        }`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),
