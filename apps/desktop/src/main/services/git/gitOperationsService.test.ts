@@ -2096,4 +2096,16 @@ describe("gitOperationsService commit history reads", () => {
     expect(logArgs.some((arg) => arg.includes("ade/alive"))).toBe(true);
     expect(logArgs.some((arg) => arg.includes("ade/deleted"))).toBe(false);
   });
+
+  it("carries author email and co-authors through a single-commit lookup", async () => {
+    mockGitLogLines();
+    const { service } = createTestGitOperationsService();
+
+    const commit = await service.getCommit({ laneId: "lane-1", commitSha: "abc123" });
+
+    expect(commit?.authorEmail).toBe("arul@example.com");
+    expect(commit?.coAuthors).toEqual(["Claude <noreply@anthropic.com>"]);
+    expect(commit?.subject).toBe("Initial commit");
+    expect(commit?.pushed).toBe(false);
+  });
 });
