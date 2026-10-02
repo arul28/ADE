@@ -40,7 +40,6 @@ import { PrMarkdownEditor } from "./PrMarkdownEditor";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
 import { PrShippedSummary } from "./PrShippedSummary";
 import { readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
-import { prSolidButton } from "./prSection";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
 
@@ -500,9 +499,13 @@ function PrStackMergeCard({
         </span>
       </div>
       <p className="mb-3 mt-1 text-[11.5px] leading-relaxed" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-        {canMerge
-          ? `GitHub merges ${scope} together, or none of them. GitHub checks the rules for each PR during the merge.`
-          : "GitHub manages this stack's rebases, reviews, and merge order."}
+        {pr.state === "draft"
+          ? "This PR is a draft. Mark it ready for review before you merge the stack."
+          : !canMerge
+          ? "GitHub manages this stack's rebases, reviews, and merge order."
+          : count > 1
+            ? `GitHub merges ${scope} together, or none of them. It checks the branch rules during the merge.`
+            : "This is the bottom open PR of the stack. GitHub checks the branch rules during the merge."}
       </p>
       {canMerge ? (
         <>
@@ -553,7 +556,12 @@ function PrStackMergeCard({
           </button>
         </>
       ) : null}
-      <button type="button" onClick={() => void window.ade.app.openExternal(pr.githubUrl)} style={prSolidButton({ height: 30, width: "100%" })}>
+      <button
+        type="button"
+        onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
+        className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-white/[0.08]"
+        style={{ color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-fg) 6%, transparent)", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+      >
         <ArrowSquareOut size={13} /> Open on GitHub
       </button>
       {mergeBlockedReason ? (

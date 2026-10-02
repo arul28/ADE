@@ -1205,7 +1205,13 @@ export function PrDetailPane({
       setActionResult(res);
       // GitHub has accepted the merge. Move the row to Merged now rather than
       // leaving it in Open until the snapshot refetch agrees.
-      if (res.success) markPrTerminalLocally(pr, "merged");
+      if (res.success) {
+        markPrTerminalLocally(pr, "merged");
+        // A stack merge also merged every open PR below this one.
+        for (const githubPrNumber of res.stackPrNumbers ?? []) {
+          markPrTerminalLocally({ repoOwner: pr.repoOwner, repoName: pr.repoName, githubPrNumber }, "merged");
+        }
+      }
       await onRefresh();
     });
   };

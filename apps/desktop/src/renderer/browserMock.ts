@@ -3582,6 +3582,46 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
+// A demo GitHub Stack: #151 sits on #142, so previews can show the stack UI.
+{
+  const stackPrs = [142, 151];
+  const pulls = stackPrs.map((number) =>
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.repoPullRequests.find((pull: any) => pull.githubPrNumber === number));
+  if (pulls.every(Boolean)) {
+    BUILTIN_MOCK_GITHUB_SNAPSHOT.stacks = [{
+      id: "mock-stack-7",
+      number: 7,
+      nodeId: "MOCK_STACK_7",
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      open: true,
+      createdAt: now,
+      syncedAt: now,
+      lastError: null,
+      entries: pulls.map((pull: any, index: number) => ({
+        githubPrNumber: pull.githubPrNumber,
+        position: index + 1,
+        state: "open",
+        isDraft: false,
+        mergedAt: null,
+        headBranch: pull.headBranch,
+        headSha: `mock-sha-${pull.githubPrNumber}`,
+      })),
+    }];
+    pulls.forEach((pull: any, index: number) => {
+      pull.stack = {
+        id: "mock-stack-7",
+        number: 7,
+        size: pulls.length,
+        position: index + 1,
+        baseBranch: "main",
+        openThroughHere: index + 1,
+      };
+    });
+  }
+}
+
 const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
     ? ADE_DB_SNAPSHOT.githubSnapshot
@@ -7650,7 +7690,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         title: "AI-drafted title",
         body: "AI-drafted body",
       }),
-      land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
+      land: async (args: { prId?: string }) => {
+        const pr = ALL_PRS.find((item: any) => item.id === args?.prId) ?? null;
+        const stack = pr ? browserMockPrSummaryWithStack(pr).stack : null;
+        // A stacked PR merges with every open PR below it, as the host's async stack merge does.
+        const stackPrNumbers = stack
+          ? (MOCK_GITHUB_SNAPSHOT.stacks.find((item: any) => item.number === stack.number)?.entries ?? [])
+              .filter((entry: any) => entry.position <= stack.position)
+              .map((entry: any) => entry.githubPrNumber)
+          : null;
+        return {
+          prId: args?.prId ?? "",
+          prNumber: pr?.githubPrNumber ?? 142,
+          success: true,
+          mergeCommitSha: "abc123",
+          branchDeleted: false,
+          laneArchived: false,
+          error: null,
+          ...(stack ? { mergeStatus: "merged", stackPrNumbers } : {}),
+        };
+      },
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
       createIntegration: resolvedArg({}),
@@ -7740,6 +7799,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           }),
         };
         MOCK_GITHUB_SNAPSHOT.stacks = [...MOCK_GITHUB_SNAPSHOT.stacks, stack];
+        // Mark each PR as stacked, as the host's stack membership does.
+        for (const entry of stack.entries) {
+          const pull = MOCK_GITHUB_SNAPSHOT.repoPullRequests.find(
+            (item: any) => item.githubPrNumber === entry.githubPrNumber,
+          );
+          if (!pull) continue;
+          pull.stack = {
+            id: stack.id,
+            number: stack.number,
+            size: stack.entries.length,
+            position: entry.position,
+            baseBranch: stack.baseBranch,
+            openThroughHere: entry.position,
+          };
+        }
         return stack;
       },
       addGitHubStackPullRequests: async (args: {
