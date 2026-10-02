@@ -65,6 +65,8 @@ import {
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
+import { formatWorkingDuration, turnStallSilenceMs } from "../../../shared/sessionStatusPresentation";
+import { turnHasOpenWork } from "../../../shared/turnInFlight";
 import {
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
@@ -5537,6 +5539,44 @@ export function AgentChatPane({
     Boolean(pendingInput)
     || (Boolean(composerSessionId) && selectedSession?.awaitingInput === true);
   const turnActive = composerSessionId ? (turnActiveBySession[composerSessionId] ?? false) : false;
+  // A live turn that has gone quiet is worth saying out loud (see
+  // `turnStallSilenceMs`). The tick runs only while a turn is active, so a
+  // silent stream still re-renders and surfaces the stall — there may never be
+  // another provider event to re-render on.
+  const [stallNowMs, setStallNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!turnActive) return;
+    setStallNowMs(Date.now());
+    const intervalId = window.setInterval(() => setStallNowMs(Date.now()), 15_000);
+    return () => window.clearInterval(intervalId);
+  }, [turnActive]);
+  // A quiet turn is only a STALL when it owns no work. A command, tool or
+  // subagent still running is the agent deliberately waiting, and saying "stuck"
+  // there would be a false alarm on every long build — the exact failure the
+  // removed wall-clock watchdog died of. `turnHasOpenWork` folds the same events
+  // the main-process watchdogs use, so the two cannot disagree.
+  //
+  // Ask only once the turn is already past the silence bar. The fold walks the
+  // session's whole resident event window (up to 60k events), and an actively
+  // streaming turn — the hot render path — is never past it. Gating here keeps
+  // that fold off every streamed event and runs it only when a turn looks quiet.
+  const turnSilenceMs = turnActive && selectedSession
+    ? turnStallSilenceMs(selectedSession, stallNowMs)
+    : null;
+  const selectedSessionEvents = composerSessionId ? eventsBySession[composerSessionId] : undefined;
+  const selectedTurnHasOpenWork = turnSilenceMs !== null && selectedSessionEvents
+    ? turnHasOpenWork(selectedSessionEvents.map((envelope) => envelope.event))
+    : false;
+  const stalledTurnSilenceMs = turnSilenceMs !== null && !selectedTurnHasOpenWork
+    ? turnSilenceMs
+    : null;
+  // Dismissal is per turn: the next turn must be able to raise the alarm again,
+  // and dismissing one chat's turn must not hide another chat's. The key carries
+  // both so a session switch always re-evaluates against the new chat.
+  const [stalledTurnDismissedKey, setStalledTurnDismissedKey] = useState<string | null>(null);
+  const stalledTurnKey = `${composerSessionId ?? ""}\u0000${selectedSession?.currentTurnStartedAt ?? ""}`;
+  const stalledTurnVisible = stalledTurnSilenceMs !== null
+    && stalledTurnDismissedKey !== stalledTurnKey;
   const selectedCodexGoalPending = composerSessionId ? (codexGoalPendingBySession[composerSessionId] === true) : false;
   const setCodexGoalFromPanel = useCallback(async (sessionId: string, nextObjective: string) => {
     const objective = nextObjective.replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -15567,6 +15607,32 @@ export function AgentChatPane({
   const restorableErrorDraftLaunchJob = error
     ? visibleDraftLaunchJobs.find((job) => job.status === "failed" && job.error === error) ?? null
     : null;
+  // The stall banner sits directly above the composer — where the user is
+  // looking while a turn runs — and is dismissable, so a quiet stretch the user
+  // has already judged is not a nag. Dismissal is per turn, so the next turn can
+  // still raise the alarm.
+  const stalledTurnBanner = stalledTurnVisible && stalledTurnSilenceMs !== null ? (
+    <Banner
+      layout="inline"
+      // Same width rule as the composer (see the takeover banner), so the two
+      // share an edge instead of the banner spanning the whole pane.
+      style={layoutVariant === "grid-tile"
+        ? { width: "100%", marginBottom: 6 }
+        : { width: "100%", maxWidth: "var(--chat-column,52rem)", margin: "0 auto 6px" }}
+      model={{
+        id: "chat-turn-stalled",
+        tone: "warning",
+        title: `No output for ${formatWorkingDuration(stalledTurnSilenceMs)}`,
+        detail: "Nothing has come back from the provider. Interrupt to stop this turn, or dismiss and keep waiting.",
+        actions: [{ label: "Interrupt", onClick: () => { void interrupt("stop_and_clear"); } }],
+        dismiss: {
+          onDismiss: () => setStalledTurnDismissedKey(stalledTurnKey),
+          label: "Dismiss",
+        },
+      }}
+    />
+  ) : null;
+
   const composerWithTypographyRoot = (
     <div
       ref={composerDockRef}
@@ -15663,6 +15729,7 @@ export function AgentChatPane({
       {authStickyBar}
       <LaneBranchDriftStrip laneId={laneId} />
       {takeoverBanner}
+      {stalledTurnBanner}
       {steeringPendingInput ? (
         <div
           data-testid="codex-steering-question"
@@ -16131,6 +16198,7 @@ export function AgentChatPane({
                           </div>
                         ) : appPanelLifecyclePill}
                         {takeoverBanner}
+                        {stalledTurnBanner}
                         {usageLimitPill}
                         {composerElement}
                       </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation } from "./sessionStatusPresentation";
+import { sessionElapsedAnchor, sessionElapsedLabel, sessionStatusPresentation, turnStallSilenceMs, TURN_STALL_AFTER_MS } from "./sessionStatusPresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";
 
@@ -66,6 +66,34 @@ describe("sessionElapsedAnchor", () => {
     const fresh = { currentTurnStartedAt: null, lastActivityAt: null, startedAt: base.startedAt };
     expect(sessionElapsedAnchor(fresh, "running", "turn")).toBe(base.startedAt);
     expect(sessionElapsedAnchor(fresh, "ready", null)).toBe(base.startedAt);
+  });
+});
+
+describe("turnStallSilenceMs", () => {
+  const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+  const ago = (ms: number) => new Date(nowMs - ms).toISOString();
+
+  it.each([
+    {
+      name: "stays quiet while a turn is still inside the bar",
+      session: { lastActivityAt: ago(60_000), currentTurnStartedAt: ago(3_600_000) },
+      expected: null,
+    },
+    {
+      name: "reports the silence once a turn passes the bar",
+      session: { lastActivityAt: ago(TURN_STALL_AFTER_MS + 100_000), currentTurnStartedAt: ago(TURN_STALL_AFTER_MS + 3_600_000) },
+      expected: TURN_STALL_AFTER_MS + 100_000,
+    },
+    {
+      // A turn that has produced nothing yet still carries the previous turn's
+      // lastActivityAt. The silence clock must start at this turn, not inherit
+      // the idle stretch before it.
+      name: "does not inherit the previous turn's quiet stretch for a fresh turn",
+      session: { lastActivityAt: ago(3_600_000), currentTurnStartedAt: ago(10_000) },
+      expected: null,
+    },
+  ])("$name", ({ session, expected }) => {
+    expect(turnStallSilenceMs(session, nowMs)).toBe(expected);
   });
 });
 

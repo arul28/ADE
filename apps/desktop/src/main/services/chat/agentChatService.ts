@@ -316,6 +316,9 @@ import {
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
+import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+import { decodeRoutePresetId, isRoutePresetId } from "../../../shared/harnessRoutes";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   createCredentialModelDescriptorBase,
   encodeOpenCodeCustomCredentialId,
@@ -40143,6 +40146,32 @@ export function createAgentChatService(args: {
       effectiveProvider = resolved;
       normalizedModel = resolvedDescriptor.isCliWrapped ? resolvedDescriptor.providerModelId : resolvedDescriptor.id;
       requireProviderAcceptsCallerMcpServers(effectiveProvider);
+    }
+
+    if (requestedPresetId?.trim()) {
+      // A preset names its harness. When a caller supplies only `presetId` — the
+      // CLI, an action bus, a scheduled wake — the provider would otherwise stay
+      // at the caller's default, and the session row would record one provider
+      // while the runtime launched under another. Every provider-gated surface
+      // (the Work provider filter, provider notices, permission-mode labels)
+      // then reads the wrong one, which is how a Claude Code chat ends up
+      // showing Codex configuration warnings. Read the preset's own body, from
+      // the same machine cache the launch reads, and adopt its harness. An
+      // ad-hoc route id carries its spec in the id itself. A caller that sent
+      // no model gets the preset's, so the row names the model that runs.
+      const presetId = requestedPresetId.trim();
+      const presetSpec: { harness: AgentChatProvider; model: string } | null = isRoutePresetId(presetId)
+        ? decodeRoutePresetId(presetId)
+        : readHarnessPresetsFromMachine(resolveMachineAdeDir())?.find((preset) => preset.id === presetId) ?? null;
+      if (presetSpec) {
+        effectiveProvider = presetSpec.harness;
+        if (!normalizedModel.trim() && presetSpec.model.trim()) normalizedModel = presetSpec.model.trim();
+        // The preset remaps the provider a third way, alongside the requested
+        // provider and the model's group, so the caller-MCP gate has to run on
+        // the provider that will actually launch — the same reason the model
+        // remap above is checked again. No servers is a no-op.
+        requireProviderAcceptsCallerMcpServers(effectiveProvider);
+      }
     }
 
     if (requestedPresetId?.trim()) {
