@@ -312,7 +312,7 @@ describe("useWorkLaneContextMenu", () => {
 
     // Every one of these runs on the machine that is gone, so offering them
     // would only produce a failure the user cannot do anything about.
-    for (const name of ["Start chat in lane", "Manage lane", "Open in Lanes"]) {
+    for (const name of ["Start chat in lane", "Manage lane", "Open in Lanes", "Commit history"]) {
       const item = screen.getByRole("menuitem", { name }) as HTMLButtonElement;
       expect(item.disabled).toBe(true);
       fireEvent.click(item);
@@ -320,6 +320,55 @@ describe("useWorkLaneContextMenu", () => {
     expect(setWorkViewState).not.toHaveBeenCalled();
     expect(capturedManageLaneHostProps?.laneId ?? null).toBeNull();
     expect(switchRemoteProject).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("opens a foreign lane's commit history on its own machine", () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { app: { writeClipboardText: vi.fn().mockResolvedValue(undefined) } },
+    });
+    const lane = {
+      id: "lane-studio",
+      name: "Studio Lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/studio-lane",
+      worktreePath: "/Users/studio/ADE/.ade/worktrees/studio-lane",
+    } as LaneSummary;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:ade",
+      targetId: "studio",
+      projectId: "ade",
+      rootPath: "/Users/studio/ADE",
+      displayName: "ADE",
+      runtimeName: "Studio",
+      hostname: "studio.local",
+    };
+    const { result } = renderHook(() => useWorkLaneContextMenu(), {
+      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
+    });
+
+    act(() => {
+      result.current.triggerForeign(lane, binding, "Studio", "studio", {
+        preventDefault: vi.fn(),
+        clientX: 12,
+        clientY: 34,
+      });
+    });
+    render(<>{result.current.menu}</>);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Commit history" }));
+
+    const target = new URL(String(navigate.mock.calls[0]?.[0]), "http://ade.test");
+    expect(target.pathname).toBe("/history");
+    expect(Object.fromEntries(target.searchParams)).toEqual({
+      surface: "commits",
+      laneId: "lane-studio",
+      machineId: "studio",
+    });
+    // History opens over the current tab; the tab stays on its machine.
+    expect(switchRemoteProject).not.toHaveBeenCalled();
+    expect(switchProjectToPath).not.toHaveBeenCalled();
   });
 
   it("opens lane management in Work without navigating to the Lanes tab", () => {
