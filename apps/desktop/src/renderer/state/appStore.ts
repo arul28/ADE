@@ -1433,6 +1433,13 @@ export type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  /**
+   * True when the git status in `lanes` (ahead/behind, dirty) was not
+   * measured on this machine within the freshness window: a read for it is
+   * pending, or the last one failed. Surfaces show those numbers quietly,
+   * never as current, and never place anything by them.
+   */
+  laneStatusStale: boolean;
   laneDeleteProgressByLaneId: Record<string, LaneDeleteProgress>;
   selectedLaneId: string | null;
   focusedSessionId: string | null;
@@ -1926,6 +1933,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   const scheduleLaneStatusRead = (maxAgeMs: number) => {
     const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
     if (!projectKey || laneStatusAgeMs(projectKey) < maxAgeMs) return;
+    // Numbers older than the window are not current while this read is out.
+    // A read asked for sooner (History reload) leaves fresh numbers fresh.
+    if (laneStatusAgeMs(projectKey) >= LANE_STATUS_MAX_AGE_MS && !get().laneStatusStale) {
+      set({ laneStatusStale: true });
+    }
     if (laneStatusReadTimer != null) return;
     laneStatusReadTimer = window.setTimeout(() => {
       laneStatusReadTimer = null;
@@ -1984,6 +1996,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         isNewTabOpen: false,
         laneSnapshots: cachedLanes?.laneSnapshots ?? [],
         lanes: cachedLanes?.lanes ?? [],
+        laneStatusStale: true,
         lanesLoading: !cachedLanes,
         laneDeleteProgressByLaneId: {},
         selectedLaneId: restoredSelection.laneId,
@@ -2044,6 +2057,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  // Nothing has been measured yet: whatever lanes arrive first (a cache, an
+  // identity read) carry a status of unknown age.
+  laneStatusStale: true,
   laneDeleteProgressByLaneId: {},
   selectedLaneId: null,
   focusedSessionId: null,
@@ -2176,6 +2192,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? {
               laneSnapshots: warmLaneCache?.laneSnapshots ?? [],
               lanes: warmLaneCache?.lanes ?? [],
+              laneStatusStale: true,
               lanesLoading: project ? !warmLaneCache : false,
               selectedLaneId: restoredSelection?.laneId ?? null,
               focusedSessionId: restoredSelection?.sessionId ?? null,
@@ -2837,6 +2854,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
+      // A status-less read of a lane this store has no status for returns the
+      // brain's 0/0 placeholder, which is no measurement at all.
+      const statusUnknownForSomeLane = !currentRequest.includeStatus
+        && rawLanes.some((lane) => !previousLanesById.has(lane.id) && !previousSnapshotsById.has(lane.id));
       // Discard stale response: a newer refresh was issued while this one was in-flight
       if (token !== laneRefreshVersion) {
         return;
@@ -2905,6 +2926,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneSnapshots: nextSnapshots,
           lanes,
           lanesLoading: false,
+          // A measured read replaces the numbers and their flag together. A
+          // status-less one only carries numbers forward: they stay as fresh
+          // as they were, unless they have aged out or a lane arrived with
+          // only the brain's 0/0 placeholder.
+          laneStatusStale: currentRequest.includeStatus
+            ? false
+            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
           selectedLaneId: nextSelected,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
@@ -2916,7 +2944,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       } else {
         // This read carried the previous status forward (or the brain's 0/0
         // placeholder when there was none). Measure it unless that was recent.
-        scheduleLaneStatusRead(LANE_STATUS_MAX_AGE_MS);
+        scheduleLaneStatusRead(statusUnknownForSomeLane ? 0 : LANE_STATUS_MAX_AGE_MS);
       }
     };
 
@@ -3130,6 +3158,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             isNewTabOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedWarmLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredWarmSelection.laneId,
@@ -3178,6 +3207,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             isNewTabOpen: false,
             laneSnapshots: cachedLanes?.laneSnapshots ?? [],
             lanes: cachedLanes?.lanes ?? [],
+            laneStatusStale: true,
             lanesLoading: !cachedLanes,
             laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredSelection.laneId,
@@ -3368,6 +3398,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
+          laneStatusStale: true,
           lanesLoading: !cachedLanes,
           laneDeleteProgressByLaneId: {},
           selectedLaneId: restoredSelection.laneId,
@@ -3573,6 +3604,7 @@ export function createProjectAppStore(
     sessionsCacheByProject: rootState.sessionsCacheByProject,
     laneSnapshots: cachedLanes?.laneSnapshots ?? [],
     lanes: cachedLanes?.lanes ?? [],
+    laneStatusStale: true,
     // The scoped surface owns its refresh lifecycle. Keep cached lanes visible,
     // but let ProjectSurface start a refresh when this surface becomes active.
     lanesLoading: false,

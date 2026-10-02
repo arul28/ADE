@@ -842,14 +842,17 @@ describe("appStore", () => {
       );
     });
 
+    const activateSurface = (store: ReturnType<typeof createProjectAppStore>) => {
+      store.getState().requestLaneStatusRead();
+    };
+    const identityRefresh = (store: ReturnType<typeof createProjectAppStore>) => {
+      void store.getState().refreshLanes({ includeStatus: false });
+    };
     it.each([
-      ["the surface becomes active", (store: ReturnType<typeof createProjectAppStore>) => {
-        store.getState().requestLaneStatusRead();
-      }],
-      ["an identity-only refresh runs", (store: ReturnType<typeof createProjectAppStore>) => {
-        void store.getState().refreshLanes({ includeStatus: false });
-      }],
-    ])("a project surface seeded with a cached lane status measures it when %s", async (_trigger, trigger) => {
+      ["the surface becomes active", activateSurface, false],
+      ["an identity-only refresh runs", identityRefresh, false],
+      ["the surface becomes active and the status read fails", activateSurface, true],
+    ])("a project surface seeded with a cached lane status measures it when %s", async (_trigger, trigger, readFails) => {
       // The History drift pill showed ↑4 ↓17 for a lane git had at 6/34: the
       // surface was seeded from the lane cache and only ever refreshed without
       // status, so the cached number was carried forward and re-persisted.
@@ -865,29 +868,39 @@ describe("appStore", () => {
           lanes: [{ id: "lane-w", name: "windows-desktop", status: { ahead: 4, behind: 17 } }],
         }));
         // The brain: a status-less read returns its 0/0 placeholder, a status
-        // read returns what git measures now.
+        // read returns what git measures now (or fails, for that row).
         let measured = { ahead: 6, behind: 34 };
-        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => [
-          { id: "lane-w", name: "windows-desktop", status: args.includeStatus ? measured : { ahead: 0, behind: 0 } },
-        ]);
+        (window.ade.lanes.list as any).mockImplementation(async (args: { includeStatus?: boolean }) => {
+          if (args.includeStatus && readFails) throw new Error("brain unreachable");
+          return [{ id: "lane-w", name: "windows-desktop", status: args.includeStatus ? measured : { ahead: 0, behind: 0 } }];
+        });
         const store = createProjectAppStore(project);
-        expect(store.getState().lanes[0].status).toEqual({ ahead: 4, behind: 17 });
+        const shown = () => ({ status: store.getState().lanes[0].status, stale: store.getState().laneStatusStale });
+        // A cached number of unknown age is never current.
+        expect(shown()).toEqual({ status: { ahead: 4, behind: 17 }, stale: true });
 
         trigger(store);
         await vi.advanceTimersByTimeAsync(5_000);
-        expect(store.getState().lanes[0].status).toEqual({ ahead: 6, behind: 34 });
+        if (readFails) {
+          // The last numbers stay, still marked not fresh; never the 0/0 placeholder.
+          expect(shown()).toEqual({ status: { ahead: 4, behind: 17 }, stale: true });
+          return;
+        }
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: false });
 
-        // Measured a moment ago: identity reads keep it without re-paying git.
+        // Measured a moment ago: identity reads keep it, fresh, without re-paying git.
         measured = { ahead: 7, behind: 34 };
         await store.getState().refreshLanes({ includeStatus: false });
         await vi.advanceTimersByTimeAsync(5_000);
-        expect(store.getState().lanes[0].status).toEqual({ ahead: 6, behind: 34 });
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: false });
 
-        // Once that ages out, the next identity read measures again.
+        // Once that ages out, the next identity read marks it not current while
+        // the read is out, then the measured numbers replace it in place.
         await vi.advanceTimersByTimeAsync(30_000);
         await store.getState().refreshLanes({ includeStatus: false });
+        expect(shown()).toEqual({ status: { ahead: 6, behind: 34 }, stale: true });
         await vi.advanceTimersByTimeAsync(5_000);
-        expect(store.getState().lanes[0].status).toEqual({ ahead: 7, behind: 34 });
+        expect(shown()).toEqual({ status: { ahead: 7, behind: 34 }, stale: false });
       } finally {
         window.setTimeout = realTimers.setTimeout;
         window.clearTimeout = realTimers.clearTimeout;
