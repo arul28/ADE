@@ -69,13 +69,15 @@ describe("formatThreadReviewBlock / parseThreadReviewBlock", () => {
 });
 
 describe("isThreadCommentsOnlyMetaEvent", () => {
-  it.each<[{ event: { type: string } & Record<string, unknown> }, boolean]>([
+  const cases: Array<[{ type: string } & Record<string, unknown>, boolean]> = [
     [{ type: "session_meta_updated", threadComments: [] }, true],
     [{ type: "session_meta_updated", threadComments: [], turnId: "turn-1" }, true],
     [{ type: "session_meta_updated" }, false],
     [{ type: "session_meta_updated", threadComments: [], title: "Renamed" }, false],
     [{ type: "user_message", text: "hi" }, false],
-  ])("classifies $0.type as comments-only=$1", (event, expected) => {
+  ];
+
+  it.each(cases)("classifies a session_meta_updated event as comments-only=%s", (event, expected) => {
     expect(isThreadCommentsOnlyMetaEvent(event)).toBe(expected);
   });
 });
