@@ -5555,12 +5555,20 @@ export function AgentChatPane({
   // there would be a false alarm on every long build — the exact failure the
   // removed wall-clock watchdog died of. `turnHasOpenWork` folds the same events
   // the main-process watchdogs use, so the two cannot disagree.
+  //
+  // Ask only once the turn is already past the silence bar. The fold walks the
+  // session's whole resident event window (up to 60k events), and an actively
+  // streaming turn — the hot render path — is never past it. Gating here keeps
+  // that fold off every streamed event and runs it only when a turn looks quiet.
+  const turnSilenceMs = turnActive && selectedSession
+    ? turnStallSilenceMs(selectedSession, stallNowMs)
+    : null;
   const selectedSessionEvents = composerSessionId ? eventsBySession[composerSessionId] : undefined;
-  const selectedTurnHasOpenWork = selectedSessionEvents
+  const selectedTurnHasOpenWork = turnSilenceMs !== null && selectedSessionEvents
     ? turnHasOpenWork(selectedSessionEvents.map((envelope) => envelope.event))
     : false;
-  const stalledTurnSilenceMs = turnActive && selectedSession && !selectedTurnHasOpenWork
-    ? turnStallSilenceMs(selectedSession, stallNowMs)
+  const stalledTurnSilenceMs = turnSilenceMs !== null && !selectedTurnHasOpenWork
+    ? turnSilenceMs
     : null;
   // Dismissal is per turn: the next turn must be able to raise the alarm again.
   const [stalledTurnDismissedAt, setStalledTurnDismissedAt] = useState<string | null>(null);

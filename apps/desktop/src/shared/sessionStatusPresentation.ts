@@ -497,8 +497,10 @@ export const TURN_STALL_AFTER_MS = 5 * 60 * 1000;
  *
  * The caller supplies a session whose turn is LIVE — this reads the timestamps
  * and answers the silence question, nothing more. `lastActivityAt` moves on real
- * output only, so it is the honest clock; `currentTurnStartedAt` is the fallback
- * for a turn that has produced nothing at all yet.
+ * output only, so it is the honest clock; `currentTurnStartedAt` keeps a turn
+ * that has produced nothing at all yet from inheriting the previous turn's quiet
+ * stretch, because a turn's silence cannot start before the turn did. The anchor
+ * is the later of the two.
  */
 export function turnStallSilenceMs(
   session: { lastActivityAt?: string | null; currentTurnStartedAt?: string | null },
@@ -506,11 +508,10 @@ export function turnStallSilenceMs(
 ): number | null {
   const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
   const turnMs = session.currentTurnStartedAt ? Date.parse(session.currentTurnStartedAt) : Number.NaN;
-  const anchorMs = Number.isFinite(activityMs)
-    ? activityMs
-    : Number.isFinite(turnMs)
-      ? turnMs
-      : Number.NaN;
+  const anchorMs = Math.max(
+    Number.isFinite(activityMs) ? activityMs : Number.NEGATIVE_INFINITY,
+    Number.isFinite(turnMs) ? turnMs : Number.NEGATIVE_INFINITY,
+  );
   if (!Number.isFinite(anchorMs)) return null;
   const silentForMs = nowMs - anchorMs;
   return silentForMs >= TURN_STALL_AFTER_MS ? silentForMs : null;

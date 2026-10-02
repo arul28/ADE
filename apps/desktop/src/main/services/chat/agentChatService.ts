@@ -40166,6 +40166,11 @@ export function createAgentChatService(args: {
       if (presetSpec) {
         effectiveProvider = presetSpec.harness;
         if (!normalizedModel.trim() && presetSpec.model.trim()) normalizedModel = presetSpec.model.trim();
+        // The preset remaps the provider a third way, alongside the requested
+        // provider and the model's group, so the caller-MCP gate has to run on
+        // the provider that will actually launch — the same reason the model
+        // remap above is checked again. No servers is a no-op.
+        requireProviderAcceptsCallerMcpServers(effectiveProvider);
       }
     }
 
