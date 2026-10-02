@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -227,5 +227,32 @@ describe("HistoryPage lane/URL sync", () => {
       const named = ["Lane A", "Lane B"].filter((name) => detail.queryAllByText(name).length > 0);
       expect(named).toEqual(lane ? [lane] : []);
     });
+  });
+
+  it("reads a lane's operations once, then fresh after a git action, not per commit click", async () => {
+    const listOperations = vi.fn(async (_args?: { laneId?: string; limit?: number }) => []);
+    (window as any).ade.history.listOperations = listOperations;
+    (window as any).ade.git.fetch = vi.fn(async () => ({}));
+    (window as any).ade.git.listRecentCommits = vi.fn(async (args: { laneId?: string; skip?: number }) =>
+      (args.skip ?? 0) > 0 ? [] : [commit("c1"), commit("c2")]);
+    render(
+      <MemoryRouter initialEntries={["/history?surface=commits&laneId=lane-a&commitSha=c1"]}>
+        <HistoryPage />
+      </MemoryRouter>,
+    );
+
+    // The commit's lane operations load once when its details open.
+    await waitFor(() => expect(listOperations).toHaveBeenCalledTimes(1));
+    expect(listOperations.mock.calls[0]?.[0]).toMatchObject({ laneId: "lane-a", limit: 500 });
+
+    // Another commit in the same lane within the 15 s window does not re-read.
+    await act(async () => {
+      captured.store!.getState().setSelectedCommit(commit("c2"));
+    });
+    expect(listOperations).toHaveBeenCalledTimes(1);
+
+    // A git action on the lane must force a fresh read.
+    fireEvent.click(screen.getByTestId("history-fetch"));
+    await waitFor(() => expect(listOperations).toHaveBeenCalledTimes(2));
   });
 });
