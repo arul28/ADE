@@ -839,6 +839,14 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                             size={13}
                           />
                           <span className={cn("truncate", labelClass)}>{item.model.title}</span>
+                          {/* The same model can run through several routes (a
+                              subscription, a pay-per-use account, an API key);
+                              the route says which one this row bills. */}
+                          {item.model.routeLabel || item.model.subtitle ? (
+                            <span className="shrink-0 truncate text-[11px] text-fg/40">
+                              via {item.model.routeLabel ?? item.model.subtitle}
+                            </span>
+                          ) : null}
                           <span className="ml-auto flex shrink-0 items-center gap-1">
                             {item.model.provider ? <ProviderLogo family={item.model.provider} size={11} /> : null}
                             {item.model.routeKey ? <ProviderLogo family={item.model.routeKey} size={11} /> : null}
