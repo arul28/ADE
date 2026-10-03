@@ -33,6 +33,7 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import { showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
@@ -185,6 +186,14 @@ async function allSettledWithConcurrency<T>(
   }));
 
   return results;
+}
+
+
+/** Copy from a menu that has already closed, so a refused write still says so. */
+function copyToClipboard(text: string, what: string): void {
+  void navigator.clipboard.writeText(text).catch(() => {
+    showToast({ title: `Could not copy ${what}`, tone: "error" });
+  });
 }
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
@@ -1907,7 +1916,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onDeleteSession={handleDeleteSession}
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
-        onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onCopySessionId={(id) => copyToClipboard(id, "session ID")}
         onSettle={handleSettleSession}
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
@@ -1935,7 +1944,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               },
               { form: "ade" },
             );
-            await navigator.clipboard.writeText(href).catch(() => {});
+            copyToClipboard(href, "deep link");
           })();
         }}
         onOpenSessionInWeb={(session) => {
@@ -2011,7 +2020,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onStopRuntimes={() => { void handleBulkCloseSelected(); }}
         onDelete={() => { void handleBulkDeleteSelected(); }}
         onStopAndDelete={handleBulkStopAndDeleteSelected}
-        onCopySessionIds={(ids) => navigator.clipboard.writeText(ids.join("\n")).catch(() => {})}
+        onCopySessionIds={(ids) => copyToClipboard(ids.join("\n"), "session IDs")}
         onLanes={handleBulkLanes}
         onClearSelection={() => {
           setSelectedSessionIds(new Set());
