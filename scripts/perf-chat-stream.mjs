@@ -22,17 +22,33 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const argv = process.argv.slice(2);
+const takeValue = (i, flag) => {
+  const v = argv[i];
+  if (v === undefined || v.startsWith("--")) {
+    console.error(`${flag} needs a value`);
+    process.exit(2);
+  }
+  return v;
+};
+const takeNumber = (i, flag, { positive = true } = {}) => {
+  const n = Number(takeValue(i, flag));
+  if (!Number.isFinite(n) || (positive && n <= 0)) {
+    console.error(`${flag} needs a ${positive ? "positive " : ""}number`);
+    process.exit(2);
+  }
+  return n;
+};
 const opt = { port: 9555, transcript: null, stream: 400, rate: 30, label: "run", out: null, profile: null };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === "--port") opt.port = Number(argv[++i]);
-  else if (a === "--transcript") opt.transcript = argv[++i];
-  else if (a === "--stream") opt.stream = Number(argv[++i]);
-  else if (a === "--rate") opt.rate = Number(argv[++i]);
-  else if (a === "--label") opt.label = argv[++i];
-  else if (a === "--out") opt.out = argv[++i];
-  else if (a === "--profile") opt.profile = argv[++i];
-  else if (a === "--render-hook") opt.renderHook = argv[++i];
+  if (a === "--port") opt.port = takeNumber(++i, "--port");
+  else if (a === "--transcript") opt.transcript = takeValue(++i, "--transcript");
+  else if (a === "--stream") opt.stream = takeNumber(++i, "--stream");
+  else if (a === "--rate") opt.rate = takeNumber(++i, "--rate");
+  else if (a === "--label") opt.label = takeValue(++i, "--label");
+  else if (a === "--out") opt.out = takeValue(++i, "--out");
+  else if (a === "--profile") opt.profile = takeValue(++i, "--profile");
+  else if (a === "--render-hook") opt.renderHook = takeValue(++i, "--render-hook");
   else if (a === "--background") opt.background = true;
 }
 if (!opt.transcript) {

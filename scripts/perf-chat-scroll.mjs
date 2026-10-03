@@ -23,24 +23,40 @@ import { writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const argv = process.argv.slice(2);
+const takeValue = (i, flag) => {
+  const v = argv[i];
+  if (v === undefined || v.startsWith("--")) {
+    console.error(`${flag} needs a value`);
+    process.exit(2);
+  }
+  return v;
+};
+const takeNumber = (i, flag, { positive = true } = {}) => {
+  const n = Number(takeValue(i, flag));
+  if (!Number.isFinite(n) || (positive && n <= 0)) {
+    console.error(`${flag} needs a ${positive ? "positive " : ""}number`);
+    process.exit(2);
+  }
+  return n;
+};
 const opt = { port: 9222, session: null, speed: 3000, label: "run", timeoutS: 120, out: null, down: true, open: true, scenario: "wheel", profile: null };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === "--port") opt.port = Number(argv[++i]);
-  else if (a === "--session") opt.session = argv[++i];
-  else if (a === "--speed") opt.speed = Number(argv[++i]);
-  else if (a === "--label") opt.label = argv[++i];
-  else if (a === "--timeout-s") opt.timeoutS = Number(argv[++i]);
-  else if (a === "--out") opt.out = argv[++i];
+  if (a === "--port") opt.port = takeNumber(++i, "--port");
+  else if (a === "--session") opt.session = takeValue(++i, "--session");
+  else if (a === "--speed") opt.speed = takeNumber(++i, "--speed");
+  else if (a === "--label") opt.label = takeValue(++i, "--label");
+  else if (a === "--timeout-s") opt.timeoutS = takeNumber(++i, "--timeout-s");
+  else if (a === "--out") opt.out = takeValue(++i, "--out");
   else if (a === "--no-down") opt.down = false;
   else if (a === "--no-open") opt.open = false;
-  else if (a === "--scenario") opt.scenario = argv[++i];
+  else if (a === "--scenario") opt.scenario = takeValue(++i, "--scenario");
   else if (a === "--reload") opt.reload = true;
-  else if (a === "--dump-frames") opt.dumpFrames = argv[++i];
-  else if (a === "--settle-ms") opt.settleMs = Number(argv[++i]);
-  else if (a === "--park") opt.park = argv[++i];
-  else if (a === "--inject-css") opt.injectCss = argv[++i];
-  else if (a === "--profile") opt.profile = argv[++i];
+  else if (a === "--dump-frames") opt.dumpFrames = takeValue(++i, "--dump-frames");
+  else if (a === "--settle-ms") opt.settleMs = takeNumber(++i, "--settle-ms", { positive: false });
+  else if (a === "--park") opt.park = takeValue(++i, "--park");
+  else if (a === "--inject-css") opt.injectCss = takeValue(++i, "--inject-css");
+  else if (a === "--profile") opt.profile = takeValue(++i, "--profile");
 }
 if (!opt.session && opt.open) {
   console.error("--session <chatId> is required (or --no-open to use the open chat)");
