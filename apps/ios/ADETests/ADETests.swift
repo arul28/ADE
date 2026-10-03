@@ -13650,6 +13650,38 @@ final class ADETests: XCTestCase {
     WorkComposerPreferences.save(provider: "   ", modelId: "", runtimeMode: "plan", reasoningEffort: "", codexFastMode: false)
     XCTAssertEqual(WorkComposerPreferences.load(), selection)
 
+    // A Custom harness survives an in-session reasoning/fast/access tweak that
+    // leaves the model alone — those call sites never knew the preset, and
+    // erasing it would move the next New Chat send onto the machine's default
+    // sign-in. A different model is a different brain, so the preset drops.
+    let presetSelection = WorkComposerPreferences.Selection(
+      provider: "opencode",
+      modelId: "opencode/opencode-go/deepseek-v4.1-flash",
+      runtimeMode: "default",
+      reasoningEffort: "high",
+      codexFastMode: false,
+      presetId: "hp_deepseek_flash"
+    )
+    WorkComposerPreferences.save(presetSelection)
+    XCTAssertEqual(WorkComposerPreferences.load()?.presetId, "hp_deepseek_flash")
+    WorkComposerPreferences.save(
+      provider: "opencode",
+      modelId: "opencode/opencode-go/deepseek-v4.1-flash",
+      runtimeMode: "default",
+      reasoningEffort: "low",
+      codexFastMode: false
+    )
+    XCTAssertEqual(WorkComposerPreferences.load()?.presetId, "hp_deepseek_flash")
+    XCTAssertEqual(WorkComposerPreferences.load()?.reasoningEffort, "low")
+    WorkComposerPreferences.save(
+      provider: "opencode",
+      modelId: "opencode/opencode-go/deepseek-v4-pro",
+      runtimeMode: "default",
+      reasoningEffort: "low",
+      codexFastMode: false
+    )
+    XCTAssertNil(WorkComposerPreferences.load()?.presetId)
+
     // Provider/model are trimmed before persisting.
     WorkComposerPreferences.save(
       provider: "  claude  ",
@@ -19527,6 +19559,27 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(fallbackCard.kind, "turnDiagnostics")
     XCTAssertEqual(fallbackCard.diagnosticModerationChecks, 3)
     XCTAssertEqual(fallbackCard.diagnosticIntegrationFailures.first?.integration, "unityMCP")
+
+    // A Codex startup run: the host sends the config warning as noticeKind
+    // "config", whose tint is not amber, then one turn-details receipt per
+    // turn. All three fold into ONE card, and the config sentence rides in the
+    // expanded body instead of splitting the run.
+    let startupRaw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"system_notice","noticeKind":"config","message":"⚙ config: `features.rmcp_client` is ignored"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"turn_diagnostics","turnId":"turn-1","moderationChecks":0,"optionalIntegrationFailures":[{"integration":"unityMCP","message":"MCP client unavailable"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:03.000Z","sequence":3,"event":{"type":"turn_diagnostics","turnId":"turn-2","moderationChecks":0,"optionalIntegrationFailures":[{"integration":"linear","message":"Not connected on this machine"}]}}
+    """
+    let startupCards = buildWorkEventCards(from: parseWorkChatTranscript(startupRaw))
+    XCTAssertEqual(startupCards.count, 1)
+    XCTAssertEqual(startupCards.first?.kind, "turnDiagnostics")
+    XCTAssertEqual(startupCards.first?.diagnosticWarnings.count, 1)
+    XCTAssertTrue(
+      startupCards.first?.diagnosticWarnings.first?.message.contains("features.rmcp_client") == true
+    )
+    XCTAssertEqual(
+      startupCards.first?.diagnosticIntegrationFailures.map(\.integration).sorted(),
+      ["linear", "unityMCP"]
+    )
   }
 
   func testRecoveredCodexTurnReplacesStallActionsWithAuditReceipt() throws {
@@ -20862,6 +20915,45 @@ final class ADETests: XCTestCase {
     let cursorGroup = groups.first(where: { $0.key == "cursor" })
     XCTAssertEqual(cursorGroup?.providers.map(\.key), ["anthropic", "cursor"])
     XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
+  }
+
+  func testGatewayRoutedModelWearsItsMakerMarkNotTheGateway() {
+    // OpenCode Go fronts many makers: the route names the gateway, the model
+    // names the maker. The composer chip and the picker row read `provider`
+    // for the mark, so a gateway route must not report the gateway as the
+    // brand — and its label must never be the raw route.
+    let groups = workModelCatalogGroups(
+      availableModelsByProvider: [
+        "opencode": [
+          AgentChatModelInfo(
+            id: "opencode/opencode-go/deepseek-v4.1-flash",
+            displayName: "DeepSeek V4.1 Flash",
+            description: nil,
+            isDefault: false,
+            reasoningEfforts: nil,
+            serviceTiers: nil,
+            maxThinkingTokens: nil,
+            modelId: "opencode/opencode-go/deepseek-v4.1-flash",
+            family: "opencode",
+            supportsReasoning: true,
+            supportsTools: true,
+            color: nil
+          ),
+        ],
+      ],
+      currentModelId: "",
+      currentProvider: "opencode"
+    )
+
+    let option = groups.first(where: { $0.key == "opencode" })?
+      .providers.flatMap(\.models)
+      .first(where: { $0.id == "opencode/opencode-go/deepseek-v4.1-flash" })
+    XCTAssertEqual(option?.displayName, "DeepSeek V4.1 Flash")
+    XCTAssertEqual(option?.provider, "deepseek")
+    XCTAssertEqual(
+      workPrettyModelNameFromId("opencode/opencode-go/deepseek-v4.1-flash"),
+      "DeepSeek V4.1 Flash"
+    )
   }
 
   func testHostModelCatalogDefensivelyPrioritizesGPT56AndCarriesDefaultEffort() throws {
