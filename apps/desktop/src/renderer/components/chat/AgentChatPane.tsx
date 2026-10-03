@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { applySteerOrder } from "../../../shared/steerOrder";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -45,6 +46,7 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type AgentChatLaunchDefaults,
   type CodexThreadGoal,
   type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
@@ -74,6 +76,7 @@ import {
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
+  queuedSteersCanReorder,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -1328,6 +1331,29 @@ export type PendingSteerEntry = {
   contextAttachments: AgentChatContextAttachment[];
 };
 
+/** A finished turn a fork keeps the conversation through ("Fork from here"). */
+type HandoffForkPoint = { turnId: string; timestamp: string };
+
+function formatHandoffForkPointTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "earlier";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? `at ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : `on ${date.toLocaleDateString([], { month: "short", day: "numeric" })} at ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
+/**
+ * Re-sorts the staged queue to the host's published order. Ids the event does
+ * not name (a steer queued after it, on another client) keep their place after
+ * the named ones; a named id that already left the queue is skipped.
+ */
+function reorderSteerMap(steerMap: Map<string, PendingSteerEntry>, steerIds: readonly string[]): void {
+  const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, steerIds);
+  steerMap.clear();
+  for (const [id, entry] of ordered) steerMap.set(id, entry);
+}
+
 export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
@@ -1375,6 +1401,8 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
     } else if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+    } else if (event.type === "queue_reordered") {
+      reorderSteerMap(steerMap, event.steerIds);
     } else if (event.type === "queue_recovery" && event.state === "restored") {
       for (const steer of event.restoredSteers ?? []) {
         resolvedSteerIds.delete(steer.steerId);
@@ -2824,6 +2852,29 @@ function buildLastLaunchConfig(
     controls,
     updatedAt,
   };
+}
+
+/** The machine's launch defaults as the composer's launch config. */
+function launchConfigFromMachineDefaults(
+  defaults: AgentChatLaunchDefaults,
+  controlDefaults: NativeControlState,
+): LastLaunchConfig | null {
+  return buildLastLaunchConfig({
+    modelId: defaults.modelId,
+    reasoningEffort: defaults.reasoningEffort,
+    fastMode: defaults.fastMode,
+    executionMode: defaults.executionMode ?? undefined,
+    interactionMode: defaults.interactionMode ?? undefined,
+    permissionMode: defaults.permissionMode ?? undefined,
+    claudePermissionMode: defaults.claudePermissionMode ?? undefined,
+    codexApprovalPolicy: defaults.codexApprovalPolicy ?? undefined,
+    codexSandbox: defaults.codexSandbox ?? undefined,
+    codexConfigSource: defaults.codexConfigSource ?? undefined,
+    opencodePermissionMode: defaults.opencodePermissionMode ?? undefined,
+    droidPermissionMode: defaults.droidPermissionMode ?? undefined,
+    cursorModeId: defaults.cursorModeId ?? undefined,
+    cursorConfigValues: defaults.cursorConfigValues ?? undefined,
+  }, controlDefaults, defaults.updatedAt);
 }
 
 function normalizeStoredLaunchConfig(
@@ -4378,7 +4429,14 @@ export function AgentChatPane({
   const [handoffNote, setHandoffNote] = useState("");
   // A note the local handoff form takes when it next opens (the quota card's
   // fork button). The form's one-shot open effect consumes it.
-  const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
+  const pendingHandoffPrefillRef = useRef<{ note: string; throughTurn?: HandoffForkPoint | null } | null>(null);
+  // The model and settings the machine that will run a new chat used last
+  // (`chat.getLaunchDefaults`). It outranks this window's own memory, so every
+  // client opens a new chat on the same defaults.
+  const [machineLaunchDefaults, setMachineLaunchDefaults] = useState<LastLaunchConfig | null>(null);
+  // "Fork from here": the finished turn a fork keeps the conversation through.
+  // Null forks the whole chat.
+  const [handoffForkPoint, setHandoffForkPoint] = useState<HandoffForkPoint | null>(null);
   // The local handoff form (fork | brief). The mode resets each time it opens.
   const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
   // Brief handoffs may target a different lane (or a freshly created one); fork
@@ -5489,6 +5547,18 @@ export function AgentChatPane({
    * cross-machine modal's `turnActive`). A chat on another machine opens the
    * same modal: its source steps are pinned to that machine.
    */
+  const openForkFromTurn = useCallback((point: HandoffForkPoint) => {
+    // The open effect resets the form, so the fork point rides in as a prefill
+    // exactly like a card's note does; an already-open form takes it directly.
+    if (localHandoffOpen) {
+      setHandoffForkPoint(point);
+      setHandoffLocalMode("fork");
+      return;
+    }
+    pendingHandoffPrefillRef.current = { note: "", throughTurn: point };
+    setLocalHandoffOpen(true);
+  }, [localHandoffOpen]);
+
   const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
     if (intent === "remote") {
       setCrossMachineHandoffOpen(true);
@@ -7828,6 +7898,13 @@ export function AgentChatPane({
     if (selectedSessionId || lockSessionId) return;
     if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) return;
     const draftKey = draftLaunchConfigScopeKey;
+    if (machineLaunchDefaults) {
+      const machineHydrationKey = `${draftKey}:machine:${machineLaunchDefaults.updatedAt}`;
+      if (draftLaunchConfigHydratedRef.current === machineHydrationKey) return;
+      applyLaunchConfigToComposer(machineLaunchDefaults);
+      draftLaunchConfigHydratedRef.current = machineHydrationKey;
+      return;
+    }
     const latestSessionConfig = sessions[0]
       ? buildLastLaunchConfig(sessions[0], initialNativeControls)
       : null;
@@ -7848,6 +7925,7 @@ export function AgentChatPane({
   }, [
     applyLaunchConfigToComposer,
     initialNativeControls,
+    machineLaunchDefaults,
     draftLaunchConfigScopeKey,
     laneId,
     lastLaunchConfigStorageKeys,
@@ -8276,6 +8354,7 @@ export function AgentChatPane({
       const prefill = pendingHandoffPrefillRef.current;
       pendingHandoffPrefillRef.current = null;
       setHandoffNote(prefill?.note ?? "");
+      setHandoffForkPoint(prefill?.throughTurn ?? null);
       // Each open starts in fork mode on the current lane and seeds the remote
       // model.
       setHandoffLocalMode("fork");
@@ -12057,6 +12136,7 @@ export function AgentChatPane({
         mode,
         ...(resolvedTargetLaneId ? { targetLaneId: resolvedTargetLaneId } : {}),
         ...(trimmedHandoffNote ? { handoffNote: trimmedHandoffNote } : {}),
+        ...(mode === "fork" && handoffForkPoint ? { throughTurnId: handoffForkPoint.turnId } : {}),
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
           ? { fastMode: handoffFastMode }
@@ -12074,6 +12154,7 @@ export function AgentChatPane({
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
+      setHandoffForkPoint(null);
       setLocalHandoffOpen(false);
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
@@ -12123,6 +12204,7 @@ export function AgentChatPane({
     handoffCodexConfigSource,
     handoffTargetDescriptor,
     handoffFastMode,
+    handoffForkPoint,
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
@@ -13986,6 +14068,42 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  // A draft reads the launch defaults of the machine it will launch on, again
+  // whenever that machine changes, a chat is created, or the window regains
+  // focus (another client may have launched since).
+  const launchDefaultsBindingKey = selectedSessionId ? null : (draftExecutionBinding?.key ?? "local");
+  const newestSessionKey = `${sessions[0]?.sessionId ?? ""}:${sessions[0]?.modelId ?? ""}`;
+  const launchDefaultsLoadedForKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (launchDefaultsBindingKey == null || lockSessionId) return undefined;
+    let cancelled = false;
+    // A new target machine starts from nothing: the previous machine's
+    // defaults must never seed this one's draft, even when it cannot answer.
+    // A refetch for the same machine keeps what it has until the answer lands.
+    if (launchDefaultsLoadedForKeyRef.current !== launchDefaultsBindingKey) {
+      launchDefaultsLoadedForKeyRef.current = launchDefaultsBindingKey;
+      setMachineLaunchDefaults(null);
+    }
+    const load = () => {
+      // Optional call: a host bridge without it (an older embedder, a test
+      // double) leaves the draft on this window's own memory.
+      void window.ade.agentChat.launchDefaults?.(draftExecutionBindingRef.current ?? null)
+        .then((defaults) => {
+          if (cancelled) return;
+          const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
+          setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
+        })
+        .catch(() => {
+          if (!cancelled) setMachineLaunchDefaults(null);
+        });
+    };
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", load);
+    };
+  }, [initialNativeControls, launchDefaultsBindingKey, lockSessionId, newestSessionKey]);
   /**
    * Catalog, auth, and model rows follow the machine that will RUN the turn —
    * the prompt-box picker or the chat's owner — not the global project tab.
@@ -14417,7 +14535,11 @@ export function AgentChatPane({
       <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
         <div className="min-w-0">
           <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
-          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">{handoffForkCopy.subtitle}</div>
+          <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">
+            {handoffForkPoint && handoffLocalMode === "fork"
+              ? "Fork copies the conversation up to the turn you picked. Brief summarizes it and starts fresh."
+              : handoffForkCopy.subtitle}
+          </div>
         </div>
         <button
           type="button"
@@ -14474,7 +14596,23 @@ export function AgentChatPane({
 
         {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
           <div className="mt-3 space-y-3">
-            <div className="text-[11px] leading-5 text-fg/54">{handoffForkCopy.body}</div>
+            {handoffForkPoint ? (
+              <Banner
+                model={{
+                  id: "handoff-fork-point",
+                  tone: "accent",
+                  icon: <GitFork size={13} weight="bold" />,
+                  title: `From the turn that ended ${formatHandoffForkPointTime(handoffForkPoint.timestamp)}. Later messages are left out.`,
+                  actions: [{ label: "Whole chat", variant: "secondary", onClick: () => setHandoffForkPoint(null) }],
+                }}
+                layout="inline"
+              />
+            ) : null}
+            <div className="text-[11px] leading-5 text-fg/54">
+              {handoffForkPoint
+                ? "The new chat starts with the conversation through that turn. This chat is not changed."
+                : handoffForkCopy.body}
+            </div>
             <div className="inline-flex items-center gap-1.5">
               <ModelPicker
                 value={handoffModelId}
@@ -15513,6 +15651,16 @@ export function AgentChatPane({
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}
+            onMoveSteer={selectedSessionId && queuedSteersCanReorder(selectedSession?.provider)
+              ? async (steerId, toIndex) => {
+                try {
+                  await window.ade.agentChat.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatRuntimePinRef.current);
+                } catch (error) {
+                  setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  throw error;
+                }
+              }
+              : undefined}
             onDispatchSteerInline={activeTurnInlineSupported ? (steerId) => {
               if (selectedSessionId) {
                 dispatchSteerSafely({ sessionId: selectedSessionId, steerId, mode: "inline" });
@@ -16285,6 +16433,7 @@ export function AgentChatPane({
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
+                        onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>

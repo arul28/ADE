@@ -517,6 +517,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -7829,6 +7831,22 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), text: record.text };
   };
 
+  const parseAgentChatMoveSteerArgs = (
+    value: unknown,
+  ): AgentChatMoveSteerArgs => {
+    const record = requireRecord(value, "Agent chat move steer request");
+    if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("Agent chat move steer sessionId must be a non-empty string");
+    }
+    if (typeof record.steerId !== "string" || !record.steerId.trim()) {
+      throw new Error("Agent chat move steer steerId must be a non-empty string");
+    }
+    if (typeof record.toIndex !== "number" || !Number.isInteger(record.toIndex) || record.toIndex < 0) {
+      throw new Error("Agent chat move steer toIndex must be a non-negative integer");
+    }
+    return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim(), toIndex: record.toIndex };
+  };
+
   const parseAgentChatDispatchSteerArgs = (
     value: unknown,
   ): AgentChatDispatchSteerArgs => {
@@ -8740,6 +8758,11 @@ export function registerIpc({
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
+  ipcMain.handle(IPC.agentChatMoveSteer, async (_event, arg: unknown): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    await ctx.agentChatService.moveSteer(parseAgentChatMoveSteerArgs(arg));
+  });
+
   ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
@@ -8857,6 +8880,11 @@ export function registerIpc({
       await ctx.agentChatService.dismissPendingInput(arg);
     },
   );
+
+  ipcMain.handle(IPC.agentChatLaunchDefaults, async (): Promise<AgentChatLaunchDefaults | null> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.getLaunchDefaults();
+  });
 
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();

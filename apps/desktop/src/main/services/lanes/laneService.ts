@@ -68,6 +68,7 @@ import type {
   ListLanesArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
+  RecreateMissingWorktreeResult,
   RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
@@ -4888,6 +4889,93 @@ export function createLaneService({
     } catch (error) { warn("stop_apple_device", error); }
   };
 
+  const missingWorktreeRecreates = new Map<string, Promise<RecreateMissingWorktreeResult>>();
+
+  const recreateMissingWorktreeOnce = async (laneId: string): Promise<RecreateMissingWorktreeResult> => {
+    const row = getLaneRow(laneId);
+    if (!row) return { recreated: false, reason: "Lane not found." };
+    // Archived lanes go through Restore; the primary lane IS the project root.
+    if (row.status === "archived" || row.archived_at) return { recreated: false, reason: "The lane is archived." };
+    if (row.lane_type === "primary") return { recreated: false, reason: "The primary lane has no separate worktree." };
+    if (laneReclaimInFlight.has(laneId) || deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+      return { recreated: false, reason: "The lane is being deleted or reclaimed." };
+    }
+    const configured = typeof row.worktree_path === "string" ? row.worktree_path.trim() : "";
+    if (!configured) return { recreated: false, reason: "The lane has no worktree configured." };
+    const targetPath = normAbs(configured);
+    if (fs.existsSync(targetPath)) return { recreated: false };
+    // A folder the user placed elsewhere (another drive, a path from another
+    // machine) is not ADE's to rebuild; it may only be unmounted.
+    if (!isDirectlyInsideManagedWorktreesDir(targetPath)) {
+      return { recreated: false, reason: "The worktree lives outside ADE's worktrees folder." };
+    }
+    if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
+      return { recreated: false, reason: "The worktree path goes through a symbolic link." };
+    }
+    const branchName = branchNameForDelete(row.branch_ref, "origin");
+    if (!branchName) return { recreated: false, reason: "The lane has no branch." };
+
+    const storageLock = acquireStorageLifecycleLock({
+      laneId,
+      worktreePath: targetPath,
+      ownerLabel: `Recreate worktree: ${row.name}`,
+    });
+    try {
+      return await runGitWorktreeMutation(async (): Promise<RecreateMissingWorktreeResult> => {
+        // Re-check under the mutation queue: another writer may have rebuilt
+        // or claimed the folder, or archived, reclaimed or deleted the lane,
+        // while this call waited.
+        if (fs.existsSync(targetPath)) return { recreated: false };
+        const current = getLaneRow(laneId);
+        if (!current || current.status === "archived" || current.archived_at
+          || laneReclaimInFlight.has(laneId) || deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+          return { recreated: false, reason: "The lane changed while waiting to rebuild its worktree." };
+        }
+        const localBranch = await runGit(
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+          { cwd: projectRoot, timeoutMs: 8_000 },
+        );
+        if (localBranch.exitCode !== 0) {
+          return { recreated: false, reason: `Branch '${branchName}' no longer exists locally.` };
+        }
+        const worktrees = await listGitWorktrees();
+        const branchKey = normalizeBranchKey(branchName);
+        const holder = worktrees.find((wt) =>
+          !wt.isBare && normalizeBranchKey(wt.branch) === branchKey && !pathsEqual(wt.path, targetPath));
+        if (holder) {
+          return { recreated: false, reason: `Branch '${branchName}' is checked out at '${holder.path}'.` };
+        }
+        if (worktrees.some((wt) => pathsEqual(wt.path, targetPath))) {
+          // Path-scoped: clears only this lane's stale entry. Fails (and so
+          // refuses) on a locked worktree, which is what a lock is for.
+          await runGitOrThrow(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+        const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
+        try {
+          await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: 120_000 });
+        } catch (error) {
+          // The folder was absent before `add`, so anything there now is this
+          // failed attempt's. Clear it and its registration, or every later
+          // attempt would see a folder and stop without a reason.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          if (fs.existsSync(targetPath)) await removeWorktreeDirectoryWithRecovery(targetPath).catch(() => undefined);
+          // With the folder gone, a path-scoped `remove` clears an entry the
+          // first one could not. Never a repository-wide `prune`: that would
+          // also drop other lanes whose folders are only briefly missing.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          throw error;
+        } finally {
+          untrack();
+        }
+        invalidateLanePathCaches();
+        logger.info("lane.worktree_recreated", { laneId, worktreePath: targetPath, branch: branchName });
+        return { recreated: true, worktreePath: targetPath, branch: branchName };
+      });
+    } finally {
+      storageLock.release();
+    }
+  };
+
   // Named so a few methods (branch-drift resolution) can delegate to sibling
   // methods instead of duplicating their transaction/rollback handling.
   const laneServiceApi = {
@@ -7858,6 +7946,28 @@ export function createLaneService({
       } finally {
         storageLock.release();
       }
+    },
+
+    /**
+     * Rebuilds an ACTIVE lane's worktree whose folder vanished from disk (the
+     * user deleted it, a cleanup tool reaped it), so the next chat turn can run
+     * instead of failing with "Restore or recreate the lane".
+     *
+     * Deliberately narrower than `unarchive`: only ADE-managed paths, only from
+     * the LOCAL branch (a branch the user deleted is a decision, not damage),
+     * never through a lock, a delete, a reclaim, or a folder that came back.
+     * The stale registration is cleared with a path-scoped `worktree remove`,
+     * not a repository-wide `prune` that would drop other lanes' entries too.
+     * Concurrent callers for one lane share a single attempt.
+     */
+    recreateMissingWorktree({ laneId }: { laneId: string }): Promise<RecreateMissingWorktreeResult> {
+      const inFlight = missingWorktreeRecreates.get(laneId);
+      if (inFlight) return inFlight;
+      const attempt = recreateMissingWorktreeOnce(laneId).finally(() => {
+        missingWorktreeRecreates.delete(laneId);
+      });
+      missingWorktreeRecreates.set(laneId, attempt);
+      return attempt;
     },
 
     listDeleteProgress(): LaneDeleteProgress[] {

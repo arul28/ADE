@@ -135,6 +135,7 @@ import {
   enrichChatSessionsWithLifecycle,
   enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
+  getLaunchDefaults,
   getAiSettingsStatus,
   getChatHistory,
   getChatHistoryPage,
@@ -353,6 +354,7 @@ import {
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
   seedModelStateFromMemory,
+  modelMemoryFromLaunchDefaults,
   resolveCodexPreset,
   resolveCursorCliModelForLaunch,
   runtimeProviderForUiProvider,
@@ -3803,6 +3805,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [modelState, setModelState] = useState<AdeCodeModelState>(
     () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
   );
+  // The model the TUI opened on; the machine's launch defaults replace it only
+  // while it is still this one (see the connect path).
+  const initialModelProviderRef = useRef({ provider: modelState.provider, modelId: modelState.modelId });
   // ── Project-scoped model memory ───────────────────────────────────────────
   // Written on every successful chat start and on every /model commit; read
   // above to seed a new chat, and per-provider on wizard step 4.
@@ -8935,6 +8940,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setActiveProjectRoot(conn.projectRoot || project.projectRoot);
         setConnection(conn);
         setMode(conn.mode);
+        // A new chat opens on what this machine used last, from any client,
+        // unless the user already picked a model here.
+        void getLaunchDefaults(conn).then((defaults) => {
+          if (!defaults) return;
+          setModelState((prev) => {
+            if (prev.provider !== initialModelProviderRef.current.provider
+              || prev.modelId !== initialModelProviderRef.current.modelId) return prev;
+            const displayName = getModelById(defaults.modelId)?.displayName ?? defaults.modelId;
+            return seedModelStateFromMemory(prev, modelMemoryFromLaunchDefaults(defaults, prev, displayName));
+          });
+        });
         if (!analyticsAppOpenedRef.current) {
           analyticsAppOpenedRef.current = true;
           void captureTuiProductAnalytics(conn, {

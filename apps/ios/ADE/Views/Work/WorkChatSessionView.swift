@@ -524,6 +524,9 @@ struct WorkChatSessionView: View {
   let onEditSteer: @MainActor (String, String) async -> Void
   let onDispatchSteerInline: (@MainActor (String) async -> Void)?
   let onDispatchSteerInterrupt: (@MainActor (String) async -> Void)?
+  /// Moves a staged message to a new position; nil when the provider keeps
+  /// its own queue or the host predates `chat.moveSteer`.
+  let onMoveSteer: (@MainActor (String, Int) async -> Void)?
   let onSelectModel: @MainActor (String) async -> Void
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
@@ -1435,6 +1438,11 @@ struct WorkChatSessionView: View {
                 transcriptScroller.scrollToLatest(animated: true, reason: "steer-dispatched")
                 unreadBelowCount = 0
               }
+            }
+          },
+          onMove: onMoveSteer.map { move in
+            { steerId, toIndex in
+              await runSessionAction { await move(steerId, toIndex) }
             }
           }
         )

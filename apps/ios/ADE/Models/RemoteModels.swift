@@ -3184,6 +3184,8 @@ enum AgentChatEvent: Decodable, Equatable {
   case contextUsage(usage: AgentChatContextUsage, turnId: String?, origin: String?, state: String?, sampleId: Int?)
   case conversationReset(newConversationId: String)
   case interruptReceipt(stillQueuedUuids: [String], cancelledUuids: [String]?)
+  /// The host's staged-queue order after a reorder (`queue_reordered`).
+  case queueReordered(steerIds: [String])
   case commandLifecycle(commandUuid: String, status: String, preview: String?, steerId: String?, turnId: String?)
   case claudeGoalUpdated(goal: AgentChatClaudeGoal, turnId: String?)
   case claudeGoalCleared(turnId: String?)
@@ -3489,6 +3491,7 @@ extension AgentChatEvent {
     case newConversationId
     case stillQueuedUuids
     case cancelledUuids
+    case steerIds
     case recoveryId
     case messageCount
     case expiresAt
@@ -3755,6 +3758,8 @@ extension AgentChatEvent {
         stillQueuedUuids: try container.decodeIfPresent([String].self, forKey: .stillQueuedUuids) ?? [],
         cancelledUuids: try container.decodeIfPresent([String].self, forKey: .cancelledUuids)
       )
+    case "queue_reordered":
+      self = .queueReordered(steerIds: try container.decodeIfPresent([String].self, forKey: .steerIds) ?? [])
     case "queue_recovery":
       let state = try container.decode(String.self, forKey: .state)
       let messageCount = try container.decode(Int.self, forKey: .messageCount)
@@ -4204,6 +4209,7 @@ extension AgentChatEvent {
     case .contextUsage: return "context_usage"
     case .conversationReset: return "conversation_reset"
     case .interruptReceipt: return "interrupt_receipt"
+    case .queueReordered: return "queue_reordered"
     case .commandLifecycle: return "command_lifecycle"
     case .claudeGoalUpdated: return "claude_goal_updated"
     case .claudeGoalCleared: return "claude_goal_cleared"
@@ -4284,6 +4290,31 @@ struct AgentChatSteerRequest: Codable, Equatable {
   /// True only when the user sends from a composer that shows pending thread
   /// comments: the host then adds them to this message. Nil = key omitted.
   var includeThreadComments: Bool? = nil
+}
+
+/// The host machine's last-used chat model and settings (`chat.getLaunchDefaults`).
+struct AgentChatLaunchDefaults: Codable, Equatable {
+  var provider: String
+  var modelId: String
+  var reasoningEffort: String?
+  var fastMode: Bool?
+  var interactionMode: String?
+  var permissionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var droidPermissionMode: String?
+  var cursorModeId: String?
+  var updatedAt: String
+}
+
+struct AgentChatMoveSteerRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+  /// Destination position, 0 = delivered next.
+  var toIndex: Int
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {

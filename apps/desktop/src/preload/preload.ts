@@ -601,6 +601,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -1870,6 +1872,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "steer",
   "cancelSteer",
   "editSteer",
+  "moveSteer",
   "dispatchSteer",
   "cancelDispatchedSteer",
   "createSession",
@@ -1921,6 +1924,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
 const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
   "modelCatalog",
   "getAvailableModels",
+  "getLaunchDefaults",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -7485,6 +7489,14 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
     },
+    moveSteer: async (
+      args: AgentChatMoveSteerArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      await callPinnedOrBoundRuntimeActionOr(pin, "chat", "moveSteer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatMoveSteer, args),
+      );
+    },
     dispatchSteer: async (
       args: AgentChatDispatchSteerArgs,
       pin?: OpenProjectBinding | null,
@@ -7676,6 +7688,15 @@ const adeBridge = {
       if (!runtime.handled)
         await ipcRenderer.invoke(IPC.agentChatDismissPendingInput, args);
       agentChatSummaryCache.clear();
+    },
+    // The machine's last-used chat model and settings. Pinned like `models`:
+    // it is a fact about the machine that will run the chat.
+    launchDefaults: async (pin?: OpenProjectBinding | null): Promise<AgentChatLaunchDefaults | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatLaunchDefaults | null>(pin, "chat", "getLaunchDefaults", {});
+      }
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatLaunchDefaults | null>("chat", "getLaunchDefaults", {});
+      return runtime.handled ? runtime.result : ipcRenderer.invoke(IPC.agentChatLaunchDefaults);
     },
     models: async (
       args: AgentChatModelsArgs,

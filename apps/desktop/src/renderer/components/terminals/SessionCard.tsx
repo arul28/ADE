@@ -45,6 +45,8 @@ import {
   sessionActivityInstant,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { CHAT_MENTION_DND_MIME } from "../../../shared/chatMentions";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
@@ -1659,6 +1661,12 @@ export const SessionCard = React.memo(function SessionCard({
         // Source for the Cursor-style work grid: drop onto a session / the work
         // area to add this chat or CLI session to a grid.
         event.dataTransfer.setData(GRID_SESSION_DND_MIME, session.id);
+        // Dropped on a composer, the row becomes an @-mention of itself.
+        event.dataTransfer.setData(CHAT_MENTION_DND_MIME, JSON.stringify({
+          kind: isChatToolType(session.toolType) ? "chat" : "terminal",
+          id: session.id,
+          title: session.title?.trim() || session.id,
+        }));
         event.dataTransfer.effectAllowed = "copyMove";
       }}
     >

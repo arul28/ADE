@@ -735,6 +735,10 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId,
           steerId: optionalString(eventDict["steerId"])
         )
+      case "queue_reordered":
+        event = .queueReordered(
+          steerIds: (eventDict["steerIds"] as? [Any] ?? []).compactMap { $0 as? String }
+        )
       case "queue_recovery":
         event = .systemNotice(
           kind: "queue_recovery",

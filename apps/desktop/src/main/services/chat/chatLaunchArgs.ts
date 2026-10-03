@@ -94,6 +94,14 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
   };
 
+  // Stamped by the runtime's RPC layer on an agent's launch, so the launch
+  // record creates its chat with the same permission ceiling a direct create
+  // gets. Only a well-formed value is kept.
+  const actor = value.runtimeActor as AgentChatCreateArgs["runtimeActor"] | undefined;
+  if (actor?.kind === "cto") parsed.runtimeActor = { kind: "cto" };
+  else if (actor?.kind === "agent") {
+    parsed.runtimeActor = { kind: "agent", chatSessionId: asTrimmedString(actor.chatSessionId) ?? null };
+  }
   if ("sessionProfile" in value) parsed.sessionProfile = value.sessionProfile == null ? undefined : asTrimmedString(value.sessionProfile) as AgentChatCreateArgs["sessionProfile"];
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatCreateArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatCreateArgs["interactionMode"];

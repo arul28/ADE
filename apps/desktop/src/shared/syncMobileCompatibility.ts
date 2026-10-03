@@ -7,6 +7,12 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
 export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  // Reorder one staged message. Optional: a phone hides the reorder controls
+  // against a brain that does not advertise it.
+  "chat.moveSteer",
+  // This machine's last-used chat model and settings, to seed a new chat.
+  // Optional: against an older brain the phone keeps its own last choice.
+  "chat.getLaunchDefaults",
   // New-lane launches owned by the brain. Optional: a phone falls back to the
   // chained lanes.create → chat.create flow against a brain without them.
   "chat.startLaunch",

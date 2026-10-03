@@ -394,6 +394,7 @@ struct WorkChatScrollBenchScreen: View {
       onEditSteer: { _, _ in },
       onDispatchSteerInline: nil,
       onDispatchSteerInterrupt: nil,
+      onMoveSteer: nil,
       onSelectModel: { _ in },
       onSelectRuntimeMode: { _ in true },
       onSelectEffort: { _ in },

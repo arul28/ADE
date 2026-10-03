@@ -1136,6 +1136,36 @@ chat pane mount, which happens either way.
   sentence keys off `capability.modes`, not the wired handlers, so a Claude or
   Codex chat whose dispatch handler is merely unwired never claims the provider
   is queue-only.
+- **Reordering staged messages.** With two or more staged messages, each row
+  shows a drag handle (`DotsSixVertical`, `data-testid="pending-steer-reorder-handle"`)
+  in place of its dot. Drag the handle onto another row's top or bottom half
+  (a `application/x-ade-pending-steer` drag, so file drops never read as a
+  reorder), or focus it and use ArrowUp / ArrowDown / Home / End; focus stays
+  on the moved message. The pane calls `ade.agentChat.moveSteer({ sessionId,
+  steerId, toIndex })`, shows the new order at once, and drops back to the
+  host's order if the call is refused (the pane error banner says why). The
+  host splices its staged queue — the one `deliverNextQueuedSteer` shifts
+  from, so delivery follows the new order — and publishes the full order as a
+  `queue_reordered { steerIds }` event, which every surface's pending-steer
+  derivation sorts by and which draws nothing in the transcript. On a
+  torn-down session (no runtime yet) the persisted `pendingSteers` are
+  reordered instead, the same way cancel tombstones them. A row an inline
+  dispatch owns is refused. Only ADE-held queues move
+  (`queuedSteersCanReorder`): Codex keeps follow-ups in its app-server queue
+  keyed by message id and OpenCode in its own inbox, and neither has a move
+  operation, so those chats show no handle. iOS offers the same moves as a
+  long-press menu (Send first / Move up / Move down / Send last) and VoiceOver
+  actions, gated on the host advertising the optional `chat.moveSteer`
+  command. The TUI's pending-steer list follows the order; its timeline keeps
+  queued bubbles where they were sent.
+- **Queued attachments are visible.** A staged message with files or context
+  items shows them under its text in the composer's own `ChatAttachmentTray`,
+  so a queue of several reads at a glance.
+- **Drag a chat in to reference it.** Every Work row (`SessionCard`) also puts a
+  `CHAT_MENTION_DND_MIME` payload (`{ kind, id, title }`) on its drag. Dropped
+  on a composer, the overlay reads "Drop to reference" and the row becomes an
+  `@chat:` / `@term:` chip, the same pointer the `@` menu inserts; a chat
+  dropped on its own composer is ignored.
 - **A cancel that fails is reported.** `onCancelSteer` catches the rejection and
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent

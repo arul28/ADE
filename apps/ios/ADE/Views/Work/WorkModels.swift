@@ -2268,6 +2268,8 @@ enum WorkChatEvent: Equatable {
   /// carried by `WorkAdeCardModel` so this union member never has to grow when
   /// the wire contract adds a field.
   case adeCard(WorkAdeCardModel)
+  /// Staged-queue order only; draws nothing in the timeline.
+  case queueReordered(steerIds: [String])
   case unknown(type: String)
 
   var typeKey: String {
@@ -2313,6 +2315,7 @@ enum WorkChatEvent: Equatable {
     case .command: return "command"
     case .fileChange: return "file_change"
     case .adeCard: return "ade_card"
+    case .queueReordered: return "queue_reordered"
     case .unknown(let type): return type
     }
   }

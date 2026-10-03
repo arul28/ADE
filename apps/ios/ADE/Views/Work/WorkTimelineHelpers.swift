@@ -520,6 +520,9 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(card.id)
     combineLongTextSignature(workAdeCardContentMergeKey(card), into: &hasher)
     combineOptional(card.turnId, into: &hasher)
+  case .queueReordered(let steerIds):
+    hasher.combine("queue_reordered")
+    hasher.combine(steerIds)
   case .unknown(let type):
     hasher.combine(type)
   }
@@ -3955,7 +3958,7 @@ struct WorkReasoningTimingFold: Equatable {
 private func workReasoningRunEndsAt(_ event: WorkChatEvent) -> Bool {
   switch event {
   case .reasoning, .activity, .sources, .tokens, .pendingInputResolved, .turnDiagnostics,
-       .userMessageResolution, .unknown:
+       .userMessageResolution, .queueReordered, .unknown:
     return false
   case .status(let turnStatus, let message, _):
     let status = turnStatus.lowercased()
@@ -5296,7 +5299,7 @@ func workTurnId(for event: WorkChatEvent) -> String? {
     return turnId
   case .adeCard(let card):
     return card.turnId
-  case .unknown:
+  case .queueReordered, .unknown:
     return nil
   }
 }

@@ -107,6 +107,19 @@ func workChatManualSteerDispatchModes(
   ).atomicDispatchModes
 }
 
+/// iOS half of desktop `queuedSteersCanReorder`: ADE holds the staged queue
+/// (and can reorder it) for every provider except Codex and OpenCode, which
+/// keep their own.
+func workChatQueuedSteersCanReorder(
+  session: TerminalSessionSummary?,
+  summary: AgentChatSessionSummary?
+) -> Bool {
+  guard let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType) else {
+    return false
+  }
+  return provider != "codex" && provider != "opencode"
+}
+
 /// iOS half of desktop `cursorSessionRunsInCloud`.
 ///
 /// `cursorRuntime` wins when the host sent it, including `"local"` over a
@@ -1344,6 +1357,14 @@ struct WorkSessionDestinationView: View {
     } else {
       dispatchSteerInterruptAction = nil
     }
+    // Host-gated like dispatch: an older brain has no `chat.moveSteer`.
+    let moveSteerAction: (@MainActor (String, Int) async -> Void)?
+    if syncService.supportsChatRemoteAction("chat.moveSteer", sessionId: session.id),
+       workChatQueuedSteersCanReorder(session: session, summary: composerChatSummary ?? chatSummary) {
+      moveSteerAction = { steerId, toIndex in await moveSteer(steerId, toIndex: toIndex) }
+    } else {
+      moveSteerAction = nil
+    }
     let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
     if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
@@ -1503,6 +1524,7 @@ struct WorkSessionDestinationView: View {
       onEditSteer: editSteer,
       onDispatchSteerInline: dispatchSteerInlineAction,
       onDispatchSteerInterrupt: dispatchSteerInterruptAction,
+      onMoveSteer: moveSteerAction,
       onSelectModel: selectModel,
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
