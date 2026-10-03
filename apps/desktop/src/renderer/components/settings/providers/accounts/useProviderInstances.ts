@@ -198,6 +198,9 @@ export function useDefaultProviderInstance(provider: ProviderInstanceProvider): 
       setBridgeMissing(true);
       return;
     }
+    // Another machine's default account must not stand in while this one reads,
+    // or after a failed read: the card would offer to sign in a stranger.
+    if (aliveRef.current) setInstance(null);
     try {
       const list = await api.list({ provider });
       if (aliveRef.current) setInstance(list.find((entry) => entry.isDefault) ?? null);

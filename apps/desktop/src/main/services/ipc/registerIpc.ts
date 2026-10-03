@@ -6706,6 +6706,12 @@ export function registerIpc({
     return id;
   };
 
+  /** A sign-in field that must arrive as a string; a coerced value never reaches the PTY. */
+  const providerLoginString = (value: unknown, label: string): string => {
+    if (typeof value !== "string") throw new Error(`A provider sign-in ${label} is required.`);
+    return value;
+  };
+
   const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
     if (!isProviderInstanceProvider(value)) {
       throw new Error("A provider account provider must be \"claude\" or \"codex\".");
@@ -6775,16 +6781,19 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
-    return getMachineProviderLoginRunner().status(String(providerInstanceArgs(arg).loginId ?? ""));
+    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
   });
 
   ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
     const args = providerInstanceArgs(arg);
-    return getMachineProviderLoginRunner().submitCode(String(args.loginId ?? ""), String(args.code ?? ""));
+    return getMachineProviderLoginRunner().submitCode(
+      providerLoginString(args.loginId, "id"),
+      providerLoginString(args.code, "code"),
+    );
   });
 
   ipcMain.handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
-    return getMachineProviderLoginRunner().cancel(String(providerInstanceArgs(arg).loginId ?? ""));
+    return getMachineProviderLoginRunner().cancel(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
   });
 
   ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {

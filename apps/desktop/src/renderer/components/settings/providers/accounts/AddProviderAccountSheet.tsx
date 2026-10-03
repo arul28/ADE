@@ -110,6 +110,8 @@ export function AddProviderAccountSheet({
 
   const instanceIdRef = useRef<string | null>(existingInstance?.id ?? null);
   const loginRef = useRef<ProviderLoginStatus | null>(null);
+  /** Orders overlapping starts: only the newest one may apply its reply. */
+  const startSeqRef = useRef(0);
   const changedRef = useRef(false);
   const closedRef = useRef(false);
   const aliveRef = useRef(true);
@@ -163,12 +165,25 @@ export function AddProviderAccountSheet({
 
   const startLogin = useCallback(async (id: string) => {
     if (!api?.loginStart) throw new Error("This ADE host cannot run a sign-in from Settings. Update ADE on that machine.");
+    const seq = ++startSeqRef.current;
+    // A second start (a quick "Try again") supersedes the first; stop the one
+    // still running so its CLI does not linger.
+    const previous = loginRef.current;
+    if (previous && isProviderLoginLive(previous)) {
+      void api.loginCancel?.({ loginId: previous.loginId }).catch(() => undefined);
+    }
     setError(null);
     setCode("");
     setShowOutput(false);
     setPhase("signing");
     // On another machine the browser is on this computer, not the account's.
-    applyLogin(await api.loginStart({ id, ...(isThisMachine ? {} : { deviceAuth: true }) }));
+    const next = await api.loginStart({ id, ...(isThisMachine ? {} : { deviceAuth: true }) });
+    // A later start replaced this reply; its status is the real one.
+    if (seq !== startSeqRef.current) {
+      if (isProviderLoginLive(next)) void api.loginCancel?.({ loginId: next.loginId }).catch(() => undefined);
+      return;
+    }
+    applyLogin(next);
   }, [api, applyLogin, isThisMachine]);
 
   /** Start (or restart) a sign-in for an account that exists; a failure ends the sheet's attempt. */

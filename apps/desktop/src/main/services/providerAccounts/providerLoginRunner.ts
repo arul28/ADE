@@ -184,12 +184,6 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
   function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
     const instance = deps.getInstance(id);
     if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
-    // One sign-in per account: a second start replaces the first.
-    for (const record of logins.values()) {
-      if (record.status.instanceId === instance.id && isLive(record)) {
-        finish(record, { state: "cancelled", message: "Replaced by a new sign-in." });
-      }
-    }
     const command = deps.loginCommand(instance.id);
     // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
     const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
@@ -217,14 +211,29 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     // A cmd.exe wrapper carries one pre-quoted command line; node-pty must not
     // quote it again.
     const ptyArgs = invocation.windowsVerbatimArguments ? invocation.args.join(" ") : invocation.args;
-    const pty = loadPty().spawn(invocation.command, ptyArgs, {
-      name: "xterm-256color",
-      cols: PTY_COLS,
-      rows: PTY_ROWS,
-      cwd: os.homedir(),
-      env: env as Record<string, string>,
-    });
+    let pty: IPty;
+    try {
+      pty = loadPty().spawn(invocation.command, ptyArgs, {
+        name: "xterm-256color",
+        cols: PTY_COLS,
+        rows: PTY_ROWS,
+        cwd: os.homedir(),
+        env: env as Record<string, string>,
+      });
+    } catch (error) {
+      // A failed spawn must not stop the sign-in already running for this
+      // account: the new attempt never existed.
+      const detail = error instanceof Error ? error.message : "the CLI could not be started";
+      throw new Error(`Could not run the ${instance.provider} sign-in command (${command.command}): ${detail}`);
+    }
     record.pty = pty;
+    // One sign-in per account: a second start replaces the first, now that this
+    // one is really running.
+    for (const live of logins.values()) {
+      if (live.status.instanceId === instance.id && isLive(live)) {
+        finish(live, { state: "cancelled", message: "Replaced by a new sign-in." });
+      }
+    }
     pty.onData((data) => {
       if (!isLive(record)) return;
       record.rawOutput = `${record.rawOutput}${data}`.slice(-OUTPUT_LIMIT * 2);
