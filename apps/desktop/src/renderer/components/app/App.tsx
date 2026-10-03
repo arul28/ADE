@@ -237,6 +237,15 @@ function isOverlayRoutePath(pathname: string): boolean {
     || pathname === "/history" || pathname.startsWith("/history/");
 }
 
+/**
+ * The page an overlay holds when the app opens straight onto it, so the
+ * sidebar is never empty. History is driven by the lane list, so it holds
+ * Lanes; CTO holds Work.
+ */
+function defaultHeldRouteForOverlay(pathname: string): string {
+  return pathname === "/history" || pathname.startsWith("/history/") ? "/lanes" : "/work";
+}
+
 const HIDDEN_PAGE_STYLE: React.CSSProperties = {
   position: "absolute",
   inset: 0,
@@ -373,8 +382,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const overlayOpen = isOverlayRoutePath(pathname);
   // The last page route that was not CTO or History. While one of those is
   // open, this page stays mounted (hidden) and holds the sidebar. When the app
-  // opens straight onto CTO or History there is no such page, so none is held.
-  const [heldRoute, setHeldRoute] = React.useState<string | null>(() => overlayOpen ? null : route);
+  // opens straight onto CTO or History, it holds that overlay's default page,
+  // so the sidebar shows a list instead of an empty pane.
+  const [heldRoute, setHeldRoute] = React.useState<string>(() => overlayOpen ? defaultHeldRouteForOverlay(pathname) : route);
   const pageRoute = overlayOpen ? heldRoute : route;
   const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
   const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
