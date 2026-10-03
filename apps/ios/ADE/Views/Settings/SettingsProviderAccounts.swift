@@ -79,9 +79,18 @@ struct SettingsProviderAccountsPage: View {
 
   var body: some View {
     let choices = self.choices
-    let selected = choices.first { $0.option.id == (selectedMachineId ?? primaryId) } ?? choices[0]
+    let wantedId = selectedMachineId ?? primaryId
+    let selected = choices.first { $0.option.id == wantedId } ?? choices[0]
     Group {
-      if !selected.host.supportsProviderAccounts {
+      if selected.option.id != wantedId {
+        // The machine picked here dropped off the fleet. Say so rather than
+        // quietly showing the primary's accounts, where the next tap would
+        // change a different machine than the one the user chose.
+        ProviderAccountsMachineGoneView(
+          machineName: fleet.machine(for: wantedId)?.name ?? "That machine",
+          primaryName: choices[0].option.name
+        ) { selectedMachineId = nil }
+      } else if !selected.host.supportsProviderAccounts {
         ProviderAccountsUnavailableView(hostName: selected.option.name, connected: selected.host.providerAccountsConnected)
       } else {
         let machine = directory.machine(id: selected.option.id, name: selected.option.name, host: selected.host)
@@ -799,6 +808,25 @@ struct ProviderAccountAddSheet: View {
 }
 
 // MARK: - Unavailable
+
+/// The machine the page was showing is no longer connected.
+struct ProviderAccountsMachineGoneView: View {
+  let machineName: String
+  let primaryName: String
+  let showPrimary: () -> Void
+
+  var body: some View {
+    ADEEmptyStateView(
+      symbol: "desktopcomputer.trianglebadge.exclamationmark",
+      title: "\(machineName) is not connected",
+      message: "Its accounts show here again when it reconnects."
+    ) {
+      Button("Show \(primaryName)", action: showPrimary)
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.accent)
+    }
+  }
+}
 
 struct ProviderAccountsUnavailableView: View {
   var hostName: String?

@@ -381,7 +381,9 @@ final class ProviderAccountsStore: ObservableObject {
 @MainActor
 final class ProviderAccountsMachine: ObservableObject, Identifiable {
   let id: String
-  @Published var name: String
+  /// Kept current by the directory while the page renders, so it is not
+  /// published: a rename shows on the next render either way.
+  var name: String
   let host: ProviderAccountsHost?
   let claude: ProviderAccountsStore
   let codex: ProviderAccountsStore
