@@ -1353,6 +1353,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case prChecks = "pr-checks"
   /// AI accounts. See `SettingsProviderAccountsPreviews.swift`.
   case accounts = "accounts"
+  case accountsOtherMachine = "accounts-other-machine"
   case accountDetail = "account-detail"
   case accountAdd = "account-add"
   case accountSignInClaude = "account-signin-claude"
@@ -1438,6 +1439,8 @@ struct ADEPreviewScreenHost: View {
       PrDetailPreviewHost(tab: .checks, state: "open")
     case .accounts:
       ProviderAccountsPreviewHost(screen: .list)
+    case .accountsOtherMachine:
+      ProviderAccountsPreviewHost(screen: .otherMachine)
     case .accountDetail:
       ProviderAccountsPreviewHost(screen: .detail)
     case .accountAdd:

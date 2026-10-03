@@ -68,31 +68,71 @@ enum ProviderAccountsPreviewData {
 }
 
 struct ProviderAccountsPreviewHost: View {
-  enum Screen { case list, detail, add, signInClaude, signInCodex, signInDone }
+  enum Screen { case list, otherMachine, detail, add, signInClaude, signInCodex, signInDone }
   let screen: Screen
   @State private var provider: ProviderAccountProvider = .claude
-  @StateObject private var store = ProviderAccountsStore(
-    provider: .claude,
-    accounts: ProviderAccountsPreviewData.accounts,
-    settings: ProviderAccountsPreviewData.settings
+  @State private var selectedMachineId: String
+  @StateObject private var studio = ProviderAccountsMachine(
+    id: "machine:studio",
+    name: "Arul’s Mac Studio",
+    claude: ProviderAccountsStore(provider: .claude, accounts: ProviderAccountsPreviewData.accounts, settings: ProviderAccountsPreviewData.settings),
+    codex: ProviderAccountsStore(provider: .codex, accounts: [], settings: ProviderAccountsPreviewData.settings),
+    quota: ProviderAccountsPreviewData.snapshot()
+  )
+  // A second machine has its own logins: the same default id (`claude`), a
+  // different person, and no quota readings yet.
+  @StateObject private var laptop = ProviderAccountsMachine(
+    id: "machine:mbp",
+    name: "MacBook Pro",
+    claude: ProviderAccountsStore(
+      provider: .claude,
+      accounts: [
+        ProviderAccount(
+          id: "claude", provider: "claude", label: "Default", configHome: "/Users/arul/.claude",
+          isDefault: true, createdAt: "2026-01-01T00:00:00Z", account: .init(email: "arul@school.edu", plan: "pro"), signedIn: true
+        ),
+        ProviderAccount(
+          id: "client", provider: "claude", label: "Client", configHome: "/Users/arul/.ade/provider-homes/claude/client",
+          isDefault: false, createdAt: "2026-05-01T00:00:00Z", account: .init(email: "arul@client.co", plan: "max"), signedIn: true
+        ),
+      ],
+      settings: ProviderAccountSettings(smartBalance: false, autoStartWindows: false)
+    ),
+    codex: ProviderAccountsStore(provider: .codex, accounts: [], settings: ProviderAccountSettings(smartBalance: false, autoStartWindows: false)),
+    quota: nil
   )
 
   init(screen: Screen) {
     self.screen = screen
-    MobileUsageQuotaStore.shared.pinPreviewSnapshot(ProviderAccountsPreviewData.snapshot())
+    _selectedMachineId = State(initialValue: screen == .otherMachine ? "machine:mbp" : "machine:studio")
+  }
+
+  private var machines: [ProviderAccountsMachineOption] {
+    [
+      ProviderAccountsMachineOption(id: "machine:studio", name: "Arul’s Mac Studio", isPrimary: true),
+      ProviderAccountsMachineOption(id: "machine:mbp", name: "MacBook Pro", isPrimary: false),
+    ]
   }
 
   var body: some View {
     switch screen {
-    case .list:
+    case .list, .otherMachine:
+      let machine = selectedMachineId == laptop.id ? laptop : studio
       NavigationStack {
-        ProviderAccountsScreen(provider: $provider, store: store, hostName: "Arul’s Mac Studio")
-          .navigationTitle("AI accounts")
-          .navigationBarTitleDisplayMode(.inline)
+        ProviderAccountsScreen(
+          provider: $provider,
+          machine: machine,
+          store: machine.store(for: provider),
+          machines: machines,
+          selectedMachineId: $selectedMachineId
+        )
+        .id(machine.id)
+        .navigationTitle("AI accounts")
+        .navigationBarTitleDisplayMode(.inline)
       }
     case .detail:
       NavigationStack {
-        ProviderAccountDetailPage(store: store, accountId: "work", hostName: "Arul’s Mac Studio")
+        ProviderAccountDetailPage(machine: studio, store: studio.claude, accountId: "work")
       }
     case .add:
       ProviderAccountAddSheet(provider: .claude) { _ in nil }

@@ -605,8 +605,14 @@ struct SettingsMachinePage: View {
             rename: machine.account.map { accountMachine in { controller.renaming = accountMachine } },
             forget: { confirmForget = true },
             removeFromAccount: machine.account == nil ? nil : { confirmRemove = true },
-            accountsPage: settingsMachineCanManageAccounts(machine)
-              ? { provider in SettingsProviderAccountsPage(syncService: syncService, provider: provider) }
+            accountsPage: settingsMachineCanManageAccounts(machine, fleet: fleet)
+              ? { provider in
+                SettingsProviderAccountsPage(
+                  syncService: syncService,
+                  provider: provider,
+                  machineKey: machine.isPrimary ? nil : machine.machineKey
+                )
+              }
               : nil
           )
         )
@@ -650,15 +656,24 @@ struct SettingsMachinePageActions {
   var rename: (() -> Void)?
   var forget: () -> Void = {}
   var removeFromAccount: (() -> Void)?
-  /// The machine's AI accounts page; set only for the machine this phone is
-  /// connected to, which is the one that can answer account commands.
+  /// The machine's AI accounts page; set only for a live machine that can
+  /// answer account commands (see `settingsMachineCanManageAccounts`).
   var accountsPage: ((ProviderAccountProvider) -> SettingsProviderAccountsPage)?
 }
 
-/// Account commands go to the machine the phone holds its main connection to.
-func settingsMachineCanManageAccounts(_ machine: SettingsMachine) -> Bool {
-  if case .primary(let live, _) = machine.link { return live }
-  return false
+/// A live machine whose accounts the phone can manage: the primary over its
+/// main connection, any other over its roster connection.
+@MainActor
+func settingsMachineCanManageAccounts(_ machine: SettingsMachine, fleet: MachineFleet) -> Bool {
+  switch machine.link {
+  case .primary(let live, _):
+    return live
+  case .connected(.live, _):
+    guard let key = machine.machineKey else { return false }
+    return fleet.connection(for: key)?.supportsProviderAccounts == true
+  default:
+    return false
+  }
 }
 
 /// The machine page body, as a pure view of one `SettingsMachine`.
