@@ -15,7 +15,6 @@ export type AgentCliDescriptor = {
     authCommand: string;
     patterns: readonly RegExp[];
   }[];
-  missingErrorPatterns: RegExp[];
   notAuthErrorPatterns: RegExp[];
 };
 
@@ -90,10 +89,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "Claude Code",
     binaryNames: ["claude"],
     ...sharedRemediation("claude"),
-    missingErrorPatterns: [
-      /\bclaude\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+claude\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bclaude\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
       /\bplease\s+run\s+\/login\b/i,
@@ -106,10 +101,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "Codex CLI",
     binaryNames: ["codex"],
     ...sharedRemediation("codex"),
-    missingErrorPatterns: [
-      /\bcodex\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+codex\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bcodex\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
       /\brun\s+[`'"]?codex\s+login[`'"]?/i,
@@ -120,10 +111,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "OpenCode",
     binaryNames: ["opencode"],
     ...sharedRemediation("opencode"),
-    missingErrorPatterns: [
-      /\bopencode\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+opencode\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bopencode\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
     ],
@@ -134,11 +121,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     binaryNames: CURSOR_CLI_EXECUTABLES.recoveryMentionNames,
     ...sharedRemediation("cursor"),
     authRecoveryRules: CURSOR_CLI_EXECUTABLES.authRecoveryRules,
-    missingErrorPatterns: [
-      /\bcursor-agent\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bcursor\b.*\b(command not found|not recognized|enoent)\b/i,
-      /\bspawn\s+cursor(?:-agent)?\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bcursor(?:-agent)?\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
     ],
@@ -148,10 +130,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "Pi",
     binaryNames: ["pi"],
     ...sharedRemediation("pi"),
-    missingErrorPatterns: [
-      /\bpi\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+pi\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bpi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|authentication required|no api key|api key required|no credentials|provider not configured)\b/i,
       /\b(?:no api key|api key required|no credentials|provider not configured)\b.*\b(?:for|pi|provider)\b/i,
@@ -165,10 +143,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     // Factory's own installer, and its interactive `/login` flow rather than a
     // non-interactive `login` subcommand — both from the shared table.
     ...sharedRemediation("droid"),
-    missingErrorPatterns: [
-      /\bdroid\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+droid\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bdroid\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
       /\bfactory\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
@@ -183,10 +157,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     installCommand: npmGlobalInstallCommand("@qwen-code/qwen-code"),
     // 0.24.0 removed `qwen auth`. Sign-in is OPENAI_API_KEY / `--auth-type=openai`.
     authCommand: "qwen --auth-type=openai",
-    missingErrorPatterns: [
-      /\bqwen\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+qwen\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bqwen\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
       /\b(?:dashscope|openai)[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
@@ -201,10 +171,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     // instead of guessing a package name that would fail on paste.
     installCommand: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
     authCommand: "kimi login",
-    missingErrorPatterns: [
-      /\bkimi\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+kimi\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bkimi\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
       /\brun\s+[`'"]?kimi\s+login[`'"]?/i,
@@ -217,10 +183,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     binaryNames: ["grok"],
     installCommand: npmGlobalInstallCommand("@xai-official/grok@1.0.34"),
     authCommand: "grok login",
-    missingErrorPatterns: [
-      /\bgrok\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+grok\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bgrok\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no api key|api key required|no credentials)\b/i,
       /\brun\s+[`'"]?grok\s+login[`'"]?/i,
@@ -233,10 +195,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     binaryNames: ["copilot"],
     installCommand: npmGlobalInstallCommand(COPILOT_NPM_PACKAGE_SPEC),
     authCommand: "copilot login",
-    missingErrorPatterns: [
-      /\bcopilot\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+copilot\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bcopilot\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials)\b/i,
       /\brun\s+[`'"]?copilot\s+login[`'"]?/i,
@@ -249,10 +207,6 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     binaryNames: ["devin"],
     installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
     authCommand: "devin auth login",
-    missingErrorPatterns: [
-      /\bdevin\b.*\b(command not found|not recognized|not found|enoent)\b/i,
-      /\bspawn\s+devin\s+enoent\b/i,
-    ],
     notAuthErrorPatterns: [
       /\bdevin\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials|sign\s*in)\b/i,
       /\brun\s+[`'"]?devin\s+auth\s+login[`'"]?/i,
@@ -269,13 +223,62 @@ function descriptorMatchesPreferred(descriptor: AgentCliDescriptor, preferredAge
     || descriptor.binaryNames.some((name) => name.toLowerCase() === normalized);
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function descriptorMentioned(descriptor: AgentCliDescriptor, text: string): boolean {
   return descriptor.binaryNames.some((name) => binaryNameMentioned(text, name))
-    || new RegExp(`\\b${descriptor.agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
+    || new RegExp(`\\b${escapeRegExp(descriptor.agent)}\\b`, "i").test(text);
 }
 
 function binaryNameMentioned(text: string, name: string): boolean {
-  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.exe|\\.cmd|\\.bat|\\.ps1)?\\b`, "i").test(text);
+  return new RegExp(`\\b${escapeRegExp(name)}(?:\\.exe|\\.cmd|\\.bat|\\.ps1)?\\b`, "i").test(text);
+}
+
+/**
+ * The phrasings an operating system, a shell or ADE itself uses when the
+ * binary `name` could not be started — and only those.
+ *
+ * Each one names the binary as the thing that is missing. A harness's own
+ * "Command not found: ship" (OpenCode, for a `/ship` it does not know) names a
+ * slash command, not the binary, and must never read as "install OpenCode".
+ * Neither may "Pi session X was not found" or "OpenCode: model not found".
+ */
+function missingBinaryPatterns(name: string): RegExp[] {
+  const bin = `${escapeRegExp(name)}(?:\\.exe|\\.cmd|\\.bat|\\.ps1)?`;
+  // An optional directory in front of the name: `spawn /opt/bin/opencode ENOENT`.
+  const dir = String.raw`(?:[^\s'"\`]*[\\/])?`;
+  const q = String.raw`['"\`]?`;
+  const end = String.raw`(?![\w.-])`;
+  return [
+    // Node: `spawn opencode ENOENT`, `spawn /opt/bin/opencode ENOENT`.
+    new RegExp(String.raw`\bspawn\s+${q}${dir}${bin}${q}\s+ENOENT\b`, "i"),
+    // Node/Electron: `ENOENT: no such file or directory, posix_spawn '/x/opencode'`.
+    new RegExp(String.raw`\bENOENT\b[^\n]*\bposix_spawnp?\s+${q}${dir}${bin}${q}${end}`, "i"),
+    // bash/dash: `opencode: command not found`, `sh: 1: opencode: not found`.
+    new RegExp(String.raw`(?:^|[\s:'"\`])${dir}${bin}${q}:\s*(?:command\s+)?not found\b`, "im"),
+    // zsh: `zsh: command not found: opencode`.
+    new RegExp(String.raw`\bcommand not found:\s*${q}${dir}${bin}${q}${end}`, "i"),
+    // cmd.exe / PowerShell.
+    new RegExp(String.raw`${q}${dir}${bin}${q}\s+is not recognized as (?:an internal or external command|the name of a cmdlet)`, "i"),
+    // Go/Rust exec: `exec: "opencode": executable file not found in $PATH`.
+    new RegExp(String.raw`${q}${dir}${bin}${q}:\s*executable file not found\b`, "i"),
+    // ADE's own: "OpenCode binary could not be found", "codex executable not found".
+    new RegExp(String.raw`\b${bin}\s+(?:cli|binary|executable)\s+(?:could not be|was not|is not|not)\s+found\b`, "i"),
+    // ADE's ACP diagnostics: "Grok was not found on this machine".
+    new RegExp(String.raw`\b${bin}\s+(?:was|is)\s+not\s+found\s+on\s+this\s+machine\b`, "i"),
+  ];
+}
+
+/**
+ * Whether `text` says the binary of `agent` (any of its registered names, or
+ * the agent id itself) could not be started.
+ */
+export function isAgentBinaryMissingError(text: string, agent: string): boolean {
+  const descriptor = AGENT_CLI_REGISTRY.find((entry) => entry.agent === agent);
+  const names = new Set([agent, ...(descriptor?.binaryNames ?? [])]);
+  return [...names].some((name) => missingBinaryPatterns(name).some((pattern) => pattern.test(text)));
 }
 
 function toMatch(descriptor: AgentCliDescriptor, category: AgentCliErrorCategory, text: string): AgentCliErrorMatch {
@@ -302,7 +305,7 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   for (const descriptor of candidates) {
     const mentioned = descriptorMentioned(descriptor, text);
     if (!mentioned && descriptor !== preferred) continue;
-    if (descriptor.missingErrorPatterns.some((pattern) => pattern.test(text))) {
+    if (isAgentBinaryMissingError(text, descriptor.agent)) {
       return toMatch(descriptor, "missing", text);
     }
     if (descriptor.notAuthErrorPatterns.some((pattern) => pattern.test(text))) {
@@ -311,13 +314,25 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   }
 
   if (preferred) {
+    // The chat's own harness failed to start, under a name the registry does
+    // not list (a custom path, a wrapper). Only the operating system's own
+    // spawn-failure phrasings count: a bare "command not found" or "no such
+    // file or directory" is as often a harness's slash command or a tool's
+    // missing file, and would send the user to reinstall a working CLI.
     if (
-      /\b(command not found|not recognized|enoent|executable file not found|no such file or directory)\b/i.test(text)
-      || /\b(?:spawn|exec(?:ute)?|binary|command|executable)\b.*\bnot found\b/i.test(text)
+      /\bspawn\s+\S+\s+ENOENT\b/i.test(text)
+      || /\bis not recognized as (?:an internal or external command|the name of a cmdlet)\b/i.test(text)
+      || /\bexecutable file not found in \$?PATH\b/i.test(text)
     ) {
       return toMatch(preferred, "missing", text);
     }
-    if (/\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key|401|403)\b/i.test(text)) {
+    // A bare 401/403 anywhere in the text is not a sign-in failure: 403 is as
+    // often a region, plan or balance refusal, and a number can be a line or
+    // PR number. Only an HTTP 401 or an explicit auth phrase counts.
+    if (
+      /\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key)\b/i.test(text)
+      || /\b(?:status(?:\s+code)?|http(?:\s+status)?|error)\s*[:=]?\s*401\b/i.test(text)
+    ) {
       return toMatch(preferred, "unauthenticated", text);
     }
   }

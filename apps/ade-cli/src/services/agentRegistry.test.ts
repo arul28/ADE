@@ -154,6 +154,33 @@ describe("classifyAgentCliError", () => {
     });
   });
 
+  // A missing CLI is the binary itself failing to start. The harness's own
+  // "not found" for a slash command, a session, a model or a file, and a bare
+  // 403, must never send the user to reinstall or sign in again.
+  it.each([
+    ["opencode", "Command not found: ship"],
+    ["opencode", "OpenCode: model not found"],
+    ["opencode", "ENOENT: no such file or directory, open '/tmp/lane/notes.md'"],
+    ["pi", "Pi session \"abc\" was not found in the authorized session directory."],
+    ["opencode", "403 Forbidden: insufficient balance"],
+    ["codex", "Error on line 401 of the config"],
+  ])("does not classify %s's %j as a CLI problem", (agent, message) => {
+    expect(classifyAgentCliError(message, agent)).toBeNull();
+  });
+
+  it.each([
+    ["opencode", "zsh: command not found: opencode"],
+    ["opencode", "/bin/sh: opencode: command not found"],
+    ["opencode", "spawn /opt/homebrew/bin/opencode ENOENT"],
+    ["opencode", "OpenCode: not-installed: OpenCode binary could not be found. Install OpenCode or ensure it is on your PATH."],
+    ["opencode", 'exec: "opencode": executable file not found in $PATH'],
+    ["opencode", "spawn /Users/me/bin/my-opencode-wrapper ENOENT"],
+    ["grok", "Grok was not found on this machine."],
+    ["codex", "codex executable not found"],
+  ])("classifies %s's %j as a missing CLI", (agent, message) => {
+    expect(classifyAgentCliError(message, agent)).toMatchObject({ agent, category: "missing" });
+  });
+
   it("does not mistake Cursor SDK agent resume misses for a missing Cursor CLI", () => {
     expect(classifyAgentCliError(
       "Cursor SDK init failed: Agent agent-5db8305e-086a-4f01-adff-5bfb8420ce32 not found (operation=Agent.resume)",
