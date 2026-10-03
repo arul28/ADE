@@ -41524,12 +41524,16 @@ export function createAgentChatService(args: {
       throw new Error(`This chat is too long to hand off to ${targetModelLabel}. Start a new chat on ${targetModelLabel} instead.`);
     }
 
+    // A native fork resumes the source's provider thread, which lives in the
+    // source account's config home, so the fork must run as that same account.
+    const forkInstanceId = nativeFork ? resolveSessionInstance(managed)?.id : undefined;
     const created = await createSession({
       laneId: targetLaneId,
       ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
       provider: targetProvider,
       model: targetModel,
       modelId: targetDescriptor.id,
+      ...(forkInstanceId ? { instanceId: forkInstanceId } : {}),
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
       fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
