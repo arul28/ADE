@@ -42,7 +42,7 @@ func overlayActiveProjectRoster(
     where !identitySessionIds.contains(session.id) && sessionIds.insert(session.id).inserted
   {
     if let status = rosterStatusById[session.id] {
-      sessions.append(workApplyRosterLiveness(status, to: session))
+      sessions.append(status.applyingTurnState(to: session))
     } else {
       sessions.append(session)
     }
@@ -73,52 +73,6 @@ func overlayActiveProjectRoster(
   }
 
   return WorkActiveProjectRosterProjection(sessions: sessions, lanes: lanes)
-}
-
-/// A local chat row with the roster's live turn state laid over it.
-///
-/// A chat's `terminal_sessions` row holds `status = "running"` between turns
-/// on purpose; whether a turn is actually streaming lives only in
-/// `runtime_state`, a phone-side column that `work.listSessions` writes and the
-/// host never replicates. So a turn starting or finishing changes nothing in
-/// the replica, and the row kept its last pull-to-refresh state ("Done" while
-/// the agent was working). The roster is computed from the host's live chat
-/// service and pushed on every change, so it is the freshest source for that
-/// one fact. Settle, attention and failure columns DO replicate (and carry the
-/// phone's pending overlays), so they stay local.
-///
-/// Returns the row untouched when it already agrees, so the common case (no
-/// turn change) copies nothing.
-func workApplyRosterLiveness(
-  _ rosterStatus: RemoteRosterChatStatus,
-  to session: TerminalSessionSummary
-) -> TerminalSessionSummary {
-  switch rosterStatus {
-  case .running:
-    guard session.status != "running" || session.runtimeState != "running" || session.chatIdleSinceAt != nil
-    else { return session }
-    var next = session
-    next.status = "running"
-    next.runtimeState = "running"
-    next.chatIdleSinceAt = nil
-    return next
-  case .awaiting:
-    guard session.runtimeState != "waiting-input" || session.chatIdleSinceAt != nil else { return session }
-    var next = session
-    next.runtimeState = "waiting-input"
-    next.chatIdleSinceAt = nil
-    return next
-  case .idle:
-    // Only a live chat can go quiet; an ended row stays ended. The host writes
-    // `status` lowercase, so no per-row case folding is needed.
-    guard session.status == "running", session.runtimeState != "idle" else { return session }
-    var next = session
-    next.runtimeState = "idle"
-    return next
-  case .ended, .failed:
-    // Derived from replicated settle/failure columns; the local row has them.
-    return session
-  }
 }
 
 /// Mirrors the desktop `WorkSessionListOrganization` union (byLane / byStatus / byTime) so users
