@@ -104,7 +104,8 @@ function useImageViewSrc(target: ImageViewTarget): string | null {
     setLocalSrc(null);
     if (inlineSrc || !localPath) return;
     let cancelled = false;
-    readAttachmentImageDataUrl(localPath, pin)
+    // An agent can rewrite the image it viewed at the same path; read it fresh.
+    readAttachmentImageDataUrl(localPath, pin, { cache: false })
       .then(({ dataUrl }) => { if (!cancelled && isDataUri(dataUrl)) setLocalSrc(dataUrl); })
       .catch(() => undefined);
     return () => { cancelled = true; };

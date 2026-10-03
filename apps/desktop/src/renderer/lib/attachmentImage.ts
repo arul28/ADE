@@ -17,53 +17,62 @@ import { effectiveRuntimeBinding } from "./chatMachineRouting";
 export async function readAttachmentImageDataUrl(
   path: string,
   pin: OpenProjectBinding | null | undefined,
+  options?: {
+    /**
+     * False for a path that can be rewritten in place (an image an agent
+     * viewed in its workspace). Attachments are written once under a fresh
+     * name, so they cache.
+     */
+    cache?: boolean;
+  },
 ): Promise<{ dataUrl: string }> {
   const owner = effectiveRuntimeBinding(pin, useAppStore.getState().projectBinding);
-  // Attachment files are written once under a fresh name and never rewritten,
-  // so one read per owner and path serves every chip that shows it. A
-  // virtualized transcript remounts a thumbnail each time its row scrolls back
-  // into view, and each uncached read is a multi-megabyte base64 reply on the
-  // runtime socket that holds up the transcript pages queued behind it.
+  if (options?.cache === false) return readUncached(path, pin, owner?.kind !== "remote");
+  // One read per owner and path serves every chip that shows the attachment.
+  // A virtualized transcript remounts a thumbnail each time its row scrolls
+  // back into view, and each uncached read is a multi-megabyte base64 reply on
+  // the runtime socket that holds up the transcript pages queued behind it.
   const key = `${owner?.key ?? "this-computer"}\u0000${path}`;
   const cached = imageDataUrlCache.get(key);
   if (cached) {
     imageDataUrlCache.delete(key);
     imageDataUrlCache.set(key, cached);
-    return cached;
+    return cached.read;
   }
-  const read = readUncached(path, pin, owner?.kind !== "remote");
-  imageDataUrlCache.set(key, read);
-  read.then(
+  const entry: ImageDataUrlCacheEntry = { read: readUncached(path, pin, owner?.kind !== "remote"), chars: null };
+  imageDataUrlCache.set(key, entry);
+  entry.read.then(
     (result) => {
-      imageDataUrlCacheChars.set(key, result.dataUrl.length);
+      if (imageDataUrlCache.get(key) !== entry) return;
+      entry.chars = result.dataUrl.length;
+      imageDataUrlCacheChars += entry.chars;
       trimImageDataUrlCache();
     },
     () => {
       // A failed read is not an answer: the next caller asks again.
-      if (imageDataUrlCache.get(key) === read) imageDataUrlCache.delete(key);
+      if (imageDataUrlCache.get(key) === entry) imageDataUrlCache.delete(key);
     },
   );
-  return read;
+  return entry.read;
 }
 
 /** Most data-URL characters kept across cached images (base64 is one byte per char). */
 const IMAGE_DATA_URL_CACHE_MAX_CHARS = 48 * 1024 * 1024;
+/** `chars` stays null while the read is in flight. */
+type ImageDataUrlCacheEntry = { read: Promise<{ dataUrl: string }>; chars: number | null };
 /** Insertion order is LRU order: a hit re-inserts at the tail. */
-const imageDataUrlCache = new Map<string, Promise<{ dataUrl: string }>>();
-const imageDataUrlCacheChars = new Map<string, number>();
+const imageDataUrlCache = new Map<string, ImageDataUrlCacheEntry>();
+/** Sum of `chars` over the settled entries. */
+let imageDataUrlCacheChars = 0;
 
 function trimImageDataUrlCache(): void {
-  let total = 0;
-  for (const chars of imageDataUrlCacheChars.values()) total += chars;
-  for (const key of imageDataUrlCache.keys()) {
+  for (const [key, entry] of imageDataUrlCache) {
     // Keep the newest entry even when it alone is over budget.
-    if (total <= IMAGE_DATA_URL_CACHE_MAX_CHARS || imageDataUrlCache.size <= 1) break;
-    const chars = imageDataUrlCacheChars.get(key);
+    if (imageDataUrlCacheChars <= IMAGE_DATA_URL_CACHE_MAX_CHARS || imageDataUrlCache.size <= 1) break;
     // Still in flight: its size is unknown and its reader is waiting on it.
-    if (chars === undefined) continue;
+    if (entry.chars === null) continue;
     imageDataUrlCache.delete(key);
-    imageDataUrlCacheChars.delete(key);
-    total -= chars;
+    imageDataUrlCacheChars -= entry.chars;
   }
 }
 

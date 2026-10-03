@@ -1695,12 +1695,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // Stable handles for the session list: these callbacks are rebuilt whenever
   // the sessions, selection or filters change (several times a second while
   // agents run), and each new identity re-rendered every lane header and card.
-  const listSelectSession = useLatestCallback(handleSelectSession)!;
+  const listSelectSession = useLatestCallback(handleSelectSession);
   const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
   const listClearSelection = useLatestCallback(() => {
     setSelectedSessionIds(new Set());
     setSelectionAnchorId(null);
-  })!;
+  });
   const listBulkClose = useLatestCallback(handleBulkCloseSelected);
   const listBulkDelete = useLatestCallback(handleBulkDeleteSelected);
   const listBulkStopAndDelete = useLatestCallback(handleBulkStopAndDeleteSelected);

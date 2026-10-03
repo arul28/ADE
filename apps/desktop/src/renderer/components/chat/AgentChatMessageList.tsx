@@ -253,8 +253,8 @@ function warnOnDuplicateRowKeys(keys: readonly string[]): void {
   }
 }
 export {
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   findAnchoredChatEventIndex,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
@@ -5123,6 +5123,11 @@ const SCROLL_RESTORE_STABLE_FRAMES = 2;
 const MAX_CHAINED_AUTO_OLDER_PAGES = 1;
 /** Longest an older-history backfill page waits for an idle slot before it runs anyway. */
 const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
+/** How often backfill looks again while a scroll restore is still landing. */
+const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
+  return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
+}
 /** Quiet time after the last scroll event before the exact scrollTop is committed to state. */
 const SCROLL_SETTLE_COMMIT_MS = 120;
 /** Keys that scroll the transcript pane; pressing one is the reader taking over. */
@@ -5359,6 +5364,7 @@ function AgentChatMessageListMain({
   loadingOlderHistory = false,
   olderHistoryError = null,
   onLoadOlderHistory,
+  backfillOlderHistory = false,
   onRetryOlderHistory,
   onReturnToLatest,
   mosaic,
@@ -5446,7 +5452,13 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: () => void;
+  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * Page the rest of the transcript in during idle time. Only for owners whose
+   * loader refuses a backfill page that would hit the resident cap (the cap
+   * merge keeps the oldest events, which would drop the reader's live tail).
+   */
+  backfillOlderHistory?: boolean;
   /** Called when the user explicitly retries a failed older-history page. */
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
@@ -5731,7 +5743,7 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.();
+    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
   }, []);
 
   // Re-arm after a batch that changed nothing visible.
@@ -5762,19 +5774,17 @@ function AgentChatMessageListMain({
   // per idle slot, so older turns are already resident before the reader
   // scrolls or jumps to them and the minimap rail holds every prompt. Re-arms
   // as each page lands (`loadingOlderHistory` flips back) and stops at the
-  // head, at the resident cap (the pane drops the cursor), or on a latched
-  // error. Idle slots keep it behind input, layout and streaming work.
+  // head, on a latched error, or when the owner refuses a page that would hit
+  // the resident cap (no loading flip, so nothing re-arms). Idle slots keep it
+  // behind input, layout and streaming work.
   useEffect(() => {
-    if (!hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
-    const idle = window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
+    if (!backfillOlderHistory || !hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
     let idleHandle: number | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = () => {
-      if (typeof idle.requestIdleCallback === "function") {
-        idleHandle = idle.requestIdleCallback(run, { timeout: OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS });
+      // jsdom (tests) has no idle callbacks.
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(run, { timeout: OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS });
       } else {
         timer = setTimeout(run, OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS);
       }
@@ -5782,9 +5792,10 @@ function AgentChatMessageListMain({
     function run() {
       idleHandle = null;
       timer = null;
-      // A restore still landing owns the scroll position; try again after it.
+      // A restore still landing owns the scroll position; look again shortly
+      // (a timer, not another idle slot, which can come back every frame).
       if (scrollRestoreActiveRef.current) {
-        schedule();
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
         return;
       }
       maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
@@ -5798,10 +5809,10 @@ function AgentChatMessageListMain({
     }
     schedule();
     return () => {
-      if (idleHandle !== null) idle.cancelIdleCallback?.(idleHandle);
+      if (idleHandle !== null) window.cancelIdleCallback(idleHandle);
       if (timer !== null) clearTimeout(timer);
     };
-  }, [hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
+  }, [backfillOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -7696,16 +7707,20 @@ function AgentChatMessageListMain({
   );
   // What a scroll to `top` would draw differently: the mounted rows and the
   // active tick. handleScroll commits a render only when this moves off what
-  // the last render drew.
-  const scrollCommitKey = (top: number): string => {
-    const win = shouldVirtualize && !stickToBottom
+  // this render drew (the same three values, already computed above).
+  const windowFollowsScroll = shouldVirtualize && !stickToBottom;
+  scrollCommitKeyRef.current = (top: number): string => {
+    const win = windowFollowsScroll
       ? calculateVirtualWindowFromOffsets({ offsets: rowStartOffsets, scrollTop: top, containerHeight, rowHeight })
       : null;
     const ordinal = computeActiveFullUserOrdinal(top, minimapSourceEntries, rowStartOffsets);
-    return `${win?.startIndex ?? -1}:${win?.endIndex ?? -1}:${ordinal ?? -1}`;
+    return scrollCommitKeyOf(win?.startIndex ?? -1, win?.endIndex ?? -1, ordinal);
   };
-  scrollCommitKeyRef.current = scrollCommitKey;
-  renderedScrollKeyRef.current = scrollCommitKey(windowScrollTop);
+  renderedScrollKeyRef.current = scrollCommitKeyOf(
+    windowFollowsScroll ? startIndex : -1,
+    windowFollowsScroll ? endIndex : -1,
+    activeFullUserOrdinal,
+  );
 
   const jumpToRowFromMinimap = useCallback(
     (rowIndex: number, entry?: ChatUserMinimapSourceEntry) => {
@@ -7735,8 +7750,8 @@ function AgentChatMessageListMain({
   // Rows get stable handles for these two: both are rebuilt whenever a row is
   // added (they close over the row keys), and a new identity re-rendered every
   // mounted row on each streamed item. The call still reaches the latest one.
-  const rowMeasure = useLatestCallback(handleMeasure)!;
-  const rowScrollToRowKey = useLatestCallback(scrollToRowKey)!;
+  const rowMeasure = useLatestCallback(handleMeasure);
+  const rowScrollToRowKey = useLatestCallback(scrollToRowKey);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {

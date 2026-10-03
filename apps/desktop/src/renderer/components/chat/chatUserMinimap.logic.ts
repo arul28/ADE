@@ -57,6 +57,8 @@ export type ChatUserMinimapSourceEntry = {
   kind?: ChatUserMinimapTickKind;
 };
 
+type TimelineTextEvent = Extract<ChatTranscriptGroupedEnvelope["event"], { type: "text" }>;
+
 type TimelineUserMessageRow = ChatTranscriptGroupedEnvelope & {
   event: Extract<ChatTranscriptGroupedEnvelope["event"], { type: "user_message" }>;
 };
@@ -80,7 +82,7 @@ function terminalTurnOutcome(value: string | undefined): ChatUserMinimapTurnOutc
 type MinimapSpanAccumulator = {
   entry: ChatUserMinimapSourceEntry;
   /** The span's last non-empty assistant `text` event (its preview source). */
-  lastAssistantText: object | null;
+  lastAssistantText: TimelineTextEvent | null;
   lastDoneStatus: ChatUserMinimapTurnOutcome | null;
   /** `undefined` until a `status` row is seen; "started" stays non-terminal. */
   lastStatusTurnStatus: string | undefined;
@@ -111,7 +113,7 @@ function cachedPreview(
 
 function settleSpan(span: MinimapSpanAccumulator | null): void {
   if (!span) return;
-  const textEvent = span.lastAssistantText as { text: string } | null;
+  const textEvent = span.lastAssistantText;
   const assistantPreview = textEvent
     ? cachedPreview(assistantPreviewByEvent, textEvent, () => textEvent.text.trim(), ASSISTANT_PREVIEW_MAX_CHARS)
     : "";

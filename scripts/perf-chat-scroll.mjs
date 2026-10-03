@@ -13,6 +13,11 @@
  *   node scripts/perf-chat-scroll.mjs --port <cdp> --session <chatId> [--speed <px/s, 3000>] [--label base]
  *     [--timeout-s 120] [--out <file.json>] [--no-down] [--reload --park <smallChatId>]
  *     [--scenario wheel|top|idle] [--profile <prefix>] [--dump-frames <file>]
+ *     [--settle-ms <ms>]        wait after open before measuring (default 4000, idle 0)
+ *     [--inject-css "<css>"]    A/B a style experiment, e.g. "*{backdrop-filter:none!important}"
+ *
+ * Launch the dev app with `ade app-control launch --command "NO_DEVTOOLS=1 node
+ * scripts/dev-desktop.mjs --auto"` so the window keeps painting while occluded.
  */
 import { writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
@@ -236,7 +241,7 @@ async function wheelUntil(direction, done) {
       polls++;
       if (await cdp.eval(done)) return { ms: Date.now() - start, reached: true };
       if (polls % 8 === 0) {
-        const st = await cdp.eval(`(() => { const p = window.__adeScrollBench.pane; const f = window.__adeScrollBench.frames; return { st: Math.round(p.scrollTop), sh: p.scrollHeight, rows: f.at(-1)?.rows, more: f.at(-1)?.more }; })()`);
+        const st = await cdp.eval(`(() => { const p = window.__adeScrollBench.pane; if (!p) return null; const f = window.__adeScrollBench.frames; return { st: Math.round(p.scrollTop), sh: p.scrollHeight, rows: f.at(-1)?.rows, more: f.at(-1)?.more }; })()`);
         console.error(`[bench] ${direction < 0 ? "up" : "down"} t=${Date.now() - start}ms`, JSON.stringify(st));
       }
     }
@@ -246,7 +251,7 @@ async function wheelUntil(direction, done) {
   }
 }
 
-const HEAD_REACHED = `(() => { const p = window.__adeScrollBench.pane; const more = !!p.querySelector('[role="status"][aria-live="polite"]'); return p.scrollTop <= 1 && !more; })()`;
+const HEAD_REACHED = `(() => { const p = window.__adeScrollBench.pane; if (!p) return false; const more = !!p.querySelector('[role="status"][aria-live="polite"]'); return p.scrollTop <= 1 && !more; })()`;
 
 // Jump to the top with no wheel input (scrollbar drag, Home, a minimap tick),
 // then keep re-pinning to the top until the true first message is there.
@@ -255,7 +260,7 @@ async function jumpToHead() {
   let pins = 0;
   while (Date.now() - start < opt.timeoutS * 1000) {
     if (await cdp.eval(HEAD_REACHED)) return { ms: Date.now() - start, reached: true, pins };
-    const moved = await cdp.eval("(() => { const p = window.__adeScrollBench.pane; if (p.scrollTop > 1) { p.scrollTop = 0; return true; } return false; })()");
+    const moved = await cdp.eval("(() => { const p = window.__adeScrollBench.pane; if (p && p.scrollTop > 1) { p.scrollTop = 0; return true; } return false; })()");
     if (moved) pins++;
     await delay(100);
   }
@@ -323,7 +328,7 @@ let down = null;
 let downProfile = null;
 if (opt.down) {
   await profileStart();
-  down = await wheelUntil(1, `(() => { const p = window.__adeScrollBench.pane; return p.scrollTop + p.clientHeight >= p.scrollHeight - 2; })()`);
+  down = await wheelUntil(1, `(() => { const p = window.__adeScrollBench.pane; if (!p) return false; return p.scrollTop + p.clientHeight >= p.scrollHeight - 2; })()`);
   downProfile = await profileStop("down");
 }
 const cpu2 = await processCpu();

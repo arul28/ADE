@@ -43,13 +43,13 @@ export function useStableIdentity<T>(next: T, isSame: (previous: T, next: T) => 
  * its closures on every render would otherwise re-render every memoized child
  * that receives them. Identity changes only when the handler appears or goes.
  */
-export function useLatestCallback<A extends unknown[], R>(
-  fn: ((...args: A) => R) | undefined,
-): ((...args: A) => R) | undefined {
+export function useLatestCallback<F extends (...args: never[]) => unknown>(fn: F): F;
+export function useLatestCallback<F extends (...args: never[]) => unknown>(fn: F | undefined): F | undefined;
+export function useLatestCallback<F extends (...args: never[]) => unknown>(fn: F | undefined): F | undefined {
   const latest = useRef(fn);
   latest.current = fn;
-  const stable = useRef<((...args: A) => R) | null>(null);
-  stable.current ??= (...args: A) => latest.current!(...args);
+  const stable = useRef<F | null>(null);
+  stable.current ??= ((...args: Parameters<F>) => (latest.current as F)(...args)) as F;
   return fn ? stable.current : undefined;
 }
 

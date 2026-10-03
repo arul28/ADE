@@ -593,7 +593,7 @@ Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
   hands every card fresh `onSelect`/`onContextMenu`/PR handlers, so plain memo
   never held. TerminalsPage passes the list stable handles (`useLatestCallback`)
   and lanes without PRs share `NO_LANE_PRS`. In the real app at idle, 20 s:
-  card renders 1,092 → off the chart, lane headers 870 → 440, idle renderer JS
+  card renders 1,092 → under 100 (only cards whose session changed), lane headers 870 → 440, idle renderer JS
   270 → 184 ms per 10 s with 32 cards. Lane headers take JSX props, so they
   still re-render with the list; the rest of those renders are real session data.
 - Measured and not kept: memoizing `AgentChatComposer` (renders halved, no
