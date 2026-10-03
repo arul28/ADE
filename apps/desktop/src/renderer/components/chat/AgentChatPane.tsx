@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
+import type { TurnDiffSummary } from "../../../shared/types";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
@@ -3471,6 +3473,23 @@ function chatSessionTitle(session: AgentChatSessionSummary): string {
   return descriptor?.displayName ?? `${session.provider}/${session.model}`;
 }
 
+function sameTurnDiffSummaries(previous: readonly TurnDiffSummary[], next: readonly TurnDiffSummary[]): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    const a = previous[index]!;
+    const b = next[index]!;
+    if (
+      a.turnId !== b.turnId
+      || a.beforeSha !== b.beforeSha
+      || a.afterSha !== b.afterSha
+      || a.files !== b.files
+      || a.totalAdditions !== b.totalAdditions
+      || a.totalDeletions !== b.totalDeletions
+    ) return false;
+  }
+  return true;
+}
+
 function orderAvailableModelIds(ids: Iterable<string>): string[] {
   const available = new Set(ids);
   const ordered = MODEL_REGISTRY
@@ -5525,7 +5544,11 @@ export function AgentChatPane({
     },
     [selectedSessionId],
   );
-  const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
+  // Rebuilt on every event; held while unchanged so memoized rows keep their props.
+  const selectedTurnDiffSummaries = useStableIdentity(
+    useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]),
+    sameTurnDiffSummaries,
+  );
   // The chat's one task list (plan or todos, every provider). Feeds the Chat
   // Info Tasks section, the drawer auto-open, and the toolbar badge.
   const selectedTaskList = useMemo(() => deriveChatTaskList(selectedEvents), [selectedEvents]);
@@ -5917,13 +5940,13 @@ export function AgentChatPane({
       activeProviderConnection = null;
       break;
   }
-  const pendingApprovalIds = useMemo(() => {
+  const pendingApprovalIds = useStableIdentity(useMemo(() => {
     const ids = new Set<string>();
     for (const entry of resolvedPendingInputsBySession[selectedSessionId ?? ""] ?? []) {
       ids.add(entry.itemId);
     }
     return ids;
-  }, [resolvedPendingInputsBySession, selectedSessionId]);
+  }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
@@ -14637,6 +14660,48 @@ export function AgentChatPane({
       </div>
     </>
   );
+  // Handlers for the message list, stable across pane renders. The pane
+  // re-renders several times a second while idle (session, usage and runtime
+  // updates); fresh closures here broke the list's memo and re-rendered every
+  // mounted transcript row each time.
+  const listLoadOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
+        }
+      : undefined,
+  );
+  const listRetryOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
+        }
+      : undefined,
+  );
+  const listReturnToLatest = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
+      : undefined,
+  );
+  const listRevealChatTerminal = useLatestCallback(revealChatTerminal);
+  const listRewindFiles = useLatestCallback(
+    selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined,
+  );
+  const listStopSubagent = useLatestCallback(
+    !subagentView
+    && selectedSessionId
+    && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+      ? (taskId: string) => {
+          void window.ade.agentChat.stopTask({
+            sessionId: selectedSessionId,
+            taskId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+        }
+      : undefined,
+  );
+
   const chatHeaderTrailingActions = (
     <>
       {spawnLineage ? (
@@ -16170,34 +16235,18 @@ export function AgentChatPane({
                             ? olderHistoryErrorBySession[renderedSessionId] ?? null
                             : null
                         }
-                        onLoadOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
-                              }
-                            : undefined
-                        }
-                        onRetryOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
-                              }
-                            : undefined
-                        }
-                        onReturnToLatest={
-                          !subagentView && renderedSessionId
-                            ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
-                            : undefined
-                        }
+                        onLoadOlderHistory={listLoadOlderHistory}
+                        onRetryOlderHistory={listRetryOlderHistory}
+                        onReturnToLatest={listReturnToLatest}
                         respondingApprovalIds={respondingApprovalIds}
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={insertComposerDraft}
-                        onRevealChatTerminal={revealChatTerminal}
+                        onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
-                        onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
+                        onRewindFiles={listRewindFiles}
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
@@ -16208,20 +16257,7 @@ export function AgentChatPane({
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
-                        onStopSubagent={
-                          !subagentView
-                          && selectedSessionId
-                          && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
-                            ? (taskId) => {
-                                void window.ade.agentChat.stopTask({
-                                  sessionId: selectedSessionId,
-                                  taskId,
-                                }, chatRuntimePinRef.current).catch((stopError) => {
-                                  setError(stopError instanceof Error ? stopError.message : String(stopError));
-                                });
-                              }
-                            : undefined
-                        }
+                        onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}

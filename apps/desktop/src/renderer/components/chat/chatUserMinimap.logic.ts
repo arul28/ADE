@@ -79,16 +79,41 @@ function terminalTurnOutcome(value: string | undefined): ChatUserMinimapTurnOutc
  */
 type MinimapSpanAccumulator = {
   entry: ChatUserMinimapSourceEntry;
-  lastAssistantText: string | null;
+  /** The span's last non-empty assistant `text` event (its preview source). */
+  lastAssistantText: object | null;
   lastDoneStatus: ChatUserMinimapTurnOutcome | null;
   /** `undefined` until a `status` row is seen; "started" stays non-terminal. */
   lastStatusTurnStatus: string | undefined;
 };
 
+/**
+ * Previews are recollected on every row change, streaming deltas included, and
+ * `summarizeInlineText` strips markdown from the whole source each time. An
+ * event object's text never changes (a streaming row gets a new event), so its
+ * preview is computed once; entries die with their events.
+ */
+const promptPreviewByEvent = new WeakMap<object, string>();
+const assistantPreviewByEvent = new WeakMap<object, string>();
+
+function cachedPreview(
+  cache: WeakMap<object, string>,
+  event: object,
+  source: () => string,
+  maxChars: number,
+): string {
+  let preview = cache.get(event);
+  if (preview === undefined) {
+    preview = summarizeInlineText(source(), maxChars);
+    cache.set(event, preview);
+  }
+  return preview;
+}
+
 function settleSpan(span: MinimapSpanAccumulator | null): void {
   if (!span) return;
-  const assistantPreview = span.lastAssistantText
-    ? summarizeInlineText(span.lastAssistantText, ASSISTANT_PREVIEW_MAX_CHARS)
+  const textEvent = span.lastAssistantText as { text: string } | null;
+  const assistantPreview = textEvent
+    ? cachedPreview(assistantPreviewByEvent, textEvent, () => textEvent.text.trim(), ASSISTANT_PREVIEW_MAX_CHARS)
     : "";
   span.entry.assistantPreview = assistantPreview.length ? assistantPreview : null;
   // `done` is authoritative; `status` only fills in for runtimes that never emit one.
@@ -133,8 +158,12 @@ export function collectUserMessageMinimapSourceEntries(
       span = null;
       const event = row.event;
       const hideFullPrompt = event.metadata?.hideFullPrompt === true;
-      const previewSource = hideFullPrompt ? (event.displayText?.trim() ?? "") : (event.text ?? "");
-      const preview = summarizeInlineText(previewSource, PREVIEW_MAX_CHARS);
+      const preview = cachedPreview(
+        promptPreviewByEvent,
+        event,
+        () => (hideFullPrompt ? (event.displayText?.trim() ?? "") : (event.text ?? "")),
+        PREVIEW_MAX_CHARS,
+      );
       if (hideFullPrompt && preview.length === 0) continue;
       const entry: ChatUserMinimapSourceEntry = {
         rowIndex,
@@ -160,8 +189,7 @@ export function collectUserMessageMinimapSourceEntries(
     if (!span) continue;
     const { event } = row;
     if (event.type === "text") {
-      const text = event.text.trim();
-      if (text.length) span.lastAssistantText = text;
+      if (event.text.trim().length) span.lastAssistantText = event;
       continue;
     }
     if (event.type === "done") {

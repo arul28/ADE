@@ -96,7 +96,38 @@ export function calculateVirtualWindow({
     offsets[i] = cumulative;
     cumulative += rowHeight(i) + rowGap;
   }
-  const totalHeight = cumulative - rowGap;
+  return calculateVirtualWindowFromOffsets({ offsets, scrollTop, containerHeight, rowHeight, overscan });
+}
+
+/**
+ * `calculateVirtualWindow` over row start offsets the caller already holds
+ * (`offsets[i]` = sum of `rowHeight(j) + rowGap` for j < i). O(log n) to find
+ * the first visible row, so a scroll handler can ask "would the mounted rows
+ * change?" every frame without rebuilding the offsets.
+ */
+export function calculateVirtualWindowFromOffsets({
+  offsets,
+  scrollTop,
+  containerHeight,
+  rowHeight,
+  overscan = CHAT_TRANSCRIPT_OVERSCAN,
+}: {
+  offsets: readonly number[];
+  scrollTop: number;
+  containerHeight: number;
+  rowHeight: (index: number) => number;
+  overscan?: number;
+}): {
+  startIndex: number;
+  endIndex: number;
+  totalHeight: number;
+  offsetTop: number;
+} {
+  const rowCount = offsets.length;
+  if (rowCount <= 0) {
+    return { startIndex: 0, endIndex: 0, totalHeight: 0, offsetTop: 0 };
+  }
+  const totalHeight = offsets[rowCount - 1]! + rowHeight(rowCount - 1);
   const viewTop = scrollTop;
   const viewBottom = scrollTop + containerHeight;
 
@@ -129,18 +160,6 @@ export function calculateVirtualWindow({
   };
 }
 
-/**
- * Window anchored to the *end* of the list, used while we're following the
- * bottom of a streaming turn. Estimate-based `scrollTop` windowing drifts on
- * long transcripts (a single rendered row whose stored height lags its real
- * DOM height desyncs the spacer math from `el.scrollTop`), which strands the
- * tail above a phantom gap and "locks" — new content keeps landing at the top
- * while the space above the composer stays empty. Anchoring directly to the
- * last row keeps the tail permanently mounted and re-measured every frame, so
- * `bottomSpacerHeight` is always 0 and the streaming indicator sits flush
- * against the final message regardless of how stale the off-screen estimates
- * upstream are.
- */
 export function calculateVirtualWindowAnchoredToEnd({
   rowCount,
   containerHeight,

@@ -522,3 +522,83 @@ chained and the thread jumped. Preserve all of these:
 Tests: `chatTranscriptRows.test.ts` "row keys are position-independent" and
 `AgentChatMessageList.test.tsx` "stable row keys, list anchoring, and scroll
 restore" (fake per-key layout, both render paths).
+
+### Chat thread scrolling and history (measured with `scripts/perf-chat-scroll.mjs`)
+
+Bench: launch the dev app with `ade app-control launch --command "NO_DEVTOOLS=1 node scripts/dev-desktop.mjs --auto"`
+(`dev.cjs` forwards `ADE_APP_CONTROL_DEBUG_FLAGS`; without them a window behind
+others stops painting and every frame metric reads 0), then
+`node scripts/perf-chat-scroll.mjs --port <cdp> --reload --park <small chat> --session <big chat> [--scenario wheel|top|idle]`.
+`--park` matters: Work reopens the last chat on reload, which pages its history
+in before the run starts. CDP `Input.dispatchMouseEvent` does not ack in the
+dev build, so the bench drives `scrollTop` in-page with a wheel event per frame.
+
+Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
+
+- A scroll event must not commit a render unless the mounted window or the
+  active minimap tick changes (`scrollCommitKey`), with one exact commit after
+  the scroll settles. Renderer JS 259→126 ms/s scrolling up, 281→161 down.
+- Cache row offsets on the `measuredHeights` version, not on `measurementTick`:
+  the tick trails measurements by a debounce, and offsets from stale heights
+  misplace the spacers (prepend jumps grew 568→1333 px until fixed).
+- The scroll memory is snapshotted in `handleScroll` too; a scroll that does not
+  render must still be what a chat switch restores.
+- Older history backfills in idle slots (immediately when the reader is in the
+  prefetch runway). Cold open → whole transcript resident in ~0.65 s with two
+  frames over 33 ms; jump-to-top waited 1.2 s at the top before, ~0.65 s after
+  (the rest is image and markdown work for rows mounting at the top).
+- Attachment image data URLs are cached per owner and path. Each uncached read
+  was a multi-MB base64 reply that held transcript pages queued behind it on the
+  runtime socket for ~370 ms.
+- Not wins (reverted): skipping selection reads on scroll, keying row
+  measurement by key. `measureNow` self time is the layout of newly mounted rows.
+- Open: `backdrop-filter` is ~half the GPU while scrolling (52→26% of a core with
+  it off): composer/banner ~10 pts, user bubbles (`ade-liquid-glass`) ~5, shell
+  header ~4. Changing it changes the look; it is a design decision.
+
+### Background cost with no visual change (measured, second pass)
+
+- An infinite animation over a `backdrop-filter` re-runs the blur and
+  composites the window every frame. The header live-activity dot (6px opacity
+  pulse, shown whenever an agent is live) cost ~32% of a GPU core and ~67% of
+  the main process at idle. Its keyframes now hold eased steps of 0.02 opacity
+  (`step-end`): GPU ~6.5%, main ~20%, pixel diff vs the smooth pulse ≤1/255.
+  Treat any new looping animation in blurred chrome the same way. Find running
+  ones with `document.getAnimations()`.
+- Props into the message list and its rows must keep identity across pane
+  renders (`useLatestCallback`, `useStableIdentity` in `lib/stableIdentity.ts`).
+  Inline closures, a fresh `Set`, a rebuilt turn-diff array or per-turn copy
+  objects re-rendered every mounted row: 1,105 row renders in 20 idle seconds
+  (now 0), ~5,100 row renders per 400 streamed events (now ~450).
+- `toLocaleTimeString(locales, options)` builds an `Intl.DateTimeFormat` per
+  call; every row renders a timestamp. Cached formatter: streaming JS
+  10.2 → 7.3 ms/event.
+- Minimap previews (`summarizeInlineText`) are cached per event object; they
+  were recomputed for the whole transcript on every streamed delta (~9%).
+- Streaming bench: `scripts/perf-chat-stream.mjs` replays a real transcript into
+  the browser-mock renderer (`window.__adeMockEmitChatEvent`) in Playwright's
+  Chromium. Pass `--render-hook` with a DevTools hook to count renders; count a
+  component only when its props or state object changed, because bailed-out
+  subtrees keep stale PerformedWork flags.
+- Not wins (reverted): gating the selection toolbar's scroll listener (its
+  self time is forced layout that moves), a `Date.parse` cache in
+  `chatHistoryMerge` (<1 ms per flush either way).
+- Machine state drifts between dev-app launches; compare A/B in one session.
+- Next candidate: `AgentChatComposer` is not memoized and gets ~100 props
+  (many inline), so it re-renders ~2x per streamed event with its tooltips.
+
+### Work list scaling and other third-pass results
+
+- `SessionCard` uses `memoWithLatestHandlers` (lib/stableIdentity.ts): the list
+  hands every card fresh `onSelect`/`onContextMenu`/PR handlers, so plain memo
+  never held. TerminalsPage passes the list stable handles (`useLatestCallback`)
+  and lanes without PRs share `NO_LANE_PRS`. In the real app at idle, 20 s:
+  card renders 1,092 → off the chart, lane headers 870 → 440, idle renderer JS
+  270 → 184 ms per 10 s with 32 cards. Lane headers take JSX props, so they
+  still re-render with the list; the rest of those renders are real session data.
+- Measured and not kept: memoizing `AgentChatComposer` (renders halved, no
+  time change; median 5.97 vs 5.77 ms per streamed event), dropping the blur
+  on hidden (`opacity-0`) hover toolbars (Chromium already skips it).
+- Background chats are cheap: streaming into a chat that is not open costs
+  0.24 ms per event (`perf-chat-stream.mjs --background`).
+- Cold chat open measured 21–28 ms to first rows (history read 6 ms).

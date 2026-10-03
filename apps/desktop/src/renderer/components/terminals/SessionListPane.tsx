@@ -8,7 +8,7 @@ import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
-import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
+import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, NO_LANE_PRS, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -2413,7 +2413,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       ? (foreignRow
           ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, lane.id)
           : boundMachineLanePrs(prsByLaneId, lane.id))
-      : [];
+      : NO_LANE_PRS;
     const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
     const markerKey = foreignRow ? `${foreignRow.machineId}:${foreignRow.lane.id}` : session.laneId;
     const laneActions: SessionContextMenuLaneActions | null = foreignRow

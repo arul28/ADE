@@ -51,15 +51,24 @@ export function formatDate(ts: string | null, fallback = "-"): string {
 export function formatDayShort(date: string): string {
   const parsed = new Date(`${date}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return date;
-  return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+  dayShortFormatter ??= new Intl.DateTimeFormat([], { month: "short", day: "numeric" });
+  return dayShortFormatter.format(parsed);
 }
 
 /** Format an ISO timestamp to HH:MM time string. */
 export function formatTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  timeFormatter ??= new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+  return timeFormatter.format(d);
 }
+
+// `toLocaleTimeString(locales, options)` is defined as formatting with a new
+// `Intl.DateTimeFormat(locales, options)`, and building one is the expensive
+// part. One per option set gives the same strings; every transcript row renders
+// a timestamp, so the per-call construction showed up while a turn streamed.
+let timeFormatter: Intl.DateTimeFormat | null = null;
+let dayShortFormatter: Intl.DateTimeFormat | null = null;
 
 /** Format milliseconds into a compact human-readable duration. */
 export function formatDurationMs(ms: number | null): string {
