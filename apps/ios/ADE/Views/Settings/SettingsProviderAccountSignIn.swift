@@ -100,6 +100,7 @@ struct ProviderAccountSignInSheet: View {
   @State private var code = ""
   @State private var copied = false
   @State private var openedPage = false
+  @State private var reportedDone = false
   @FocusState private var codeFocused: Bool
 
   init(account: ProviderAccount, syncService: SyncService?, onDone: @escaping (String?) -> Void) {
@@ -155,8 +156,12 @@ struct ProviderAccountSignInSheet: View {
       .animation(.snappy, value: login)
     }
     // Every way out (Cancel, a swipe down, Done) ends a sign-in still running
-    // on the host, so its login CLI does not linger until the timeout.
-    .onDisappear { controller.cancel() }
+    // on the host, so its login CLI does not linger until the timeout, and a
+    // sign-in that succeeded is reported however the sheet closed.
+    .onDisappear {
+      controller.cancel()
+      if login?.state == "succeeded" { reportDone() }
+    }
   }
 
   // MARK: Pieces
@@ -406,7 +411,7 @@ struct ProviderAccountSignInSheet: View {
           .foregroundStyle(ADEColor.textSecondary)
       }
       Button {
-        onDone(login?.email)
+        reportDone()
       } label: {
         Text("Done")
           .font(.body.weight(.semibold))
@@ -437,6 +442,13 @@ struct ProviderAccountSignInSheet: View {
     if login.state == "failed" { return login.message ?? "The sign-in did not finish. Try again." }
     if login.state == "cancelled" { return "The sign-in was cancelled." }
     return nil
+  }
+
+  /// Tells the caller the sign-in finished, once, from Done or from closing.
+  private func reportDone() {
+    guard !reportedDone else { return }
+    reportedDone = true
+    onDone(login?.email)
   }
 
   private func submit() {

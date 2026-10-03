@@ -33,6 +33,7 @@ import {
   zlib,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -442,6 +443,32 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("runs a native fork as the source chat's account, whatever the default is", async () => {
+      // The forked thread lives in the source account's config home, so a
+      // fork launched as the default account would resume nothing.
+      const work = getMachineProviderInstanceStore().create({ provider: "codex", label: "Work" }).instance;
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        instanceId: work.id,
+      });
+      source.threadId = "source-thread-account";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({ thread: { id: "forked-thread-account" } }));
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      expect(result.session.threadId).toBe("forked-thread-account");
+      expect((await service.getSessionSummary(result.session.id))?.instanceId).toBe(work.id);
+      expect((await service.getSessionSummary(source.id))?.instanceId).toBe(work.id);
     });
 
     it("forks from an earlier turn with only the turns through it", async () => {

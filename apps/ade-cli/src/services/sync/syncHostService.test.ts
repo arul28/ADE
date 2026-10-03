@@ -36,6 +36,7 @@ import {
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
+import { PROVIDER_ACCOUNT_REMOTE_COMMANDS } from "../../../../desktop/src/shared/types/sync";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -6524,6 +6525,14 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
       ]);
 
+      // Provider-account changes, and a running sign-in's status, are for a
+      // controller; the reads stay open to a viewer.
+      for (const [method, access] of Object.entries(PROVIDER_ACCOUNT_REMOTE_COMMANDS)) {
+        if (access !== "controller") continue;
+        viewerBlockedActions.add(`providerAccounts.${method}`);
+        controllerAllowedActions.add(`providerAccounts.${method}`);
+      }
+
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         // `apple.*` is registered only by a runtime that built a simulator
         // service — which this fixture does not, and a Windows brain never
@@ -6539,7 +6548,10 @@ describe("CTO-gated Linear sync commands", () => {
           "chat.resolveSourceFavicons",
           "account.getMachineInventory",
         ]);
-        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) ? "runtime" : "project";
+        // Provider accounts are machine-wide config homes, never a project's.
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.")
+          ? "runtime"
+          : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.

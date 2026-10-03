@@ -457,8 +457,10 @@ describe("web machine-scoped availability", () => {
     SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
   );
 
-  it("keeps every setting on the desktop, bound or not", () => {
-    expect(availableSettingsEntries()).toHaveLength(SETTINGS_ENTRIES.length);
+  it("keeps every setting on the desktop, bound or not, except the web-only cards", () => {
+    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+    expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
+    for (const entry of SETTINGS_ENTRIES) expect(available.has(entry.id)).toBe(entry.webOnly !== true);
   });
 
   it("drops machine-scoped settings on web while no project tab is bound", () => {

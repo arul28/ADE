@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { moveProviderThread } from "./providerThreadMove";
+import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
 
 /**
  * Every case uses its own temp config homes. `moveProviderThread` copies local
@@ -158,5 +158,56 @@ describe("moveProviderThread", () => {
       expect(result.reason).toBe("copy_failed");
       expect(result.message.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("findInstanceHoldingThread", () => {
+  const claudeThread = "11111111-2222-4333-8444-555555555555";
+  // A v7 id: its first 48 bits are the creation time, which names the day folder.
+  const codexThread = "0190f5a2-3b40-7c00-8000-000000000001";
+
+  function home(name: string): string {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  function writeClaude(configHome: string, threadId: string): void {
+    const projectDir = path.join(configHome, "projects", "-Users-me-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${threadId}.jsonl`), "{}\n", "utf8");
+  }
+
+  function writeCodex(configHome: string, threadId: string): void {
+    const createdAt = new Date(Number.parseInt(threadId.replace(/-/g, "").slice(0, 12), 16));
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const dayDir = path.join(
+      configHome,
+      "sessions",
+      String(createdAt.getFullYear()),
+      pad(createdAt.getMonth() + 1),
+      pad(createdAt.getDate()),
+    );
+    fs.mkdirSync(dayDir, { recursive: true });
+    fs.writeFileSync(path.join(dayDir, `rollout-2024-07-01T00-00-00-${threadId}.jsonl`), "{}\n", "utf8");
+  }
+
+  it.each([
+    { provider: "claude" as const, threadId: claudeThread, write: writeClaude },
+    { provider: "codex" as const, threadId: codexThread, write: writeCodex },
+  ])("finds the $provider account whose config home holds the thread", ({ provider, threadId, write }) => {
+    const accounts = [
+      { id: "default", configHome: home(`${provider}-default`), isDefault: true },
+      { id: "work", configHome: home(`${provider}-work`), isDefault: false },
+      { id: "spare", configHome: home(`${provider}-spare`), isDefault: false },
+    ];
+    write(accounts[1]!.configHome, threadId);
+
+    expect(findInstanceHoldingThread(provider, threadId, accounts)?.id).toBe("work");
+    expect(findInstanceHoldingThread(provider, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", accounts)).toBeNull();
+
+    // A thread copied to several accounts (a usage-limit move) stays on the default.
+    write(accounts[0]!.configHome, threadId);
+    expect(findInstanceHoldingThread(provider, threadId, [...accounts].reverse())?.id).toBe("default");
   });
 });

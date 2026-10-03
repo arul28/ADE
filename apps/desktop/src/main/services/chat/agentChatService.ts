@@ -10150,17 +10150,21 @@ export function createAgentChatService(args: {
     }
   };
 
-  /** The account whose config home holds this chat's provider thread, if any. */
+  /**
+   * The account whose config home holds this chat's provider thread: `null`
+   * when no account holds it (or the chat has no thread yet), `undefined` when
+   * the accounts could not be read, which is not an answer to pin on.
+   */
   const accountHoldingThread = (
     managed: ManagedChatSession,
     provider: ProviderInstanceProvider,
-  ): ProviderInstance | null => {
+  ): ProviderInstance | null | undefined => {
     const threadId = providerThreadIdForMove(managed);
     if (!threadId) return null;
     try {
       return findInstanceHoldingThread(provider, threadId, getMachineProviderInstanceStore().list(provider));
     } catch {
-      return null;
+      return undefined;
     }
   };
 
@@ -10199,7 +10203,11 @@ export function createAgentChatService(args: {
       return null;
     }
     if (!requestedId) {
-      const pinned = accountHoldingThread(managed, provider) ?? resolved.instance;
+      const holder = accountHoldingThread(managed, provider);
+      // A failed lookup launches on the default this once, unpinned, so a
+      // later launch can still find the account that holds the thread.
+      if (holder === undefined) return resolved.instance;
+      const pinned = holder ?? resolved.instance;
       managed.session.instanceId = pinned.id;
       persistChatState(managed);
       logger.info("agent_chat.provider_instance_pinned", {
