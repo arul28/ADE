@@ -7042,6 +7042,14 @@ struct MobileUsageQuotaSnapshot: Codable, Equatable {
   var errors: [String]
   /// Codex spending cap hit — surfaced from the desktop UsageSnapshot.
   var spendControlReached: Bool?
+  /// The account smart balance would give the next new chat, per provider.
+  /// Absent while balance is off or skipped, and on older hosts.
+  var balanceNext: [MobileUsageBalanceNext]? = nil
+}
+
+struct MobileUsageBalanceNext: Codable, Equatable {
+  var provider: String
+  var instanceId: String
 }
 
 // MARK: - Work tools (read-only mirror of the desktop's tools pane)

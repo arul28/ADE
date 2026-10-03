@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
+import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
 
 /**
  * Copies one provider thread from one local account's config home to another,
@@ -66,6 +66,30 @@ async function findClaudeThreadFile(configHome: string, sessionId: string): Prom
     }
   }
   return newest?.filePath ?? null;
+}
+
+/**
+ * Whether one config home holds this thread, so a chat that never recorded its
+ * account can be tied back to the account its conversation lives in.
+ */
+export function providerThreadIsInHome(
+  provider: "claude" | "codex",
+  threadId: string,
+  configHome: string,
+): boolean {
+  const id = threadId.trim();
+  if (!id || !configHome.trim()) return false;
+  if (provider === "codex") {
+    return findCodexRolloutPathBySessionId(id, { env: { CODEX_HOME: configHome } }) !== null;
+  }
+  const projectsDir = path.join(configHome, "projects");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some((entry) => entry.isDirectory() && fs.existsSync(path.join(projectsDir, entry.name, `${id}.jsonl`)));
 }
 
 async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {

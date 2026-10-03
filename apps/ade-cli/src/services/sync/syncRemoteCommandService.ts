@@ -246,6 +246,10 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
 import {
+  PROVIDER_ACCOUNT_REMOTE_COMMANDS,
+  type ProviderAccountRemoteCommandMethod,
+} from "../../../../desktop/src/shared/types";
+import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
 } from "../../../../desktop/src/shared/types";
@@ -358,7 +362,7 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
+import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -7376,6 +7380,24 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       accountId: requireString(payload.accountId, "usage.consumeResetCredit requires accountId."),
     });
   }, "runtime");
+
+  // Provider accounts are machine-wide: they name config homes on the host, so
+  // they run at runtime scope and never need a project open. Reads are open to
+  // a viewer; anything that changes a login needs control of the host.
+  const providerAccounts = buildProviderInstancesDomainService(
+    { productAnalyticsService: args.productAnalyticsService, usageTrackingService: args.usageTrackingService },
+    "mobile",
+  ) as Record<ProviderAccountRemoteCommandMethod, (input: unknown) => unknown>;
+  for (const [method, policy] of Object.entries(PROVIDER_ACCOUNT_REMOTE_COMMANDS) as Array<
+    [ProviderAccountRemoteCommandMethod, { viewerAllowed: boolean }]
+  >) {
+    register(
+      `providerAccounts.${method}`,
+      policy.viewerAllowed ? { viewerAllowed: true } : { viewerAllowed: false, controllerAllowed: true },
+      async (payload) => await providerAccounts[method](payload),
+      "runtime",
+    );
+  }
 
   registerProxyRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });

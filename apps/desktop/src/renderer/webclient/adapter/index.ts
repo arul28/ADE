@@ -159,6 +159,7 @@ export function createAdeWebAdapter(
     macDesktop: createMacDesktopNamespace(infra),
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
+    providerInstances: misc.providerInstances,
     automations: misc.automations,
     feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,

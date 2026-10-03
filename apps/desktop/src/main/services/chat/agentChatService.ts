@@ -678,7 +678,7 @@ import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
-import { moveProviderThread } from "./providerThreadMove";
+import { moveProviderThread, providerThreadIsInHome } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatUsageLimitAlternateAccount,
@@ -10143,8 +10143,12 @@ export function createAgentChatService(args: {
   /**
    * Which provider ACCOUNT this chat runs as.
    *
-   * An explicit `instanceId` wins while it still names a real account; anything
-   * else resolves to the provider's default. Only Claude and Codex have
+   * An explicit `instanceId` wins while it still names a real account. A chat
+   * with no `instanceId` (one created before chats recorded their account) is
+   * tied to an account here, once: the account whose config home holds its
+   * provider thread, else the current default. Left floating, it would follow
+   * every later default switch and relaunch on a config home that does not hold
+   * its thread, so the resume fails. Only Claude and Codex have
    * accounts — every other provider returns `null` and its launch is untouched.
    *
    * A pointer at a REMOVED account is the interesting case. Falling back
@@ -10156,6 +10160,32 @@ export function createAgentChatService(args: {
    * id is cleared at the same time. Leaving the id in place would restart the
    * conversation on every single turn.
    */
+  /** The default account first, then the others; `null` when no home holds the thread. */
+  const accountHoldingThread = (
+    managed: ManagedChatSession,
+    provider: ProviderInstanceProvider,
+  ): ProviderInstance | null => {
+    const threadId = providerThreadIdForMove(managed);
+    if (!threadId) return null;
+    try {
+      const instances = getMachineProviderInstanceStore().list(provider);
+      const ordered = [...instances].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+      return ordered.find((instance) => providerThreadIsInHome(provider, threadId, instance.configHome)) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** The account a new Claude or Codex chat starts on when nothing picked one. */
+  const currentDefaultInstanceId = (provider: string): string | undefined => {
+    if (provider !== "claude" && provider !== "codex") return undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, undefined).instance.id;
+    } catch {
+      return undefined;
+    }
+  };
+
   const resolveSessionInstance = (managed: ManagedChatSession): ProviderInstance | null => {
     const provider: ProviderInstanceProvider | null = managed.session.provider === "claude"
       ? "claude"
@@ -10174,7 +10204,18 @@ export function createAgentChatService(args: {
       });
       return null;
     }
-    if (requestedId && resolved.fellBack) {
+    if (!requestedId) {
+      const pinned = accountHoldingThread(managed, provider) ?? resolved.instance;
+      managed.session.instanceId = pinned.id;
+      persistChatState(managed);
+      logger.info("agent_chat.provider_instance_pinned", {
+        sessionId: managed.session.id,
+        provider,
+        instanceId: pinned.id,
+      });
+      return pinned;
+    }
+    if (resolved.fellBack) {
       logger.info("agent_chat.provider_instance_fell_back", {
         sessionId: managed.session.id,
         provider,
@@ -40683,7 +40724,12 @@ export function createAgentChatService(args: {
       }
     }
     if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
-    const selectedInstanceId = balancedInstance?.instanceId ?? requestedInstanceId?.trim();
+    // Every Claude and Codex chat records its account. A chat without one
+    // follows the default, and a later default switch would relaunch it on a
+    // config home that does not hold its thread.
+    const selectedInstanceId = balancedInstance?.instanceId
+      || requestedInstanceId?.trim()
+      || currentDefaultInstanceId(effectiveProvider);
 
     /* A Custom provider's thinking level is part of the preset, and the preset
        is what the user picked — so a chat created on one adopts that level

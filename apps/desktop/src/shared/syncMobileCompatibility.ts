@@ -195,6 +195,22 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "archive.summary",
   "archive.restore",
   "archive.delete",
+  // The host's Claude and Codex logins. The phone shows "update ADE" on its
+  // AI accounts page until the host advertises them.
+  "providerAccounts.list",
+  "providerAccounts.getSettings",
+  "providerAccounts.loginStatus",
+  "providerAccounts.refresh",
+  "providerAccounts.create",
+  "providerAccounts.remove",
+  "providerAccounts.rename",
+  "providerAccounts.setDefault",
+  "providerAccounts.setAccent",
+  "providerAccounts.dismissReplaced",
+  "providerAccounts.setSettings",
+  "providerAccounts.loginStart",
+  "providerAccounts.loginSubmitCode",
+  "providerAccounts.loginCancel",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

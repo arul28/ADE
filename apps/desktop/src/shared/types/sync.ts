@@ -2393,12 +2393,37 @@ export type CtoClearLinearTokenArgs = Record<string, never>;
 
 export type CtoClearLinearTokenResult = LinearConnectionStatus;
 
+/**
+ * The host's provider accounts (Claude and Codex logins), for the phone and the
+ * hosted web client. Each forwards to the `provider_instances` action domain.
+ */
+export const PROVIDER_ACCOUNT_REMOTE_COMMANDS = {
+  list: { viewerAllowed: true },
+  getSettings: { viewerAllowed: true },
+  loginStatus: { viewerAllowed: true },
+  refresh: { viewerAllowed: true },
+  create: { viewerAllowed: false },
+  remove: { viewerAllowed: false },
+  rename: { viewerAllowed: false },
+  setDefault: { viewerAllowed: false },
+  setAccent: { viewerAllowed: false },
+  dismissReplaced: { viewerAllowed: false },
+  setSettings: { viewerAllowed: false },
+  loginStart: { viewerAllowed: false },
+  loginSubmitCode: { viewerAllowed: false },
+  loginCancel: { viewerAllowed: false },
+} as const;
+
+export type ProviderAccountRemoteCommandMethod = keyof typeof PROVIDER_ACCOUNT_REMOTE_COMMANDS;
+export type ProviderAccountRemoteCommandAction = `providerAccounts.${ProviderAccountRemoteCommandMethod}`;
+
 export type SyncRemoteCommandAction =
   | "analytics.capture"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
   | "account.getMachineInventory"
+  | ProviderAccountRemoteCommandAction
   | "usage.getAdeStats"
   | "usage.getQuotaSnapshot"
   | "usage.getUsageRollup"

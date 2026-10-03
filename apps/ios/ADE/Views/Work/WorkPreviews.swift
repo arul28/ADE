@@ -1351,6 +1351,13 @@ enum ADEPreviewScreen: String, CaseIterable {
   case prFiles = "pr-files"
   case prDiff = "pr-diff"
   case prChecks = "pr-checks"
+  /// AI accounts. See `SettingsProviderAccountsPreviews.swift`.
+  case accounts = "accounts"
+  case accountDetail = "account-detail"
+  case accountAdd = "account-add"
+  case accountSignInClaude = "account-signin-claude"
+  case accountSignInCodex = "account-signin-codex"
+  case accountSignInDone = "account-signin-done"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1429,6 +1436,18 @@ struct ADEPreviewScreenHost: View {
       PrDiffPreviewHost()
     case .prChecks:
       PrDetailPreviewHost(tab: .checks, state: "open")
+    case .accounts:
+      ProviderAccountsPreviewHost(screen: .list)
+    case .accountDetail:
+      ProviderAccountsPreviewHost(screen: .detail)
+    case .accountAdd:
+      ProviderAccountsPreviewHost(screen: .add)
+    case .accountSignInClaude:
+      ProviderAccountsPreviewHost(screen: .signInClaude)
+    case .accountSignInCodex:
+      ProviderAccountsPreviewHost(screen: .signInCodex)
+    case .accountSignInDone:
+      ProviderAccountsPreviewHost(screen: .signInDone)
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:

@@ -38,6 +38,7 @@ import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
+import { createProviderAccountsNamespace } from "./providerAccounts";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
@@ -69,6 +70,7 @@ export type MiscNamespaces = {
   iosSimulator: AdeNamespace<"iosSimulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
+  providerInstances: AdeNamespace<"providerInstances">;
   automations: AdeNamespace<"automations">;
 };
 
@@ -816,6 +818,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
+    providerInstances: createProviderAccountsNamespace(call),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
 }

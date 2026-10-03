@@ -197,6 +197,12 @@ export type SettingEntry = {
   web: SettingWebScope;
   /** Group heading the card sits under, within its tab. */
   group: string;
+  /**
+   * Only the hosted web client renders this card. The desktop reaches the same
+   * controls another way (provider accounts live on each provider's page), so
+   * its nav, search and palette must not offer an anchor it never draws.
+   */
+  webOnly?: true;
 };
 
 /**
@@ -564,6 +570,23 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "hidden",
     group: "Connections",
+  },
+  // The web client hides every provider page (sign-in, keys and permissions
+  // run on the machine itself), but the machine's Claude and Codex logins are
+  // managed over sync, so the browser gets them as one card of its own.
+  {
+    id: "agents.accounts",
+    label: "AI accounts",
+    keywords: [
+      "account", "accounts", "claude", "codex", "sign in", "login", "second account",
+      "default account", "switch account", "smart balance",
+    ],
+    tab: "agents",
+    anchor: "ai-accounts",
+    scope: "machine",
+    web: "machine",
+    group: "Connections",
+    webOnly: true,
   },
   // One entry per provider, so ⌘K, settings search, and deeplinks land on the
   // provider's own page rather than the top of the list. The keywords carry the
@@ -1136,8 +1159,8 @@ export function settingsEntryById(id: string): SettingEntry | null {
 
 /**
  * Whether a setting is reachable from the renderer we are running in. Every
- * setting is reachable on the desktop; the web client drops the ones whose
- * writes have nowhere to land. Nav, search, and the palette all read this, so
+ * setting but a web-only one is reachable on the desktop; the web client drops
+ * the ones whose writes have nowhere to land. Nav, search, and the palette all read this, so
  * a hidden setting is hidden everywhere at once rather than only in the nav.
  *
  * `resolveSettingsTab` and `resolveSettingsHash` deliberately do not: a URL
@@ -1145,7 +1168,7 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
-  if (!isWebClientMode()) return true;
+  if (!isWebClientMode()) return entry.webOnly !== true;
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
   // bound to. With no tab open there is no such machine, so the control would

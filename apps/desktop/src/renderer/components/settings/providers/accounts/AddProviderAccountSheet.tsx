@@ -37,13 +37,11 @@ import {
   type ProviderLoginStatus,
 } from "../../../../../shared/types/providerInstances";
 import { isUnsupportedAdeActionError } from "../../../../../shared/codedError";
-import { AccentSwatchRow } from "./AccentSwatchRow";
 import { accountIdentityLine } from "./accountPresentation";
 import { providerActionMessage } from "../providerErrorMessage";
 import { pinnedProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
-import { providerColor } from "../../../usage/providerColors";
-import { useAppStore } from "../../../../state/appStore";
+import { isWebClientMode } from "../../../../lib/webClientMode";
 
 /** How long the success state stays up before the sheet closes itself. */
 const SUCCESS_HOLD_MS = 1_800;
@@ -59,8 +57,6 @@ export type AddProviderAccountSheetProps = {
   existingInstance?: ProviderInstance | null;
   /** A starting label for a new account, e.g. one being added back. */
   initialLabel?: string;
-  /** Suggested accent for a brand-new account — the provider's own colour. */
-  defaultAccent: string;
   /** Called on every close. `changed` is true once anything was written. */
   onClose: (changed: boolean) => void;
 };
@@ -89,7 +85,6 @@ export function AddProviderAccountSheet({
   providerLabel,
   existingInstance,
   initialLabel,
-  defaultAccent,
   onClose,
 }: AddProviderAccountSheetProps) {
   // The account, its sign-in and its config home all live on the machine the
@@ -98,7 +93,6 @@ export function AddProviderAccountSheet({
   const resuming = Boolean(existingInstance);
   const [phase, setPhase] = useState<Phase>(resuming ? "signing" : "form");
   const [label, setLabel] = useState(initialLabel ?? "");
-  const [accent, setAccent] = useState<string | null>(defaultAccent);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [login, setLogin] = useState<ProviderLoginStatus | null>(null);
@@ -176,8 +170,10 @@ export function AddProviderAccountSheet({
     setCode("");
     setShowOutput(false);
     setPhase("signing");
-    // On another machine the browser is on this computer, not the account's.
-    const next = await api.loginStart({ id, ...(isThisMachine ? {} : { deviceAuth: true }) });
+    // On another machine, or in the hosted web client, the browser is not on
+    // the account's computer, so a sign-in that returns to its localhost fails.
+    const browserOnHost = isThisMachine && !isWebClientMode();
+    const next = await api.loginStart({ id, ...(browserOnHost ? {} : { deviceAuth: true }) });
     // A later start replaced this reply; its status is the real one.
     if (seq !== startSeqRef.current) {
       if (isProviderLoginLive(next)) void api.loginCancel?.({ loginId: next.loginId }).catch(() => undefined);
@@ -244,7 +240,6 @@ export function AddProviderAccountSheet({
       const created = await api.create({
         provider,
         label: label.trim(),
-        ...(accent ? { accentColor: accent } : {}),
       });
       changedRef.current = true;
       instanceIdRef.current = created.instance.id;
@@ -257,7 +252,7 @@ export function AddProviderAccountSheet({
     } finally {
       if (aliveRef.current) setBusy(false);
     }
-  }, [accent, api, label, provider, startLogin]);
+  }, [api, label, provider, startLogin]);
 
   // ── Reopening sign-in for an account that already exists ──
   const startedRef = useRef(false);
@@ -384,8 +379,6 @@ export function AddProviderAccountSheet({
               Shown in Settings, the usage bar, and on each chat that uses it.
             </span>
           </label>
-
-          <AccentSwatchRow value={accent} onChange={setAccent} />
 
           <Banner
             layout="inline"
@@ -696,7 +689,6 @@ export function useAccountSignInSheet({
   providerLabel: string;
   onChanged: () => void;
 }): { open: (target: AccountSignInTarget) => void; element: React.ReactNode } {
-  const theme = useAppStore((state) => state.theme);
   const [target, setTarget] = useState<AccountSignInTarget | null>(null);
   const element = target ? (
     <AddProviderAccountSheet
@@ -706,7 +698,6 @@ export function useAccountSignInSheet({
       providerLabel={providerLabel}
       existingInstance={target.existing}
       initialLabel={target.label}
-      defaultAccent={providerColor(provider, theme)}
       onClose={(changed) => {
         setTarget(null);
         if (changed) onChanged();
