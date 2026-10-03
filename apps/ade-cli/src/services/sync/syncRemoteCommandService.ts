@@ -246,10 +246,6 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
 import {
-  PROVIDER_ACCOUNT_REMOTE_COMMANDS,
-  type ProviderAccountRemoteCommandMethod,
-} from "../../../../desktop/src/shared/types";
-import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
 } from "../../../../desktop/src/shared/types";
@@ -296,6 +292,7 @@ import {
   type AppleDeviceRemoteService,
   type AppleStreamTicketIssuer,
 } from "./appleRemoteCommands";
+import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -6026,6 +6023,22 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /**
+ * Provider accounts are machine-wide: they name config homes on the host, so
+ * they run at runtime scope and never need a project open. The caller's client
+ * (phone or browser) is not known at this layer, so analytics files them under
+ * the generic `api` surface, like the CLI action they share.
+ */
+function registerProviderAccountRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const domain = buildProviderInstancesDomainService({
+    productAnalyticsService: args.productAnalyticsService,
+    usageTrackingService: args.usageTrackingService,
+  });
+  for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
+    register(entry.action, entry.policy, entry.handler, "runtime");
+  }
+}
+
+/**
  * Apple device environment for remote surfaces.
  *
  * Project-scoped like `workTools.*` — a lane only exists inside a project — and
@@ -7381,24 +7394,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   }, "runtime");
 
-  // Provider accounts are machine-wide: they name config homes on the host, so
-  // they run at runtime scope and never need a project open. Reads are open to
-  // a viewer; anything that changes a login needs control of the host.
-  const providerAccounts = buildProviderInstancesDomainService(
-    { productAnalyticsService: args.productAnalyticsService, usageTrackingService: args.usageTrackingService },
-    "mobile",
-  ) as Record<ProviderAccountRemoteCommandMethod, (input: unknown) => unknown>;
-  for (const [method, policy] of Object.entries(PROVIDER_ACCOUNT_REMOTE_COMMANDS) as Array<
-    [ProviderAccountRemoteCommandMethod, { viewerAllowed: boolean }]
-  >) {
-    register(
-      `providerAccounts.${method}`,
-      policy.viewerAllowed ? { viewerAllowed: true } : { viewerAllowed: false, controllerAllowed: true },
-      async (payload) => await providerAccounts[method](payload),
-      "runtime",
-    );
-  }
-
   registerProxyRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
@@ -7409,6 +7404,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });

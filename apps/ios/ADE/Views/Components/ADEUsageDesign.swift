@@ -796,6 +796,15 @@ struct ADEUsageLimitCard: Identifiable, Equatable {
   }
 }
 
+/// Where a window label sorts: the short rolling window first, then weekly,
+/// then monthly, then anything else.
+func adeUsageWindowRank(_ label: String) -> Int {
+  if label.hasSuffix("-hour") || label.hasSuffix("-min") { return 0 }
+  if label == "Weekly" { return 1 }
+  if label == "Monthly" { return 2 }
+  return 3
+}
+
 /// One card per window label, ordered short window first.
 func adeUsageLimitCards(
   provider: String,
@@ -827,12 +836,7 @@ func adeUsageLimitCards(
     )
   }
 
-  let rank: (String) -> Int = { label in
-    if label.hasSuffix("-hour") || label.hasSuffix("-min") { return 0 }
-    if label == "Weekly" { return 1 }
-    if label == "Monthly" { return 2 }
-    return 3
-  }
+  let rank = adeUsageWindowRank
 
   return order.compactMap { label -> ADEUsageLimitCard? in
     guard var segments = grouped[label], !segments.isEmpty else { return nil }

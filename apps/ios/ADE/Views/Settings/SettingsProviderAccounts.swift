@@ -10,15 +10,9 @@ func providerAccountWindows(_ account: ProviderAccount, snapshot: MobileUsageQuo
     guard window.provider == account.provider, let accountId = window.accountId else { return false }
     return usageIds.contains(accountId) || accountId == account.id
   }
-  let rank: (MobileUsageQuotaWindow) -> Int = { window in
-    let label = adeUsageWindowLabel(window)
-    if label.hasSuffix("-hour") || label.hasSuffix("-min") { return 0 }
-    if label == "Weekly" { return 1 }
-    return 2
-  }
   var seen = Set<String>()
   return windows
-    .sorted { rank($0) < rank($1) }
+    .sorted { adeUsageWindowRank(adeUsageWindowLabel($0)) < adeUsageWindowRank(adeUsageWindowLabel($1)) }
     .filter { seen.insert(adeUsageWindowLabel($0)).inserted }
 }
 
@@ -27,6 +21,16 @@ func providerAccountDetailLine(_ account: ProviderAccount) -> String {
   if account.loginBroken == true { return [account.email, "sign in again"].compactMap { $0 }.joined(separator: " · ") }
   guard account.signedIn else { return "Not signed in yet" }
   return [account.email, account.plan.map { $0.capitalized }].compactMap { $0 }.joined(separator: " · ")
+}
+
+/// The provider's name, for an account of either provider.
+func providerAccountProviderTitle(_ account: ProviderAccount) -> String {
+  ProviderAccountProvider(rawValue: account.provider)?.title ?? account.provider.capitalized
+}
+
+/// What removing an account does, for both places that offer it.
+func providerAccountRemoveMessage(hostName: String?) -> String {
+  "ADE stops using this account. Its login stays on \(hostName ?? "the machine"), so you can add it back later."
 }
 
 // MARK: - Page
@@ -192,14 +196,9 @@ struct ProviderAccountsScreen: View {
       ProviderAccountSignInSheet(account: route.account, syncService: syncService) { email in
         signIn = nil
         toast = ADEToastMessage(text: email.map { "Signed in as \($0)" } ?? "Signed in")
-        Task {
-          _ = await store.perform(accountId: route.account.id) { sync in
-            _ = try await sync.refreshProviderAccounts(store.provider, instanceId: route.account.id)
-          }
-        }
+        Task { await store.refreshAfterSignIn(id: route.account.id) }
       }
       .presentationDetents([.large])
-      .interactiveDismissDisabled(false)
     }
     .alert("Rename account", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
       TextField("Name", text: $renameText)
@@ -209,7 +208,7 @@ struct ProviderAccountsScreen: View {
         let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         renaming = nil
         guard !label.isEmpty else { return }
-        Task { await store.perform(accountId: account.id) { _ = try await $0.renameProviderAccount(id: account.id, label: label) } }
+        Task { await store.rename(id: account.id, label: label) }
       }
     }
     .confirmationDialog(
@@ -221,14 +220,14 @@ struct ProviderAccountsScreen: View {
         guard let account = removing else { return }
         removing = nil
         Task {
-          if await store.perform(accountId: account.id, { try await $0.removeProviderAccount(id: account.id) }) {
+          if await store.remove(id: account.id) {
             toast = ADEToastMessage(text: "\(account.label) removed")
           }
         }
       }
       Button("Cancel", role: .cancel) { removing = nil }
     } message: {
-      Text("ADE stops using this account. Its login stays on \(hostName ?? "the machine"), so you can add it back later.")
+      Text(providerAccountRemoveMessage(hostName: hostName))
     }
   }
 
@@ -301,7 +300,7 @@ struct ProviderAccountsScreen: View {
 
   private func makeDefault(_ account: ProviderAccount) {
     Task {
-      if await store.perform(accountId: account.id, { _ = try await $0.setDefaultProviderAccount(id: account.id) }) {
+      if await store.makeDefault(id: account.id) {
         ADEHaptics.success()
         toast = ADEToastMessage(text: "\(account.label) is now the default")
       }
@@ -382,7 +381,7 @@ struct ProviderAccountQuotaMeter: View {
 
   var body: some View {
     let left = adeUsageDisplayPercentLeft(window)
-    let color = left < 15 ? ADEColor.danger : left < 35 ? ADEColor.warning : tint
+    let color = ADEUsagePressure.color(percent: 100 - left, providerColor: tint)
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 4) {
         Text(adeUsageWindowLabel(window))
@@ -391,7 +390,7 @@ struct ProviderAccountQuotaMeter: View {
         Spacer(minLength: 4)
         Text("\(Int(left.rounded()))%")
           .font(.adeMono(10.5, weight: .semibold))
-          .foregroundStyle(left < 15 ? ADEColor.danger : ADEColor.textSecondary)
+          .foregroundStyle(100 - left > ADEUsagePressure.critical ? ADEColor.danger : ADEColor.textSecondary)
       }
       GeometryReader { proxy in
         ZStack(alignment: .leading) {
@@ -459,7 +458,7 @@ struct ProviderAccountDetailPage: View {
               .multilineTextAlignment(.center)
           }
           HStack(spacing: 6) {
-            ADEFlatChip(symbol: nil, text: account.provider == "codex" ? "Codex" : "Claude", tint: ADEColor.providerBrand(for: account.provider))
+            ADEFlatChip(symbol: nil, text: providerAccountProviderTitle(account), tint: ADEColor.providerBrand(for: account.provider))
             if account.isDefault { ADEFlatBadge(text: "Default", tint: ADEColor.accent) }
           }
         }
@@ -482,7 +481,7 @@ struct ProviderAccountDetailPage: View {
               .fixedSize(horizontal: false, vertical: true)
             if canChange {
               Button("Dismiss") {
-                Task { await store.perform(accountId: account.id) { _ = try await $0.dismissReplacedProviderLogin(id: account.id) } }
+                Task { await store.dismissReplaced(id: account.id) }
               }
               .font(.footnote.weight(.semibold))
               .buttonStyle(.glass)
@@ -528,18 +527,18 @@ struct ProviderAccountDetailPage: View {
       Button("Save") {
         let label = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { return }
-        Task { await store.perform(accountId: account.id) { _ = try await $0.renameProviderAccount(id: account.id, label: label) } }
+        Task { await store.rename(id: account.id, label: label) }
       }
     }
     .confirmationDialog("Remove \(account.label)?", isPresented: $confirmRemove, titleVisibility: .visible) {
       Button("Remove", role: .destructive) {
         Task {
-          if await store.perform(accountId: account.id, { try await $0.removeProviderAccount(id: account.id) }) { dismiss() }
+          if await store.remove(id: account.id) { dismiss() }
         }
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("ADE stops using this account. Its login stays on \(hostName ?? "the machine"), so you can add it back later.")
+      Text(providerAccountRemoveMessage(hostName: hostName))
     }
   }
 
@@ -555,9 +554,7 @@ struct ProviderAccountDetailPage: View {
             enabled: !account.isDefault
           ) {
             Task {
-              if await store.perform(accountId: account.id, { _ = try await $0.setDefaultProviderAccount(id: account.id) }) {
-                ADEHaptics.success()
-              }
+              if await store.makeDefault(id: account.id) { ADEHaptics.success() }
             }
           }
         }

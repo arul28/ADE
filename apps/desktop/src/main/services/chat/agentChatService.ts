@@ -309,7 +309,7 @@ import {
   getMachineProviderInstanceStore,
   providerInstanceEnvPatch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import { isProviderInstanceProvider, type ProviderInstance, type ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
   resolveOpenCodeServedModel,
@@ -678,7 +678,7 @@ import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
-import { moveProviderThread, providerThreadIsInHome } from "./providerThreadMove";
+import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatUsageLimitAlternateAccount,
@@ -10140,6 +10140,30 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** The account a new Claude or Codex chat starts on when nothing picked one. */
+  const currentDefaultInstanceId = (provider: string): string | undefined => {
+    if (!isProviderInstanceProvider(provider)) return undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, undefined).instance.id;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /** The account whose config home holds this chat's provider thread, if any. */
+  const accountHoldingThread = (
+    managed: ManagedChatSession,
+    provider: ProviderInstanceProvider,
+  ): ProviderInstance | null => {
+    const threadId = providerThreadIdForMove(managed);
+    if (!threadId) return null;
+    try {
+      return findInstanceHoldingThread(provider, threadId, getMachineProviderInstanceStore().list(provider));
+    } catch {
+      return null;
+    }
+  };
+
   /**
    * Which provider ACCOUNT this chat runs as.
    *
@@ -10160,39 +10184,9 @@ export function createAgentChatService(args: {
    * id is cleared at the same time. Leaving the id in place would restart the
    * conversation on every single turn.
    */
-  /** The default account first, then the others; `null` when no home holds the thread. */
-  const accountHoldingThread = (
-    managed: ManagedChatSession,
-    provider: ProviderInstanceProvider,
-  ): ProviderInstance | null => {
-    const threadId = providerThreadIdForMove(managed);
-    if (!threadId) return null;
-    try {
-      const instances = getMachineProviderInstanceStore().list(provider);
-      const ordered = [...instances].sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
-      return ordered.find((instance) => providerThreadIsInHome(provider, threadId, instance.configHome)) ?? null;
-    } catch {
-      return null;
-    }
-  };
-
-  /** The account a new Claude or Codex chat starts on when nothing picked one. */
-  const currentDefaultInstanceId = (provider: string): string | undefined => {
-    if (provider !== "claude" && provider !== "codex") return undefined;
-    try {
-      return getMachineProviderInstanceStore().resolve(provider, undefined).instance.id;
-    } catch {
-      return undefined;
-    }
-  };
-
   const resolveSessionInstance = (managed: ManagedChatSession): ProviderInstance | null => {
-    const provider: ProviderInstanceProvider | null = managed.session.provider === "claude"
-      ? "claude"
-      : managed.session.provider === "codex"
-        ? "codex"
-        : null;
-    if (!provider) return null;
+    const provider = managed.session.provider;
+    if (!isProviderInstanceProvider(provider)) return null;
     const requestedId = managed.session.instanceId?.trim();
     let resolved: { instance: ProviderInstance; fellBack: boolean };
     try {
@@ -58266,6 +58260,11 @@ export function createAgentChatService(args: {
         || managed.session.model !== nextModel;
       modelSwitched = modelChanged;
       if (providerChanged) {
+        // An account belongs to one provider. The new provider starts on its
+        // own default rather than resolving the old provider's account id.
+        const nextInstanceId = currentDefaultInstanceId(nextProvider);
+        if (nextInstanceId) managed.session.instanceId = nextInstanceId;
+        else delete managed.session.instanceId;
         modelHandoff = {
           fromProvider: previousProvider,
           toProvider: nextProvider,

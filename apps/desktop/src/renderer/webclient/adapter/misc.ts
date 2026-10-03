@@ -39,7 +39,7 @@ import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
-import type { AdapterInfra, AdeNamespace } from "./types";
+import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
@@ -879,14 +879,6 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
   };
 }
 
-// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
-// value or a lazy resolver that may throw for calls with no offline shape.
-type MiscCall = <T>(
-  action: string,
-  args: unknown,
-  fallback: T | (() => T | Promise<T>),
-  idempotent?: boolean,
-) => Promise<T>;
 
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing

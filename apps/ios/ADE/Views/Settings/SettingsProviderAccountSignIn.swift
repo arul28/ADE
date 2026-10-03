@@ -14,6 +14,7 @@ final class ProviderAccountSignInController: ObservableObject {
   let account: ProviderAccount
   private let syncService: SyncService?
   private var pollTask: Task<Void, Never>?
+  private var closed = false
 
   init(account: ProviderAccount, syncService: SyncService?) {
     self.account = account
@@ -33,10 +34,14 @@ final class ProviderAccountSignInController: ObservableObject {
   func start() async {
     guard let syncService, !starting else { return }
     starting = true
+    closed = false
     errorMessage = nil
     defer { starting = false }
     do {
-      login = try await syncService.startProviderAccountLogin(id: account.id, provider: provider)
+      let started = try await syncService.startProviderAccountLogin(id: account.id, provider: provider)
+      login = started
+      // The sheet closed while the host was starting: end this sign-in too.
+      if closed { cancel(); return }
       poll()
     } catch {
       errorMessage = error.localizedDescription
@@ -56,6 +61,7 @@ final class ProviderAccountSignInController: ObservableObject {
   }
 
   func cancel() {
+    closed = true
     pollTask?.cancel()
     guard let syncService, let login, login.isLive else { return }
     let loginId = login.loginId
@@ -69,8 +75,15 @@ final class ProviderAccountSignInController: ObservableObject {
         try? await Task.sleep(for: .milliseconds(1200))
         guard let self, !Task.isCancelled, let syncService = self.syncService,
               let current = self.login, current.isLive else { return }
-        if let next = try? await syncService.providerAccountLoginStatus(loginId: current.loginId) {
-          self.login = next
+        do {
+          self.login = try await syncService.providerAccountLoginStatus(loginId: current.loginId)
+        } catch {
+          // A dropped connection is retried on the next tick. A connected host
+          // that refuses (it restarted and lost the sign-in) is final: say so
+          // rather than spinning on a sign-in that no longer exists.
+          guard syncService.connectionState == .connected else { continue }
+          self.errorMessage = error.localizedDescription
+          return
         }
       }
     }
@@ -127,10 +140,7 @@ struct ProviderAccountSignInSheet: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button(login?.state == "succeeded" ? "Close" : "Cancel") {
-            controller.cancel()
-            dismiss()
-          }
+          Button(login?.state == "succeeded" ? "Close" : "Cancel") { dismiss() }
         }
       }
       .task {
@@ -144,6 +154,9 @@ struct ProviderAccountSignInSheet: View {
       }
       .animation(.snappy, value: login)
     }
+    // Every way out (Cancel, a swipe down, Done) ends a sign-in still running
+    // on the host, so its login CLI does not linger until the timeout.
+    .onDisappear { controller.cancel() }
   }
 
   // MARK: Pieces
@@ -161,7 +174,7 @@ struct ProviderAccountSignInSheet: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
       }
-      Text(subtitle)
+      Text(controller.provider.signInSubtitle)
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
@@ -170,27 +183,19 @@ struct ProviderAccountSignInSheet: View {
     .frame(maxWidth: .infinity)
   }
 
-  private var subtitle: String {
-    controller.provider == .codex
-      ? "Approve this \(controller.provider.title) login in your browser with a one-time code."
-      : "Approve this \(controller.provider.title) login in your browser, then paste the code it shows."
-  }
 
   private enum Step: Int { case open, approve, finish }
 
   private var currentStep: Step {
     guard let login else { return .open }
     if login.state == "verifying" || login.state == "succeeded" { return .finish }
-    // The page is step one until it has been opened; a code shown here is
-    // step two for Codex as soon as the page exists.
+    // The page is step one until it has been opened.
     if openedPage { return .approve }
     return .open
   }
 
   private var stepList: some View {
-    let titles: [String] = controller.provider == .codex
-      ? ["Open the sign-in page", "Paste the code on the page", "ADE checks the login"]
-      : ["Open the sign-in page", "Paste the code it gives you", "ADE checks the login"]
+    let titles = controller.provider.signInSteps
     return HStack(alignment: .top, spacing: 0) {
       ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
         let state = stepState(index)
@@ -233,7 +238,7 @@ struct ProviderAccountSignInSheet: View {
     if login?.state == "succeeded" {
       successCard
     } else if login?.state == "verifying" {
-      progressCard("Checking the new login on \(machineWord)…")
+      progressCard("Checking the new login on your computer…")
     } else if let login, login.isLive {
       VStack(spacing: 14) {
         if let deviceCode = login.deviceCode {
@@ -269,7 +274,7 @@ struct ProviderAccountSignInSheet: View {
             .tint(ADEColor.accent)
           }
         } else {
-          progressCard("Starting sign-in on \(machineWord)…")
+          progressCard("Starting sign-in on your computer…")
         }
         if login.awaitingCode {
           codeEntry
@@ -281,7 +286,7 @@ struct ProviderAccountSignInSheet: View {
               .foregroundStyle(ADEColor.textSecondary)
           }
           .padding(.top, 2)
-        } else if login.url != nil, controller.provider == .claude {
+        } else if login.url != nil, !controller.provider.usesDeviceCode {
           Text("After you approve, the page shows a code. Come back here to paste it.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textMuted)
@@ -289,7 +294,7 @@ struct ProviderAccountSignInSheet: View {
         }
       }
     } else if controller.starting || login == nil, controller.errorMessage == nil {
-      progressCard("Starting sign-in on \(machineWord)…")
+      progressCard("Starting sign-in on your computer…")
     } else if login?.state == "failed" || login?.state == "cancelled" {
       Button {
         Task { await controller.start() }
@@ -304,7 +309,6 @@ struct ProviderAccountSignInSheet: View {
     }
   }
 
-  private var machineWord: String { "your computer" }
 
   private func deviceCodeCard(_ deviceCode: String) -> some View {
     VStack(spacing: 10) {

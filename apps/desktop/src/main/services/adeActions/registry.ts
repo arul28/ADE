@@ -176,7 +176,6 @@ import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
-import type { ProductAnalyticsSurface } from "../../../shared/types/productAnalytics";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
@@ -3371,14 +3370,13 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
 
 export function buildProviderInstancesDomainService(
   runtime: Pick<AdeRuntime, "productAnalyticsService" | "usageTrackingService">,
-  surface: ProductAnalyticsSurface = "api",
 ): OpaqueService {
   // Machine-local by nature: the registry names directories on THIS machine, so
   // the store is reached through its own ADE-home accessor rather than through
   // the runtime graph. The runtime is used only for the brain-owned analytics
   // sink; every machine still has at least its own default account.
   const store = getMachineProviderInstanceStore();
-  const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, surface);
+  const capture = providerAccountAnalyticsCapture(runtime.productAnalyticsService, "api");
   // The registry file caches each account's email and plan from its last
   // refresh. A brain that has never refreshed would list every account as
   // "not signed in" until something else asked, which is what the Accounts

@@ -73,6 +73,24 @@ enum ProviderAccountProvider: String, CaseIterable, Identifiable {
 
   var id: String { rawValue }
   var title: String { self == .claude ? "Claude" : "Codex" }
+
+  /// Codex signs in from the phone with a device code; Claude shows a code to
+  /// paste back. See `SyncService.startProviderAccountLogin`.
+  var usesDeviceCode: Bool { self == .codex }
+
+  var signInSubtitle: String {
+    usesDeviceCode
+      ? "Approve this \(title) login in your browser with a one-time code."
+      : "Approve this \(title) login in your browser, then paste the code it shows."
+  }
+
+  var signInSteps: [String] {
+    [
+      "Open the sign-in page",
+      usesDeviceCode ? "Paste the code on the page" : "Paste the code it gives you",
+      "ADE checks the login",
+    ]
+  }
 }
 
 // MARK: - Host calls
@@ -142,7 +160,7 @@ extension SyncService {
   func startProviderAccountLogin(id: String, provider: ProviderAccountProvider) async throws -> ProviderAccountLogin {
     try await providerAccountsCall(
       "loginStart",
-      ["id": id, "deviceAuth": provider == .codex],
+      ["id": id, "deviceAuth": provider.usesDeviceCode],
       as: ProviderAccountLoginEnvelope.self
     ).login
   }
@@ -212,21 +230,33 @@ final class ProviderAccountsStore: ObservableObject {
     loaded = true
   }
 
-  /// Runs one change, then re-reads the list. Returns whether it worked.
   @discardableResult
-  func perform(accountId: String?, _ change: (SyncService) async throws -> Void) async -> Bool {
-    guard let syncService else { return false }
-    busyAccountId = accountId
-    defer { busyAccountId = nil }
-    do {
-      try await change(syncService)
-      accounts = sortedAccounts(try await syncService.listProviderAccounts(provider))
-      errorMessage = nil
-      return true
-    } catch {
-      errorMessage = error.localizedDescription
-      return false
-    }
+  func rename(id: String, label: String) async -> Bool {
+    await run(accountId: id) { _ = try await $0.renameProviderAccount(id: id, label: label) } != nil
+  }
+
+  @discardableResult
+  func remove(id: String) async -> Bool {
+    await run(accountId: id) { try await $0.removeProviderAccount(id: id) } != nil
+  }
+
+  @discardableResult
+  func makeDefault(id: String) async -> Bool {
+    await run(accountId: id) { _ = try await $0.setDefaultProviderAccount(id: id) } != nil
+  }
+
+  @discardableResult
+  func dismissReplaced(id: String) async -> Bool {
+    await run(accountId: id) { _ = try await $0.dismissReplacedProviderLogin(id: id) } != nil
+  }
+
+  /// Re-reads one account's saved login, right after a sign-in finished for it.
+  func refreshAfterSignIn(id: String) async {
+    await run(accountId: id) { _ = try await $0.refreshProviderAccounts(self.provider, instanceId: id) }
+  }
+
+  func create(label: String) async -> ProviderAccount? {
+    await run(accountId: nil) { try await $0.createProviderAccount(self.provider, label: label) }
   }
 
   func setSmartBalance(_ enabled: Bool) async {
@@ -245,21 +275,26 @@ final class ProviderAccountsStore: ObservableObject {
     }
   }
 
-  func create(label: String) async -> ProviderAccount? {
+  func account(id: String) -> ProviderAccount? {
+    accounts.first { $0.id == id }
+  }
+
+  /// Runs one change, then re-reads the list. Nil when the change failed; the
+  /// error is on `errorMessage`.
+  @discardableResult
+  private func run<T>(accountId: String?, _ change: (SyncService) async throws -> T) async -> T? {
     guard let syncService else { return nil }
+    busyAccountId = accountId
+    defer { busyAccountId = nil }
     do {
-      let created = try await syncService.createProviderAccount(provider, label: label)
+      let result = try await change(syncService)
       accounts = sortedAccounts(try await syncService.listProviderAccounts(provider))
       errorMessage = nil
-      return created
+      return result
     } catch {
       errorMessage = error.localizedDescription
       return nil
     }
-  }
-
-  func account(id: String) -> ProviderAccount? {
-    accounts.first { $0.id == id }
   }
 
   /// Default first, then the order the accounts were added.

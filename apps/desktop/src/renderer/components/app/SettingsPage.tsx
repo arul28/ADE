@@ -44,7 +44,7 @@ import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { ProviderAccountsPanel } from "../settings/providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "../settings/primitives/SettingsManagerPage";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { SettingsSection } from "../settings/primitives/SettingsRows";
 import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
@@ -290,28 +290,11 @@ function WebAiAccountsPage() {
       icon={<UsersThree size={15} weight="duotone" />}
       tone="violet"
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 28, paddingTop: 12 }}>
-        {([["claude", "Claude"], ["codex", "Codex"]] as const).map(([provider, label]) => (
-          <section key={provider} aria-label={`${label} accounts`} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <h3
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 13,
-                fontWeight: 600,
-                color: COLORS.textPrimary,
-              }}
-            >
-              <ProviderLogo family={provider} size={18} />
-              {label}
-            </h3>
-            <ProviderAccountsPanel provider={provider} providerLabel={label} />
-          </section>
-        ))}
-      </div>
+      {([["claude", "Claude"], ["codex", "Codex"]] as const).map(([provider, label]) => (
+        <SettingsSection key={provider} title={label}>
+          <ProviderAccountsPanel provider={provider} providerLabel={label} />
+        </SettingsSection>
+      ))}
     </SettingsManagerPage>
   );
 }

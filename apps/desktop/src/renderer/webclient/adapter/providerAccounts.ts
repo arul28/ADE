@@ -5,14 +5,7 @@ import type {
   ProviderInstanceSettings,
   ProviderLoginStatus,
 } from "../../../shared/types/providerInstances";
-import type { AdeNamespace } from "./types";
-
-type Call = <T>(
-  action: string,
-  args: unknown,
-  fallback: T | (() => T | Promise<T>),
-  idempotent?: boolean,
-) => Promise<T>;
+import type { AdeNamespace, MiscCall } from "./types";
 
 /**
  * The host's provider accounts, for the Accounts panel in the hosted web client.
@@ -25,34 +18,34 @@ type Call = <T>(
  *
  * `loginCommand` stays absent: it hands back a shell command to run on the
  * host, which a browser cannot do. The panel signs in with `loginStart`.
+ * `setAccent` stays absent too: no account screen offers a colour any more.
  */
-export function createProviderAccountsNamespace(call: Call): AdeNamespace<"providerInstances"> {
+export function createProviderAccountsNamespace(call: MiscCall): AdeNamespace<"providerInstances"> {
   const unavailable = (): never => {
     throw new Error("This ADE host cannot manage provider accounts remotely yet. Update ADE on the host.");
   };
-  const read = <T>(method: string, args: unknown): Promise<T> =>
+  // A read may be answered from the last good reply while the host is away.
+  const cached = <T>(method: string, args: unknown): Promise<T> =>
     call<T>(`providerAccounts.${method}`, args ?? {}, unavailable);
-  // A change goes to the host every time: never replayed from a cached answer.
-  const write = <T>(method: string, args: unknown): Promise<T> =>
+  // A change, or a running sign-in's status, goes to the host every time.
+  const live = <T>(method: string, args: unknown): Promise<T> =>
     call<T>(`providerAccounts.${method}`, args ?? {}, unavailable, false);
   const instance = (result: { instance: ProviderInstance }): ProviderInstance => result.instance;
   const login = (result: { login: ProviderLoginStatus }): ProviderLoginStatus => result.login;
 
   return {
-    list: async (args) => (await read<{ instances: ProviderInstance[] }>("list", args)).instances,
-    create: (args) => write<ProviderInstanceCreateResult>("create", args),
-    remove: (args) => write<ProviderInstanceRemoveResult>("remove", args),
-    rename: async (args) => instance(await write("rename", args)),
-    setDefault: async (args) => instance(await write("setDefault", args)),
-    setAccent: async (args) => instance(await write("setAccent", args)),
-    dismissReplaced: async (args) => instance(await write("dismissReplaced", args)),
-    loginStart: async (args) => login(await write("loginStart", args)),
-    // A poll must see the live state, not a cached one.
-    loginStatus: async (args) => login(await write("loginStatus", args)),
-    loginSubmitCode: async (args) => login(await write("loginSubmitCode", args)),
-    loginCancel: async (args) => login(await write("loginCancel", args)),
-    getSettings: async (args) => (await read<{ settings: ProviderInstanceSettings }>("getSettings", args)).settings,
-    setSettings: async (args) => (await write<{ settings: ProviderInstanceSettings }>("setSettings", args)).settings,
-    refresh: async (args) => (await write<{ instances: ProviderInstance[] }>("refresh", args)).instances,
+    list: async (args) => (await cached<{ instances: ProviderInstance[] }>("list", args)).instances,
+    create: (args) => live<ProviderInstanceCreateResult>("create", args),
+    remove: (args) => live<ProviderInstanceRemoveResult>("remove", args),
+    rename: async (args) => instance(await live("rename", args)),
+    setDefault: async (args) => instance(await live("setDefault", args)),
+    dismissReplaced: async (args) => instance(await live("dismissReplaced", args)),
+    loginStart: async (args) => login(await live("loginStart", args)),
+    loginStatus: async (args) => login(await live("loginStatus", args)),
+    loginSubmitCode: async (args) => login(await live("loginSubmitCode", args)),
+    loginCancel: async (args) => login(await live("loginCancel", args)),
+    getSettings: async (args) => (await cached<{ settings: ProviderInstanceSettings }>("getSettings", args)).settings,
+    setSettings: async (args) => (await live<{ settings: ProviderInstanceSettings }>("setSettings", args)).settings,
+    refresh: async (args) => (await live<{ instances: ProviderInstance[] }>("refresh", args)).instances,
   } as AdeNamespace<"providerInstances">;
 }
