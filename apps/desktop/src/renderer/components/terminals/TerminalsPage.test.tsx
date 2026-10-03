@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { getToasts } from "../app/toast/toastStore";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -2368,6 +2369,67 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
+  });
+
+  it("scopes right-click to the multi-selection: bulk menu inside it, the row's own menu outside it", async () => {
+    const atRest = workMocks.makeTerminalSession("chat-at-rest", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const waiting = workMocks.makeTerminalSession("chat-waiting", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+      pendingInputItemId: "input-1",
+    });
+    const outside = workMocks.makeTerminalSession("chat-outside", "lane-primary", "codex-chat", {
+      status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
+    });
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { settle, delete: vi.fn() },
+        agentChat: { delete: vi.fn() },
+      },
+    });
+    const sessions = [atRest, waiting, outside];
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions,
+      visibleSessions: sessions,
+      endedFiltered: sessions,
+      filtered: sessions,
+      sessionsGroupedByLane: new Map([["lane-primary", sessions]]),
+    };
+
+    render(<TerminalsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-at-rest" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-waiting" }), { metaKey: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-waiting" }));
+    const bulk = await screen.findByRole("menu", { name: "2 selected sessions" });
+    expect(screen.queryByRole("button", { name: "context delete chat chat-waiting" })).toBeNull();
+
+    // Bulk settle files away only the at-rest row; the one waiting on the user
+    // keeps its pending input.
+    const settleRow = within(bulk).getByRole("menuitem", { name: /Settle/ });
+    expect(settleRow.textContent).toContain("1 of 2");
+    fireEvent.click(settleRow);
+    await waitFor(() => expect(settle).toHaveBeenCalledTimes(1));
+    expect(settle.mock.calls[0]).toEqual(["chat-at-rest"]);
+
+    // A refused clipboard write says so instead of closing silently.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-at-rest" }));
+    fireEvent.click(within(await screen.findByRole("menu", { name: "2 selected sessions" }))
+      .getByRole("menuitem", { name: "Copy session IDs" }));
+    await waitFor(() => expect(getToasts().some((toast) => toast.title === "Could not copy session IDs")).toBe(true));
+    expect(writeText).toHaveBeenCalledWith("chat-at-rest\nchat-waiting");
+
+    // A row outside the selection keeps its own single-session menu.
+    fireEvent.click(screen.getByRole("button", { name: "context menu chat-outside" }));
+    expect(await screen.findByRole("button", { name: "context delete chat chat-outside" })).toBeTruthy();
+    expect(screen.queryByRole("menu", { name: "2 selected sessions" })).toBeNull();
   });
 
   const studioBindingForDelete = STUDIO_BINDING;
