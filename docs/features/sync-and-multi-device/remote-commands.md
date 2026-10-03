@@ -232,6 +232,27 @@ over the wire. A controller only invokes an action the host advertises in
   is fetched only when the machine is online and already connected; older brains
   that do not advertise the command are treated as compatibility gaps.
 
+**Provider accounts** (`providerAccounts.*`)
+- `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's Claude
+  and Codex logins.
+- `loginStatus`, `create`, `remove`, `rename`, `setDefault`, `dismissReplaced`,
+  `setSettings`, `loginStart`, `loginSubmitCode`, `loginCancel` — controller-only
+  (`viewerAllowed: false`, `controllerAllowed: true`). A viewer may read;
+  anything that changes a login, or reads a running sign-in (its link and device
+  code), needs control of the host.
+
+All are runtime-scoped (`register(entry.action, entry.policy, entry.handler,
+"runtime")`): accounts name config homes on the host, so they need no open
+project. `providerAccountRemoteCommands.ts` forwards each payload unchanged to
+the method of the same name on the `provider_instances` action domain, so a
+remote caller and the desktop run one implementation; a method the domain does
+not expose throws when the host starts, not on a user's first tap. The actions
+are registered under `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`
+(`shared/syncMobileCompatibility.ts`), so a host older than them leaves the
+phone's AI accounts page showing "update ADE" rather than an empty list. iOS and
+the hosted web client both consume them; see `ios-companion.md` and
+`../web-client/README.md`.
+
 **Usage** (`usage.*`)
 - `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
   or all time. Returns the same stale-while-revalidate aggregate used by

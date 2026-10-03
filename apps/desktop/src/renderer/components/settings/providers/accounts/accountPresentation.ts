@@ -22,23 +22,6 @@ import {
   type AccountLimitRow,
 } from "../../../usage/usageLimitModel";
 
-/**
- * Eight accents that stay legible on both themes and do not collide with the
- * status vocabulary (no red, no green — those already mean something here).
- * Deliberately a fixed list rather than a generated ramp: the point is telling
- * two accounts apart at a glance, which needs hue separation, not coverage.
- */
-export const ACCOUNT_ACCENT_SWATCHES: readonly string[] = [
-  "#d97757",
-  "#2dd4bf",
-  "#5b93f5",
-  "#a78bfa",
-  "#e0a82e",
-  "#a3e635",
-  "#f472b6",
-  "#93a6c4",
-];
-
 /** The mini usage line's two numbers. Either half can be missing. */
 type AccountUsagePercents = {
   fiveHourPercent: number | null;
@@ -204,14 +187,4 @@ export function accountIdentityLine(instance: ProviderInstance, signedOut = !ins
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );
   return parts.length ? parts.join(" · ") : "Signed in";
-}
-
-/** The dot's colour: the account's own accent, else the provider's brand. */
-export function accountAccent(instance: ProviderInstance, providerBrand: string): string {
-  return instance.accentColor ?? providerBrand;
-}
-
-/** A soft tint of an accent, the same `color-mix` treatment `AlertBanner` uses. */
-export function accentTint(color: string, percent: number): string {
-  return `color-mix(in srgb, ${color} ${percent}%, transparent)`;
 }

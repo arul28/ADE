@@ -46,6 +46,7 @@ import {
   waitForEvent,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { describe, expect, it, test, vi } from "vitest";
@@ -3749,6 +3750,45 @@ describe("createAgentChatService", () => {
         status: "running",
         endedAt: null,
       }));
+    });
+  });
+
+  // The account registry lives under the test's own temp home: `os.homedir()`
+  // is pinned there, and no test sets ADE_HOME.
+  describe("provider account pinning", () => {
+    it("records the account a new chat starts on, and keeps it when the default changes", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+
+      const before = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+
+      accounts.setDefault(work.id);
+      const after = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      expect((await service.getSessionSummary(after.id))?.instanceId).toBe(work.id);
+      // The chat started before the switch stays on the account it began on.
+      expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
+    });
+
+    it("moves a chat onto the new provider's default account when it switches provider", async () => {
+      const accounts = getMachineProviderInstanceStore();
+      const work = accounts.create({ provider: "claude", label: "Work" }).instance;
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        instanceId: work.id,
+      });
+      expect((await service.getSessionSummary(created.id))?.instanceId).toBe(work.id);
+
+      await service.updateSession({ sessionId: created.id, modelId: "gpt-5.4" as never });
+
+      const summary = await service.getSessionSummary(created.id);
+      expect(summary?.provider).toBe("codex");
+      expect(summary?.instanceId).toBe("codex");
     });
   });
 });

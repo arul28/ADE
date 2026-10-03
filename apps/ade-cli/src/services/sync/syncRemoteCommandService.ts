@@ -292,6 +292,7 @@ import {
   type AppleDeviceRemoteService,
   type AppleStreamTicketIssuer,
 } from "./appleRemoteCommands";
+import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -358,7 +359,7 @@ import type { createLaneService } from "../../../../desktop/src/main/services/la
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import { createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
+import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
@@ -6022,6 +6023,22 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /**
+ * Provider accounts are machine-wide: they name config homes on the host, so
+ * they run at runtime scope and never need a project open. The caller's client
+ * (phone or browser) is not known at this layer, so analytics files them under
+ * the generic `api` surface, like the CLI action they share.
+ */
+function registerProviderAccountRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const domain = buildProviderInstancesDomainService({
+    productAnalyticsService: args.productAnalyticsService,
+    usageTrackingService: args.usageTrackingService,
+  });
+  for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
+    register(entry.action, entry.policy, entry.handler, "runtime");
+  }
+}
+
+/**
  * Apple device environment for remote surfaces.
  *
  * Project-scoped like `workTools.*` — a lane only exists inside a project — and
@@ -7387,6 +7404,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerProviderAccountRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });

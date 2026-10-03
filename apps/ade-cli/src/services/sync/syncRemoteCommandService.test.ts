@@ -3497,6 +3497,55 @@ describe("web-reachable settings and lane-risk commands", () => {
     }
   });
 
+  it("lets a remote client manage the host's provider accounts, with changes reserved for a controller", async () => {
+    const previous = { ADE_HOME: process.env.ADE_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-provider-accounts-"));
+    process.env.ADE_HOME = path.join(tempRoot, ".ade");
+    process.env.CLAUDE_CONFIG_DIR = path.join(tempRoot, ".claude");
+    resetSharedProviderInstanceStoresForTests();
+
+    try {
+      const { service } = createService();
+      const descriptor = (action: string) => service.getDescriptors().find((entry) => entry.action === action);
+      // Reads open to any paired viewer; changes and a running sign-in's
+      // status (its link and device code) only to a controller. All are
+      // machine-wide, so none needs a project.
+      for (const action of ["providerAccounts.list", "providerAccounts.getSettings"]) {
+        expect(descriptor(action)).toMatchObject({ scope: "runtime", policy: { viewerAllowed: true } });
+      }
+      for (const action of ["providerAccounts.setDefault", "providerAccounts.loginStart", "providerAccounts.loginStatus"]) {
+        expect(descriptor(action)).toMatchObject({
+          scope: "runtime",
+          policy: { viewerAllowed: false, controllerAllowed: true },
+        });
+      }
+      expect(descriptor("providerAccounts.setAccent")).toBeUndefined();
+
+      const run = (action: string, args: Record<string, unknown>) =>
+        service.execute(makePayload(`providerAccounts.${action}`, args)) as Promise<any>;
+      const created = await run("create", { provider: "claude", label: "Work" });
+      await run("setDefault", { id: created.instance.id });
+      await run("setSettings", { provider: "claude", settings: { smartBalance: true } });
+
+      const listed = await run("list", { provider: "claude" });
+      expect(listed.instances.find((instance: any) => instance.isDefault)?.label).toBe("Work");
+      await expect(run("getSettings", { provider: "claude" })).resolves.toMatchObject({ settings: { smartBalance: true } });
+
+      // The default cannot be removed; the base login takes the default back first.
+      await run("setDefault", { id: "claude" });
+      await expect(run("remove", { id: created.instance.id })).resolves.toMatchObject({ removed: true });
+      expect((await run("list", { provider: "claude" })).instances.map((instance: any) => instance.id)).toEqual(["claude"]);
+      await expect(run("loginStatus", { loginId: "no-such-login" })).rejects.toThrow();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      resetSharedProviderInstanceStoresForTests();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("routes Cursor Cloud fleet reads and actions to the fleet service", async () => {
     const getFleet = vi.fn().mockResolvedValue({ items: [], relayState: "ready", lastEventAt: null, fetchedAt: "t" });
     const resolveLaneForAgent = vi.fn().mockResolvedValue({ laneId: "lane-1", laneName: "L", created: false });

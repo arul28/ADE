@@ -26,8 +26,6 @@ import { ProviderPanel } from "../../providerSectionPrimitives";
 import { SettingsToggle } from "../../primitives/SettingsControls";
 import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
-import { providerColor } from "../../../usage/providerColors";
-import { useAppStore } from "../../../../state/appStore";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
 import type { ProviderInstance, ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
@@ -181,10 +179,8 @@ export function ProviderAccountsPanel({
   provider: ProviderInstanceProvider;
   providerLabel: string;
 }) {
-  const theme = useAppStore((state) => state.theme);
   // Accounts belong to the machine the Settings page is showing.
   const { pin } = useSettingsMachineScope();
-  const brandColor = providerColor(provider, theme);
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
   const { snapshot } = useUsageSnapshot();
@@ -195,7 +191,6 @@ export function ProviderAccountsPanel({
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [accentingId, setAccentingId] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
@@ -226,13 +221,7 @@ export function ProviderAccountsPanel({
       const api = pinnedProviderInstances(pin);
       if (!api) return;
       if (action === "rename") {
-        setAccentingId(null);
         setRenamingId(instance.id);
-        return;
-      }
-      if (action === "accent") {
-        setRenamingId(null);
-        setAccentingId((current) => (current === instance.id ? null : instance.id));
         return;
       }
       if (action === "signIn") {
@@ -280,15 +269,6 @@ export function ProviderAccountsPanel({
       const api = pinnedProviderInstances(pin);
       if (!api) return;
       void run(() => api.rename({ id: instance.id, label: next }));
-    },
-    [pin, run],
-  );
-
-  const onCommitAccent = useCallback(
-    (instance: ProviderInstance, accent: string | null) => {
-      const api = pinnedProviderInstances(pin);
-      if (!api) return;
-      void run(() => api.setAccent({ id: instance.id, accentColor: accent }));
     },
     [pin, run],
   );
@@ -446,7 +426,6 @@ export function ProviderAccountsPanel({
               <AccountCard
                 key={instance.id}
                 instance={instance}
-                brandColor={brandColor}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
                 state={state}
                 badge={badge}
@@ -458,10 +437,8 @@ export function ProviderAccountsPanel({
                 onSignIn={(target) => openSheet({ existing: target })}
                 replacedNote={replacedNote}
                 renaming={renamingId === instance.id}
-                accenting={accentingId === instance.id}
                 onCommitRename={onCommitRename}
                 onCancelRename={() => setRenamingId(null)}
-                onCommitAccent={onCommitAccent}
               />
             );
           })}

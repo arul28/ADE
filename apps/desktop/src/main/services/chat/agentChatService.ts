@@ -309,7 +309,7 @@ import {
   getMachineProviderInstanceStore,
   providerInstanceEnvPatch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import type { ProviderInstance, ProviderInstanceProvider } from "../../../shared/types/providerInstances";
+import { isProviderInstanceProvider, type ProviderInstance, type ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import {
   buildOpenCodeDoneUsage,
   resolveOpenCodeServedModel,
@@ -678,7 +678,7 @@ import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat, type AccountBalanceResult } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
-import { moveProviderThread } from "./providerThreadMove";
+import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatUsageLimitAlternateAccount,
@@ -10140,11 +10140,43 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** The account a new Claude or Codex chat starts on when nothing picked one. */
+  const currentDefaultInstanceId = (provider: string): string | undefined => {
+    if (!isProviderInstanceProvider(provider)) return undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, undefined).instance.id;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * The account whose config home holds this chat's provider thread: `null`
+   * when no account holds it (or the chat has no thread yet), `undefined` when
+   * the accounts could not be read, which is not an answer to pin on.
+   */
+  const accountHoldingThread = (
+    managed: ManagedChatSession,
+    provider: ProviderInstanceProvider,
+  ): ProviderInstance | null | undefined => {
+    const threadId = providerThreadIdForMove(managed);
+    if (!threadId) return null;
+    try {
+      return findInstanceHoldingThread(provider, threadId, getMachineProviderInstanceStore().list(provider));
+    } catch {
+      return undefined;
+    }
+  };
+
   /**
    * Which provider ACCOUNT this chat runs as.
    *
-   * An explicit `instanceId` wins while it still names a real account; anything
-   * else resolves to the provider's default. Only Claude and Codex have
+   * An explicit `instanceId` wins while it still names a real account. A chat
+   * with no `instanceId` (one created before chats recorded their account) is
+   * tied to an account here, once: the account whose config home holds its
+   * provider thread, else the current default. Left floating, it would follow
+   * every later default switch and relaunch on a config home that does not hold
+   * its thread, so the resume fails. Only Claude and Codex have
    * accounts — every other provider returns `null` and its launch is untouched.
    *
    * A pointer at a REMOVED account is the interesting case. Falling back
@@ -10157,12 +10189,8 @@ export function createAgentChatService(args: {
    * conversation on every single turn.
    */
   const resolveSessionInstance = (managed: ManagedChatSession): ProviderInstance | null => {
-    const provider: ProviderInstanceProvider | null = managed.session.provider === "claude"
-      ? "claude"
-      : managed.session.provider === "codex"
-        ? "codex"
-        : null;
-    if (!provider) return null;
+    const provider = managed.session.provider;
+    if (!isProviderInstanceProvider(provider)) return null;
     const requestedId = managed.session.instanceId?.trim();
     let resolved: { instance: ProviderInstance; fellBack: boolean };
     try {
@@ -10174,7 +10202,22 @@ export function createAgentChatService(args: {
       });
       return null;
     }
-    if (requestedId && resolved.fellBack) {
+    if (!requestedId) {
+      const holder = accountHoldingThread(managed, provider);
+      // A failed lookup launches on the default this once, unpinned, so a
+      // later launch can still find the account that holds the thread.
+      if (holder === undefined) return resolved.instance;
+      const pinned = holder ?? resolved.instance;
+      managed.session.instanceId = pinned.id;
+      persistChatState(managed);
+      logger.info("agent_chat.provider_instance_pinned", {
+        sessionId: managed.session.id,
+        provider,
+        instanceId: pinned.id,
+      });
+      return pinned;
+    }
+    if (resolved.fellBack) {
       logger.info("agent_chat.provider_instance_fell_back", {
         sessionId: managed.session.id,
         provider,
@@ -40683,7 +40726,12 @@ export function createAgentChatService(args: {
       }
     }
     if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
-    const selectedInstanceId = balancedInstance?.instanceId ?? requestedInstanceId?.trim();
+    // Every Claude and Codex chat records its account. A chat without one
+    // follows the default, and a later default switch would relaunch it on a
+    // config home that does not hold its thread.
+    const selectedInstanceId = balancedInstance?.instanceId
+      || requestedInstanceId?.trim()
+      || currentDefaultInstanceId(effectiveProvider);
 
     /* A Custom provider's thinking level is part of the preset, and the preset
        is what the user picked — so a chat created on one adopts that level
@@ -41484,12 +41532,16 @@ export function createAgentChatService(args: {
       throw new Error(`This chat is too long to hand off to ${targetModelLabel}. Start a new chat on ${targetModelLabel} instead.`);
     }
 
+    // A native fork resumes the source's provider thread, which lives in the
+    // source account's config home, so the fork must run as that same account.
+    const forkInstanceId = nativeFork ? resolveSessionInstance(managed)?.id : undefined;
     const created = await createSession({
       laneId: targetLaneId,
       ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
       provider: targetProvider,
       model: targetModel,
       modelId: targetDescriptor.id,
+      ...(forkInstanceId ? { instanceId: forkInstanceId } : {}),
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
       fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
@@ -58220,6 +58272,11 @@ export function createAgentChatService(args: {
         || managed.session.model !== nextModel;
       modelSwitched = modelChanged;
       if (providerChanged) {
+        // An account belongs to one provider. The new provider starts on its
+        // own default rather than resolving the old provider's account id.
+        const nextInstanceId = currentDefaultInstanceId(nextProvider);
+        if (nextInstanceId) managed.session.instanceId = nextInstanceId;
+        else delete managed.session.instanceId;
         modelHandoff = {
           fromProvider: previousProvider,
           toProvider: nextProvider,

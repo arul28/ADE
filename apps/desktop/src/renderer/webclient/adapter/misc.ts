@@ -38,7 +38,8 @@ import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
-import type { AdapterInfra, AdeNamespace } from "./types";
+import { createProviderAccountsNamespace } from "./providerAccounts";
+import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
@@ -69,6 +70,7 @@ export type MiscNamespaces = {
   iosSimulator: AdeNamespace<"iosSimulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
+  providerInstances: AdeNamespace<"providerInstances">;
   automations: AdeNamespace<"automations">;
 };
 
@@ -816,6 +818,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
     usage: createUsageStubs(call),
+    providerInstances: createProviderAccountsNamespace(call),
     automations: createAutomationStubs() as AdeNamespace<"automations">,
   };
 }
@@ -876,14 +879,6 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
   };
 }
 
-// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
-// value or a lazy resolver that may throw for calls with no offline shape.
-type MiscCall = <T>(
-  action: string,
-  args: unknown,
-  fallback: T | (() => T | Promise<T>),
-  idempotent?: boolean,
-) => Promise<T>;
 
 // Wired method-by-method on purpose. The host registers every `cto.*` action as
 // viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing

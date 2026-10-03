@@ -17,6 +17,7 @@ import {
   Palette,
   PlugsConnected,
   UserCircle,
+  UsersThree,
 } from "@phosphor-icons/react";
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "../settings/AppearanceSection";
@@ -41,6 +42,9 @@ import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
+import { ProviderAccountsPanel } from "../settings/providers/accounts/ProviderAccountsPanel";
+import { SettingsManagerPage } from "../settings/primitives/SettingsManagerPage";
+import { SettingsSection } from "../settings/primitives/SettingsRows";
 import { providerDescriptor } from "../settings/providers/descriptors";
 import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
@@ -237,6 +241,14 @@ function AgentsTabContent() {
     );
   }, [location.pathname, navigate, searchParams]);
 
+  if (isWebClientMode()) {
+    return (
+      <WebSettingsSection entryIds={["agents.accounts"]}>
+        <WebAiAccountsPage />
+      </WebSettingsSection>
+    );
+  }
+
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
@@ -261,6 +273,29 @@ function AgentsTabContent() {
         <BudgetCapSettings />
       </WebSettingsSection>
     </>
+  );
+}
+
+/**
+ * The web client's whole Providers tab: the connected machine's Claude and
+ * Codex logins. Every other provider control signs in or reads files on that
+ * machine, which a browser cannot do, so the tab shows only these two panels.
+ */
+function WebAiAccountsPage() {
+  return (
+    <SettingsManagerPage
+      anchor="ai-accounts"
+      title="AI accounts"
+      description="Claude and Codex logins on the connected machine. Switching the default only changes new chats; running chats keep their account."
+      icon={<UsersThree size={15} weight="duotone" />}
+      tone="violet"
+    >
+      {([["claude", "Claude"], ["codex", "Codex"]] as const).map(([provider, label]) => (
+        <SettingsSection key={provider} title={label}>
+          <ProviderAccountsPanel provider={provider} providerLabel={label} />
+        </SettingsSection>
+      ))}
+    </SettingsManagerPage>
   );
 }
 

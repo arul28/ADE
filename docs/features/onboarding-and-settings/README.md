@@ -192,10 +192,10 @@ Main process:
   never creates a pairing or spends a reconnect attempt; the durable directory
   summary stays the floor.
 - `apps/desktop/src/renderer/components/settings/providers/accounts/` — the
-  Accounts panel: the routing strip, account cards with avatar, badges and the
+  Accounts panel: the routing strip, account cards with name, badges and the
   usage popover's `UsageAccountRow`, the ⋯ menu, the copy and replaced-login
   states, the three-step Add-account sheet driven by the host's login runner,
-  the accent swatches, and `useProviderInstances`.
+  and `useProviderInstances`.
 - `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
   API keys panel, the add-key sheet (only the fields a harness actually has),
   the OpenCode custom-provider panel, and `useApiCredentials`.
@@ -526,8 +526,13 @@ Renderer — settings:
   [Configuration schema](configuration-schema.md).
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
-  `keywords`, `tab`, `anchor`, `scope`, `web`, `group`). Add a setting here and
+  `keywords`, `tab`, `anchor`, `scope`, `web`, `group`, and an optional
+  `webOnly`). Add a setting here and
   it becomes navigable, searchable, and deep-linkable at once.
+  `webOnly: true` marks a card only the hosted browser draws (currently
+  `agents.accounts`, "AI accounts"): the desktop reaches the same controls on
+  each provider's page, so its nav, search, and palette must not offer an
+  anchor it never renders.
   `scope` answers *who does this affect*; `web` (`SettingWebScope`) answers
   *does it work at all from a browser, and what do we tell the user about where
   it went*. A hosted browser has no Electron shell and reaches its machine only
@@ -1844,7 +1849,7 @@ The pages themselves:
 | Appearance (Machines → This computer) | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, and terminal text. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
 | Apple devices (Account) | `AppleDevicesSection.tsx` | Simulator display, recording overlays, and the remote streaming cap. These follow the account because the host reads the cap from the account store. They sat on the Appearance page until Appearance became per computer. |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
-| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
@@ -2023,7 +2028,9 @@ file, so they have exactly one identity per machine.
   with no CTO gate, because an account is a directory path and a label, never a
   token. Reachable from the desktop IPC surface, the preload three-way route
   (pinned runtime → project runtime → local IPC), the daemon action bus, and
-  `ade providers accounts list|add|remove|rename|default`.
+  `ade providers accounts list|add|remove|rename|default`. `setAccent` and the
+  stored `accentColor` field are retained for compatibility only: no desktop,
+  web, or iOS surface offers or shows a per-account colour any more.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
   same file under `settings.<provider>` and default to off.
 - **Signing in is a command ADE returns, not a flow it drives.**
@@ -2056,7 +2063,7 @@ not carry the install command.
   width allows, then evens them out over the rows (`balancedColumns`): two cards
   never leave an empty column, and four go two by two, not three and one. Cards
   in a row share a height.
-  A card has a dot in the account's accent, the label, one status
+  A card has the account's name, one status
   badge and the ⋯ menu; under it, the top-bar usage popover's own
   `UsageAccountRow` (email, pace pill, Use reset, one meter per window), built by
   `accountLimitRow` with `buildAccountRows` and matched by
@@ -2081,16 +2088,16 @@ not carry the install command.
   shift instead of doubling; otherwise a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
   once any account holds that email again.
-- **The card menu (⋯)** carries Rename, Change accent (eight fixed swatches plus
-  a `#rrggbb` field), Sign in / Sign in again, and Remove. Remove is not offered
+- **The card menu (⋯)** carries Rename, Sign in / Sign in again, and Remove.
+  Remove is not offered
   on the default or the machine's own login, which the store refuses; it asks
   for confirmation, and any other refusal shows the store's own sentence.
 - **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
   with nothing to show folds to its header (API keys with none saved reads
   `API keys · 0 None saved`), and a click on the title flips any panel. Sheets
   render outside the panel body, so a folded panel still opens its Add sheet.
-- **Add account** opens a three-step sheet (Name it → Sign in → Done): a name,
-  an accent, and a note that the provider opens its sign-in page and the login
+- **Add account** opens a three-step sheet (Name it → Sign in → Done): a name
+  and a note that the provider opens its sign-in page and the login
   is saved for this account only. **Continue to sign-in** creates the account
   and calls `provider_instances.loginStart`. There is no terminal: the host's
   login runner (`main/services/providerAccounts/providerLoginRunner.ts`, one per
@@ -2103,9 +2110,10 @@ not carry the install command.
   "finish with your browser" card with **Open sign-in page** / **Copy link**, a
   code field when the CLI asks for one (`loginSubmitCode`), and the CLI's output
   behind a closed **Sign-in output** disclosure. For a machine other than the
-  one holding the browser, a Codex sign-in passes `deviceAuth`, which appends
+  one holding the browser, and for the hosted web client, a Codex sign-in passes
+  `deviceAuth`, which appends
   `--device-auth` so the CLI prints a one-time code instead of returning to a
-  localhost port the other computer cannot reach; the sheet shows that code to
+  localhost port the other computer (or a browser) cannot reach; the sheet shows that code to
   type into the sign-in page. It ends on a Done state with the
   email, or "Sign-in did not complete." with the runner's reason, **Try again**
   and **Close**. Closing a running sign-in cancels it (`loginCancel`); a sign-in
@@ -2121,6 +2129,14 @@ not carry the install command.
   "Smart balance is on for Claude Code" — while that provider is balancing.
   Nothing else about the picker changes: every model is still listed and an
   explicit pick is still honoured.
+
+The hosted web client hides every provider page (sign-in, keys, and permissions
+run on the machine itself), but the machine's Claude and Codex logins are
+managed over sync, so it gets them as one web-only **AI accounts** card
+(`agents.accounts`, `webOnly: true`, anchor `#ai-accounts`) on the Agents tab,
+showing the same `ProviderAccountsPanel` for Claude and Codex. The manifest's
+`webOnly` flag keeps the anchor out of the desktop nav, search, and command
+palette, which never draw it.
 
 ### API credentials
 
@@ -2396,7 +2412,8 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
 - **The default account's config home is resolved, never stored.** Freezing it
   would make ADE read one directory and launch the provider against another the
   moment a user sets `CLAUDE_CONFIG_DIR` in a shell profile. The stored record
-  for the base identity carries a label and an accent; its `configHome` is
+  for the base identity carries a label (and a legacy `accentColor` field no
+  surface sets or shows); its `configHome` is
   recomputed on every read and any persisted copy is ignored.
 - **Scope is two axes, not one.** Who owns a setting — your account or this
   computer — and how much it covers — everything, or one repository. The

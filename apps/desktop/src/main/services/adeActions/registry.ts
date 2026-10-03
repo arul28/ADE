@@ -3368,7 +3368,9 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
   } as OpaqueService;
 }
 
-function buildProviderInstancesDomainService(runtime: AdeRuntime): OpaqueService {
+export function buildProviderInstancesDomainService(
+  runtime: Pick<AdeRuntime, "productAnalyticsService" | "usageTrackingService">,
+): OpaqueService {
   // Machine-local by nature: the registry names directories on THIS machine, so
   // the store is reached through its own ADE-home accessor rather than through
   // the runtime graph. The runtime is used only for the brain-owned analytics

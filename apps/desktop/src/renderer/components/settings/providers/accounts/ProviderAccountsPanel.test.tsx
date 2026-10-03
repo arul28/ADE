@@ -439,22 +439,6 @@ describe("ProviderAccountsPanel", () => {
     });
   });
 
-  it("stores a new accent picked from the row menu's swatches", async () => {
-    const harness = installBridge();
-    renderPanel();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Change accent" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accent #a78bfa" }));
-
-    await waitFor(() => {
-      expect(harness.providerInstances.setAccent).toHaveBeenCalledWith({
-        id: "claude-work",
-        accentColor: "#a78bfa",
-      });
-    });
-  });
-
   it("confirms before removing, and removes nothing when the confirm is cancelled", async () => {
     const harness = installBridge();
     renderPanel();
@@ -518,7 +502,6 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.create).toHaveBeenCalledWith({
         provider: "claude",
         label: "Work",
-        accentColor: expect.any(String),
       });
     });
     await waitFor(() => {

@@ -1,5 +1,5 @@
 /**
- * One account in Settings → Accounts: its accent dot, label, status badge and
+ * One account in Settings → Accounts: its name, status badge and
  * ⋯ menu, then the top-bar popover's own usage row. The panel decides the
  * card's state and badge; the card only draws them and reports clicks.
  */
@@ -16,28 +16,9 @@ import {
   providerInstanceHasAccount,
   type ProviderInstance,
 } from "../../../../../shared/types/providerInstances";
-import { accountAccent, accountIdentityLine, accentTint } from "./accountPresentation";
-import { AccentSwatchRow } from "./AccentSwatchRow";
+import { accountIdentityLine } from "./accountPresentation";
 
-/** The account's accent as a small dot, so cards read apart at a glance. */
-function AccentDot({ accent, dim }: { accent: string; dim: boolean }) {
-  return (
-    <span
-      aria-hidden
-      style={{
-        width: 8,
-        height: 8,
-        borderRadius: 999,
-        flexShrink: 0,
-        background: accent,
-        boxShadow: `0 0 0 3px ${accentTint(accent, 18)}`,
-        opacity: dim ? 0.45 : 1,
-      }}
-    />
-  );
-}
-
-export type RowMenuAction = "rename" | "accent" | "signIn" | "remove";
+export type RowMenuAction = "rename" | "signIn" | "remove";
 
 /** Why a card is shown the way it is; one state per card, decided by the panel. */
 export type CardState =
@@ -47,7 +28,6 @@ export type CardState =
 
 export function AccountCard({
   instance,
-  brandColor,
   limitRow,
   state,
   badge,
@@ -59,13 +39,10 @@ export function AccountCard({
   onSignIn,
   replacedNote,
   renaming,
-  accenting,
   onCommitRename,
   onCancelRename,
-  onCommitAccent,
 }: {
   instance: ProviderInstance;
-  brandColor: string;
   limitRow: AccountLimitRow | null;
   state: CardState;
   /** "New chats" / "Next chat": where new chats go. Absent for every other card. */
@@ -79,17 +56,14 @@ export function AccountCard({
   onSignIn: (instance: ProviderInstance) => void;
   replacedNote: React.ReactNode;
   renaming: boolean;
-  accenting: boolean;
   onCommitRename: (instance: ProviderInstance, label: string) => void;
   onCancelRename: () => void;
-  onCommitAccent: (instance: ProviderInstance, accent: string | null) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const accent = accountAccent(instance, brandColor);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   const signedOut = state.kind === "signedOut";
   const isCopy = state.kind === "copy";
@@ -161,7 +135,6 @@ export function AccountCard({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, minHeight: 26 }}>
-        <AccentDot accent={accent} dim={signedOut || isCopy} />
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
           {renaming ? (
             <input
@@ -268,7 +241,6 @@ export function AccountCard({
             }}
           >
             {item("rename", "Rename")}
-            {item("accent", "Change accent")}
             {item("signIn", signedOut ? "Sign in" : "Sign in again")}
             {/* The store refuses both: the default, and the machine's own login. */}
             {instance.isDefault || isBaseProviderInstance(instance) ? null : item("remove", "Remove", true)}
@@ -308,14 +280,6 @@ export function AccountCard({
       )}
 
       {replacedNote}
-
-      {accenting ? (
-        <AccentSwatchRow
-          label={`${instance.label} accent`}
-          value={instance.accentColor ?? null}
-          onChange={(next) => onCommitAccent(instance, next)}
-        />
-      ) : null}
     </div>
   );
 }

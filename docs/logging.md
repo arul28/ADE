@@ -411,6 +411,10 @@ at most 140 per UTC day and 30 per minute (and the shared ceiling remains
 200).
 No account id, label, config-home path, email, plan, or refresh/list activity is
 captured.
+The phone and the hosted web client reach the same domain through the
+`providerAccounts.*` sync commands, so their mutations are captured by the same
+code with the same keys and limits. The command layer cannot tell a phone from
+a browser, so those events carry `surface: "api"`, like the CLI action.
 
 API-credential store and remove mutations are captured in
 `apps/desktop/src/main/services/ai/apiKeyStore.ts`, after the multi-credential

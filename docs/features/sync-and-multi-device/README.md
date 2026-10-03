@@ -1712,6 +1712,14 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ios_simulator` method by name. It refuses any method outside the
   `ios_simulator` action allowlist (`APPLE_AGENT_ACTIONS` plus
   `APPLE_USER_ONLY_ACTIONS`). See [Apple device](../apple-device/README.md).
+- `providerAccountRemoteCommands.ts` — the `providerAccounts.*` remote commands
+  (runtime-scoped) that forward to the `provider_instances` action domain, so
+  the phone and browser manage the host's Claude and Codex logins through the
+  same implementation the desktop uses. `list` / `getSettings` / `refresh` are
+  viewer-allowed; every login change and running sign-in read is
+  controller-only. The policy table is `PROVIDER_ACCOUNT_REMOTE_COMMANDS` in
+  `shared/types/sync.ts`. See
+  [remote commands](remote-commands.md#action-categories).
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the

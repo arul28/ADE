@@ -1,5 +1,6 @@
 import { THREAD_COMMENT_ACTION_NAMES } from "./threadComments";
 import type { SyncFileRequest, SyncRemoteCommandAction } from "./types";
+import { PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS } from "./types/sync";
 
 export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 
@@ -195,6 +196,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "archive.summary",
   "archive.restore",
   "archive.delete",
+  // The host's Claude and Codex logins. The phone shows "update ADE" on its
+  // AI accounts page until the host advertises them.
+  ...PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS,
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
