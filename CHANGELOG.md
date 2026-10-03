@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.88] - 2026-10-03
+
+### Desktop
+
+- Running and forked chats stay on their provider account (#1444).
+
+### iOS
+
+- Manage provider accounts from iOS and the web client (#1444).
+
 ## [1.2.87] - 2026-10-03
 
 ### Desktop
@@ -2283,6 +2293,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88
 [1.2.87]: https://github.com/arul28/ADE/compare/v1.2.86...v1.2.87
 [1.2.86]: https://github.com/arul28/ADE/compare/v1.2.85...v1.2.86
 [1.2.85]: https://github.com/arul28/ADE/compare/v1.2.84...v1.2.85
