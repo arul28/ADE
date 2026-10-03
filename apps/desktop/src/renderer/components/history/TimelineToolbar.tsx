@@ -111,6 +111,7 @@ export function TimelineToolbar({
   commitListControls?: boolean;
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
@@ -307,7 +308,7 @@ export function TimelineToolbar({
         {surface === "commits" ? (
           <>
             <HistoryLanePicker value={laneSelectValue} groups={laneGroups} onChange={pickLane} />
-            {commitScope === "lane" ? <LaneDriftPill lane={focusLane} /> : null}
+            {commitScope === "lane" ? <LaneDriftPill lane={focusLane} stale={laneStatusStale} /> : null}
             <span className="min-w-0 flex-1" />
             {commitListControls ? (
               <>

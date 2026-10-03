@@ -188,6 +188,7 @@ export function LaneDashboard({
 }) {
   const navigate = useNavigate();
   const boundLanes = useAppStore((s) => s.lanes);
+  const boundLaneStatusStale = useAppStore((s) => s.laneStatusStale);
   const lanes = machine?.lanes ?? boundLanes;
   const pin = machine?.pin ?? null;
   const selectLane = useAppStore((s) => s.selectLane);
@@ -395,6 +396,8 @@ export function LaneDashboard({
             onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             onSelectLane={onSelectLane}
+            // A lane on another machine carries that machine's own read.
+            statusStale={!machine && boundLaneStatusStale}
           />
           {notice ? (
             <RebaseNotice

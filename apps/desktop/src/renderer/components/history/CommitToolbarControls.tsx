@@ -19,33 +19,47 @@ import { useCommitViewPrefs, type CommitColumnId } from "./commitViewPrefs";
 import { normalizeBranchName } from "./commitRowModel";
 import { stripIpcErrorPrefix } from "./historyClipboard";
 
-/** "3 ahead · 12 behind" against the lane's base; opens the lane in Lanes. */
-export function LaneDriftPill({ lane }: { lane: LaneSummary | null }) {
+/**
+ * "3 ahead · 12 behind" against the lane's base; opens the lane in Lanes.
+ *
+ * `stale`: these numbers were not measured within the freshness window (a read
+ * is out, or the last one failed). They render quietly, never as current, and
+ * a 0/0 that may be the brain's placeholder holds the pill's place empty.
+ */
+export function LaneDriftPill({ lane, stale = false }: { lane: LaneSummary | null; stale?: boolean }) {
   const navigate = useNavigate();
-  if (!lane || lane.laneType === "primary" || !lane.status) return null;
+  // A lane whose worktree is missing on this machine has no measured status:
+  // the brain reports its 0/0 placeholder, which must not read as "Even with".
+  if (!lane || lane.laneType === "primary" || !lane.status || lane.worktreeAvailable === false) return null;
   const ahead = Math.max(0, lane.status.ahead ?? 0);
   const behind = Math.max(0, lane.status.behind ?? 0);
   const base = normalizeBranchName(lane.baseRef) || "base";
+  const held = stale && ahead === 0 && behind === 0;
   const label = ahead === 0 && behind === 0
     ? `Even with ${base}`
     : `${ahead} ahead of ${base}, ${behind} behind`;
   return (
-    <PaneTooltip label={`${label} · open in Lanes`}>
+    <PaneTooltip label={`${stale ? "Last known: " : ""}${label} · open in Lanes`} disabled={held}>
       <button
         type="button"
         onClick={() => navigate(`/lanes?${new URLSearchParams({ laneId: lane.id }).toString()}`)}
         className={cn(
           "inline-flex h-6 shrink-0 items-center gap-2 rounded-full bg-white/[0.05] px-2.5 text-[11.5px] font-medium tabular-nums text-fg/75",
-          "transition-colors duration-100 hover:bg-white/[0.09] hover:text-fg",
+          "transition-[color,background-color,opacity] duration-150 hover:bg-white/[0.09] hover:text-fg",
+          stale && "opacity-50",
+          held && "invisible",
           WORK_TOOL_CHROME_FOCUS,
         )}
+        aria-hidden={held || undefined}
+        tabIndex={held ? -1 : undefined}
+        data-stale={stale || undefined}
         data-testid="history-lane-drift"
       >
-        <span className="inline-flex items-center gap-0.5" style={{ color: ahead > 0 ? "var(--ade-lane-violet, #B9A6F5)" : undefined }}>
+        <span className="inline-flex items-center gap-0.5" style={{ color: ahead > 0 && !stale ? "var(--ade-lane-violet, #B9A6F5)" : undefined }}>
           <ArrowUp size={11} weight="bold" aria-hidden />
           {ahead}
         </span>
-        <span className="inline-flex items-center gap-0.5" style={{ color: behind > 0 ? "var(--color-warning)" : undefined }}>
+        <span className="inline-flex items-center gap-0.5" style={{ color: behind > 0 && !stale ? "var(--color-warning)" : undefined }}>
           <ArrowDown size={11} weight="bold" aria-hidden />
           {behind}
         </span>

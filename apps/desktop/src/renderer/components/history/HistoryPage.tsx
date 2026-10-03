@@ -149,6 +149,30 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   const lanes = useAppStore((s) => s.lanes ?? []);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const requestLaneStatusRead = useAppStore((s) => s.requestLaneStatusRead);
+
+  // The drift pill and the base divider show this machine's lane status. It
+  // must be measured, not inherited: on opening History unless it was read a
+  // moment ago, and again whenever the commit list reloads (a commit action, a
+  // fetch, an agent's operation), since that is when the branch moved.
+  // A running head-changing operation is replaced by its completed row on a
+  // later poll without changing the list length, so include each row's head
+  // SHAs: completing one (a commit, a fetch) still re-measures the lane.
+  // Unchanged polls produce the same string, so the effect stays put.
+  const laneMovedToken = useMemo(
+    () => [
+      String(commitRefreshToken),
+      ...rawEvents.map((event) => `${event.id}:${event.preHeadSha ?? ""}:${event.postHeadSha ?? ""}`),
+    ].join("|"),
+    [commitRefreshToken, rawEvents],
+  );
+  const laneMovedTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const moved = laneMovedTokenRef.current != null && laneMovedTokenRef.current !== laneMovedToken;
+    laneMovedTokenRef.current = laneMovedToken;
+    requestLaneStatusRead(moved ? { maxAgeMs: 0 } : undefined);
+  }, [active, laneMovedToken, requestLaneStatusRead]);
 
   // A lane on another machine is read through that machine's pin. Writes
   // (lane git actions, commit actions) stay with lanes on this tab's machine:

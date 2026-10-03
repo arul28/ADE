@@ -23,6 +23,7 @@ import {
   COMMIT_ROW_HEIGHT,
   computeDividerAfterRow,
   contractCommitGraph,
+  laneForkWaitsForStatus,
   toGraphCommits,
   type CommitGraphLayout,
   type GraphCommit,
@@ -39,6 +40,7 @@ import {
 import { useCommitViewPrefs } from "./commitViewPrefs";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { showToast } from "../app/toast/toastStore";
+import { useAppStore } from "../../state/appStore";
 
 const PAGE_SIZE = 100;
 /** Search keeps reading older pages until it has this many matches… */
@@ -298,6 +300,11 @@ export function CommitHistoryView({
   /* ── Lanes, owners, colours ── */
 
   const focusLane = useMemo(() => lanes.find((lane) => lane.id === laneId) ?? null, [lanes, laneId]);
+  // This machine's lane status not measured within the freshness window (a
+  // read is out, or failed). A lane on another machine (`pin`) comes from that
+  // machine's own read, not from this store.
+  const storeStatusStale = useAppStore((s) => s.laneStatusStale);
+  const statusStale = !pin && storeStatusStale;
   const liveLanes = useMemo(() => lanes.filter((lane) => !lane.archivedAt), [lanes]);
   const laneColor = useMemo(() => {
     const map = new Map<string, string>();
@@ -334,13 +341,18 @@ export function CommitHistoryView({
     const baseLane = baseName ? lanesByBranch.get(baseName) ?? null : null;
     return baseLane?.id ?? (baseName ? `base:${baseName}` : null);
   }, [baseName, lanesByBranch]);
+  const baseTipLoaded = Boolean(baseSha && commits.some((c) => c.sha === baseSha));
+  // Without the base tip loaded, the fork point comes from `ahead`, which is
+  // not measured yet. A stale count would put the divider (and the lane's
+  // colour) on the wrong rows, so both wait for the measured value.
+  const forkWaitsForStatus = laneForkWaitsForStatus({ statusStale, baseTipLoaded, laneType: focusLane?.laneType });
   const owners = useMemo(() => {
     if (commits.length === 0) return new Map<string, string>();
     const baseKey = baseOwnerKey ?? `base:${baseName}`;
-    let baseFrom = baseSha && commits.some((c) => c.sha === baseSha) ? baseSha : null;
+    let baseFrom = baseTipLoaded ? baseSha : null;
     // A lane behind its base never reaches the base tip; its fork point is
     // `ahead` first-parent steps below its head.
-    if (!baseFrom && focusLane && focusLane.laneType !== "primary" && headSha && focusLane.status) {
+    if (!baseFrom && !forkWaitsForStatus && focusLane && focusLane.laneType !== "primary" && headSha && focusLane.status) {
       const bySha = new Map(commits.map((c) => [c.sha, c]));
       let sha: string | undefined = headSha;
       for (let step = 0; sha && step < Math.max(0, focusLane.status.ahead); step += 1) sha = bySha.get(sha)?.parents[0];
@@ -348,14 +360,14 @@ export function CommitHistoryView({
     }
     const base: LaneTip | null = baseFrom ? { key: baseKey, sha: baseFrom } : null;
     const tips: LaneTip[] = [];
-    if (focusLane && headSha && focusLane.laneType !== "primary") tips.push({ key: focusLane.id, sha: headSha });
+    if (focusLane && headSha && focusLane.laneType !== "primary" && !forkWaitsForStatus) tips.push({ key: focusLane.id, sha: headSha });
     for (const lane of liveLanes) {
       if (lane.id === focusLane?.id || lane.laneType === "primary") continue;
       const sha = branchTip(normalizeBranchName(lane.branchRef));
       if (sha) tips.push({ key: lane.id, sha });
     }
     return assignCommitOwners({ commitsNewestFirst: commits, base, tips });
-  }, [baseName, baseOwnerKey, baseSha, branchTip, commits, focusLane, headSha, liveLanes]);
+  }, [baseName, baseOwnerKey, baseSha, baseTipLoaded, branchTip, commits, focusLane, forkWaitsForStatus, headSha, liveLanes]);
 
   // Colour means "a lane's own work". The base line (main, or the primary
   // lane) is neutral so no lane colour can be mistaken for it; other branches
@@ -421,7 +433,7 @@ export function CommitHistoryView({
   // base history starts. Base commits merged into the lane can sit above it;
   // they are drawn as base. A lane with no commits of its own gets the band
   // on top.
-  const ownLaneId = scope === "lane" && focusLane && focusLane.laneType !== "primary" ? focusLane.id : null;
+  const ownLaneId = scope === "lane" && focusLane && focusLane.laneType !== "primary" && !forkWaitsForStatus ? focusLane.id : null;
   const dividerAfterRow = useMemo(
     () => computeDividerAfterRow({ rows: graphRows, owners, ownLaneId, searching: matches != null }),
     [graphRows, matches, owners, ownLaneId],
@@ -753,7 +765,7 @@ export function CommitHistoryView({
                       {baseName || "base"}
                     </span>
                     {behind > 0 ? (
-                      <span className="shrink-0 tabular-nums text-muted-fg/70">{behind.toLocaleString()} behind</span>
+                      <span className={`shrink-0 tabular-nums text-muted-fg/70 transition-opacity duration-150${statusStale ? " opacity-50" : ""}`} data-stale={statusStale || undefined}>{behind.toLocaleString()} behind</span>
                     ) : null}
                     <span aria-hidden className="h-px min-w-0 flex-1 bg-white/[0.07]" />
                   </div>

@@ -9,7 +9,7 @@ import type {
 } from "../../../shared/types";
 import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { selectChatPrs } from "../lanes/lanePageModel";
-import type { WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { browserHostLabel } from "../../lib/browserUrl";
 import { relativeWhen } from "../../lib/format";
 import {
@@ -67,6 +67,12 @@ export type WorkToolStatus = {
    * dot is asking for a hand.
    */
   attention?: boolean;
+  /**
+   * The line repeats numbers that were not measured within their freshness
+   * window (a lane's ahead/behind while its status read is out, or after one
+   * failed). The card shows them quietly, never as current.
+   */
+  stale?: boolean;
 };
 
 export type WorkToolStatusMap = Partial<Record<WorkSidebarTab, WorkToolStatus>>;
@@ -251,7 +257,7 @@ export function browserStatusLine(
   return statusLine(`${label}${suffix}`, true, { errorCount, attention: handedOff });
 }
 
-export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
+export function gitStatusLine(lane: LaneSummary | null, statusStale = false): WorkToolStatus {
   if (!lane?.status) return IDLE;
   const { dirty, rebaseInProgress } = lane.status;
   if (rebaseInProgress) return statusLine("Rebasing", true);
@@ -285,7 +291,9 @@ export function gitStatusLine(lane: LaneSummary | null): WorkToolStatus {
   const syncParts: string[] = [];
   if (ahead > 0) syncParts.push(`${formatStatusCount(ahead)} ahead`);
   if (behind > 0) syncParts.push(`${formatStatusCount(behind)} behind`);
-  if (syncParts.length > 0) return statusLine(syncParts.join(" · "), ahead > 0);
+  if (syncParts.length > 0) {
+    return statusLine(syncParts.join(" · "), ahead > 0, statusStale ? { stale: true } : undefined);
+  }
 
   const age = relativeCommitAge(lastCommitAt);
   if (age) return statusLine(`${hasUpstream ? "Pushed" : "Committed"} ${age}`, false);
@@ -502,6 +510,8 @@ export function useWorkToolStatuses(args: {
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
+  // The store's status is this tab's machine's; a pinned lane carries its own.
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -617,7 +627,7 @@ export function useWorkToolStatuses(args: {
     browser: offline
       ? IDLE
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
-    git: gitStatusLine(lane),
+    git: gitStatusLine(lane, laneStatusStale),
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(appleDevice),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
@@ -634,6 +644,7 @@ export function useWorkToolStatuses(args: {
     browserStatus,
     lane,
     laneId,
+    laneStatusStale,
     offline,
     panelShellCount,
     prCount,

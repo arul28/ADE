@@ -619,6 +619,9 @@ function ProjectSurface({
     ) {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
+    // A surface seeded from the lane cache shows whatever status that cache
+    // held, from any age. Measure it on this machine before anyone reads it.
+    state.requestLaneStatusRead();
     if (!state.keybindings) {
       void state.refreshKeybindings().catch(() => {});
     }

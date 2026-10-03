@@ -980,6 +980,20 @@ async function resolveTrackedFileCount(
   }
 }
 
+/**
+ * `refs/remotes/origin/<base>` for a short branch name, or null when the base is
+ * already qualified (a remote or full ref) or is a commit id.
+ */
+function remoteTrackingBaseRef(baseRef: string): string | null {
+  const base = baseRef.trim();
+  if (!base || base.startsWith("refs/") || base.startsWith("origin/")) return null;
+  // Only a full commit id (SHA-1 40, SHA-256 64) is a commit id. An
+  // abbreviated one is not a valid ref anyway, and a hex-looking branch name
+  // (e.g. "deadbeef") is a branch, so it still deserves the remote retry.
+  if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return null;
+  return `refs/remotes/origin/${base}`;
+}
+
 async function computeLaneStatus(
   worktreePath: string,
   baseRef: string,
@@ -1032,10 +1046,19 @@ async function computeLaneStatus(
   const lastCommitAt = lastCommitIso || null;
   const trackedFileCountPromise = resolveTrackedFileCount(worktreePath, treeHash, options.trackedFileCountCache);
 
-  const countsRes = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
-    cwd: worktreePath,
-    timeoutMs: 8_000
-  });
+  const countAgainst = (base: string) =>
+    runGit(["rev-list", "--left-right", "--count", `${base}...${branchRef}`], {
+      cwd: worktreePath,
+      timeoutMs: 8_000
+    });
+  let countsRes = await countAgainst(baseRef);
+  // A base that exists only as a remote-tracking branch (a clone that never
+  // checked out `main`) does not resolve by its short name: git's lookup skips
+  // `refs/remotes/origin/<name>`. Counting against nothing reported 0/0, which
+  // reads as "even with main". Retry once against the remote-tracking ref; the
+  // extra spawn happens only on that failure.
+  const remoteBase = countsRes.exitCode === 0 ? null : remoteTrackingBaseRef(baseRef);
+  if (remoteBase) countsRes = await countAgainst(remoteBase);
   let behind = 0;
   let ahead = 0;
   if (countsRes.exitCode === 0) {
