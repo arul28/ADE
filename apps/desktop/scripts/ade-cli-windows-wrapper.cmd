@@ -15,11 +15,19 @@ if /I "%ADE_BUNDLED_CHANNEL%"=="beta" (
   set "APP_EXE_NAME=ADE Beta.exe"
   if not defined ADE_PACKAGE_CHANNEL set "ADE_PACKAGE_CHANNEL=beta"
   if not defined ADE_DESKTOP_APP_NAME set "ADE_DESKTOP_APP_NAME=ADE Beta"
+  rem The channel's own home, as the packaged app sets it. Without this the
+  rem channel CLI resolved the stable home and its pipe, so `brain status` and
+  rem `brain stop` could not reach the running beta brain.
+  if not defined ADE_HOME set "ADE_HOME=%USERPROFILE%\.ade-beta"
 )
 if /I "%ADE_BUNDLED_CHANNEL%"=="alpha" (
   set "APP_EXE_NAME=ADE Alpha.exe"
   if not defined ADE_PACKAGE_CHANNEL set "ADE_PACKAGE_CHANNEL=alpha"
   if not defined ADE_DESKTOP_APP_NAME set "ADE_DESKTOP_APP_NAME=ADE Alpha"
+  rem The channel's own home, as the packaged app sets it. Without this the
+  rem channel CLI resolved the stable home and its pipe, so `brain status` and
+  rem `brain stop` could not reach the running alpha brain.
+  if not defined ADE_HOME set "ADE_HOME=%USERPROFILE%\.ade-alpha"
 )
 set "APP_EXE=%RESOURCES_DIR%\..\%APP_EXE_NAME%"
 if not defined ADE_AGENT_SKILLS_DIRS if exist "%RESOURCES_DIR%\agent-skills" set "ADE_AGENT_SKILLS_DIRS=%RESOURCES_DIR%\agent-skills"

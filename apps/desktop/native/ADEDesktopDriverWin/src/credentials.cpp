@@ -7,6 +7,18 @@
 #pragma comment(lib, "netapi32.lib")
 
 namespace ade {
+std::string credentialAccountKind(const std::wstring& username) {
+  const auto separator = username.find(L'\\');
+  if (separator != std::wstring::npos) {
+    const auto prefix = username.substr(0, separator);
+    if (_wcsicmp(prefix.c_str(), L"MicrosoftAccount") == 0) return "microsoft";
+    wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD size = ARRAYSIZE(computer);
+    if (prefix == L"." || (GetComputerNameW(computer, &size) && _wcsicmp(prefix.c_str(), computer) == 0)) return "local";
+    return "domain";
+  }
+  return username.find(L'@') == std::wstring::npos ? "local" : "domain";
+}
 std::wstring credentialTarget(const std::wstring& home) {
   uint64_t hash = 14695981039346656037ULL;
   for (wchar_t c : lower(home)) { hash ^= static_cast<uint64_t>(c); hash *= 1099511628211ULL; }
@@ -84,7 +96,7 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
               reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
       CloseHandle(token);
     }
-    logLine("save: identity provider=" + Json(identity->usri24_internet_provider_name ? narrow(identity->usri24_internet_provider_name) : "").dump() +
+    logLine("save: identity microsoft=" + std::to_string(identity->usri24_internet_provider_name && _wcsicmp(identity->usri24_internet_provider_name, L"MicrosoftAccount") == 0) +
         " connected=" + std::to_string(identity->usri24_internet_identity) + " matchesCurrentSid=" + std::to_string(sameUser));
     if (sameUser && identity->usri24_internet_identity && identity->usri24_internet_provider_name &&
         _wcsicmp(identity->usri24_internet_provider_name, L"MicrosoftAccount") == 0 &&
@@ -106,7 +118,7 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   UINT_PTR timer = SetTimer(nullptr, 0, 250, cancelPrompt);
   if (!timer) { promptWait = nullptr; fail(code::kDriverUnavailable, "Windows could not open a cancellable password dialog."); }
   struct Timer { UINT_PTR value; ~Timer() { KillTimer(nullptr, value); promptWait = nullptr; } } cleanup{timer};
-  logLine("save: prompt opened account=" + Json(narrow(username)).dump());
+  logLine("save: prompt opened accountPresent=" + std::to_string(*username != 0) + " accountKind=" + credentialAccountKind(username));
   DWORD result = CredUIPromptForCredentialsW(&info, L"ADE private Windows screen", nullptr, 0,
       username, ARRAYSIZE(username), credential->password.data(), static_cast<ULONG>(credential->password.size()), &save,
       CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST | CREDUI_FLAGS_EXCLUDE_CERTIFICATES);
@@ -115,7 +127,7 @@ std::unique_ptr<WindowsCredential> promptCredential(HWND owner, const std::atomi
   if (result == ERROR_CANCELLED) fail(code::kCancelled, "Saving the Windows password was cancelled.");
   if (result != NO_ERROR) fail(code::kDriverUnavailable, "Windows could not open the password dialog.");
   credential->username = username;
-  logLine("save: submitted account=" + Json(narrow(credential->username)).dump());
+  logLine("save: submitted accountPresent=" + std::to_string(!credential->username.empty()) + " accountKind=" + credentialAccountKind(credential->username));
   size_t length = wcslen(credential->password.data());
   if (!length || credential->username.empty()) fail(code::kInvalidArgument, "Enter a Windows user name and password.");
   // Preserve the allocated buffer so its entire capacity is wiped on destruction.

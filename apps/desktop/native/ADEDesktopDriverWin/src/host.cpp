@@ -394,7 +394,8 @@ class Host {
     setSignInWaiting(false);
     bool connected = false; std::string error;
     try {
-      ui([&] { ShowWindow(window_, SW_HIDE); connected = rdp_.begin(window_, 1280, 800, &error, credential.get()); });
+      ui([&] { ShowWindow(window_, SW_HIDE); connected = rdp_.begin(window_, 1280, 800, &error, credential.get());
+        if (connected) signInStarted_ = true; });
       refreshStatus();
       logLine("save: rdp begin result=" + std::to_string(connected));
       if (!connected) fail(code::kSignInFailed, error);
@@ -415,7 +416,7 @@ class Host {
       logLine("save: password verified and saved (value omitted)");
     } catch (...) {
       setSignInWaiting(false);
-      if (!childId_) childId_ = childSessionId();
+      if (!childId_ && signInStarted_) childId_ = childSessionId();
       cleanupSession_ = childId_;
       stopPrivate();
       throw;
@@ -500,6 +501,7 @@ class Host {
           FLASHWINFO flash{sizeof(flash), window_, FLASHW_TRAY, 3, 0}; FlashWindowEx(&flash);
         }
         connected = rdp_.begin(window_, width, height, &error, credential.get());
+        if (connected) signInStarted_ = true;
       });
       setSignInWaiting(!credential && connected);
       refreshStatus();
@@ -543,7 +545,7 @@ class Host {
       ui([&] { ShowWindow(window_, SW_HIDE); });
     } catch (...) {
       setSignInWaiting(false);
-      if (!childId_) childId_ = childSessionId();
+      if (!childId_ && signInStarted_) childId_ = childSessionId();
       cleanupSession_ = childId_;
       stopPrivate();
       throw;
@@ -640,7 +642,7 @@ class Host {
     // Disconnect first so a still-connecting control cannot create a child
     // after the cleanup query. Windows logoff itself is asynchronous/bounded.
     ui([&] { rdp_.end(); ShowWindow(window_, SW_HIDE); });
-    if (!childId_) childId_ = childSessionId();
+    if (!childId_ && signInStarted_) childId_ = childSessionId();
     cleanupSession_ = childId_;
     const auto deadline = hardDeadline_ ? std::min<int64_t>(hardDeadline_, nowMs() + 10'000) : nowMs() + 10'000;
     const bool signedOut = !childId_ || signOutSession(childId_, deadline);
@@ -648,6 +650,7 @@ class Host {
       privateActive_ = false; recording_ = false;
       fail(code::kDriverUnavailable, "Windows could not sign out the private screen. Its session is retained; retry Stop before starting another screen.");
     }
+    signInStarted_ = false;
     childId_ = 0; cleanupSession_ = 0; holder_.clear(); holderName_.clear(); activeUntil_ = 0; privateActive_ = false; recording_ = false;
     logLine("teardown: complete");
   }
@@ -664,6 +667,8 @@ class Host {
   std::atomic<DWORD> cleanupSession_{0};
   RdpSession rdp_;
   std::string holder_, holderName_;
+  // A global Windows child session is not ours unless our RDP begin succeeded.
+  bool signInStarted_ = false;
   DWORD childId_ = 0;
   HANDLE toChild_ = INVALID_HANDLE_VALUE, fromChild_ = INVALID_HANDLE_VALUE;
   std::unique_ptr<LineWriter> childOutput_;

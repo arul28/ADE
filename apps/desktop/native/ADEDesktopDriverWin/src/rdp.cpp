@@ -443,7 +443,7 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
   if (credential) {
     // Match the successful saved-password spike exactly: the full qualified
     // name belongs in UserName, not split across UserName and Domain.
-    logLine("rdp: account UserName=" + Json(narrow(credential->username)).dump() + " Domain=control default");
+    logLine("rdp: account present=" + std::to_string(!credential->username.empty()) + " kind=" + credentialAccountKind(credential->username));
     VARIANT user = vBstr(credential->username.c_str());
     hr = dispPut(impl_->disp, L"UserName", user);
     VariantClear(&user);
@@ -451,7 +451,7 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
     for (const wchar_t* property : {L"UserName", L"Domain"}) {
       VARIANT actual;
       if (SUCCEEDED(dispGet(impl_->disp, property, &actual)) && actual.vt == VT_BSTR)
-        logLine("rdp: account readback " + narrow(property) + "=" + Json(actual.bstrVal ? narrow(actual.bstrVal) : "").dump());
+        logLine("rdp: account readback " + narrow(property) + "Present=" + std::to_string(actual.bstrVal && *actual.bstrVal));
       VariantClear(&actual);
     }
     IMsTscNonScriptable* native = nullptr;

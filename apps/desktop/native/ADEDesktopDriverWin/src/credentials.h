@@ -13,6 +13,7 @@ struct WindowsCredential {
   WindowsCredential& operator=(const WindowsCredential&) = delete;
   ~WindowsCredential() { if (!password.empty()) SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t)); }
 };
+std::string credentialAccountKind(const std::wstring& username);
 std::wstring credentialTarget(const std::wstring& home);
 bool credentialSaved(const std::wstring& target);
 std::unique_ptr<WindowsCredential> readCredential(const std::wstring& target);
