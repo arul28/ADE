@@ -11,6 +11,7 @@ import {
   CaretRight,
   ArrowRight,
   Bug,
+  ArrowBendUpRight,
   CloudArrowUp,
   GitFork,
   Warning,
@@ -2589,6 +2590,16 @@ function renderEvent(
   if (event.type === "user_message") {
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const metadataKind = event.metadata?.hideFullPrompt === true && typeof event.metadata?.kind === "string"
+      ? event.metadata.kind
+      : null;
+    // A brief handoff's first message is the hidden brief. The thread marks it
+    // with a line, like the fork line, not with a label inside the bubble.
+    const handoffBriefLabel = metadataKind === "handoff"
+      ? "Started from a brief of the previous chat"
+      : metadataKind === "cross_machine_handoff"
+        ? "Continued from another computer"
+        : null;
     return (
       <motion.div
         className="flex min-w-0 max-w-full w-full flex-col items-end overflow-visible"
@@ -2597,6 +2608,21 @@ function renderEvent(
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
+        {handoffBriefLabel ? (
+          <div
+            className="mb-3 flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]"
+            data-testid="handoff-brief-divider"
+          >
+            <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+            <span className="inline-flex shrink-0 items-center gap-1.5">
+              {metadataKind === "cross_machine_handoff"
+                ? <CloudArrowUp size={12} weight="regular" className="opacity-80" aria-hidden />
+                : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
+              {handoffBriefLabel}
+            </span>
+            <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+          </div>
+        ) : null}
         <div
           className={cn(
             GLASS_CARD_CLASS,
@@ -2631,30 +2657,9 @@ function renderEvent(
           {(() => {
             const displayText = event.displayText?.trim();
             if (event.metadata?.hideFullPrompt === true) {
-              const metadataKind = typeof event.metadata?.kind === "string" ? event.metadata.kind : null;
-              const isHandoffBrief = metadataKind === "handoff" || metadataKind === "cross_machine_handoff";
-              const briefChip = isHandoffBrief ? (
-                <div
-                  className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_26%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-4 text-[color:color-mix(in_srgb,var(--chat-accent)_78%,var(--chat-fg,#e6e6e6))]"
-                  data-testid="handoff-brief-chip"
-                >
-                  <CloudArrowUp size={12} weight="regular" className="shrink-0 opacity-85" aria-hidden />
-                  Previous chat summarized into this chat&rsquo;s context
-                </div>
+              return displayText ? (
+                <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
               ) : null;
-              if (!briefChip) {
-                return displayText ? (
-                  <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-                ) : null;
-              }
-              return (
-                <div>
-                  {briefChip}
-                  {displayText ? (
-                    <ChipText className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white" text={displayText} />
-                  ) : null}
-                </div>
-              );
             }
             // A send that carried thread comments: the review card, then what
             // the user typed (if anything) under it.
