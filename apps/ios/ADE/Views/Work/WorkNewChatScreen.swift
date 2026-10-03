@@ -717,6 +717,10 @@ struct WorkNewChatScreen: View {
   /// `HubComposerDrawer`'s destination-picker focus restore).
   @State private var composerFocused: Bool = false
   @State private var composerFocusedBeforeLaneSheet: Bool = false
+  /// The selection the screen opened on, so the host's launch defaults only
+  /// replace it while the user has not picked anything here yet.
+  private let openingSelection: WorkComposerPreferences.Selection
+  @State private var hostLaunchDefaultsChecked = false
 
   init(
     lanes: [LaneSummary],
@@ -765,6 +769,43 @@ struct WorkNewChatScreen: View {
       modelId: restoredModelId,
       provider: restoredProvider
     ))
+    let saved = WorkComposerPreferences.load()
+    openingSelection = WorkComposerPreferences.Selection(
+      provider: restoredProvider,
+      modelId: restoredModelId,
+      runtimeMode: saved?.runtimeMode ?? "default",
+      reasoningEffort: saved?.reasoningEffort ?? "",
+      codexFastMode: saved?.codexFastMode ?? false
+    )
+  }
+
+  /// Open a new chat on what this machine used last, from any client. Only a
+  /// chat on the focused machine, and only before the user picks anything here.
+  @MainActor
+  private func applyHostLaunchDefaults() async {
+    guard !hostLaunchDefaultsChecked else { return }
+    hostLaunchDefaultsChecked = true
+    guard let defaults = await syncService.fetchChatLaunchDefaults() else { return }
+    guard sessionMode == .chat, selectedMachineKey == nil, composerSelection == openingSelection else { return }
+    selectedModelOption = nil
+    provider = workNormalizedChatProvider(defaults.provider)
+    modelId = defaults.modelId
+    reasoningEffort = defaults.reasoningEffort ?? ""
+    codexFastMode = defaults.fastMode ?? false
+    let mode = workRuntimeMode(
+      provider: defaults.provider,
+      interactionMode: defaults.interactionMode,
+      permissionMode: defaults.permissionMode,
+      claudePermissionMode: defaults.claudePermissionMode,
+      codexConfigSource: defaults.codexConfigSource,
+      codexApprovalPolicy: defaults.codexApprovalPolicy,
+      codexSandbox: defaults.codexSandbox,
+      opencodePermissionMode: defaults.opencodePermissionMode,
+      cursorModeId: defaults.cursorModeId,
+      droidPermissionMode: defaults.droidPermissionMode
+    )
+    runtimeMode = mode.isEmpty ? workDefaultRuntimeMode(provider: provider) : mode
+    checkModelOnMachine()
   }
 
   /// The live composer selection. Persisted as the app-wide "last used" choice
@@ -978,6 +1019,7 @@ struct WorkNewChatScreen: View {
       // Persist the full selection without deriving one setting from another.
       WorkComposerPreferences.save(newValue)
     }
+    .task { await applyHostLaunchDefaults() }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,

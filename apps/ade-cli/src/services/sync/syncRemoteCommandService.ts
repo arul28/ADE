@@ -81,6 +81,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
   AgentChatDispatchSteerArgs,
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
@@ -2826,6 +2827,18 @@ function parseAgentChatEditSteerArgs(value: Record<string, unknown>): AgentChatE
   };
 }
 
+function parseAgentChatMoveSteerArgs(value: Record<string, unknown>): AgentChatMoveSteerArgs {
+  const toIndex = value.toIndex;
+  if (typeof toIndex !== "number" || !Number.isInteger(toIndex) || toIndex < 0) {
+    throw new Error("chat.moveSteer toIndex must be a non-negative integer.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.moveSteer requires sessionId."),
+    steerId: requireString(value.steerId, "chat.moveSteer requires steerId."),
+    toIndex,
+  };
+}
+
 function parseAgentChatDispatchSteerArgs(value: Record<string, unknown>): AgentChatDispatchSteerArgs {
   const mode = value.mode;
   if (mode !== "inline" && mode !== "interrupt") {
@@ -5310,6 +5323,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").editSteer(parseAgentChatEditSteerArgs(payload));
     return { ok: true };
   });
+  register("chat.moveSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
+    await requireService(args.agentChatService, "Agent chat service not available.").moveSteer(parseAgentChatMoveSteerArgs(payload));
+    return { ok: true };
+  });
   register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").dispatchSteer(parseAgentChatDispatchSteerArgs(payload));
     return { ok: true, dispatchedAt: result.dispatchedAt, ...(result.reason ? { reason: result.reason } : {}) };
@@ -5375,6 +5392,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     return { ok: true };
   });
+  register("chat.getLaunchDefaults", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").getLaunchDefaults());
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>

@@ -525,6 +525,18 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
+  func moveSteer(_ steerId: String, toIndex: Int) async {
+    do {
+      try await syncService.moveChatSteer(sessionId: sessionId, steerId: steerId, toIndex: toIndex)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   func editSteer(_ steerId: String, _ text: String) async {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }

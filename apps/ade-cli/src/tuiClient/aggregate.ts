@@ -1,3 +1,4 @@
+import { applySteerOrder } from "../../../desktop/src/shared/steerOrder";
 import {
   collapseActivityPhaseRows,
   mergeReasoningTextFragments,
@@ -912,6 +913,13 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+      continue;
+    }
+    if (event.type === "queue_reordered") {
+      // The host's order after a reorder; ids it does not name stay after it.
+      const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, event.steerIds);
+      steerMap.clear();
+      for (const [id, entry] of ordered) steerMap.set(id, entry);
     }
   }
   return Array.from(steerMap.values());

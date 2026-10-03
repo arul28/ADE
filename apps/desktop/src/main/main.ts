@@ -4224,6 +4224,7 @@ app.whenReady().then(async () => {
     linearLiveStatusServiceRef = linearLiveStatusService;
 
     const agentChatService = createAgentChatService({
+      machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
       projectRoot,
       analytics: productAnalyticsService,

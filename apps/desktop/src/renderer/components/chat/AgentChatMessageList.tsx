@@ -4302,8 +4302,11 @@ function DoneTurnDivider({
   workSummaryInFold = false,
   turnSources,
   onOpenTurnSources,
+  onForkFromTurn,
 }: {
   event: Extract<AgentChatEvent, { type: "done" }>;
+  /** "Fork from here": a new chat holding the conversation through this turn. */
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
   /**
    * This turn folded: its tool and file counts moved up to the fold row, so
    * the line keeps only time, usage, proof, and the checkpoint diff.
@@ -4453,11 +4456,23 @@ function DoneTurnDivider({
       {turnSources?.length && event.turnId ? (
         <TurnSourcesChip turnId={event.turnId} sources={turnSources} onOpen={onOpenTurnSources} />
       ) : null}
+      {onForkFromTurn && event.turnId ? (
+        <button
+          type="button"
+          data-testid="turn-fork-from-here"
+          aria-label="Fork from here"
+          title="Fork from here: a new chat with the conversation up to this point"
+          onClick={() => onForkFromTurn({ turnId: event.turnId!, timestamp })}
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-white/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--chat-fg,#e6e6e6))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
+        >
+          <GitFork size={11} weight="bold" aria-hidden />
+        </button>
+      ) : null}
     </span>
   );
 
   return (
-    <div className="my-4 min-w-0">
+    <div className="group/turnend my-4 min-w-0">
       <ChatTurnWorkSummary
         toolEntries={workSummaryInFold ? EMPTY_WORK_LOG_ENTRIES : toolEntries}
         fileEntries={hasCheckpointDiffSummary || workSummaryInFold
@@ -4724,6 +4739,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   /** `done` / `turn_fold` rows: sources the agent used this turn. */
   turnSources?: ChatSource[];
   onOpenTurnSources?: (turnId: string) => void;
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4790,6 +4806,7 @@ const EventRow = React.memo(function EventRow({
   turnWorkInFold = false,
   turnSources,
   onOpenTurnSources,
+  onForkFromTurn,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   const doneTurnId = envelope.event.type === "done" ? envelope.event.turnId : null;
@@ -4909,6 +4926,7 @@ const EventRow = React.memo(function EventRow({
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
+          onForkFromTurn={onForkFromTurn}
         />
       ) : null}
       {inlineProof?.length ? (
@@ -5394,6 +5412,7 @@ function AgentChatMessageListMain({
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onOpenTurnSources,
+  onForkFromTurn,
   threadComments = null,
 }: SpawnedChatProviderProps & {
   /**
@@ -5496,6 +5515,8 @@ function AgentChatMessageListMain({
   onOpenProofDrawer?: () => void;
   /** Opens the drawer's Sources section narrowed to one turn (the turn chip). */
   onOpenTurnSources?: (turnId: string) => void;
+  /** "Fork from here" on a finished turn's end line. Absent where forking is unavailable. */
+  onForkFromTurn?: (request: { turnId: string; timestamp: string }) => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   // The machine label belongs to the CHAT, not to the tab. A Work tab unions
@@ -7833,6 +7854,7 @@ function AgentChatMessageListMain({
           turnProof={turnProof}
           turnSources={turnSources}
           onOpenTurnSources={onOpenTurnSources}
+          onForkFromTurn={onForkFromTurn}
           inlineProof={inlineProof}
           resolveProofThumbnailSrc={resolveProofThumbnailSrc}
           allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
@@ -7903,6 +7925,7 @@ function AgentChatMessageListMain({
         turnProof={turnProof}
         turnSources={turnSources}
         onOpenTurnSources={onOpenTurnSources}
+        onForkFromTurn={onForkFromTurn}
         inlineProof={inlineProof}
         resolveProofThumbnailSrc={resolveProofThumbnailSrc}
         allowLocalProofArtifactProtocol={allowLocalProofArtifactProtocol}
@@ -7958,7 +7981,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

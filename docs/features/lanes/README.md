@@ -700,6 +700,23 @@ that machine's own numbers and is never marked stale by this one.
    the saved path points somewhere ADE does not manage). Restore rejects
    occupied, linked, or differently registered paths instead of overwriting
    them.
+   **An active lane whose folder vanished** (deleted by hand, reaped by a
+   cleanup tool) is rebuilt before the next chat turn instead of failing with
+   "Restore or recreate the lane": `agentChatService.sendMessage` calls
+   `laneService.recreateMissingWorktree({ laneId })`, which is narrower than
+   restore on purpose. It only acts on a non-primary, non-archived lane with no
+   delete or reclaim in flight, whose saved path is inside `.ade/worktrees`
+   (an unmanaged path may just be an unmounted drive) and is not reached
+   through a symlink. It rebuilds from the **local** branch only — a deleted
+   branch is a decision, not damage — and refuses when that branch is checked
+   out in another worktree. The stale registration is cleared with a
+   path-scoped `git worktree remove --force <path>`, never a
+   repository-wide `prune`, so a locked worktree still refuses. It holds the
+   storage-lifecycle lease and the git worktree-mutation queue, re-checks the
+   folder under that queue, and concurrent callers for one lane share one
+   attempt. A refusal leaves the original launch error to surface; a rebuild
+   posts an info notice in the chat saying the folder was recreated from the
+   branch and that uncommitted changes from the old folder are gone.
 8. **Delete** — `delete({ laneId, deleteBranch?, deleteRemoteBranch?,
    remoteBranchName?, force? })` runs an explicit teardown pipeline
    and emits `lanes.delete.event` per step. Steps execute in order:

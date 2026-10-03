@@ -712,6 +712,9 @@ struct WorkQueuedSteerStrip: View {
   let onSaveEdit: @MainActor (String, String) async -> Void
   let onDispatchInline: (@MainActor (String) async -> Void)?
   let onDispatchInterrupt: (@MainActor (String) async -> Void)?
+  /// Moves a staged message to a position; nil when the queue cannot be
+  /// reordered. Offered as a long-press menu and as VoiceOver actions.
+  var onMove: (@MainActor (String, Int) async -> Void)? = nil
 
   // Cancel haptic token: bumped each time a row's cancel lands so the
   // whole strip can drive a single sensoryFeedback modifier.
@@ -721,7 +724,31 @@ struct WorkQueuedSteerStrip: View {
     VStack(alignment: .leading, spacing: 6) {
       if steers.count > 1 { header }
 
-      ForEach(steers) { steer in
+      ForEach(Array(steers.enumerated()), id: \.element.id) { index, steer in
+        queuedRow(steer)
+          .modifier(WorkQueuedSteerReorderModifier(
+            index: index,
+            count: steers.count,
+            // Hidden while the host is offline or another row action runs,
+            // like the row's own buttons.
+            move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
+          ))
+      }
+    }
+    .padding(6)
+    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    // Floats over the thread (no band behind the composer stack), so it
+    // carries its own glass to stay legible over prose.
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
+    )
+    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
+    .accessibilityElement(children: .contain)
+  }
+
+  private func queuedRow(_ steer: WorkPendingSteerModel) -> some View {
         WorkQueuedSteerRow(
           steer: steer,
           capability: capability,
@@ -751,19 +778,6 @@ struct WorkQueuedSteerStrip: View {
             { await dispatch(steer.id) }
           }
         )
-      }
-    }
-    .padding(6)
-    .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    // Floats over the thread (no band behind the composer stack), so it
-    // carries its own glass to stay legible over prose.
-    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
-    )
-    .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
-    .accessibilityElement(children: .contain)
   }
 
   /// Static label, not a disclosure control — the rows below it are always
@@ -776,6 +790,42 @@ struct WorkQueuedSteerStrip: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel("\(steers.count) queued messages")
       .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
+  }
+}
+
+/// Reorder for one staged row: a long-press menu (Send first / Move up / Move
+/// down / Send last) and the same moves as VoiceOver actions. Desktop drags a
+/// handle; on a phone the row's tap already opens its detail sheet, so the
+/// moves live behind a long press instead of a second gesture on the card.
+private struct WorkQueuedSteerReorderModifier: ViewModifier {
+  let index: Int
+  let count: Int
+  let move: (@MainActor (Int) async -> Void)?
+
+  func body(content: Content) -> some View {
+    if let move, count > 1 {
+      content
+        .contextMenu {
+          if index > 0 {
+            Button { Task { await move(0) } } label: { Label("Send first", systemImage: "arrow.up.to.line") }
+            Button { Task { await move(index - 1) } } label: { Label("Move up", systemImage: "arrow.up") }
+          }
+          if index < count - 1 {
+            Button { Task { await move(index + 1) } } label: { Label("Move down", systemImage: "arrow.down") }
+            Button { Task { await move(count - 1) } } label: { Label("Send last", systemImage: "arrow.down.to.line") }
+          }
+        }
+        .accessibilityAction(named: "Move up") {
+          guard index > 0 else { return }
+          Task { await move(index - 1) }
+        }
+        .accessibilityAction(named: "Move down") {
+          guard index < count - 1 else { return }
+          Task { await move(index + 1) }
+        }
+    } else {
+      content
+    }
   }
 }
 

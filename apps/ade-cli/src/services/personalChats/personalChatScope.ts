@@ -298,6 +298,10 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.editSteer(args as never);
         break;
+      case "moveSteer":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.moveSteer(args as never);
+        break;
       case "dispatchSteer":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.dispatchSteer(args as never);

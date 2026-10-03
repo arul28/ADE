@@ -2047,6 +2047,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Brief handoff into a different lane (same project)
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <session> --model <model> --through-turn <turn-id>
+                                                    Fork from an earlier finished turn; later turns are left out
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
@@ -9617,6 +9619,10 @@ function buildChatPlan(args: string[]): CliPlan {
     const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
     const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
     const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
+    if (throughTurnId !== null && mode !== "fork") {
+      throw new CliUsageError("--through-turn only applies to chat fork.");
+    }
     return {
       kind: "execute",
       label: mode === "fork" ? "chat fork" : "chat handoff",
@@ -9637,6 +9643,7 @@ function buildChatPlan(args: string[]): CliPlan {
             ...(codexSandbox !== null ? { codexSandbox } : {}),
             ...(codexConfigSource !== null ? { codexConfigSource } : {}),
             ...(handoffNote !== null ? { handoffNote } : {}),
+            ...(throughTurnId !== null ? { throughTurnId } : {}),
           }),
         ),
       ],
@@ -16948,6 +16955,23 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   ...SPAWN_TYPE_FLAGS,
   ...CHAT_PARENT_FLAGS,
   ...DEFAULT_PARENT_FLAGS,
+  // `ade chat handoff` / `ade chat fork` value flags (read before the positional session).
+  "--target-lane",
+  "--target-lane-id",
+  "--reasoning-effort",
+  "--effort",
+  "--codex-approval-policy",
+  "--approval-policy",
+  "--codex-sandbox",
+  "--sandbox",
+  "--codex-config-source",
+  "--config-source",
+  "--handoff-note",
+  "--note",
+  "--through-turn",
+  "--from-turn",
+  "--target-model",
+  "--target-model-id",
 ]);
 
 /**

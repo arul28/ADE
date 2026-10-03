@@ -516,6 +516,14 @@ export type RestoreLaneResult = {
   setupWarning?: string | null;
 };
 
+/**
+ * Outcome of `laneService.recreateMissingWorktree`. `recreated: false` with no
+ * `reason` means the folder was already there and nothing was touched.
+ */
+export type RecreateMissingWorktreeResult =
+  | { recreated: true; worktreePath: string; branch: string }
+  | { recreated: false; reason?: string };
+
 export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;

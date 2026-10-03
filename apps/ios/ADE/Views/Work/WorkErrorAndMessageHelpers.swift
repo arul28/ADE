@@ -2220,6 +2220,11 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         queue.removeValue(forKey: steerId)
         resolved.insert(steerId)
       }
+    case .queueReordered(let steerIds):
+      // The host's order after a reorder. Ids it does not name (queued after
+      // it) keep their place behind the named ones.
+      let named = steerIds.filter { order.contains($0) }
+      order = named + order.filter { !named.contains($0) }
     default:
       continue
     }
@@ -2535,6 +2540,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     // the transcript must survive base+live merging as its own envelope so the
     // card builder can fold the newer state over the older one.
     return ["ade_card", card.turnId ?? "", card.id, workAdeCardContentMergeKey(card)].joined(separator: "|")
+  case .queueReordered(let steerIds):
+    return (["queue_reordered"] + steerIds).joined(separator: "|")
   case .unknown(let type):
     return ["unknown", type].joined(separator: "|")
   }

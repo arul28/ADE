@@ -473,6 +473,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       turnId: nil,
       steerId: nil
     )
+  case .queueReordered(let steerIds):
+    return .queueReordered(steerIds: steerIds)
   case .interruptReceipt(let stillQueuedUuids, let cancelledUuids):
     let stillQueuedCount = stillQueuedUuids.count
     let cancelledCount = cancelledUuids?.count ?? 0

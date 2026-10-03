@@ -87,6 +87,9 @@ import {
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
   type AgentChatSendArgs,
+  type AgentChatSteerArgs,
+  type AgentChatCancelSteerArgs,
+  type AgentChatMoveSteerArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
@@ -2021,6 +2024,7 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
 // changes reach the pane through the same `onEvent` path the host uses.
 const browserMockChatListeners = new Set<(envelope: any) => void>();
 const browserMockSentEvents = new Map<string, any[]>();
+const browserMockStagedSteers = new Map<string, string[]>();
 const browserMockThreadComments = new Map<string, ChatThreadComment[]>();
 
 function emitBrowserMockChatEvent(sessionId: string, event: Record<string, unknown>, persist = false): void {
@@ -6250,12 +6254,39 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ...(args.displayText !== undefined ? { displayText: args.displayText } : {}),
         }, true);
       },
-      steer: async () => ({
-        steerId: globalThis.crypto.randomUUID(),
-        queued: true,
-      }),
-      cancelSteer: resolvedArg(undefined),
+      // The staged queue behaves like the host's: a steer stages a queued
+      // bubble, a cancel retires it, and a move publishes the new order.
+      steer: async (args: AgentChatSteerArgs) => {
+        const steerId = globalThis.crypto.randomUUID();
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, [...queue, steerId]);
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "user_message",
+          text: args.text,
+          steerId,
+          deliveryState: "queued",
+          ...(args.attachments?.length ? { attachments: args.attachments } : {}),
+          ...(args.contextAttachments?.length ? { contextAttachments: args.contextAttachments } : {}),
+        }, true);
+        return { steerId, queued: true };
+      },
+      cancelSteer: async (args: AgentChatCancelSteerArgs) => {
+        const queue = browserMockStagedSteers.get(args.sessionId) ?? [];
+        browserMockStagedSteers.set(args.sessionId, queue.filter((id) => id !== args.steerId));
+        emitBrowserMockChatEvent(args.sessionId, {
+          type: "system_notice",
+          noticeKind: "info",
+          steerId: args.steerId,
+          message: "Queued message cancelled.",
+        }, true);
+      },
       editSteer: resolvedArg(undefined),
+      moveSteer: async (args: AgentChatMoveSteerArgs) => {
+        const queue = (browserMockStagedSteers.get(args.sessionId) ?? []).filter((id) => id !== args.steerId);
+        queue.splice(Math.max(0, Math.min(queue.length, args.toIndex)), 0, args.steerId);
+        browserMockStagedSteers.set(args.sessionId, queue);
+        emitBrowserMockChatEvent(args.sessionId, { type: "queue_reordered", steerIds: queue }, true);
+      },
       dispatchSteer: resolvedArg({
         delivered: false,
         reason: "Browser mock does not run chat sessions.",
@@ -6306,6 +6337,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       dismissPendingInput: resolvedArg(undefined),
+      launchDefaults: resolvedArg(null),
       models: resolvedArg([]),
       modelCatalog: resolvedArg({ groups: [], fetchedAt: new Date(0).toISOString() }),
       archive: resolvedArg(undefined),

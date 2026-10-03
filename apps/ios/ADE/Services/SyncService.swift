@@ -14927,6 +14927,26 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The focused machine's last-used chat model and settings, or nil when the
+  /// host has none or predates the command (the phone then keeps its own).
+  func fetchChatLaunchDefaults() async -> AgentChatLaunchDefaults? {
+    guard supportsRemoteAction("chat.getLaunchDefaults") else { return nil }
+    return try? await sendDecodableCommand(
+      action: "chat.getLaunchDefaults",
+      as: AgentChatLaunchDefaults?.self
+    )
+  }
+
+  func moveChatSteer(sessionId: String, steerId: String, toIndex: Int) async throws {
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: chatActionName("chat.moveSteer", sessionId: sessionId),
+      payload: AgentChatMoveSteerRequest(sessionId: sessionId, steerId: steerId, toIndex: toIndex),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
   func editChatSteer(sessionId: String, steerId: String, text: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
