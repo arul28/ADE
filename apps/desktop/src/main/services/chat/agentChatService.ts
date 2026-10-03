@@ -253,11 +253,13 @@ import {
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
-import { launchDefaultsFromSession, readChatLaunchDefaults, writeChatLaunchDefaults } from "./chatLaunchDefaults";
+import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
+import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
+import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
-  permissionFieldsForLevel,
+  lowerPermissionCeiling,
+  permissionCeilingClamp,
   permissionLevelLabel,
-  permissionLevelRank,
   sessionPermissionLevel,
   type PermissionLevel,
   type SessionPermissionFields,
@@ -438,6 +440,7 @@ import type {
   AgentChatEditSteerArgs,
   AgentChatMoveSteerArgs,
   AgentChatLaunchDefaults,
+  AgentChatRuntimeActor,
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -6679,26 +6682,7 @@ function survivingPersistedSteers(
   const cancelled = cancelledPersistedSteerIds.get(managed);
   const surviving = cancelled?.size ? steers.filter((steer) => !cancelled.has(steer.steerId)) : [...steers];
   const order = persistedSteerOrder.get(managed);
-  if (!order?.length) return surviving;
-  const rank = new Map(order.map((id, index) => [id, index] as const));
-  // Stable: rows the order does not name keep their place after the named ones.
-  return surviving
-    .map((steer, index) => ({ steer, key: rank.get(steer.steerId) ?? order.length + index }))
-    .sort((a, b) => a.key - b.key)
-    .map(({ steer }) => steer);
-}
-
-/**
- * `ids` with `id` moved to `toIndex` (clamped), or null when `id` is absent.
- * Returns the same order when the move is a no-op.
- */
-function moveId(ids: readonly string[], id: string, toIndex: number): string[] | null {
-  const from = ids.indexOf(id);
-  if (from === -1) return null;
-  const next = ids.filter((candidate) => candidate !== id);
-  const target = Math.max(0, Math.min(next.length, Number.isFinite(toIndex) ? Math.trunc(toIndex) : from));
-  next.splice(target, 0, id);
-  return next;
+  return order?.length ? applySteerOrder(surviving, (steer) => steer.steerId, order) : surviving;
 }
 
 function cursorSdkSilentRunError(): Error {
@@ -11936,8 +11920,10 @@ export function createAgentChatService(args: {
         listChats: listSessions,
         getChatStatus: getSessionSummary,
         getChatTranscript,
-        createChat: createSession,
-        updateChatSession: updateSession,
+        // In-process CTO tools: the CTO is trusted with permissions but, like
+        // any non-person caller, never moves the machine's launch defaults.
+        createChat: (createArgs) => createSession({ ...createArgs, runtimeActor: { kind: "cto" } }),
+        updateChatSession: (updateArgs) => updateSessionAndRememberDefaults({ ...updateArgs, runtimeActor: { kind: "cto" } }),
         sendChatMessage: sendMessage,
         interruptChat: async (args) => {
           await interrupt(args);
@@ -12009,7 +11995,7 @@ export function createAgentChatService(args: {
               toggleRule: (a) => automationRuleToggle.call(automationService, a),
             }
           : null,
-        handoffSession: (handoffArgs) => handoffSession(handoffArgs as AgentChatHandoffArgs),
+        handoffSession: (handoffArgs) => handoffSession({ ...(handoffArgs as AgentChatHandoffArgs), runtimeActor: { kind: "cto" } }),
         scheduledWorkService: {
           create: (a) => createScheduledWork(a as AgentChatCreateScheduledWorkArgs),
           list: (a) => listScheduledWork(a ?? {}),
@@ -16292,24 +16278,26 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The ceiling a parent chat puts on a child's permissions: null when the
-   * child is at or below the parent's level, otherwise the fields that bring
-   * the child down to it. A parent ADE cannot load caps at `ask`.
+   * The highest permission level a chat may be given by this call: the lower
+   * of its parent's level (a spawned chat) and the calling agent's own chat
+   * level (an agent can never hand out more than it has). Null when neither
+   * applies — a person, the CTO, or an unparented chat from an agent that has
+   * no chat of its own. A parent or caller chat ADE cannot load caps at `ask`.
    */
-  const resolveParentPermissionCeiling = (
-    parentSessionId: string,
-    child: SessionPermissionFields,
-  ): { level: PermissionLevel; requested: PermissionLevel; patch: ReturnType<typeof permissionFieldsForLevel> } | null => {
-    let parent: AgentChatSession | null = null;
-    try {
-      parent = ensureManagedSession(parentSessionId).session;
-    } catch {
-      parent = null;
-    }
-    const parentLevel = parent ? sessionPermissionLevel(parent, "ask") : "ask";
-    const requested = sessionPermissionLevel(child, "full-auto");
-    if (permissionLevelRank(requested) <= permissionLevelRank(parentLevel)) return null;
-    return { level: parentLevel, requested, patch: permissionFieldsForLevel(child.provider, parentLevel) };
+  const resolvePermissionCeiling = (args: {
+    parentSessionId?: string | null;
+    actor?: AgentChatRuntimeActor | null;
+  }): PermissionLevel | null => {
+    const levelOf = (sessionId: string): PermissionLevel => {
+      try {
+        return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
+      } catch {
+        return "ask";
+      }
+    };
+    const parentId = args.parentSessionId?.trim();
+    const callerId = args.actor?.kind === "agent" ? args.actor.chatSessionId?.trim() : null;
+    return lowerPermissionCeiling(parentId ? levelOf(parentId) : null, callerId ? levelOf(callerId) : null);
   };
 
   const resolveManagedExecutionLaneId = (managed: ManagedChatSession): string =>
@@ -39890,116 +39878,44 @@ export function createAgentChatService(args: {
     onDeliveryFailed: (lastError: unknown) => void;
   };
 
-  /**
-   * Child completions waiting to wake an idle parent together. A parent that is
-   * mid-turn takes each result inline as it lands, at no extra cost; an idle
-   * parent would otherwise start one full turn per finished child, so results
-   * from siblings that finish close together share one wake. A batch flushes as
-   * soon as no sibling subagent is still running, or after the hold limit.
-   */
-  type PendingParentWake = {
-    entries: Array<{
-      childSessionId: string;
-      wakeText: string;
-      spawnCompletion: AgentChatSpawnCompletion;
-      resolve: () => void;
-      reject: (error: unknown) => void;
-    }>;
-    timer: ReturnType<typeof setTimeout> | null;
-    startedAt: number;
-  };
-  const pendingParentWakes = new Map<string, PendingParentWake>();
-  /** Longest an idle parent waits for siblings before its wake goes anyway. */
-  const PARENT_WAKE_BATCH_HOLD_MS = 15_000;
-
-  const parentHasRunningSubagent = (parentSessionId: string, exceptChildId: string): boolean => {
-    for (const candidate of managedSessions.values()) {
-      if (candidate.deleted || candidate.session.id === exceptChildId) continue;
-      if (candidate.session.orchestrationParentSessionId?.trim() !== parentSessionId) continue;
-      if (candidate.session.spawnKind !== "subagent") continue;
-      if (candidate.session.status === "active" || runtimeMidTurn(candidate)) return true;
-    }
-    return false;
-  };
-
-  const flushParentWake = async (parentSessionId: string): Promise<void> => {
-    const batch = pendingParentWakes.get(parentSessionId);
-    if (!batch) return;
-    pendingParentWakes.delete(parentSessionId);
-    if (batch.timer) clearTimeout(batch.timer);
-    const [lead, ...rest] = batch.entries;
-    if (!lead) return;
-    try {
-      const parent = ensureManagedSession(parentSessionId);
-      const text = rest.length
-        ? [`${batch.entries.length} of your subagents finished:`, ...batch.entries.map((entry) => entry.wakeText)].join("\n\n")
-        : lead.wakeText;
+  const parentWakes = createParentWakeBatcher({
+    isParentBusy: (parentSessionId) => {
+      const parent = managedSessions.get(parentSessionId);
+      return Boolean(parent && (parent.session.status === "active" || runtimeMidTurn(parent)));
+    },
+    hasRunningSibling: (parentSessionId, exceptChildId) => {
+      for (const candidate of managedSessions.values()) {
+        if (candidate.deleted || candidate.session.id === exceptChildId) continue;
+        if (candidate.session.orchestrationParentSessionId?.trim() !== parentSessionId) continue;
+        if (candidate.session.spawnKind !== "subagent") continue;
+        if (candidate.session.status === "active" || runtimeMidTurn(candidate)) return true;
+      }
+      return false;
+    },
+    deliverWake: async (parentSessionId, text, lead) => {
       await messageSession({
         sessionId: parentSessionId,
         kind: "wake",
         text,
-        metadata: { spawnCompletion: lead.spawnCompletion },
+        metadata: { spawnCompletion: lead },
       }, { trustedSpawnCompletion: true });
-      // Each extra child keeps its own completion row, which is also its
-      // delivery dedupe anchor. Written only once the wake landed, so a failed
-      // wake leaves them undelivered and the retry carries them again.
-      for (const entry of rest) {
-        emitChatEvent(parent, {
-          type: "system_notice",
-          noticeKind: "info",
-          status: "spawn_completed",
-          message: spawnCompletedNoticeMessage(entry.spawnCompletion.childTitle ?? "Subagent"),
-          detail: { spawnCompletion: entry.spawnCompletion },
-        });
-      }
-      logger.info("agent_chat.parent_wake_delivered", {
-        parentSessionId,
-        completions: batch.entries.length,
-        heldMs: Date.now() - batch.startedAt,
+    },
+    recordBatchedCompletion: (parentSessionId, completion) => {
+      emitChatEvent(ensureManagedSession(parentSessionId), {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_completed",
+        message: spawnCompletedNoticeMessage(completion.childTitle ?? "Subagent"),
+        detail: { spawnCompletion: completion },
       });
-      for (const entry of batch.entries) entry.resolve();
-    } catch (error) {
-      for (const entry of batch.entries) entry.reject(error);
-    }
-  };
-
-  /**
-   * Wake a parent with one child's completion, batching with siblings when
-   * the parent is idle and other subagents of it are still running.
-   */
-  const wakeParentWithChildCompletion = (
-    parent: ManagedChatSession,
-    childSessionId: string,
-    wakeText: string,
-    spawnCompletion: AgentChatSpawnCompletion,
-  ): Promise<void> => {
-    const parentSessionId = parent.session.id;
-    const parentBusy = parent.session.status === "active" || runtimeMidTurn(parent);
-    const pending = pendingParentWakes.get(parentSessionId);
-    if (parentBusy && !pending) {
-      return messageSession({
-        sessionId: parentSessionId,
-        kind: "wake",
-        text: wakeText,
-        metadata: { spawnCompletion },
-      }, { trustedSpawnCompletion: true }).then(() => {
-        logger.info("agent_chat.parent_wake_delivered", { parentSessionId, completions: 1, heldMs: 0, joinedLiveTurn: true });
-      });
-    }
-    return new Promise<void>((resolve, reject) => {
-      const batch: PendingParentWake = pending ?? { entries: [], timer: null, startedAt: Date.now() };
-      batch.entries.push({ childSessionId, wakeText, spawnCompletion, resolve, reject });
-      pendingParentWakes.set(parentSessionId, batch);
-      if (!parentHasRunningSubagent(parentSessionId, childSessionId)) {
-        void flushParentWake(parentSessionId);
-        return;
-      }
-      if (!batch.timer) {
-        batch.timer = setTimeout(() => { void flushParentWake(parentSessionId); }, PARENT_WAKE_BATCH_HOLD_MS);
-        batch.timer.unref?.();
-      }
-    });
-  };
+    },
+    onDelivered: (event) => logger.info("agent_chat.parent_wake_delivered", event),
+    onRecordFailed: ({ parentSessionId, childSessionId, error }) => logger.warn("agent_chat.parent_wake_record_failed", {
+      parentSessionId,
+      childSessionId,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  });
 
   /**
    * Route one child completion into its parent: the `subagent_result` that
@@ -40105,7 +40021,7 @@ export function createAgentChatService(args: {
               }, { trustedSpawnCompletion: true });
             }
           } else if (parentShouldWake) {
-            await wakeParentWithChildCompletion(parent, childSessionId, delivery.wakeText, spawnCompletion);
+            await parentWakes.wake(parent.session.id, childSessionId, delivery.wakeText, spawnCompletion);
           } else {
             emitChatEvent(parent, {
               type: "system_notice",
@@ -40522,6 +40438,7 @@ export function createAgentChatService(args: {
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
     spawnKind: requestedSpawnKind,
     idempotencyKey,
+    runtimeActor,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
     // as the chat's Fast tier, the one control that now carries it.
@@ -40975,15 +40892,19 @@ export function createAgentChatService(args: {
       };
       })();
       // A spawned chat never runs with more freedom than the chat that spawned
-      // it (see `sessionPermissionLevel`). Identity-pinned sessions are locked
-      // to their own mode and stay out of it.
-      const parentPermissionCeiling = normalizedParentSessionId && !permissionsPinned
-        ? resolveParentPermissionCeiling(normalizedParentSessionId, {
+      // it, and an agent never starts a chat with more than its own (see
+      // `resolvePermissionCeiling`). Identity-pinned sessions are locked to
+      // their own mode and stay out of it.
+      const permissionCeiling = permissionsPinned
+        ? null
+        : resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId, actor: runtimeActor });
+      const parentPermissionCeiling = permissionCeiling
+        ? permissionCeilingClamp({
             provider: effectiveProvider,
             ...nativePermissionFields,
             permissionMode: effectivePermissionMode
               ?? ("permissionMode" in nativePermissionFields ? nativePermissionFields.permissionMode : undefined),
-          })
+          }, permissionCeiling)
         : null;
       const initialClaudeOutputStyle = effectiveProvider === "claude"
         ? normalizePersistedOutputStyle(requestedClaudeOutputStyle)
@@ -41210,7 +41131,9 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`,
+        message: normalizedParentSessionId
+          ? `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`
+          : `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}": an agent can't start a chat with more access than its own.`,
       });
       logger.info("agent_chat.parent_permission_ceiling", {
         sessionId,
@@ -41232,7 +41155,8 @@ export function createAgentChatService(args: {
     }
 
     persistChatState(managed);
-    rememberLaunchDefaults(managed.session);
+    // Only a person's choice moves the machine's defaults.
+    if (!runtimeActor) rememberLaunchDefaults(managed.session);
     return managed.session;
   };
 
@@ -41558,6 +41482,7 @@ export function createAgentChatService(args: {
 
     const created = await createSession({
       laneId: targetLaneId,
+      ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
       provider: targetProvider,
       model: targetModel,
       modelId: targetDescriptor.id,
@@ -41647,10 +41572,11 @@ export function createAgentChatService(args: {
     }
 
     if (handoffMode === "fork") {
-      const persistedEnvelopes = readTranscriptEnvelopes(managed);
-      const keptEnvelopes = requestedThroughTurnId && forkFromEarlierTurn
-        ? sliceTranscriptThroughTurn(persistedEnvelopes, requestedThroughTurnId)?.envelopes ?? persistedEnvelopes
-        : persistedEnvelopes;
+      // One cut, shared with the replay above, so the copied history and what
+      // the new agent reads are always the same turns.
+      const keptEnvelopes = forkPoint && forkFromEarlierTurn
+        ? forkPoint.envelopes
+        : readTranscriptEnvelopes(managed);
       const sourceEnvelopes = keptEnvelopes.map((envelope) => ({
         ...envelope,
         sessionId: created.id,
@@ -52067,13 +51993,18 @@ export function createAgentChatService(args: {
       // queue is the only copy, and the next runtime hydrates it in order.
       const persisted = survivingPersistedSteers(managed, readPersistedState(managed.session.id)?.pendingSteers ?? []);
       const ids = persisted.map((steer) => steer.steerId);
-      const nextIds = moveId(ids, steerId, toIndex);
+      const nextIds = moveSteerId(ids, steerId, toIndex);
       if (!nextIds) throw new Error("This message is no longer queued.");
       persistedSteerOrder.set(managed, nextIds);
       emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
       persistChatState(managed);
+      // The file now holds this order; keeping the override would re-sort a
+      // later live reorder back to it on the next torn-down persist.
+      persistedSteerOrder.delete(managed);
       return;
     }
+    // Already refused by provider above; kept so the type narrows to the
+    // runtimes whose `pendingSteers` ADE owns.
     if (runtime.kind === "codex" || runtime.kind === "opencode") {
       throw new Error("This provider keeps its own queue, so its order can't be changed.");
     }
@@ -52081,7 +52012,7 @@ export function createAgentChatService(args: {
       throw new Error("This message is already being dispatched.");
     }
     const queue = runtime.pendingSteers;
-    const nextIds = moveId(queue.map((steer) => steer.steerId), steerId, toIndex);
+    const nextIds = moveSteerId(queue.map((steer) => steer.steerId), steerId, toIndex);
     if (!nextIds) throw new Error("This message is no longer queued.");
     const byId = new Map(queue.map((steer) => [steer.steerId, steer] as const));
     queue.splice(0, queue.length, ...nextIds.map((id) => byId.get(id)!));
@@ -57674,6 +57605,8 @@ export function createAgentChatService(args: {
     autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
+    // Held parent wakes must not fire into a disposed service.
+    parentWakes.dispose();
   };
 
   const disposeAll = async (): Promise<void> => {
@@ -58041,7 +57974,7 @@ export function createAgentChatService(args: {
     autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
     mcpServers: requestedMcpServers,
     attachmentRoots: requestedAttachmentRoots,
-    enforceParentPermissionCeiling,
+    runtimeActor,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     // Cursor's Fast toggle sent as a model option by an older client becomes
     // the chat's Fast tier; an option record left empty by the fold clears.
@@ -58054,24 +57987,50 @@ export function createAgentChatService(args: {
       ? foldedCursorFast.configValues ?? null
       : requestedCursorConfigValuesArg;
     const managed = ensureManagedSession(sessionId);
-    const parentSessionId = managed.session.orchestrationParentSessionId?.trim();
-    if (enforceParentPermissionCeiling && parentSessionId) {
-      const defined = <T,>(value: T | null | undefined): T | undefined => value ?? undefined;
-      const ceiling = resolveParentPermissionCeiling(parentSessionId, {
-        ...managed.session,
-        ...(claudePermissionMode !== undefined ? { claudePermissionMode: defined(claudePermissionMode) } : {}),
-        ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy: defined(codexApprovalPolicy) } : {}),
-        ...(codexSandbox !== undefined ? { codexSandbox: defined(codexSandbox) } : {}),
-        ...(codexConfigSource !== undefined ? { codexConfigSource: defined(codexConfigSource) } : {}),
-        ...(opencodePermissionMode !== undefined ? { opencodePermissionMode: defined(opencodePermissionMode) } : {}),
-        ...(droidPermissionMode !== undefined ? { droidPermissionMode: defined(droidPermissionMode) } : {}),
-        ...(cursorModeId !== undefined ? { cursorModeId: defined(cursorModeId) } : {}),
-        ...(requestedAcpPermissionMode !== undefined ? { acpPermissionMode: defined(requestedAcpPermissionMode) } : {}),
-        ...(permissionMode !== undefined ? { permissionMode: defined(permissionMode) } : {}),
+    // An agent can only lower permissions, never raise them past its own
+    // chat's level or the target's parent. Checked only when the update can
+    // change the level (a permission field, or a model that may switch the
+    // provider), against the provider the update resolves to.
+    const nativePermissionPatch: Partial<SessionPermissionFields> = Object.fromEntries(Object.entries({
+      claudePermissionMode,
+      codexApprovalPolicy,
+      codexSandbox,
+      codexConfigSource,
+      opencodePermissionMode,
+      droidPermissionMode,
+      cursorModeId,
+      acpPermissionMode: requestedAcpPermissionMode,
+    }).filter(([, value]) => value !== undefined));
+    const touchesPermissions = permissionMode !== undefined
+      || interactionMode !== undefined
+      || Object.keys(nativePermissionPatch).length > 0;
+    // Identity-pinned sessions ignore permission changes, so there is nothing
+    // an agent could raise there.
+    if (
+      runtimeActor?.kind === "agent"
+      && !isPrimaryPinnedIdentity(managed.session.identityKey)
+      && (modelId !== undefined || touchesPermissions)
+    ) {
+      const ceiling = resolvePermissionCeiling({
+        parentSessionId: managed.session.orchestrationParentSessionId,
+        actor: runtimeActor,
       });
-      if (ceiling) {
+      const targetDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : null;
+      const provider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : managed.session.provider;
+      // The fields this update will leave, built in the update's own order:
+      // the generic word rewrites the provider's native fields first, then any
+      // explicit native field is layered on top.
+      const after = { ...managed.session, provider };
+      if (permissionMode !== undefined) applyLegacyPermissionModeToNativeControls(after, permissionMode);
+      Object.assign(after, nativePermissionPatch);
+      if (interactionMode !== undefined) after.interactionMode = interactionMode ?? undefined;
+      // The same normalization the update ends with (Claude rebuilds its
+      // access mode from the generic word here).
+      normalizeSessionNativePermissionControls(after, resolveChatConfig());
+      const clamp = ceiling ? permissionCeilingClamp(after, ceiling) : null;
+      if (clamp) {
         throw new Error(
-          `A spawned chat can't have more permissions than the chat that started it ("${permissionLevelLabel(ceiling.level)}").`,
+          `An agent can't give a chat more access than "${permissionLevelLabel(clamp.level)}" (its own level or the chat's parent).`,
         );
       }
     }
@@ -58878,23 +58837,10 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  let inMemoryLaunchDefaults: AgentChatLaunchDefaults | null = null;
+  const launchDefaults = createChatLaunchDefaultsStore(args.machineAdeHome);
+  const rememberLaunchDefaults = launchDefaults.remember;
 
-  /**
-   * Remember a user's chat settings as this machine's launch defaults. Only a
-   * top-level Work chat counts: subagents, CTO and identity chats, and
-   * automation runs launch on settings someone else picked.
-   */
-  const rememberLaunchDefaults = (session: AgentChatSession): void => {
-    if ((session.surface ?? "work") !== "work") return;
-    if (session.orchestrationParentSessionId?.trim() || session.identityKey || session.automationId) return;
-    const defaults = launchDefaultsFromSession(session);
-    if (!defaults) return;
-    if (args.machineAdeHome) writeChatLaunchDefaults(args.machineAdeHome, defaults);
-    else inMemoryLaunchDefaults = defaults;
-  };
-
-  const LAUNCH_DEFAULT_UPDATE_FIELDS = [
+  const LAUNCH_DEFAULT_UPDATE_FIELDS: ReadonlyArray<keyof AgentChatUpdateSessionArgs> = [
     "modelId", "reasoningEffort", "fastMode", "codexFastMode", "interactionMode", "permissionMode",
     "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource",
     "opencodePermissionMode", "droidPermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
@@ -58903,13 +58849,12 @@ export function createAgentChatService(args: {
   /** The public update: a person changing a chat's settings also moves the machine defaults. */
   const updateSessionAndRememberDefaults = async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const session = await updateSession(args);
-    const touchesDefaults = LAUNCH_DEFAULT_UPDATE_FIELDS.some((field) => (args as Record<string, unknown>)[field] !== undefined);
-    if (touchesDefaults && !args.enforceParentPermissionCeiling) rememberLaunchDefaults(session);
+    const touchesDefaults = LAUNCH_DEFAULT_UPDATE_FIELDS.some((field) => args[field] !== undefined);
+    if (touchesDefaults && !args.runtimeActor) rememberLaunchDefaults(session);
     return session;
   };
 
-  const getLaunchDefaults = (): AgentChatLaunchDefaults | null =>
-    args.machineAdeHome ? readChatLaunchDefaults(args.machineAdeHome) : inMemoryLaunchDefaults;
+  const getLaunchDefaults = (): AgentChatLaunchDefaults | null => launchDefaults.get();
 
   /**
    * Explicitly pre-warm a provider query for an existing chat session.
@@ -61907,6 +61852,7 @@ export function createAgentChatService(args: {
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,
     getLaunchDefaults,
+    getPermissionCeiling: resolvePermissionCeiling,
     regenerateSessionMetadata,
     setSpawnKind,
     dismissSubagentTakeoverPrompt,

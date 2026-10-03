@@ -3659,6 +3659,8 @@ export type AgentChatPermissionPolicy = {
 };
 
 export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
   laneId: string;
   provider: AgentChatProvider;
   model: string;
@@ -3982,6 +3984,8 @@ export type AgentChatHandoffArgs = {
    * whole chat.
    */
   throughTurnId?: string | null;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
   /**
    * When set (including `null` for "no extra reasoning"), combined with the target
    * model to pick a valid reasoning tier. When omitted, inherits from the source
@@ -5046,14 +5050,25 @@ export type AgentChatDismissSubagentTakeoverPromptArgs = {
   sessionId: string;
 };
 
+/**
+ * Who asked for a chat create, update or fork, stamped by the runtime's RPC
+ * layer for every caller that is not one of the user's own clients. Whatever a
+ * caller sends in this field is discarded first, so it can only come from the
+ * runtime. Absent means a person (desktop, web, phone).
+ *
+ * An `agent` actor can never give any chat more permission than its own chat
+ * has, and a spawned chat is also capped at its parent; an agent's chats and
+ * settings never move the machine's launch defaults. The CTO is trusted with
+ * permissions but, like an agent, does not move the launch defaults.
+ */
+export type AgentChatRuntimeActor =
+  | { kind: "agent"; chatSessionId: string | null }
+  | { kind: "cto" };
+
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
-  /**
-   * Set by the runtime (never trusted from a caller) when an agent makes the
-   * update: refuses a permission change that would lift a spawned chat above
-   * its parent. A person changing a subagent's mode in the UI is not limited.
-   */
-  enforceParentPermissionCeiling?: boolean;
+  /** Who made the call; see `AgentChatRuntimeActor`. Absent means a person. */
+  runtimeActor?: AgentChatRuntimeActor;
   title?: string | null;
   tag?: string | null;
   manuallyNamed?: boolean;

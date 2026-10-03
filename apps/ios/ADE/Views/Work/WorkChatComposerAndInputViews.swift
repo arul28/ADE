@@ -729,7 +729,9 @@ struct WorkQueuedSteerStrip: View {
           .modifier(WorkQueuedSteerReorderModifier(
             index: index,
             count: steers.count,
-            move: onMove.map { move in { toIndex in await move(steer.id, toIndex) } }
+            // Hidden while the host is offline or another row action runs,
+            // like the row's own buttons.
+            move: isLive && !busy ? onMove.map { move in { toIndex in await move(steer.id, toIndex) } } : nil
           ))
       }
     }

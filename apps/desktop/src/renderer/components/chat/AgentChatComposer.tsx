@@ -186,6 +186,7 @@ import {
 } from "./ComposerPromptStash";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
@@ -1295,23 +1296,6 @@ function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | 
 }
 
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
-/** Drag payload type for a staged message, so file drops never read as a reorder. */
-const PENDING_STEER_DND_MIME = "application/x-ade-pending-steer";
-
-type PendingSteerReorder = {
-  index: number;
-  count: number;
-  dragging: boolean;
-  dropEdge: "before" | "after" | null;
-  /** Move this row to `toIndex` in the current list. */
-  onMove: (toIndex: number) => void;
-  onDragStart: () => void;
-  onDragOverRow: (edge: "before" | "after") => void;
-  onDrop: () => void;
-  onDragEnd: () => void;
-  handleRef: (element: HTMLButtonElement | null) => void;
-};
-
 function PendingSteerItem({
   steer,
   capability,
@@ -2410,60 +2394,11 @@ export function AgentChatComposer({
       + appControlContextItems.length
       + builtInBrowserContextItems.length,
   });
-  // Staged-queue reorder. The host publishes the order back as an event, so
-  // the local order is optimistic only until the list it overrides changes.
-  const [optimisticSteerOrder, setOptimisticSteerOrder] = useState<string[] | null>(null);
-  const [steerDrag, setSteerDrag] = useState<{
-    steerId: string;
-    over: { steerId: string; edge: "before" | "after" } | null;
-  } | null>(null);
-  const steerHandleRefs = useRef(new Map<string, HTMLButtonElement>());
-  const focusSteerHandleRef = useRef<string | null>(null);
-  const pendingSteerOrderKey = pendingSteers.map((steer) => steer.steerId).join("\u0000");
-  useEffect(() => {
-    setOptimisticSteerOrder(null);
-  }, [pendingSteerOrderKey]);
-  const orderedPendingSteers = useMemo(() => {
-    if (!optimisticSteerOrder) return pendingSteers;
-    const rank = new Map(optimisticSteerOrder.map((id, index) => [id, index] as const));
-    return [...pendingSteers].sort((a, b) =>
-      (rank.get(a.steerId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.steerId) ?? Number.MAX_SAFE_INTEGER));
-  }, [pendingSteers, optimisticSteerOrder]);
-  const canReorderSteers = Boolean(onMoveSteer) && orderedPendingSteers.length > 1;
-  useLayoutEffect(() => {
-    const steerId = focusSteerHandleRef.current;
-    if (!steerId) return;
-    focusSteerHandleRef.current = null;
-    steerHandleRefs.current.get(steerId)?.focus();
-  });
-  const moveStagedSteer = (steerId: string, toIndex: number, options?: { focus?: boolean }) => {
-    if (!onMoveSteer) return;
-    const ids = orderedPendingSteers.map((steer) => steer.steerId);
-    const from = ids.indexOf(steerId);
-    if (from === -1 || toIndex === from) return;
-    ids.splice(from, 1);
-    ids.splice(toIndex, 0, steerId);
-    setOptimisticSteerOrder(ids);
-    // Blur, then refocus once the row has moved: arrow keys keep moving the
-    // same message, and the blur closes the handle's tooltip, which is
-    // positioned once and would otherwise stay over the row's old slot.
-    if (options?.focus) {
-      steerHandleRefs.current.get(steerId)?.blur();
-      focusSteerHandleRef.current = steerId;
-    }
-    void onMoveSteer(steerId, toIndex).catch(() => setOptimisticSteerOrder(null));
-  };
-  const dropStagedSteer = () => {
-    const drag = steerDrag;
-    setSteerDrag(null);
-    if (!drag?.over || drag.over.steerId === drag.steerId) return;
-    const ids = orderedPendingSteers.map((steer) => steer.steerId);
-    const from = ids.indexOf(drag.steerId);
-    const targetIndex = ids.indexOf(drag.over.steerId);
-    if (from === -1 || targetIndex === -1) return;
-    const insertAt = targetIndex + (drag.over.edge === "after" ? 1 : 0);
-    moveStagedSteer(drag.steerId, insertAt > from ? insertAt - 1 : insertAt);
-  };
+  const {
+    orderedSteers: orderedPendingSteers,
+    canReorder: canReorderSteers,
+    reorderPropsFor: steerReorderPropsFor,
+  } = usePendingSteerReorder(pendingSteers, onMoveSteer);
 
   const stagedSteerInlineBlock = (steer: {
     attachments: AgentChatFileRef[];
@@ -7270,7 +7205,7 @@ export function AgentChatComposer({
         >
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-[1]">
-              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} reference={dragActive === "reference"} />
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} kind={dragActive === "reference" ? "reference" : "files"} />
             </div>
           ) : null}
 
@@ -7642,27 +7577,7 @@ export function AgentChatComposer({
                   className="mt-1 gap-1.5 px-0 py-0"
                 />
               ) : null}
-              reorder={canReorderSteers ? {
-                index,
-                count: orderedPendingSteers.length,
-                dragging: steerDrag?.steerId === steer.steerId,
-                dropEdge: steerDrag?.over?.steerId === steer.steerId && steerDrag.steerId !== steer.steerId
-                  ? steerDrag.over.edge
-                  : null,
-                onMove: (toIndex) => moveStagedSteer(steer.steerId, toIndex, { focus: true }),
-                onDragStart: () => setSteerDrag({ steerId: steer.steerId, over: null }),
-                onDragOverRow: (edge) => setSteerDrag((current) => (
-                  current && (current.over?.steerId !== steer.steerId || current.over.edge !== edge)
-                    ? { ...current, over: { steerId: steer.steerId, edge } }
-                    : current
-                )),
-                onDrop: () => dropStagedSteer(),
-                onDragEnd: () => setSteerDrag(null),
-                handleRef: (element) => {
-                  if (element) steerHandleRefs.current.set(steer.steerId, element);
-                  else steerHandleRefs.current.delete(steer.steerId);
-                },
-              } : undefined}
+              reorder={canReorderSteers ? steerReorderPropsFor(steer.steerId, index) : undefined}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,

@@ -40,6 +40,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatOpenCodePermissionMode,
 } from "./types/chat";
+import { ACP_PROVIDER_IDS } from "./acpProviderMetadata";
 
 /** Ordered from most cautious to most autonomous. The order is the contract. */
 export const PERMISSION_LEVELS = ["plan", "ask", "auto-edit", "full-auto"] as const;
@@ -275,9 +276,10 @@ export type SessionPermissionFields = {
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
   acpPermissionMode?: AgentChatAcpPermissionMode | null;
   cursorModeId?: string | null;
+  interactionMode?: string | null;
 };
 
-const ACP_LADDER_PROVIDERS = new Set(["qwen", "kimi", "grok", "copilot", "devin"]);
+const ACP_LADDER_PROVIDERS: ReadonlySet<string> = new Set(ACP_PROVIDER_IDS);
 
 /** ADE's generic composer word, read as a level; null when it defers to a file. */
 function levelForGenericMode(mode: string | null | undefined): PermissionLevel | null {
@@ -301,9 +303,13 @@ export function sessionPermissionLevel(
 ): PermissionLevel {
   const provider = fields.provider ?? "";
   if (provider === "claude") {
-    return fields.claudePermissionMode
+    const stored = fields.claudePermissionMode
       ? permissionLevelForClaude(fields.claudePermissionMode)
       : levelForGenericMode(fields.permissionMode) ?? unknown;
+    // Plan mode with ask-level access behind it is the plan rung. With more
+    // behind it, leaving plan mode restores that access, so it reads as such.
+    if (fields.interactionMode === "plan" && permissionLevelRank(stored) <= permissionLevelRank("ask")) return "plan";
+    return stored;
   }
   if (provider === "codex") {
     if (fields.codexConfigSource === "config-toml") return unknown;
@@ -316,11 +322,12 @@ export function sessionPermissionLevel(
     const mode = fields.cursorModeId?.trim().toLowerCase();
     if (mode === "full-auto") return "full-auto";
     if (mode === "ask" || mode === "plan") return "plan";
-    if (mode === "agent" || mode === "default") return unknown === "full-auto" ? "auto-edit" : "ask";
-    if (fields.permissionMode === "full-auto") return "full-auto";
-    if (fields.permissionMode === "plan") return "plan";
-    // Cursor's `agent` spans ask and auto-edit, so its reading depends on side.
-    return unknown === "full-auto" ? "auto-edit" : "ask";
+    if (fields.permissionMode === "full-auto" && !mode) return "full-auto";
+    if (fields.permissionMode === "plan" && !mode) return "plan";
+    // `agent` reads as `ask` on both sides: it is what the ceiling writes for
+    // `ask` (CURSOR_BY_LEVEL), so a clamped Cursor child must read back at the
+    // level it was clamped to, or every later check would refuse it.
+    return "ask";
   }
   if (provider === "droid") {
     return fields.droidPermissionMode ? permissionLevelForDroid(fields.droidPermissionMode) : unknown;
@@ -379,9 +386,12 @@ export function permissionFieldsForLevel(
   );
   switch (provider) {
     case "claude":
+      // The generic word too: Claude's normalization rebuilds the access mode
+      // from `permissionMode`, so a stale `full-auto` there would undo the clamp.
       return {
         claudePermissionMode: resolved.claudePermissionMode,
         interactionMode: level === "plan" ? "plan" : "default",
+        permissionMode: GENERIC_BY_LEVEL[level],
       };
     case "codex":
       return { codexApprovalPolicy: resolved.codexApprovalPolicy, codexSandbox: resolved.codexSandbox, codexConfigSource: "flags" };
@@ -408,4 +418,41 @@ export function permissionLevelLabel(level: PermissionLevel): string {
     case "auto-edit": return "auto-accept edits";
     case "full-auto": return "full auto";
   }
+}
+
+/**
+ * The clamp a ceiling puts on a session: null when `fields` already sit at or
+ * below `ceiling`, otherwise the level asked for and the fields that bring the
+ * session down to the ceiling in its own provider's vocabulary.
+ */
+export function permissionCeilingClamp(
+  fields: SessionPermissionFields,
+  ceiling: PermissionLevel,
+): { requested: PermissionLevel; level: PermissionLevel; patch: PermissionFieldsPatch } | null {
+  const requested = sessionPermissionLevel(fields, "full-auto");
+  if (permissionLevelRank(requested) <= permissionLevelRank(ceiling)) return null;
+  return { requested, level: ceiling, patch: permissionFieldsForLevel(fields.provider, ceiling) };
+}
+
+/** The more cautious of two optional ceilings; null when neither applies. */
+export function lowerPermissionCeiling(
+  a: PermissionLevel | null,
+  b: PermissionLevel | null,
+): PermissionLevel | null {
+  if (!a) return b;
+  if (!b) return a;
+  return permissionLevelRank(a) <= permissionLevelRank(b) ? a : b;
+}
+
+/**
+ * ADE's generic launch word (`ade --permission-mode`, CLI child spawns) capped
+ * at `ceiling`: unchanged when it already fits, otherwise the generic word for
+ * the ceiling. A word that defers to a config file counts as above any ceiling.
+ */
+export function clampGenericPermissionMode<T extends string>(
+  mode: T | null | undefined,
+  ceiling: PermissionLevel,
+): T | "plan" | "default" | "edit" | "full-auto" | null | undefined {
+  const level = levelForGenericMode(mode ?? "default") ?? "full-auto";
+  return permissionLevelRank(level) <= permissionLevelRank(ceiling) ? mode : GENERIC_BY_LEVEL[ceiling];
 }

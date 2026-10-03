@@ -4923,8 +4923,14 @@ export function createLaneService({
     try {
       return await runGitWorktreeMutation(async (): Promise<RecreateMissingWorktreeResult> => {
         // Re-check under the mutation queue: another writer may have rebuilt
-        // or claimed the folder while this call waited.
+        // or claimed the folder, or archived, reclaimed or deleted the lane,
+        // while this call waited.
         if (fs.existsSync(targetPath)) return { recreated: false };
+        const current = getLaneRow(laneId);
+        if (!current || current.status === "archived" || current.archived_at
+          || laneReclaimInFlight.has(laneId) || deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+          return { recreated: false, reason: "The lane changed while waiting to rebuild its worktree." };
+        }
         const localBranch = await runGit(
           ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
           { cwd: projectRoot, timeoutMs: 8_000 },
@@ -4947,6 +4953,16 @@ export function createLaneService({
         const untrack = trackPendingWorktreeCreation(targetPath, row.branch_ref);
         try {
           await runGitOrThrow(["worktree", "add", targetPath, branchName], { cwd: projectRoot, timeoutMs: 120_000 });
+        } catch (error) {
+          // The folder was absent before `add`, so anything there now is this
+          // failed attempt's. Clear it and its registration, or every later
+          // attempt would see a folder and stop without a reason.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          if (fs.existsSync(targetPath)) await removeWorktreeDirectoryWithRecovery(targetPath).catch(() => undefined);
+          // If `remove` could not clear a half-made entry, the folder is gone
+          // now and git reports it prunable; drop it so the next `add` works.
+          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          throw error;
         } finally {
           untrack();
         }

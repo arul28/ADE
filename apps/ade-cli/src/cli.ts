@@ -16955,6 +16955,23 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   ...SPAWN_TYPE_FLAGS,
   ...CHAT_PARENT_FLAGS,
   ...DEFAULT_PARENT_FLAGS,
+  // `ade chat handoff` / `ade chat fork` value flags (read before the positional session).
+  "--target-lane",
+  "--target-lane-id",
+  "--reasoning-effort",
+  "--effort",
+  "--codex-approval-policy",
+  "--approval-policy",
+  "--codex-sandbox",
+  "--sandbox",
+  "--codex-config-source",
+  "--config-source",
+  "--handoff-note",
+  "--note",
+  "--through-turn",
+  "--from-turn",
+  "--target-model",
+  "--target-model-id",
 ]);
 
 /**

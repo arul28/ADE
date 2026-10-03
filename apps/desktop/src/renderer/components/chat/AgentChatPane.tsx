@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { applySteerOrder } from "../../../shared/steerOrder";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -1348,15 +1349,9 @@ function formatHandoffForkPointTime(iso: string): string {
  * the named ones; a named id that already left the queue is skipped.
  */
 function reorderSteerMap(steerMap: Map<string, PendingSteerEntry>, steerIds: readonly string[]): void {
-  const entries = new Map(steerMap);
+  const ordered = applySteerOrder([...steerMap.entries()], ([id]) => id, steerIds);
   steerMap.clear();
-  for (const id of steerIds) {
-    const entry = entries.get(id);
-    if (!entry) continue;
-    steerMap.set(id, entry);
-    entries.delete(id);
-  }
-  for (const [id, entry] of entries) steerMap.set(id, entry);
+  for (const [id, entry] of ordered) steerMap.set(id, entry);
 }
 
 export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
@@ -2864,11 +2859,22 @@ function launchConfigFromMachineDefaults(
   defaults: AgentChatLaunchDefaults,
   controlDefaults: NativeControlState,
 ): LastLaunchConfig | null {
-  const source: Partial<LaunchConfigSessionSource> = {};
-  for (const [key, value] of Object.entries(defaults)) {
-    if (value !== null && value !== undefined) (source as Record<string, unknown>)[key] = value;
-  }
-  return buildLastLaunchConfig(source, controlDefaults, defaults.updatedAt);
+  return buildLastLaunchConfig({
+    modelId: defaults.modelId,
+    reasoningEffort: defaults.reasoningEffort,
+    fastMode: defaults.fastMode,
+    executionMode: defaults.executionMode ?? undefined,
+    interactionMode: defaults.interactionMode ?? undefined,
+    permissionMode: defaults.permissionMode ?? undefined,
+    claudePermissionMode: defaults.claudePermissionMode ?? undefined,
+    codexApprovalPolicy: defaults.codexApprovalPolicy ?? undefined,
+    codexSandbox: defaults.codexSandbox ?? undefined,
+    codexConfigSource: defaults.codexConfigSource ?? undefined,
+    opencodePermissionMode: defaults.opencodePermissionMode ?? undefined,
+    droidPermissionMode: defaults.droidPermissionMode ?? undefined,
+    cursorModeId: defaults.cursorModeId ?? undefined,
+    cursorConfigValues: defaults.cursorConfigValues ?? undefined,
+  }, controlDefaults, defaults.updatedAt);
 }
 
 function normalizeStoredLaunchConfig(
@@ -14067,17 +14073,29 @@ export function AgentChatPane({
   // focus (another client may have launched since).
   const launchDefaultsBindingKey = selectedSessionId ? null : (draftExecutionBinding?.key ?? "local");
   const newestSessionKey = `${sessions[0]?.sessionId ?? ""}:${sessions[0]?.modelId ?? ""}`;
+  const launchDefaultsLoadedForKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (launchDefaultsBindingKey == null || lockSessionId) return undefined;
     let cancelled = false;
+    // A new target machine starts from nothing: the previous machine's
+    // defaults must never seed this one's draft, even when it cannot answer.
+    // A refetch for the same machine keeps what it has until the answer lands.
+    if (launchDefaultsLoadedForKeyRef.current !== launchDefaultsBindingKey) {
+      launchDefaultsLoadedForKeyRef.current = launchDefaultsBindingKey;
+      setMachineLaunchDefaults(null);
+    }
     const load = () => {
+      // Optional call: a host bridge without it (an older embedder, a test
+      // double) leaves the draft on this window's own memory.
       void window.ade.agentChat.launchDefaults?.(draftExecutionBindingRef.current ?? null)
         .then((defaults) => {
           if (cancelled) return;
           const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
           setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled) setMachineLaunchDefaults(null);
+        });
     };
     load();
     window.addEventListener("focus", load);
@@ -14579,22 +14597,16 @@ export function AgentChatPane({
         {handoffLocalMode === "fork" && !handoffForkTabDisabled ? (
           <div className="mt-3 space-y-3">
             {handoffForkPoint ? (
-              <div
-                data-testid="handoff-fork-point"
-                className="flex items-center gap-2 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] px-2.5 py-1.5"
-              >
-                <GitFork size={12} weight="bold" className="shrink-0 text-[color:color-mix(in_srgb,var(--chat-accent)_78%,var(--chat-fg,#e6e6e6))]" aria-hidden />
-                <span className="min-w-0 flex-1 text-[11px] leading-4 text-fg/75">
-                  From the turn that ended {formatHandoffForkPointTime(handoffForkPoint.timestamp)}. Later messages are left out.
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setHandoffForkPoint(null)}
-                  className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-medium text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/85"
-                >
-                  Whole chat
-                </button>
-              </div>
+              <Banner
+                model={{
+                  id: "handoff-fork-point",
+                  tone: "accent",
+                  icon: <GitFork size={13} weight="bold" />,
+                  title: `From the turn that ended ${formatHandoffForkPointTime(handoffForkPoint.timestamp)}. Later messages are left out.`,
+                  actions: [{ label: "Whole chat", variant: "secondary", onClick: () => setHandoffForkPoint(null) }],
+                }}
+                layout="inline"
+              />
             ) : null}
             <div className="text-[11px] leading-5 text-fg/54">
               {handoffForkPoint

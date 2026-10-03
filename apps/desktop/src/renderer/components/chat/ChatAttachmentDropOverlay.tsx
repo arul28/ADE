@@ -4,14 +4,18 @@ import { PARALLEL_CHAT_MAX_ATTACHMENTS } from "../../../shared/types/chat";
 export function ChatAttachmentDropOverlay({
   variant,
   parallelChatMode = false,
-  reference = false,
+  kind = "files",
 }: {
   variant: "composer" | "pane";
   parallelChatMode?: boolean;
-  /** A chat/terminal row is being dragged in: it becomes an @-mention. */
-  reference?: boolean;
+  /** `reference`: a chat/terminal row is being dragged in to become an @-mention. */
+  kind?: "files" | "reference";
 }) {
+  const reference = kind === "reference";
   const compact = variant === "composer";
+  const filesDetail = compact && parallelChatMode
+    ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
+    : "Images and files will be added to this turn.";
   return (
     <div className={cn(
       "flex h-full w-full items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,rgba(5,5,8,0.58))] backdrop-blur-sm",
@@ -35,11 +39,7 @@ export function ChatAttachmentDropOverlay({
             ? "text-[length:calc(var(--chat-font-size)*12/14)]"
             : "font-sans text-[length:calc(var(--chat-font-size)*12/14)]",
         )}>
-          {reference
-            ? "The agent gets a pointer to it and reads what it needs."
-            : compact && parallelChatMode
-              ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
-              : "Images and files will be added to this turn."}
+          {reference ? "The agent gets a pointer to it and reads what it needs." : filesDetail}
         </div>
       </div>
     </div>

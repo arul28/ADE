@@ -1,3 +1,10 @@
+import {
+  clampGenericPermissionMode,
+  permissionFieldsForLevel,
+  permissionLevelForDroid,
+  permissionLevelRank,
+  type PermissionLevel,
+} from "../../desktop/src/shared/permissionLadder";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -87,7 +94,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -3223,6 +3230,40 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "dismissSubagentTakeoverPrompt",
 ]);
 
+/**
+ * Chat actions whose caller the runtime stamps as `runtimeActor`: everything
+ * an agent can use to create a chat, change its permissions, or start a CLI
+ * agent. `startLaunch` carries its create fields under `chat.create`.
+ */
+const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
+  "createSession",
+  "updateSession",
+  "handoffSession",
+  "launchHeadless",
+  "startLaunch",
+  "launchCli",
+]);
+
+/**
+ * `args` with the runtime's `actor` in place of anything the caller sent:
+ * top-level for most actions, under `chat.create` for `startLaunch`. A null
+ * actor (one of the user's own clients) removes any caller-sent value.
+ */
+function stampChatRuntimeActor(
+  action: string,
+  args: Record<string, unknown>,
+  actor: { kind: "cto" } | { kind: "agent"; chatSessionId: string | null } | null,
+): Record<string, unknown> {
+  const stamp = (target: Record<string, unknown>): Record<string, unknown> => {
+    const { runtimeActor: _callerValue, ...rest } = target;
+    return actor ? { ...rest, runtimeActor: actor } : rest;
+  };
+  if (action !== "startLaunch") return stamp(args);
+  const chat = isRecord(args.chat) ? args.chat : null;
+  const create = chat && isRecord(chat.create) ? chat.create : null;
+  return chat && create ? { ...args, chat: { ...chat, create: stamp(create) } } : args;
+}
+
 function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): boolean {
   return chatArgs.spawnKind === "subagent"
     || chatArgs.spawnKind === "peer"
@@ -4281,6 +4322,12 @@ async function runCtoOperatorBridgeTool(
 ): Promise<unknown> {
   const agentChatService = requireAgentChatService(runtime);
   const defaultLaneId = (resolveRequestedOrSessionLaneId(runtime, session, toolArgs) ?? await resolveDefaultLaneId(runtime)).trim();
+  // The same caller stamp `run_ade_action` puts on chat creates and updates:
+  // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
+  // only when a create or update actually runs.
+  const bridgeActor = async (): Promise<AgentChatRuntimeActor> => (await callerIsTrustedCto(runtime, session)
+    ? { kind: "cto" }
+    : { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null });
   const ctoIdentity = runtime.ctoStateService.getIdentity();
   // Null until the user picks a model the CTO can steer live; the Claude/Codex
   // fallback below already covers "nothing chosen yet".
@@ -4308,8 +4355,8 @@ async function runCtoOperatorBridgeTool(
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
-    createChat: agentChatService.createSession,
-    updateChatSession: agentChatService.updateSession,
+    createChat: async (args) => agentChatService.createSession({ ...args, runtimeActor: await bridgeActor() }),
+    updateChatSession: async (args) => agentChatService.updateSession({ ...args, runtimeActor: await bridgeActor() }),
     sendChatMessage: agentChatService.sendMessage,
     interruptChat: async (args) => {
       await agentChatService.interrupt(args);
@@ -4394,6 +4441,41 @@ function sha256Text(value: string): string {
 }
 
 type SpawnPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
+
+/**
+ * True when the caller is the CTO for the permission ceiling: the CTO role,
+ * and either no chat of its own or a chat that is the CTO thread. A run, step
+ * or attempt agent that only inherited the CTO role from its environment is
+ * an agent here.
+ */
+async function callerIsTrustedCto(runtime: AdeRuntime, session: SessionState): Promise<boolean> {
+  if (!callerHasRoleAtLeast(session.identity.role, "cto")) return false;
+  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!chatSessionId) return !session.identity.runId && !session.identity.stepId && !session.identity.attemptId;
+  try {
+    const summary = await runtime.agentChatService?.getSessionSummary?.(chatSessionId);
+    return summary?.identityKey === "cto";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The permission ceiling for a CLI child an agent starts: the agent's own chat
+ * level and, for a parented child, its parent's. Null for the user's clients
+ * and the CTO, who may start a child at any level.
+ */
+async function agentCliPermissionCeiling(
+  runtime: AdeRuntime,
+  session: SessionState,
+  parentSessionId: string | null,
+): Promise<PermissionLevel | null> {
+  if (isUserClientSession(session) || await callerIsTrustedCto(runtime, session)) return null;
+  return runtime.agentChatService?.getPermissionCeiling?.({
+    parentSessionId,
+    actor: { kind: "agent", chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null },
+  }) ?? null;
+}
 
 function parseSpawnPermissionMode(value: unknown): SpawnPermissionMode {
   const normalized = asTrimmedString(value).toLowerCase();
@@ -5574,14 +5656,38 @@ async function runTool(args: {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
     }
-    if (domain === "chat" && action === "updateSession" && !argsList && !hasScalarArg) {
-      // Only the runtime sets this flag, whatever the caller sent: an agent's
-      // update may never lift a spawned chat above its parent's permissions.
-      // The user's own clients and the CTO may.
-      const { enforceParentPermissionCeiling: _callerValue, ...rest } = scopedObjectArgs;
-      scopedObjectArgs = isUserClient || callerIsCto
-        ? rest
-        : { ...rest, enforceParentPermissionCeiling: true };
+    if (domain === "chat" && RUNTIME_ACTOR_CHAT_ACTIONS.has(action)) {
+      // Only the runtime says who is calling (`AgentChatRuntimeActor`): any
+      // value the caller sent is dropped. An agent's create, update or fork is
+      // capped at its own chat's permission level; the user's clients are not.
+      // Positional args would skip the stamp, so a non-user caller must send
+      // one object.
+      if (!isUserClient && (argsList || hasScalarArg)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `run_ade_action:chat.${action} takes one object argument.`,
+        );
+      }
+      const actor = isUserClient
+        ? null
+        : await callerIsTrustedCto(runtime, session)
+          ? { kind: "cto" as const }
+          : { kind: "agent" as const, chatSessionId: asOptionalTrimmedString(session.identity.chatSessionId) ?? null };
+      scopedObjectArgs = stampChatRuntimeActor(action, scopedObjectArgs, actor);
+      if (action === "launchCli" && actor?.kind === "agent") {
+        // A terminal agent has no chat record to clamp later, so its
+        // permission word (full-auto when omitted) is capped here.
+        const ceiling = await agentCliPermissionCeiling(runtime, session, null);
+        if (ceiling) {
+          scopedObjectArgs = {
+            ...scopedObjectArgs,
+            permissionMode: clampGenericPermissionMode(
+              asOptionalTrimmedString(scopedObjectArgs.permissionMode) ?? "full-auto",
+              ceiling,
+            ),
+          };
+        }
+      }
     }
     if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
       // Same remote-first default as the `create_lane` tool and the sync
@@ -5713,9 +5819,9 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const requestedChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
     const provider = parseCliSessionProvider(toolArgs.provider);
-    const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
-    const droidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
-    if (droidPermissionMode && provider !== "droid") {
+    const requestedPermissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    const requestedDroidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
+    if (requestedDroidPermissionMode && provider !== "droid") {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
         "droidPermissionMode is only supported for Droid CLI sessions.",
@@ -5734,6 +5840,15 @@ async function runTool(args: {
         ptyAccessDenied("start_cli_session");
       }
     }
+    // An agent's CLI child never runs above the agent, or above its parent.
+    const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
+    const permissionMode = cliCeiling
+      ? clampGenericPermissionMode(requestedPermissionMode, cliCeiling) as AgentChatPermissionMode
+      : requestedPermissionMode;
+    const droidPermissionMode = cliCeiling && requestedDroidPermissionMode
+      && permissionLevelRank(permissionLevelForDroid(requestedDroidPermissionMode)) > permissionLevelRank(cliCeiling)
+      ? permissionFieldsForLevel("droid", cliCeiling).droidPermissionMode
+      : requestedDroidPermissionMode;
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     const instanceId = toolArgs.instanceId == null
       ? null
@@ -7325,7 +7440,11 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
+    const permissionMode = spawnCeiling
+      ? clampGenericPermissionMode(requestedSpawnPermissionMode, spawnCeiling) as SpawnPermissionMode
+      : requestedSpawnPermissionMode;
     if (provider === "claude" && permissionMode === "config-toml") {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,

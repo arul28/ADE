@@ -1379,30 +1379,63 @@ Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
 reverse, and Codex is where it matters: both axes are required for `full-auto`,
 because "never ask" with `workspace-write` is a user who still wants a sandbox.
 
-### Parent permission ceiling
-
-A spawned chat (`orchestrationParentSessionId` set) never runs with more
-freedom than the chat that started it, in any provider. `sessionPermissionLevel`
-reads each session's concrete fields onto the ladder and
-`permissionFieldsForLevel` writes a level back in the child's own vocabulary.
-A field the ladder cannot read resolves in the safe direction for its side: an
-unreadable parent counts as `ask`, an unreadable child (Codex `config-toml`, a
-Cursor `agent` mode) as above it, so the child is pinned to explicit flags.
-
-- **At creation** (`createSessionInternal`) a child above its parent is clamped
-  to the parent's level, and the child's transcript gets one info notice
-  ("Permissions capped at … to match the chat that started this one").
-  Identity-pinned sessions keep their locked mode.
-- **On update** an agent cannot lift a spawned chat above its parent:
-  `updateSession` refuses when `enforceParentPermissionCeiling` is set, and only
-  the runtime sets it — `adeRpcServer` strips any caller-sent value and stamps it
-  on every `chat.updateSession` that does not come from a user client or the
-  CTO. A person raising a subagent's mode in the desktop, web, or phone UI is
-  not limited.
 Treating that as `full-auto` would hand Claude `bypassPermissions` on a family
 switch — unsandboxed, in a family with no sandbox axis at all. OpenCode
 `config-toml` reads as `ask` for the same reason: it defers to the user's own
 file, and claiming a freedom that file may not grant is rounding up.
+
+### Permission ceiling for agents and spawned chats
+
+An agent can never give any chat more freedom than its own chat has, and a
+spawned chat (`orchestrationParentSessionId` set) is also capped at its parent
+— in any provider. `sessionPermissionLevel` reads each session's concrete
+fields onto the ladder; `permissionCeilingClamp` and `permissionFieldsForLevel`
+write a level back in the target's own vocabulary. A field the ladder cannot
+read resolves in the safe direction for its side: an unreadable parent or caller
+counts as `ask`, an unreadable child (Codex `config-toml`) as above any ceiling,
+so the child is pinned to explicit flags. Cursor's `agent` mode reads as `ask`
+on both sides because it is what the ceiling writes for `ask`.
+
+**Who is calling** is `runtimeActor` (`AgentChatRuntimeActor`), stamped by
+`adeRpcServer` (`stampChatRuntimeActor`) on every `chat.createSession`,
+`chat.updateSession`, `chat.handoffSession`, `chat.launchHeadless`,
+`chat.startLaunch` (under `chat.create`, kept in the launch record) and
+`chat.launchCli` that does not come from one of the user's own clients:
+`{ kind: "cto" }` for the CTO, `{ kind: "agent", chatSessionId }` for everyone
+else. Any value the caller sent is dropped first, and a non-user caller must
+pass one object (positional args would skip the stamp). The CTO operator tools
+stamp the same way (the RPC bridge) or pass `{ kind: "cto" }` (in process).
+A value from one of the user's own clients is not trusted for anything it
+could gain: a missing actor is already the most permissive case.
+
+- **Create** (`createSessionInternal`): the ceiling is the lower of the parent's
+  level and, for an agent, its own chat's level (`resolvePermissionCeiling`). A
+  chat above it is clamped and its transcript gets one info notice.
+  Identity-pinned sessions keep their locked mode. A fork or brief handoff
+  passes the caller through, so an agent cannot fork itself into more access.
+- **Update**: an agent's update that touches a permission field, the
+  interaction mode or `modelId` is refused when the result would sit above the
+  same ceiling. The check builds the fields the update will leave — the
+  provider the model resolves to, the generic word applied first, explicit
+  native fields on top, then the same normalization — so it cannot be fooled by
+  a field the update later rewrites. Title and other updates are never checked,
+  and identity-pinned sessions are skipped (their permissions cannot change).
+- **CLI children**: `start_cli_session`, `spawn_agent` and `chat.launchCli` clamp
+  an agent's requested `permissionMode` (full-auto when omitted, and Droid's
+  `droidPermissionMode`) to the agent's level and the parent's
+  (`clampGenericPermissionMode`).
+- The CTO and a person are not capped. A call from one of the user's own
+  clients — including an `ade` CLI with no chat identity, which the runtime
+  cannot tell apart from a person's terminal — carries no `runtimeActor` and is
+  not capped. A stamped agent with no chat of its own (an orchestrator run,
+  step or attempt) is capped only by the target's parent. The CTO counts as the
+  CTO only from its own thread, or as a CTO-role caller with no chat and no run,
+  step or attempt (`callerIsTrustedCto`); a CTO-role run agent is an agent here.
+- Claude plan mode with ask-level access behind it reads as the plan rung; with
+  more behind it, it reads at that level, because leaving plan mode restores it.
+- Trade-off: Cursor's `agent` mode reads as `ask`, so an `ask` agent may start
+  a Cursor child in `agent` mode, which can also auto-edit. `CURSOR_BY_LEVEL`
+  has no rung between the two.
 
 **The ladder is deliberately separate from the abstract permission mode below,
 and the two must not be reconciled.** `AgentChatPermissionMode`
@@ -1413,9 +1446,11 @@ translates it. In *that* vocabulary `edit` is the **cautious** editing tier
 (Droid `auto-low`) by original intent, so the two tables look inverted on the
 middle rungs. That is fine, because they answer different questions: the ladder
 reads and writes each family's concrete native mode on a model switch, the
-legacy converter maps a generic CLI word to a tier at launch, and **no code path
-converts between them**. "Fixing" the apparent inversion would shift
-`ade --permission-mode edit` and every persisted session carrying it.
+legacy converter maps a generic CLI word to a tier at launch. "Fixing" the
+apparent inversion would shift `ade --permission-mode edit` and every persisted
+session carrying it. The one place a generic word meets the ladder is the
+permission ceiling (`clampGenericPermissionMode`), which reads `edit` as
+`auto-edit` — the higher reading — so it can only clamp more, never less.
 
 ### Abstract-to-native mapping
 
@@ -1616,10 +1651,11 @@ chosen point ("From the turn that ended at …") with a **Whole chat** escape.
 
 The model and settings a person last launched or switched a chat to are kept by
 the brain, one record per machine, in `<ADE home>/chat-launch-defaults.json`
-(`chatLaunchDefaults.ts`). A top-level Work chat's creation writes it, and so
-does a user's `updateSession` that changes model, effort, Fast, or any
-permission field; subagents, CTO and identity chats, automation runs, and agent
-updates do not. Every client reads `chat.getLaunchDefaults` to seed a new chat
+(`createChatLaunchDefaultsStore` in `chatLaunchDefaults.ts`). A person's
+top-level Work chat creation writes it, and so does a person's `updateSession`
+that changes model, effort, Fast, or any permission field. Anything carrying a
+`runtimeActor` (an agent or the CTO), subagents, identity chats and automation
+runs never move it. Every client reads `chat.getLaunchDefaults` to seed a new chat
 ahead of its own local memory: the desktop draft composer (refetched when the
 target machine changes, a chat is created, or the window regains focus), the
 iOS new-chat screen (while the user has not picked anything there, chat mode,
