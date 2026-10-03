@@ -172,6 +172,31 @@ export function permissionLevelForCursorMode(modeId: string | null | undefined):
   return "ask";
 }
 
+/** The concrete permission controls a chat surface holds for every family. */
+export type PermissionLadderControls = {
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandbox: AgentChatCodexSandbox;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  droidPermissionMode: AgentChatDroidPermissionMode;
+  cursorModeId: string | null | undefined;
+};
+
+/**
+ * The level `family` currently sits on. ACP has no control of its own on a chat
+ * surface: it rides the in-process mode the OpenCode control owns.
+ */
+export function permissionLevelForFamily(family: PermissionLadderFamily, controls: PermissionLadderControls): PermissionLevel {
+  switch (family) {
+    case "claude": return permissionLevelForClaude(controls.claudePermissionMode);
+    case "codex": return permissionLevelForCodex(controls.codexSandbox, controls.codexApprovalPolicy);
+    case "opencode":
+    case "acp": return permissionLevelForOpenCode(controls.opencodePermissionMode);
+    case "droid": return permissionLevelForDroid(controls.droidPermissionMode);
+    case "cursor": return permissionLevelForCursorMode(controls.cursorModeId);
+  }
+}
+
 /**
  * Step down from `level` until `table` can express it. Returns the exact level
  * when supported, otherwise the nearest lower one, and the most cautious rung

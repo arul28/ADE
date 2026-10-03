@@ -984,6 +984,89 @@ describe("createAgentChatService", () => {
       )).toBe(true);
     });
 
+    it("expands an ADE skill queued as a steer during an active Claude turn", async () => {
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-skill-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-skill-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      const result = await service.sendMessage({
+        sessionId: session.id,
+        text: "/ship resume for lane x",
+      }, { routeActiveToSteer: true });
+      expect(result).toMatchObject({ queued: true });
+
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        const delivered = send.mock.calls
+          .map((call) => String(call[0]))
+          .find((prompt) => prompt.includes("Ship the lane."));
+        expect(delivered, "the queued steer is delivered as the ADE expansion").toBeTruthy();
+        expect(delivered).toContain("Task: resume for lane x");
+        expect(delivered?.trimStart().startsWith("/ship")).toBe(false);
+      });
+    });
+
     it("does not steer /compact during an active Claude turn", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);

@@ -1413,9 +1413,12 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
     expect(screen.queryByText("Full prompt")).toBeNull();
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+    // The hidden brief is marked in the thread above the bubble, not inside it.
+    const divider = screen.getByTestId("handoff-brief-divider");
+    expect(divider.textContent).toContain("Started from a brief of the previous chat");
   });
 
-  it("renders a brief chip for hidden cross-machine handoff messages", async () => {
+  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1430,13 +1433,13 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-chip")).toBeTruthy();
+      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
     });
-    expect(screen.getByText(/Previous chat summarized into this chat/i)).toBeTruthy();
+    expect(screen.getByText("Continued from another computer")).toBeTruthy();
     expect(screen.getByText("Continue the handoff")).toBeTruthy();
   });
 
-  it("does not render a brief chip for hidden messages that are not handoffs", async () => {
+  it("does not render a brief divider for hidden messages that are not handoffs", async () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1453,7 +1456,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByText("Visible summary")).toBeTruthy();
     });
-    expect(screen.queryByTestId("handoff-brief-chip")).toBeNull();
+    expect(screen.queryByTestId("handoff-brief-divider")).toBeNull();
   });
 
   it("renders a provider handoff divider with direction and provider marks", () => {

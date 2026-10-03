@@ -69,6 +69,29 @@ export type ComputerUseActionEffect = {
   status: "observed" | "unconfirmed" | "not_checked" | "waiting_for_approval";
   /** One short plain-English sentence, e.g. "the focused element changed", "the URL changed", "3 elements changed", "nothing on screen changed". */
   reason: string;
+  /**
+   * What to try next when the effect is not `observed`, so an agent climbs to
+   * the right input method instead of repeating the one that did nothing.
+   * Absent when the surface has no advice.
+   */
+  next?: ComputerUseActionNextStep | null;
+};
+
+/**
+ * One recommended next step after an action ADE could not confirm.
+ *
+ * - `observe`: look again (or `wait` for a label); do not change method. The
+ *   action probably applied, or something else must happen first.
+ * - `real_input`: retry with real pointer/keyboard events (`--real`).
+ * - `lease`: real input is the fix, but this chat must ask the user for it.
+ * - `browser`: the target is a web page; drive it in the ADE browser.
+ */
+export type ComputerUseActionNextStep = {
+  method: "observe" | "real_input" | "lease" | "browser";
+  /** One short sentence: why this method. */
+  reason: string;
+  /** A command the agent can run as is, when ADE can build one. */
+  command?: string | null;
 };
 
 /**

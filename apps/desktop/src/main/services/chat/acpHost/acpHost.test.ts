@@ -1950,6 +1950,21 @@ describe("cancel", () => {
     expect(session.turnAnswered).toBe(false);
   });
 
+  it("carries the agent's own error detail into the failure", async () => {
+    // Qwen answers an unreachable model endpoint with a bare "Internal error"
+    // and puts the reason in `data.details`; the chat must show the reason.
+    const harness = makeHarness(qwenDialect);
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => ({
+      error: { code: -32603, message: "Internal error", data: { details: "Connection error." } },
+    }));
+    const session = await withDeadline("open", harness.open());
+    await expect(withDeadline("turn", session.prompt({
+      turnId: "turn-1",
+      blocks: goBlocks,
+      isInterrupted: () => false,
+    }))).rejects.toThrow(/Internal error.*Connection error\./);
+  });
+
   it("never reports turnAnswered for a prompt the agent failed", async () => {
     const harness = makeHarness(qwenDialect);
     harness.agent.on(ACP_METHOD.sessionPrompt, () => ({ error: { code: -32000, message: "model overloaded" } }));

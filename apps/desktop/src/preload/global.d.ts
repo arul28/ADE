@@ -116,6 +116,11 @@ import type {
   ProviderInstanceRemoveResult,
   ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
+  ProviderInstanceDismissReplacedArgs,
+  ProviderLoginRefArgs,
+  ProviderLoginStartArgs,
+  ProviderLoginStatus,
+  ProviderLoginSubmitCodeArgs,
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
@@ -462,6 +467,7 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
@@ -3464,6 +3470,14 @@ declare global {
           args: ProviderInstanceSetAccentArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ProviderInstance>;
+        dismissReplaced: (
+          args: ProviderInstanceDismissReplacedArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProviderInstance>;
+        loginStart: (args: ProviderLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginStatus: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginSubmitCode: (args: ProviderLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
+        loginCancel: (args: ProviderLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<ProviderLoginStatus>;
         getSettings: (
           args: ProviderInstanceGetSettingsArgs,
           pin?: OpenProjectBinding | null,
@@ -3646,7 +3660,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<GitGenerateCommitMessageResult>;
         listRecentCommits: (
-          args: { laneId: string; limit?: number },
+          args: GitListRecentCommitsArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitCommitSummary[]>;
         listCommitFiles: (

@@ -150,7 +150,7 @@ export function ProviderDetailPage({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(280px, 340px) minmax(0, 1fr)",
+          gridTemplateColumns: "minmax(280px, 320px) minmax(0, 1fr)",
           gap: 16,
           alignItems: "stretch",
           flex: "1 1 auto",
@@ -166,6 +166,10 @@ export function ProviderDetailPage({
             flexDirection: "column",
             gap: 10,
             minHeight: 0,
+            maxHeight: "100%",
+            // As tall as what it holds. Stretched to the accounts column it
+            // opened a wide empty gap above its actions.
+            alignSelf: "start",
           })}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>

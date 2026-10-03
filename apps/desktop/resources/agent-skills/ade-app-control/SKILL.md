@@ -46,6 +46,7 @@ Use these directly; you do not need `--help` for them.
 | Attach to a running app | `ade app-control connect --cdp-port 9222 --text` |
 | What is on screen | `ade app-control observe --map --text` |
 | Click a control by its label | `ade app-control click --text-match "Save" --text` |
+| Right-click a control | `ade app-control right-click --text-match "Row" --text` |
 | Fill a field | `ade app-control fill --selector "#name" --value "Ada" --text` |
 | Wait for text to appear | `ade app-control wait --text-match "Saved" --timeout-ms 8000 --text` |
 | Record a video | `ade app-control record start --caption "<what>" --text`, then `record stop --text` |
@@ -99,6 +100,8 @@ did nothing.
 ```bash
 ade app-control click --handle obs-...:e:7 --text
 ade app-control click --text-match "Save" --text
+ade app-control click --button right --text-match "Row" --text
+ade app-control right-click --text-match "Row" --text   # same as click --button right
 ade app-control hover --test-id row-3 --text
 ade app-control fill --selector "#name" --value "Ada" --text
 ade app-control clear --selector "#name" --text
@@ -271,8 +274,13 @@ Control, the dev launcher is isolated and safe:
 
 ```bash
 ade app-control launch --command "npm run dev" --text
+ade app-control launch --command "npm run dev:desktop -- --socket /tmp/ade-runtime-app.sock {ADE_APP_CONTROL_DEBUG_FLAGS}" --text
 ```
 
 `npm run dev` uses its own runtime socket (`/tmp/ade-runtime-dev.sock`) and its
 own Electron profile (`ade-desktop-dev`), so it does not collide with the ADE
 that hosts you. `ade runtime status --text` tells you which socket the CLI uses.
+The `dev-desktop` launcher accepts App Control's `{ADE_APP_CONTROL_DEBUG_FLAGS}`
+placeholder (and the `ADE_APP_CONTROL_CDP_PORT` it exports) and passes the CDP
+port and render flags through to Electron, so `launch` connects on the port
+App Control expects.

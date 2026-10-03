@@ -2590,6 +2590,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control observe --no-dom --text      Screenshot only, no element list
     $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
     $ ade app-control click --text-match "Save"    Click by visible label
+    $ ade app-control right-click --text-match "Row"  Right-click by label (same as click --button right)
     $ ade app-control click 120 420 --coords viewport
     $ ade app-control hover --test-id row-3
     $ ade app-control fill --selector "#name" --value "Ada"
@@ -12933,7 +12934,9 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "click" || sub === "tap") {
+  if (sub === "click" || sub === "tap" || sub === "right-click" || sub === "context-click") {
+    const rightClick = sub === "right-click" || sub === "context-click";
+    const verb = rightClick ? "right-click" : "click";
     const targetArgs = readBrowserClickTargetArgs(args);
     const actionArgs = readAppControlAgentActionArgs(args);
     const hasTarget = Object.keys(targetArgs).length > 0;
@@ -12941,12 +12944,12 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     const y = hasTarget ? readNumberOption(args, ["--y"]) : readCoordinate("--y", 1);
     if (!hasTarget && (x == null || y == null)) {
       throw new CliUsageError(
-        "app-control click requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.",
+        `app-control ${verb} requires --x/--y, --selector, --text-match, --test-id, --element, or --handle.`,
       );
     }
     return {
       kind: "execute",
-      label: "App Control click",
+      label: `App Control ${verb}`,
       steps: [
         appControlStep("result", "agentClick",
           collectGenericObjectArgs(args, {
@@ -12956,8 +12959,8 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
             ...(y == null ? {} : { y }),
             scale: readNumberOption(args, ["--scale"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
-            button: readValue(args, ["--button"]),
-            clickCount: readNumberOption(args, ["--click-count", "--count"]),
+            button: rightClick ? "right" : readValue(args, ["--button"]),
+            clickCount: rightClick ? 1 : readNumberOption(args, ["--click-count", "--count"]),
           }),
         ),
       ],
@@ -27230,15 +27233,20 @@ export function formatActionAnswerLines(
   const effect = isRecord(result.effect) ? result.effect : options.fallbackEffect ?? null;
   const status = asString(effect?.status);
   const reason = asString(effect?.reason) ?? "";
+  const next = isRecord(result.effect) && isRecord(result.effect.next) ? result.effect.next : null;
+  const nextReason = asString(next?.reason);
   let effectLine: string;
   if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
   else if (status === "unconfirmed") {
-    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+    // A `next:` line replaces the generic advice with the specific step.
+    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}${nextReason ? "" : "; observe again before you continue"}`;
   } else if (status === "waiting_for_approval") {
     effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
   } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
   else effectLine = "effect: not checked — this ADE did not report an effect";
-  return [hit, effectLine];
+  if (!nextReason) return [hit, effectLine];
+  const nextCommand = asString(next?.command);
+  return [hit, effectLine, `next: ${nextReason}${nextCommand ? ` — run: ${nextCommand}` : ""}`];
 }
 
 /** The rows of a DOM element list, shared by the browser and App Control. */
@@ -27731,6 +27739,8 @@ function formatProviderAccounts(value: unknown): string {
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
       ["account", isRecord(instance.account) ? instance.account.email ?? instance.account.plan : undefined],
+      ["same login as", instance.sameLoginAs],
+      ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
@@ -27794,7 +27804,9 @@ function formatProviderAccounts(value: unknown): string {
       instance.label,
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? (isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes")
+        ? `${isRecord(instance.account) ? instance.account.email ?? instance.account.plan ?? "yes" : "yes"}${
+          typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""
+        }`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
     ]),

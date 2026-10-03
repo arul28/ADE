@@ -157,9 +157,19 @@ Main process:
   default selection, `resolve(provider, requestedId)` used by every launch path,
   and the per-provider settings (smart balance, auto-start windows). Backs the
   `provider_instances.*` action domain and `ade providers accounts`.
+- `apps/desktop/src/main/services/providerAccounts/` — the in-app sign-in.
+  `providerLoginRunner.ts` runs a provider's own login command for one
+  account's config home in a private node-pty, reads the sign-in link and any
+  code prompt from its output, and verifies the saved login when the CLI exits;
+  it is the only place that reads a login's raw output, and it never creates a
+  terminal session or Work row. `machineProviderLoginRunner.ts` is the one
+  runner per machine, shared by local IPC and the pinned `provider_instances`
+  actions. `refreshProviderAccounts.ts` re-reads a provider's accounts (and one
+  named account's saved login) after a sign-in.
 - `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
   account, environment-key, and per-provider-settings contracts used by the
-  registry, IPC, renderer, and CLI action surface.
+  registry, IPC, renderer, and CLI action surface. It also carries the
+  `ProviderLoginStatus` shape the sign-in sheet polls.
 - `apps/desktop/src/shared/types/apiCredentials.ts` — secret-free credential
   summaries for the stored-key panel and harness launch catalog; values are
   represented by provider, id, label, source, and masked tail rather than the
@@ -182,9 +192,10 @@ Main process:
   never creates a pairing or spends a reconnect attempt; the durable directory
   summary stays the floor.
 - `apps/desktop/src/renderer/components/settings/providers/accounts/` — the
-  Accounts panel: rows with the Default badge, the ⋯ menu (rename / default /
-  remove), the Add-account sheet with its embedded terminal, the accent
-  swatches, and `useProviderInstances`.
+  Accounts panel: the routing strip, account cards with avatar, badges and the
+  usage popover's `UsageAccountRow`, the ⋯ menu, the copy and replaced-login
+  states, the three-step Add-account sheet driven by the host's login runner,
+  the accent swatches, and `useProviderInstances`.
 - `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
   API keys panel, the add-key sheet (only the fields a harness actually has),
   the OpenCode custom-provider panel, and `useApiCredentials`.
@@ -1211,10 +1222,10 @@ Renderer — settings:
   (`ade.usage.consumeResetCredit`). Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
-  balance selector for new Claude/Codex chats. It scores each signed-in account
-  by the burn rate it needs to use its room before the weekly reset, scales
-  that down below half a five-hour window, skips a login that is gone, and
-  reports why it skipped when no account was a real choice.
+  balance selector for new Claude/Codex chats. It picks the signed-in account
+  whose weekly window resets soonest, ranks an account short on five-hour room
+  last, skips a login that is gone, and reports why it skipped when no account
+  was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
   best-effort lightweight request per enabled Claude/Codex account shortly
   after a future five-hour reset, with provider-specific model selection and
@@ -2031,51 +2042,79 @@ row and on **Add account**. The left column does not repeat a Sign in section.
 A missing CLI still shows an Install block there, because the account rows do
 not carry the install command.
 
-- **One row per account**: an accent dot (the account's own `accentColor`, or
-  the provider's brand colour from `usage/providerColors.ts`), the label, and
-  `email · plan` — or `Not signed in`, or `email · Signed out` when the usage
-  poller read the saved login as broken. A row that is not signed in carries a
-  **Sign in** button that reopens the login sheet for that account; the config
-  home keeps the email after the provider CLI clears a login, so a broken one
-  still names the account. Under it, the mini usage line `5h NN% · wk NN%`,
-  read from the usage snapshot by matching `UsageAccount.instanceId`, never by
-  email: two logins can share an email, and a login whose email cannot be read
-  still has quota. A signed-in account with no windows yet reads `No usage yet`.
-  There is no cap at two accounts.
-- **Clicking a row picks the account for new chats.** The account new chats use
-  carries a green check and a highlighted border. With smart balance off exactly
-  one account — the default — is checked; clicking another turns smart balance
-  off when it was on and makes that account the default. With smart balance on
-  every signed-in account is checked, and a click turns the switch off and
-  selects the clicked account. A signed-out account cannot be selected: its
-  check is disabled. There is no separate "Set as default" action.
-- **The row menu (⋯)** carries Rename, Change accent (eight
-  fixed swatches plus a `#rrggbb` field), and Remove. Remove asks for
-  confirmation first, and when the store refuses — it will not remove the
-  default account — the store's own sentence is shown rather than a guess.
-- **Two header switches**, each gated on the fact that makes it meaningful.
-  *Smart balance* appears only with two or more accounts and picks the account
-  with the most room when a chat starts, weighting the weekly window more as the
-  week goes on. A running chat stays on the account it started on. If that chat
-  hits a usage limit and another account still has room, smart balance continues
-  the work in a new chat on that account; with the switch off, the limit offers
-  that move instead of taking it, and new chats use the account with the check.
-  *Auto-start 5-hour windows* appears only while
-  the provider reports a five-hour window, and sends one tiny request on the
-  cheapest model when a window ends so the next one starts right away, each
-  request logged with its cost. Both read and write `provider_instances`
-  `getSettings`/`setSettings` for that provider. A (?) beside each explains it
-  on hover.
-- **Add account** opens a sheet: a label, an accent, and the sentence "This
-  account gets its own sign-in. Your other accounts are not touched."
-  **Sign in →** creates the account and then runs the returned login command in
-  an embedded terminal — a real PTY created through `pty.create` with the
-  command's own env, the same mechanism the provider sign-in modal uses.
-  Nothing is spawned from the renderer. Below the terminal the sheet says
-  `Waiting for sign-in…` with a one-shot **Check again**; when the terminal
-  exits the registry is refreshed once and the sheet either shows `✓ <email>`
-  and closes, or says "Sign-in did not complete." with **Try again** and
-  **Close**.
+- **Routing strip** above the cards, shown only when it has a switch: *Smart
+  balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
+  provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
+  and one line saying where new chats go. Smart balance sends each new chat to
+  the account whose weekly room resets soonest, so room is used before it
+  resets. A running chat stays on its account; one that hits a usage limit
+  moves to another account with room (with the switch off, the limit offers
+  that move instead). Auto-start sends one tiny request on the cheapest model
+  when a window ends, each logged with its cost. Both read and write
+  `provider_instances` `getSettings`/`setSettings`.
+- **One card per account**, in a grid that fits as many 290px columns as the
+  width allows, then evens them out over the rows (`balancedColumns`): two cards
+  never leave an empty column, and four go two by two, not three and one. Cards
+  in a row share a height.
+  A card has a dot in the account's accent, the label, one status
+  badge and the ⋯ menu; under it, the top-bar usage popover's own
+  `UsageAccountRow` (email, pace pill, Use reset, one meter per window), built by
+  `accountLimitRow` with `buildAccountRows` and matched by
+  `UsageAccountRow.instanceId`, never by email — so Settings and the popover draw
+  one account the same way. There is no cap on accounts.
+- **Badges say where new chats go.** With smart balance off the default carries
+  `New chats` and an accent border; another card shows **Use** while pointed at
+  or focused, and clicking a card does the same. With smart balance on,
+  `Next chat` marks the account the host would pick now, from
+  `UsageSnapshot.balanceNext` (the same pure `pickInstanceForNewChat` chat
+  creation runs); clicking a card turns balance off and selects it.
+- **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
+  it, else a header badge), dimmed meters, and **Sign in**.
+- **Same login twice**: when two config homes hold one email the later card
+  (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
+  says which account it copies, with **Sign in to another account**; it adds no
+  quota and smart balance skips it.
+- **Replaced login**: when a config home's email changes to another email — a
+  `claude /login` in a shell for the default account — the store records the old
+  one as `replacedAccount`. The card says it was replaced outside ADE, with
+  **Sign it back in** (into a `Copy` slot when there is one, so the accounts
+  shift instead of doubling; otherwise a new account named after the email) and
+  **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
+  once any account holds that email again.
+- **The card menu (⋯)** carries Rename, Change accent (eight fixed swatches plus
+  a `#rrggbb` field), Sign in / Sign in again, and Remove. Remove is not offered
+  on the default or the machine's own login, which the store refuses; it asks
+  for confirmation, and any other refusal shows the store's own sentence.
+- **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
+  with nothing to show folds to its header (API keys with none saved reads
+  `API keys · 0 None saved`), and a click on the title flips any panel. Sheets
+  render outside the panel body, so a folded panel still opens its Add sheet.
+- **Add account** opens a three-step sheet (Name it → Sign in → Done): a name,
+  an accent, and a note that the provider opens its sign-in page and the login
+  is saved for this account only. **Continue to sign-in** creates the account
+  and calls `provider_instances.loginStart`. There is no terminal: the host's
+  login runner (`main/services/providerAccounts/providerLoginRunner.ts`, one per
+  machine) runs the provider's own login command for that account's config home
+  in a private node-pty, reads its output for the sign-in link and a code
+  prompt, and verifies the saved login when the CLI exits (re-reading a stale
+  signed-out mark and the config home's identity). The sheet polls
+  `loginStatus` every second — the subscription proxy's sign-in shape, so it
+  works the same for a Settings page pinned to another machine — and shows a
+  "finish with your browser" card with **Open sign-in page** / **Copy link**, a
+  code field when the CLI asks for one (`loginSubmitCode`), and the CLI's output
+  behind a closed **Sign-in output** disclosure. For a machine other than the
+  one holding the browser, a Codex sign-in passes `deviceAuth`, which appends
+  `--device-auth` so the CLI prints a one-time code instead of returning to a
+  localhost port the other computer cannot reach; the sheet shows that code to
+  type into the sign-in page. It ends on a Done state with the
+  email, or "Sign-in did not complete." with the runner's reason, **Try again**
+  and **Close**. Closing a running sign-in cancels it (`loginCancel`); a sign-in
+  times out after ten minutes. No terminal session or Work row is created.
+  The embedded terminal it replaces drew nothing once the CLI exited (an
+  untracked shell has no transcript) and left an Ended row per attempt.
+  The left card's **Sign in to Claude Code** / **Sign in to Codex** opens the
+  same sheet for the default account. `providers accounts refresh` (and the IPC
+  refresh) also re-reads the saved login of every account marked signed out.
 - **The provider list row** shows `N accounts` in its Details column once a
   provider has more than one.
 - **The model picker** adds one muted line under the provider header —

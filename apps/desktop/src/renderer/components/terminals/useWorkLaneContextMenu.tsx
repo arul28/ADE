@@ -11,6 +11,7 @@ import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { chatDraftMachineId, startChatDraftPatch } from "../../lib/workDraft";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
+import { historyCommitsPath } from "../history/historyUrlHydration";
 import { ForeignLaneContextMenu } from "./ForeignLaneContextMenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
@@ -265,6 +266,7 @@ export function useWorkLaneContextMenu(options?: {
               onClose={close}
               {...laneMenuActions}
               onToggleWorkPin={options?.onToggleWorkPin}
+              onOpenHistory={(id) => void navigate(historyCommitsPath(id))}
               workPinnedLaneIds={options?.workPinnedLaneIds}
             />
           ) : null}
@@ -288,6 +290,11 @@ export function useWorkLaneContextMenu(options?: {
                 onStartChat={startForeignChat}
                 onManage={manageForeignLane}
                 onOpenInLanes={openForeignLane}
+                onOpenHistory={() => {
+                  const { lane, machineId } = foreignMenuState;
+                  close();
+                  void navigate(historyCommitsPath(lane.id, machineId));
+                }}
               />
             </>
           ) : null}

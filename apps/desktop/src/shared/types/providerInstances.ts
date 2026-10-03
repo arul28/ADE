@@ -63,6 +63,24 @@ export type ProviderInstance = {
    * new sign-in. Absent when the login works or was never read.
    */
   loginBroken?: boolean;
+  /**
+   * Another account of this provider is signed in to the same email: this one
+   * is a copy of that login and quota. Names the account that owns it (the
+   * default first, then creation order). Smart balance skips copies.
+   */
+  sameLoginAs?: string;
+  /**
+   * The login this config home held before a different one replaced it — a
+   * sign-in outside ADE, such as `claude /login` in a shell for the default
+   * account. Absent once any account holds that email again, or once dismissed.
+   */
+  replacedAccount?: ProviderInstanceReplacedAccount;
+};
+
+export type ProviderInstanceReplacedAccount = {
+  email: string;
+  plan?: string;
+  replacedAt: string;
 };
 
 /**
@@ -151,6 +169,10 @@ export type ProviderInstanceSetDefaultArgs = {
   id: string;
 };
 
+export type ProviderInstanceDismissReplacedArgs = {
+  id: string;
+};
+
 export type ProviderInstanceSetAccentArgs = {
   id: string;
   /** `#rrggbb`, or `null` to clear the accent. */
@@ -170,8 +192,59 @@ export type ProviderInstanceLoginCommandArgs = {
   id: string;
 };
 
+/**
+ * One sign-in ADE runs for an account: the provider's own login command in a
+ * private PTY on the account's machine, read for the link it prints and the
+ * code it may ask for. No terminal session or Work row is created.
+ */
+export type ProviderLoginState = "running" | "verifying" | "succeeded" | "failed" | "cancelled";
+
+export type ProviderLoginStatus = {
+  loginId: string;
+  instanceId: string;
+  provider: ProviderInstanceProvider;
+  state: ProviderLoginState;
+  /** The sign-in link the CLI printed, once it has. */
+  url: string | null;
+  /** The CLI is asking for a code pasted from the browser. */
+  awaitingCode: boolean;
+  /** A device sign-in's one-time code, typed into the sign-in page. */
+  deviceCode?: string;
+  /** The CLI's output so far, without terminal escapes; the last few KB. */
+  output: string;
+  /** The account's email once the login is verified. */
+  email?: string;
+  /** Why a failed sign-in failed, in one sentence. */
+  message?: string;
+  startedAt: string;
+  endedAt?: string;
+};
+
+/** A sign-in that has not ended: its CLI still runs, or its result is being checked. */
+export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | null | undefined): boolean {
+  return login?.state === "running" || login?.state === "verifying";
+}
+
+export type ProviderLoginStartArgs = {
+  id: string;
+  /**
+   * Sign in with a one-time code typed into the sign-in page (Codex
+   * `--device-auth`), for a machine other than the one with the browser:
+   * Codex's normal sign-in returns to a localhost port on the account's
+   * machine, which a browser on another computer cannot reach.
+   */
+  deviceAuth?: boolean;
+};
+export type ProviderLoginRefArgs = { loginId: string };
+export type ProviderLoginSubmitCodeArgs = { loginId: string; code: string };
+
 export type ProviderInstanceRefreshArgs = {
   provider?: ProviderInstanceProvider;
+  /**
+   * Re-read this account's saved login now, even when it is not marked
+   * signed out — the account a sign-in just finished for.
+   */
+  instanceId?: string;
 };
 
 /** `#rrggbb` only — the renderer renders it raw, so anything else is rejected. */

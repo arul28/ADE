@@ -7,6 +7,7 @@ import {
   DESTRUCTIVE_ITEM_CLASS,
   MENU_ITEM_CLASS,
   MenuRowIcon,
+  MenuSectionLabel,
   MenuSeparator,
   MenuSubmenu,
 } from "./MenuSubmenu";
@@ -27,6 +28,9 @@ export type ContextMenuEntry =
       onSelect: () => void;
       danger?: boolean;
       disabled?: boolean;
+      /** Quiet trailing text, e.g. how many of a selection the row touches. */
+      hint?: string;
+      title?: string;
     }
   | {
       kind: "submenu";
@@ -34,7 +38,11 @@ export type ContextMenuEntry =
       label: string;
       icon: Icon;
       entries: ContextMenuEntry[];
+      /** Runs as the submenu opens, for rows that resolve against the clock. */
+      onOpen?: () => void;
+      testId?: string;
     }
+  | { kind: "label"; key: string; label: string }
   | {
       kind: "open-in";
       key: string;
@@ -46,12 +54,17 @@ export type ContextMenuEntry =
 /** Where the menu opens, in client pixels; null when it is closed. */
 export type ContextMenuState = { x: number; y: number } | null;
 
-/** Drops leading, trailing and doubled separators left by hidden rows. */
+/**
+ * Drops leading, trailing and doubled separators left by hidden rows, and a
+ * section label whose rows were all hidden (one that runs into a separator).
+ */
 function tidyEntries(entries: ContextMenuEntry[]): ContextMenuEntry[] {
   const out: ContextMenuEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind === "separator" && (out.length === 0 || out[out.length - 1]!.kind === "separator")) {
-      continue;
+    const last = out[out.length - 1];
+    if (entry.kind === "separator") {
+      if (last?.kind === "label") out.pop();
+      if (out.length === 0 || out[out.length - 1]!.kind === "separator") continue;
     }
     out.push(entry);
   }
@@ -72,6 +85,8 @@ function EntryRows({
         switch (entry.kind) {
           case "separator":
             return <MenuSeparator key={entry.key} />;
+          case "label":
+            return <MenuSectionLabel key={entry.key}>{entry.label}</MenuSectionLabel>;
           case "open-in":
             return (
               <OpenInSubmenu
@@ -89,6 +104,8 @@ function EntryRows({
                 icon={<MenuRowIcon icon={entry.icon} />}
                 className={MENU_ITEM_CLASS}
                 role="menuitem"
+                onOpen={entry.onOpen}
+                data-testid={entry.testId}
               >
                 <EntryRows entries={entry.entries} onClose={onClose} />
               </MenuSubmenu>
@@ -100,6 +117,7 @@ function EntryRows({
                 type="button"
                 role="menuitem"
                 disabled={entry.disabled}
+                title={entry.title}
                 className={
                   (entry.danger ? DESTRUCTIVE_ITEM_CLASS : MENU_ITEM_CLASS)
                   + (entry.disabled ? " pointer-events-none opacity-40" : "")
@@ -111,6 +129,9 @@ function EntryRows({
               >
                 <MenuRowIcon icon={entry.icon} danger={entry.danger} />
                 {entry.label}
+                {entry.hint ? (
+                  <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">{entry.hint}</span>
+                ) : null}
               </button>
             );
           default: {
@@ -128,12 +149,14 @@ export function ContextMenu({
   entries,
   onClose,
   label,
+  testId,
 }: {
   menu: ContextMenuState;
   entries: ContextMenuEntry[];
   onClose: () => void;
   /** Accessible name for the menu. */
   label: string;
+  testId?: string;
 }) {
   const { ref, position } = useClampedFixedPosition(menu);
   useEffect(() => {
@@ -162,6 +185,7 @@ export function ContextMenu({
         ref={ref}
         role="menu"
         aria-label={label}
+        data-testid={testId}
         className="ade-liquid-glass-menu fixed min-w-[200px] py-1"
         style={{
           zIndex: Z_LAYERS.contextMenu,

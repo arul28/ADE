@@ -14324,6 +14324,17 @@ describe("ADE CLI", () => {
       },
     });
 
+    const rightClick = buildCliPlan(["app-control", "right-click", "--text-match", "Row"]);
+    expect(rightClick.kind).toBe("execute");
+    if (rightClick.kind !== "execute") return;
+    expect(rightClick.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "app_control",
+        action: "agentClick",
+        args: { text: "Row", button: "right" },
+      },
+    });
+
     const hover = buildCliPlan(["app-control", "hover", "--test-id", "row-3"]);
     expect(hover.kind).toBe("execute");
     if (hover.kind !== "execute") return;

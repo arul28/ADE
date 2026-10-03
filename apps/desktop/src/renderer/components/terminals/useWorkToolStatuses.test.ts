@@ -34,6 +34,7 @@ import {
   pruneWorkToolBrowserErrors,
   workToolBrowserErrorCount,
 } from "./workToolErrors";
+import { useAppStore } from "../../state/appStore";
 
 /** The longest a status can be before the two-column card cuts it. */
 const ONE_LINE_BUDGET = 22;
@@ -217,6 +218,35 @@ describe("work tool status lines", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("marks the sync numbers stale only when the lane status is unmeasured", () => {
+    const lane = (
+      status: Partial<NonNullable<LaneSummary["status"]>>,
+      extra: Partial<LaneSummary> = {},
+    ) => ({
+      ...extra,
+      status: {
+        ahead: 0,
+        behind: 0,
+        dirty: false,
+        remoteBehind: -1,
+        rebaseInProgress: false,
+        lastCommitAt: null,
+        ...status,
+      },
+    } as LaneSummary);
+    // Measured: no stale marker, so the card shows the numbers as current.
+    expect(gitStatusLine(lane({ ahead: 2, behind: 1 }))).toMatchObject({ line: "2 ahead · 1 behind" });
+    expect(gitStatusLine(lane({ ahead: 2, behind: 1 })).stale).toBeUndefined();
+    // The same numbers, unmeasured: marked stale so the card shows them quietly.
+    expect(gitStatusLine(lane({ ahead: 2, behind: 1 }), true)).toMatchObject({
+      line: "2 ahead · 1 behind",
+      stale: true,
+    });
+    // An upstream-only line comes from its own live read, so it stays current.
+    expect(gitStatusLine(lane({ remoteBehind: 0 }, { lastCommitAt: "2026-09-09T16:00:00.000Z" }), true).stale)
+      .toBeUndefined();
   });
 
   it("keeps the other tools to a fact each", () => {
@@ -429,5 +459,75 @@ describe("useWorkToolStatuses shell re-reads", () => {
     clearWorkTerminalShellCount(OWNER);
     await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(result.current.statuses.terminal?.line).toBe("1 shell"));
+  });
+});
+
+describe("useWorkToolStatuses lane status staleness", () => {
+  const lane = {
+    id: "lane-1",
+    laneType: "worktree",
+    branchRef: "feature/x",
+    baseRef: "main",
+    status: {
+      ahead: 2,
+      behind: 1,
+      dirty: false,
+      remoteBehind: -1,
+      rebaseInProgress: false,
+      lastCommitAt: null,
+    },
+  } as unknown as LaneSummary;
+
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ laneStatusStale: false });
+    delete (window as unknown as { ade?: unknown }).ade;
+  });
+
+  function wrapper({ children }: { children: ReactNode }) {
+    return createElement(NativeToolFeedsProvider, { active: true, runtimePin: null, children });
+  }
+
+  it("dims this machine's numbers but leaves a pinned machine's own read current", async () => {
+    (window as unknown as { ade?: unknown }).ade = {
+      terminal: { list: vi.fn(async () => []) },
+      sessions: { onChanged: () => () => {} },
+      pty: { onExit: () => () => {} },
+    };
+    useAppStore.setState({ laneStatusStale: true });
+
+    const initialProps: { runtimePin: Parameters<typeof useWorkToolStatuses>[0]["runtimePin"] } = {
+      runtimePin: null,
+    };
+    const { result, rerender } = renderHook(
+      ({ runtimePin }: typeof initialProps) =>
+        useWorkToolStatuses({
+          enabled: true,
+          laneId: null,
+          lane,
+          runtimePin,
+          terminalOwnerSessionId: null,
+          activeTool: "git",
+        }),
+      { wrapper, initialProps },
+    );
+
+    await waitFor(() => expect(result.current.statuses.git?.line).toBe("2 ahead · 1 behind"));
+    expect(result.current.statuses.git?.stale).toBe(true);
+
+    // A lane pinned to another machine carries that machine's own measured read,
+    // so this machine's unmeasured status must not dim it.
+    rerender({
+      runtimePin: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/one",
+        displayName: "Remote One",
+      } as NonNullable<Parameters<typeof useWorkToolStatuses>[0]["runtimePin"]>,
+    });
+    await waitFor(() => expect(result.current.statuses.git?.stale).toBeFalsy());
   });
 });

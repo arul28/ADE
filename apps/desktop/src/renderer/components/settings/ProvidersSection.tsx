@@ -8,7 +8,6 @@
  * 1800 lines with six different vocabularies for "connected".
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type {
   AiConfig,
   AiApiKeyVerificationResult,
@@ -33,7 +32,6 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
-import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import {
   OpenCodeProviderDetailModal,
   useOpenCodeProviderDetail,
@@ -253,7 +251,6 @@ export function ProvidersSection({
   /** `#ai-harnesses` — scroll the Custom section into view on mount. */
   harnessesParam?: boolean;
 } = {}) {
-  const navigate = useNavigate();
   const usageHeaderPreferences = useUsageHeaderPreferences();
   // The machine whose providers this page shows. Every runtime call below
   // carries `pin` (null = the tab's binding); the page is
@@ -325,10 +322,6 @@ export function ProvidersSection({
     setSelectedProviderId(next);
     onProviderChange?.(next);
   }, [onProviderChange]);
-
-  const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
-    revealTerminalSessionInWork(navigate, terminal);
-  }, [navigate]);
 
   const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
@@ -1049,7 +1042,6 @@ export function ProvidersSection({
       saveLocalProvider,
       setCustomModelSlugs,
       saveCustomModelSlugs,
-      revealClaudeLoginTerminal: revealClaudeLoginTerminalInWork,
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
@@ -1067,7 +1059,7 @@ export function ProvidersSection({
     saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
-    verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
+    verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
     acpDoctorBusy, acpUpdateBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor,
     updateAcpProvider, openSignInTerminal,

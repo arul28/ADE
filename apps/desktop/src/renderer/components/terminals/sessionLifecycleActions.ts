@@ -96,6 +96,98 @@ export async function snoozeSessionForDuration(
   });
 }
 
+export type BulkLifecycleTarget = {
+  session: Pick<TerminalSessionSummary, "id">;
+  pin?: OpenProjectBinding | null;
+};
+
+let bulkToastSeq = 0;
+
+/**
+ * Run one lifecycle write over a multi-selection, each row on its own machine,
+ * and report failures once. Per-row toasts would stack N copies of the same
+ * message; one row failing must not stop the rest. Returns the rows that took.
+ */
+async function runBulkLifecycle(
+  action: string,
+  targets: ReadonlyArray<BulkLifecycleTarget>,
+  write: (target: BulkLifecycleTarget) => Promise<unknown>,
+): Promise<BulkLifecycleTarget[]> {
+  const results = await Promise.allSettled(targets.map(write));
+  const failedIndex = results.findIndex((result) => result.status === "rejected");
+  if (failedIndex >= 0) {
+    const failure = results[failedIndex] as PromiseRejectedResult;
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    reportFailure(
+      targets.length > 1 ? `${action} (${failedCount} of ${targets.length})` : action,
+      targets[failedIndex]!.session.id,
+      failure.reason,
+    );
+  }
+  return targets.filter((_, index) => results[index]?.status === "fulfilled");
+}
+
+function sessionCount(count: number): string {
+  return `${count} session${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Snooze a multi-selection to one shared deadline, with one toast and one Undo
+ * for the whole batch.
+ */
+export async function snoozeSessionsForDuration(
+  targets: ReadonlyArray<BulkLifecycleTarget>,
+  key: SnoozeDurationKey,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  if (!targets.length) return;
+  const untilIso = snoozeDeadlineIso(key, nowMs);
+  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
+    : window.ade.sessions.snoozeSession(session.id, untilIso)));
+  if (!snoozed.length) return;
+  showToast({
+    // Unique per batch: two batches snoozed to the same deadline each keep
+    // their own Undo.
+    id: `session-snooze-bulk:${++bulkToastSeq}`,
+    title: `Snoozed ${sessionCount(snoozed.length)} ${snoozeConfirmationLabel(key)}`,
+    durationMs: UNDO_TOAST_MS,
+    actions: [{ label: "Undo", onClick: () => { void wakeSessions(snoozed); } }],
+  });
+}
+
+/** Wake every snoozed row in a selection. */
+export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  await runBulkLifecycle("Wake", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.wakeSession(session.id, "manual", pin)
+    : window.ade.sessions.wakeSession(session.id, "manual")));
+}
+
+/**
+ * Settle a selection of at-rest rows, with one Undo. Like the sidebar header's
+ * bulk settle, it never dismisses pending input: callers leave needs-you rows
+ * out, and none of these writes carries `dismissPendingInput`.
+ */
+export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.settle(session.id, undefined, pin)
+    : window.ade.sessions.settle(session.id)));
+  if (!settled.length) return;
+  showToast({
+    id: `session-settle-bulk:${++bulkToastSeq}`,
+    title: `Settled ${sessionCount(settled.length)}`,
+    durationMs: UNDO_TOAST_MS,
+    actions: [{ label: "Undo", onClick: () => { void unsettleSessions(settled); } }],
+  });
+}
+
+/** Lift the settle on every settled row in a selection. */
+export async function unsettleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
+  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => (pin
+    ? window.ade.sessions.unsettle(session.id, pin)
+    : window.ade.sessions.unsettle(session.id)));
+}
+
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
 export async function wakeSessionNow(
   session: Pick<TerminalSessionSummary, "id">,

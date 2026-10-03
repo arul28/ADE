@@ -333,7 +333,9 @@ resolve it on another machine) and the `terminal` domain (`list`, `read`,
    - for `electron` / `npx electron`, appends the flags; or
    - for any other launcher, only exports the variables. That launcher must
      forward `ADE_APP_CONTROL_DEBUG_FLAGS`, or read `ADE_APP_CONTROL_CDP_PORT`
-     and pass `--remote-debugging-port`.
+     and pass `--remote-debugging-port`. ADE's own `npm run dev:desktop`
+     launcher accepts the substituted flags and passes the port and render
+     flags through to Electron.
 2. **Visible terminal.** The command runs in the chat-owned PTY, so the user
    sees its output. The session records `terminalSessionId` and
    `terminalPtyId`.
@@ -372,8 +374,11 @@ iframe ADE cannot reach).
 ## Input (renderer live-frame path)
 
 - `click` sends `Input.dispatchMouseEvent`. Screenshot-space points are scaled
-  to viewport space with separate x and y factors from the latest screencast
-  frame. A hidden renderer tries an in-page DOM click first.
+  to viewport space by the explicit `scale` when given, else by the app's own
+  device pixel ratio — the scale the observation screenshot was taken at. The
+  live screencast frame is a different, downscaled image and is not used. A
+  hidden renderer tries an in-page DOM click first. `click --button right` (and
+  the `right-click` alias) sends a right click.
 - `typeText` uses `Input.insertText`; `dispatchKey` is the escape hatch for
   shortcuts.
 - `press` (and the built-in browser's key press) builds its events with
@@ -405,10 +410,14 @@ Actions: `agentClick`, `agentHover`, `agentFill`, `agentClear`, `agentPress` and
 `agentWait` resolve a target from a handle, `selector`, `text`, `testId`,
 `elementIndex`, or `x`/`y` (click and hover only). A handle is read back from
 its saved observation, so a pruned or foreign handle fails with a clear error.
-The target is scrolled into view and focused; a disabled target is refused.
-`fill` and `clear` need an editable target, and `fill` types only an explicit
-`value`. `agentType` has no target: it types into the focused element.
-`agentScroll` takes coordinates only.
+A `text` match prefers an exact match, then the smallest element whose own text
+carries the string resolved to its closest clickable ancestor — so a list row
+wins over the list container that merely contains the same text. `agentClick`
+takes `button` (`left`, `middle`, `right`); `ade app-control right-click` is the
+`button: right` shorthand. The target is scrolled into view and focused; a
+disabled target is refused. `fill` and `clear` need an editable target, and
+`fill` types only an explicit `value`. `agentType` has no target: it types into
+the focused element. `agentScroll` takes coordinates only.
 
 Every action then dispatches CDP input, records a trace entry (the last 80 are
 kept, with a redacted target), and answers with a post-action observation after

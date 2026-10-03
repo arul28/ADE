@@ -809,6 +809,8 @@ const now = new Date().toISOString();
  * the real store synthesizes on read. Mutable so the mock's create/rename/
  * remove handlers round-trip in the preview instead of looking broken.
  */
+const mockLogins = new Map<string, import("../shared/types").ProviderLoginStatus>();
+
 const mockProviderInstances: Array<{
   id: string;
   provider: "claude" | "codex";
@@ -819,6 +821,9 @@ const mockProviderInstances: Array<{
   createdAt: string;
   account?: { email?: string; plan?: string };
   signedIn: boolean;
+  loginBroken?: boolean;
+  sameLoginAs?: string;
+  replacedAccount?: { email: string; plan?: string; replacedAt: string };
 }> = [
   {
     id: "claude",
@@ -1351,6 +1356,9 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetKind: "session",
       targetId: "mock-session-claude-1",
       launch: {},
+      // Launched on the second Claude sign-in, so the chat account note has
+      // a non-default account to show.
+      instanceId: "claude-work",
     },
   },
   {
@@ -1567,19 +1575,21 @@ const MOCK_COMMIT_TRAILERS = [
 ];
 const MOCK_COMMIT_MESSAGES = new Map<string, string>();
 
-function mockLaneRecentCommits(args: any = {}): any[] | null {
-  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
-  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
-  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
-  const ahead = lane.laneType === "primary" ? limit : Math.max(0, lane.status?.ahead ?? 0);
-  const count = Math.min(limit, ahead + 5);
+function mockCommitsForLane(lane: any, count: number): any[] {
+  const ahead = lane.laneType === "primary" ? count : Math.max(0, lane.status?.ahead ?? 0);
+  const total = Math.min(count, ahead + 5);
   let seed = 0;
   for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
   const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
   const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
-  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, count)));
+  // A stable denominator (not the request-dependent row count), so a commit's
+  // timestamp does not shift between pages and reorder the union.
+  const timestampSlots = lane.laneType === "primary"
+    ? Math.max(1, MOCK_COMMIT_POOL.length)
+    : Math.max(1, lane.status?.ahead ?? 0);
+  const step = Math.max(12 * 60_000, (end - start) / timestampSlots);
   const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
-  return Array.from({ length: count }, (_, index) => {
+  return Array.from({ length: total }, (_, index) => {
     const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];
     const sourceSha = String(source.sha);
     const sha = `${sourceSha.slice(0, 7)}${index.toString(16).padStart(4, "0")}${lanePrefix}${sourceSha.slice(19)}`;
@@ -1596,6 +1606,21 @@ function mockLaneRecentCommits(args: any = {}): any[] | null {
       pushed: index > 0,
     };
   });
+}
+
+function mockLaneRecentCommits(args: any = {}): any[] | null {
+  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
+  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
+  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
+  const skip = Number.isFinite(args?.skip) ? Math.max(0, Math.floor(args.skip)) : 0;
+  // "All lanes" unions every lane; both scopes page by `skip` so the preview's
+  // "Load older" advances instead of re-reading page one.
+  const lanes = args?.scope === "lanes"
+    ? [lane, ...MOCK_LANES.filter((row) => row.id !== lane.id)]
+    : [lane];
+  const rows = lanes.flatMap((row) => mockCommitsForLane(row, limit + skip));
+  rows.sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
+  return rows.slice(skip, skip + limit);
 }
 
 const ADE_DB_OPERATIONS: any[] =
@@ -2082,6 +2107,9 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    instanceId: session.resumeMetadata?.instanceId ?? undefined,
+    presetId: session.resumeMetadata?.presetId ?? undefined,
+    credentialId: session.resumeMetadata?.credentialId ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -7168,6 +7196,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         for (const other of mockProviderInstances) {
           if (other.provider === instance.provider) other.isDefault = other.id === instance.id;
         }
+        return instance;
+      },
+      // A simulated sign-in: the link appears at once, the code prompt after a
+      // beat, and a pasted code finishes it — enough to walk every state.
+      loginStart: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        const loginId = `mock-login-${Date.now()}`;
+        mockLogins.set(loginId, {
+          loginId,
+          instanceId: instance.id,
+          provider: instance.provider,
+          state: "running",
+          url: instance.provider === "claude"
+            ? "https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code"
+            : "https://auth.openai.com/oauth/authorize?client_id=mock",
+          awaitingCode: false,
+          output: "Opening browser to sign in…\nIf the browser didn't open, visit the link below.\n",
+          startedAt: new Date().toISOString(),
+        });
+        setTimeout(() => {
+          const login = mockLogins.get(loginId);
+          if (login?.state === "running") {
+            login.awaitingCode = true;
+            login.output += "Paste code here if prompted > ";
+          }
+        }, 1500);
+        return { ...mockLogins.get(loginId)! };
+      },
+      loginStatus: async (args: { loginId: string }) => ({ ...mockLogins.get(args.loginId)! }),
+      loginSubmitCode: async (args: { loginId: string; code: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.awaitingCode = false;
+        login.state = "verifying";
+        login.output += "\nLogin successful.\n";
+        setTimeout(() => {
+          const instance = mockProviderInstanceById(login.instanceId);
+          instance.signedIn = true;
+          instance.account = instance.account ?? { email: "new.account@example.com", plan: "Claude Max 20x" };
+          login.state = "succeeded";
+          login.email = instance.account.email;
+          login.endedAt = new Date().toISOString();
+        }, 900);
+        return { ...login };
+      },
+      loginCancel: async (args: { loginId: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.state = "cancelled";
+        return { ...login };
+      },
+      dismissReplaced: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.replacedAccount;
         return instance;
       },
       setAccent: async (args: { id: string; accentColor: string | null }) => {

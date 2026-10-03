@@ -133,6 +133,26 @@ export type GitCommitSummary = {
   authoredAt: string;
   subject: string;
   pushed: boolean;
+  /** Author email, when the read asked for it (History). */
+  authorEmail?: string;
+  /** `Co-authored-by:` trailer values ("Claude <noreply@anthropic.com>"). */
+  coAuthors?: string[];
+};
+
+/**
+ * Which refs a commit list walks. `lane` is the lane's HEAD. `lanes` is the
+ * lane's HEAD plus every active lane's branch and the lane's base, so one
+ * graph shows where every lane sits.
+ */
+export type GitCommitListScope = "lane" | "lanes";
+
+export type GitListRecentCommitsArgs = {
+  laneId: string;
+  /** Page size; at most 500 per call. */
+  limit?: number;
+  /** Newest commits to skip, for loading older pages. */
+  skip?: number;
+  scope?: GitCommitListScope;
 };
 
 export type GitFileHistoryEntry = {

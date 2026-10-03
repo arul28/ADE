@@ -6566,6 +6566,9 @@ describe("AgentChatPane submit recovery", () => {
         cursorConfigValues: {},
       }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
+      // A successful handoff closes the form instead of leaving it over the
+      // new chat.
+      expect(screen.queryByTestId("handoff-local")).toBeNull();
     });
   });
 
@@ -6799,6 +6802,103 @@ describe("AgentChatPane submit recovery", () => {
         mode: "fork",
       }), null);
     });
+  });
+
+  it("defaults fork and brief to the source chat's model", async () => {
+    // Codex source on gpt-5.5, with a Claude alternative in the catalog: the
+    // form must start on the model this chat runs on, not the alternative.
+    seedRuntimeModelCatalog();
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2"),
+        usedFallbackSummary: false,
+      },
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    const localView = await screen.findByTestId("handoff-local");
+    await waitFor(() => {
+      expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+    });
+
+    // The brief tab shares the target and must not snap back to the alternative.
+    fireEvent.click(within(localView).getByRole("button", { name: /^Brief$/ }));
+    expect(within(localView).getByRole("button", { name: /Select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+      }), null);
+    });
+  });
+
+  it("shows a failed local handoff's error inside the form and keeps it open", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({
+      sessions: [session],
+      handoffError: new Error("The handoff could not reach the runtime."),
+    });
+
+    renderPane(session);
+
+    openChatHandoff(session.sessionId, "local");
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    // The pane's own error line sits behind the form, so the failure has to be
+    // shown where the user is looking.
+    await waitFor(() => {
+      expect(within(localView).getByText("The handoff could not reach the runtime.")).toBeTruthy();
+    });
+    // The form stays open so the note is not lost and the user can retry.
+    expect(within(localView).getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("closes the local handoff form when the pane switches chats", async () => {
+    const first = buildSession("session-1", { status: "idle" });
+    const second = buildSession("session-2", { status: "idle" });
+    installAdeMocks({ sessions: [first, second] });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={first.laneId}
+          lockSessionId={first.sessionId}
+          hideSessionTabs
+          initialSessionSummary={first}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    openChatHandoff(first.sessionId, "local");
+    await screen.findByTestId("handoff-local");
+
+    // The pane is re-pointed at another chat while the form is open; a form
+    // left mounted would hand off the wrong chat.
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={second.laneId}
+          lockSessionId={second.sessionId}
+          hideSessionTabs
+          initialSessionSummary={second}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId("handoff-local")).toBeNull());
   });
 
   it("shows replay truncation disclosure after fork handoff", async () => {

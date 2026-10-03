@@ -1109,6 +1109,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * anything on disk. So none of these methods can leak or destroy a
    * credential, which is the bar the CTO gate exists to enforce.
    *
+   * `loginStart`/`loginSubmitCode` run the provider's own sign-in for one
+   * account in a private PTY. That opens the user's browser and, once the user
+   * approves there, the CLI writes a new login into that account's directory,
+   * which can replace the login it held (tracked as `replacedAccount`). ADE
+   * still never sees the token, and nothing changes without the user's
+   * approval in the browser.
+   *
    * The locked decision is that an agent may both see and manage accounts:
    * a worker agent that needs a second Claude login (rate limits, a separate
    * work identity) must be able to create it and point a session at it without
@@ -1122,6 +1129,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rename",
     "setDefault",
     "setAccent",
+    "dismissReplaced",
+    "loginStart",
+    "loginStatus",
+    "loginSubmitCode",
+    "loginCancel",
     "getSettings",
     "setSettings",
     "loginCommand",

@@ -104,6 +104,7 @@ import type {
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { historyCommitsPath } from "../history/historyUrlHydration";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -227,6 +228,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return {
       action: p.get("action"),
       laneIdsRaw: p.get("laneIds"),
+      /** Batch manage dialog's opening tab (`archive` / `delete`), from the Work bulk menu. */
+      manageTab: p.get("manageTab"),
       laneId: p.get("laneId"),
       /** Owning machine of `laneId` when it is not the tab's (see foreign deep link below). */
       machineId: p.get("machineId"),
@@ -1750,10 +1753,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
     } else if (action === "split-remove" || action === "select-all") {
       handled = true;
-    } else if (action === "batch") {
-      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+    } else if (action === "batch" || action === "select") {
+      // Both leave the lanes multi-selected in the sidebar, exactly as a
+      // Cmd-click selection would; `batch` also opens the manage dialog on them.
+      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim())
+        .filter((id) => id && lanesById.has(id) && !deletingLaneIds.has(id));
       if (ids.length > 0) {
-        openBatchManage(ids);
+        selectDetailLane(ids[0]!);
+        setMultiSelectedLaneIds(ids.length > 1 ? new Set(ids) : EMPTY_LANE_ID_SET);
+        if (action === "batch") {
+          const tab = urlLaneDeeplinks.manageTab;
+          openBatchManage(ids, tab === "archive" || tab === "delete" ? tab : null);
+        }
         handled = true;
       }
     }
@@ -1765,6 +1776,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneId,
     urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.manageTab,
     lanesById,
     deletingLaneIds,
     active,
@@ -2356,6 +2368,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
                       machine={detailForeignRow.pin ? {
                         pin: detailForeignRow.pin,
+                        machineId: detailForeignRow.machineId,
                         machineName: detailForeignRow.machineName,
                         lanes: foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES,
                         prs: allMachineLanes.prsByMachineId.get(detailForeignRow.machineId) ?? EMPTY_PRS,
@@ -2473,6 +2486,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={selectDetailLane}
           onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
+          onOpenHistory={(id) => navigate(historyCommitsPath(id))}
         />
       ) : null}
       {laneContextMenu && contextMenuForeignRow?.pin ? (
@@ -2488,6 +2502,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={(realLaneId) => selectDetailLane(foreignLaneKey(contextMenuForeignRow.machineId, realLaneId))}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(contextMenuForeignRow.machineId)}
           onStartChatInLane={(realLaneId) => startChatInLane(realLaneId, { machineId: contextMenuForeignRow.machineId })}
+          onOpenHistory={(realLaneId) => navigate(historyCommitsPath(realLaneId, contextMenuForeignRow.machineId))}
           runtimePin={contextMenuForeignRow.pin}
         />
       ) : null}

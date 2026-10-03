@@ -130,6 +130,7 @@ import type {
   GitCheckoutBranchArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
+  GitListRecentCommitsArgs,
   GitPullArgs,
   GitPullMode,
   GitPushArgs,
@@ -3193,10 +3194,14 @@ function parseGitGenerateCommitMessageArgs(value: Record<string, unknown>): GitG
   };
 }
 
-function parseGitListRecentCommitsArgs(value: Record<string, unknown>): { laneId: string; limit?: number } {
+function parseGitListRecentCommitsArgs(value: Record<string, unknown>): GitListRecentCommitsArgs {
+  const skip = asOptionalNumber(value.skip);
+  const scope = value.scope === "lanes" || value.scope === "lane" ? value.scope : undefined;
   return {
     laneId: requireString(value.laneId, "git.listRecentCommits requires laneId."),
     limit: asOptionalNumber(value.limit),
+    ...(skip != null ? { skip } : {}),
+    ...(scope ? { scope } : {}),
   };
 }
 

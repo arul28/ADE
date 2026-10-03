@@ -290,14 +290,17 @@ async function main() {
   const electronEnv = {
     VITE_DEV_SERVER_URL: devServerUrl,
   };
+  // App Control's render flags (an occluded or background window must keep
+  // painting). The CDP port and address are handled above; anything else in
+  // the App Control flag list rides on the Electron argv verbatim.
+  const extraDebugFlags = String(process.env.ADE_APP_CONTROL_DEBUG_FLAGS || "")
+    .split(/\s+/)
+    .map((flag) => flag.trim())
+    .filter((flag) => flag
+      && !flag.startsWith("--remote-debugging-port")
+      && !flag.startsWith("--remote-debugging-address"));
   const launchElectron = () => {
-    const electronArgs = [`--remote-debugging-port=${remoteDebugPort}`];
-    // `ade app-control launch` passes its Chromium switches here (no occluded-
-    // window or renderer backgrounding). Without them a window behind others
-    // stops painting and the agent driving it sees a frozen page.
-    for (const flag of String(process.env.ADE_APP_CONTROL_DEBUG_FLAGS ?? "").split(/\s+/)) {
-      if (flag.startsWith("--") && !flag.startsWith("--remote-debugging-port")) electronArgs.push(flag);
-    }
+    const electronArgs = [`--remote-debugging-port=${remoteDebugPort}`, ...extraDebugFlags];
     if (process.env.ADE_DISABLE_HARDWARE_ACCEL === "1") {
       electronArgs.push("--disable-gpu");
     }

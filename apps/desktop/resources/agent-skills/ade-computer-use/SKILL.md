@@ -42,6 +42,19 @@ fill, scroll, drag) reports two lines:
 When the effect is `unconfirmed`, observe again before you act again or report
 the step. Do not repeat the action blindly.
 
+An `unconfirmed` answer can carry a third line, `next:`. It names the one
+input method to try next and why, and often a command to run:
+
+- `observe` — keep the same method. Look at the new screen, or `wait` for the
+  label you expect. The action probably applied, or the element is disabled.
+- `real_input` — repeat the same command with `--real`.
+- `lease` — real input is the fix, but this chat must ask for it first. Run
+  the `ade mac-desktop lease` command it prints, then repeat with `--real`.
+- `browser` — the target is a web page. Drive it in the ADE browser, unless
+  the task needs that exact browser.
+
+Follow `next:` instead of a guess. Today only the Mac Desktop prints it.
+
 ## Proof per surface
 
 | Surface | Still proof | Video |
