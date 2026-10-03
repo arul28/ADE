@@ -249,17 +249,23 @@ function missingBinaryPatterns(name: string): RegExp[] {
   const bin = `${escapeRegExp(name)}(?:\\.exe|\\.cmd|\\.bat|\\.ps1)?`;
   // An optional directory in front of the name: `spawn /opt/bin/opencode ENOENT`.
   const dir = String.raw`(?:[^\s'"\`]*[\\/])?`;
+  // A spawned path may contain spaces (`C:\Program Files\OpenCode\opencode.exe`),
+  // so this variant allows them up to the last separator before the binary.
+  const spawnDir = String.raw`(?:[^'"\`\n]*[\\/])?`;
   const q = String.raw`['"\`]?`;
   const end = String.raw`(?![\w.-])`;
   return [
-    // Node: `spawn opencode ENOENT`, `spawn /opt/bin/opencode ENOENT`.
-    new RegExp(String.raw`\bspawn\s+${q}${dir}${bin}${q}\s+ENOENT\b`, "i"),
+    // Node: `spawn opencode ENOENT`, `spawn /opt/bin/opencode ENOENT`,
+    // `spawn C:\Program Files\OpenCode\opencode.exe ENOENT`.
+    new RegExp(String.raw`\bspawn\s+${q}${spawnDir}${bin}${q}\s+ENOENT\b`, "i"),
     // Node/Electron: `ENOENT: no such file or directory, posix_spawn '/x/opencode'`.
-    new RegExp(String.raw`\bENOENT\b[^\n]*\bposix_spawnp?\s+${q}${dir}${bin}${q}${end}`, "i"),
+    new RegExp(String.raw`\bENOENT\b[^\n]*\bposix_spawnp?\s+${q}${spawnDir}${bin}${q}${end}`, "i"),
     // bash/dash: `opencode: command not found`, `sh: 1: opencode: not found`.
     new RegExp(String.raw`(?:^|[\s:'"\`])${dir}${bin}${q}:\s*(?:command\s+)?not found\b`, "im"),
-    // zsh: `zsh: command not found: opencode`.
-    new RegExp(String.raw`\bcommand not found:\s*${q}${dir}${bin}${q}${end}`, "i"),
+    // zsh/bash: `zsh: command not found: opencode`. The shell prefix is
+    // required: a harness answers an unknown slash command with a bare
+    // `Command not found: <name>`, which names the command, not a binary.
+    new RegExp(String.raw`\b(?:zsh|bash|sh|dash|fish|ksh|csh|tcsh|ash|nu|pwsh|powershell|xonsh):\s*(?:\d+:\s*)?command not found:\s*${q}${dir}${bin}${q}${end}`, "i"),
     // cmd.exe / PowerShell.
     new RegExp(String.raw`${q}${dir}${bin}${q}\s+is not recognized as (?:an internal or external command|the name of a cmdlet)`, "i"),
     // Go/Rust exec: `exec: "opencode": executable file not found in $PATH`.
@@ -269,6 +275,22 @@ function missingBinaryPatterns(name: string): RegExp[] {
     // ADE's ACP diagnostics: "Grok was not found on this machine".
     new RegExp(String.raw`\b${bin}\s+(?:was|is)\s+not\s+found\s+on\s+this\s+machine\b`, "i"),
   ];
+}
+
+/**
+ * The executable an operating-system spawn-failure message names, or null.
+ * Used only for the preferred-agent fallback, where the binary name is not in
+ * the registry (a custom path or wrapper). A bare "command not found" is
+ * deliberately excluded: it is as often a harness's slash command as a binary.
+ */
+function failedSpawnExecutable(text: string): string | null {
+  const spawn = /\bspawn\s+(['"`]?)([^'"`\n]+?)\1\s+ENOENT\b/i.exec(text);
+  if (spawn) return spawn[2]!.trim();
+  const recognized = /(['"`]?)([^'"`\n]+?)\1\s+is not recognized as (?:an internal or external command|the name of a cmdlet)\b/i.exec(text);
+  if (recognized) return recognized[2]!.trim();
+  const execMissing = /(['"`]?)([^'"`\n]+?)\1:\s*executable file not found in \$?PATH\b/i.exec(text);
+  if (execMissing) return execMissing[2]!.trim();
+  return null;
 }
 
 /**
@@ -316,14 +338,13 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   if (preferred) {
     // The chat's own harness failed to start, under a name the registry does
     // not list (a custom path, a wrapper). Only the operating system's own
-    // spawn-failure phrasings count: a bare "command not found" or "no such
-    // file or directory" is as often a harness's slash command or a tool's
-    // missing file, and would send the user to reinstall a working CLI.
-    if (
-      /\bspawn\s+\S+\s+ENOENT\b/i.test(text)
-      || /\bis not recognized as (?:an internal or external command|the name of a cmdlet)\b/i.test(text)
-      || /\bexecutable file not found in \$?PATH\b/i.test(text)
-    ) {
+    // spawn-failure phrasings count, and only when the failed executable is
+    // this agent's: `spawn git ENOENT` must not send the user to reinstall a
+    // working OpenCode. A bare "command not found" or "no such file or
+    // directory" is as often a harness's slash command or a tool's missing
+    // file, and would send the user to reinstall a working CLI.
+    const failedExecutable = failedSpawnExecutable(text);
+    if (failedExecutable && descriptorMentioned(preferred, failedExecutable)) {
       return toMatch(preferred, "missing", text);
     }
     // A bare 401/403 anywhere in the text is not a sign-in failure: 403 is as

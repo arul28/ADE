@@ -29979,13 +29979,24 @@ export function createAgentChatService(args: {
   const awaitAcpCommandsAdvertised = (runtime: AcpRuntime, timeoutMs: number): Promise<void> => {
     if (acpCommandsAdvertised.has(runtime)) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, timeoutMs);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (): void => {
+        if (timer) clearTimeout(timer);
+        const waiters = acpCommandWaiters.get(runtime);
+        const index = waiters?.indexOf(settle) ?? -1;
+        if (waiters && index >= 0) {
+          waiters.splice(index, 1);
+          if (!waiters.length) acpCommandWaiters.delete(runtime);
+        }
+        resolve();
+      };
+      // A timeout settles the wait without advertising, so the dead waiter must
+      // be removed: a runtime whose agent never sends a list would otherwise
+      // accumulate one closure per leading-slash turn.
+      timer = setTimeout(settle, timeoutMs);
       timer.unref?.();
       const waiters = acpCommandWaiters.get(runtime) ?? [];
-      waiters.push(() => {
-        clearTimeout(timer);
-        resolve();
-      });
+      waiters.push(settle);
       acpCommandWaiters.set(runtime, waiters);
     });
   };
@@ -44030,18 +44041,17 @@ export function createAgentChatService(args: {
     };
     switch (managed.session.provider) {
       case "claude":
-        for (const name of CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES) names.add(name);
+        for (const name of CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES) add(name);
         break;
       case "codex":
-        for (const name of CODEX_BUILT_IN_SLASH_COMMAND_NAMES) names.add(name);
+        for (const name of CODEX_BUILT_IN_SLASH_COMMAND_NAMES) add(name);
         break;
       default:
         break;
     }
     if (runtime?.kind === "claude") runtime.slashCommands.forEach((command) => add(command.name));
-    else if (runtime?.kind === "codex") {
-      (runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.forEach((command) => add(command.name));
-    } else if (runtime?.kind === "acp") runtime.slashCommands.forEach((command) => add(command.name));
+    else if (runtime?.kind === "codex") runtime.slashCommands.forEach((command) => add(command.name));
+    else if (runtime?.kind === "acp") runtime.slashCommands.forEach((command) => add(command.name));
     else if (runtime?.kind === "opencode") runtime.commandNames?.forEach((name) => names.add(name));
     return names;
   };

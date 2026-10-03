@@ -64,13 +64,10 @@ export const ACP_TERMINATE_GRACE_MS = 1_500;
 function acpErrorDetailSuffix(payload: AcpRpcErrorPayload): string {
   const data = payload.data;
   const record = data && typeof data === "object" ? data as Record<string, unknown> : null;
-  const raw = typeof data === "string"
-    ? data
-    : typeof record?.details === "string"
-      ? record.details
-      : typeof record?.message === "string"
-        ? record.message
-        : "";
+  let raw = "";
+  if (typeof data === "string") raw = data;
+  else if (typeof record?.details === "string") raw = record.details;
+  else if (typeof record?.message === "string") raw = record.message;
   const detail = raw.replace(/\s+/g, " ").trim().slice(0, 200);
   if (!detail || payload.message.includes(detail)) return "";
   return ` (${detail})`;

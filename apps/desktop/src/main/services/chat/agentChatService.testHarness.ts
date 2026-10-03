@@ -165,9 +165,9 @@ const mockState = vi.hoisted(() => ({
   /** Commands the mocked OpenCode server lists (`command.list`), by bare name. */
   openCodeCommands: [] as string[],
   /** v2 `session.prompt` calls outside a running turn (no `delivery`), in call order. */
-  openCodePromptCalls: [] as any[],
+  openCodePromptCalls: [] as Array<{ sessionID: string; text?: string; delivery?: string }>,
   /** v2 `session.command` calls, in call order. */
-  openCodeCommandCalls: [] as any[],
+  openCodeCommandCalls: [] as Array<{ sessionID: string; name: string; text: string }>,
   /** Set to make the mocked v2 `session.prompt` reject, as a server error would. */
   openCodePromptError: null as Error | null,
   /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
