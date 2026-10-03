@@ -1722,17 +1722,31 @@ render unwindowed. Key rules:
   the transcript. Clicking **retry** performs one immediate request, keeps
   the failure visible with a loading state, and never repeats the automatic
   backoff ladder. A late result from a previous chat, runtime binding, or
-  cursor is discarded.
+  cursor is discarded, and a request still in flight when the pane unmounts
+  ends its ladder instead of retrying for a pane that is gone.
+- In the Work chat pane the rest of the transcript also **backfills in idle
+  time** (`backfillOlderHistory` on the list, one page per idle slot, or at
+  once when the reader is already inside the prefetch runway), so a cold
+  chat has its whole history resident within about a second and the reader
+  never waits at the top. Backfill only serves the chat on screen and stops
+  at the resident cap: a backfill page that would hit it is dropped (the cap
+  merge keeps the oldest events and would detach a reader at the live tail).
+  A reader who pages up past the cap still gets the detached view. Other
+  list owners (personal chats, the import preview) keep scroll-driven
+  paging only.
+- Plain scrolling commits no React render: `handleScroll` commits
+  `scrollTop` only when the mounted window or the active minimap tick would
+  change (plus one exact commit after the scroll settles), and snapshots the
+  per-chat scroll memory itself. Row offsets are cached on a
+  measured-heights version, not on the debounced `measurementTick`.
 - The timeline keeps programmatic scrolling and the left tick rail, but hides
   the native browser scrollbar. The minimap remains the transcript-position
   affordance without adding a second bright rail at the window edge.
 - The left tick rail (`ChatUserMinimap`) mounts as a direct child of the
   list root, because its `left-0` gutter maths assume the offset parent
-  is the element measured as `listWidthPx`. When older transcript pages
-  exist before the resident tail, the rail keeps a top continuation marker
-  even if the loaded window contains fewer than two user turns; paging fills
-  in real ticks progressively instead of making the rail disappear at the
-  cutoff.
+  is the element measured as `listWidthPx`. It shows the resident prompts
+  only and has no load-earlier control: older history arrives on its own
+  (backfill above), so the rail grows as earlier prompts land.
 - Pull requests open in the lane's PR Work tool, not as a floating overlay on the transcript. The minimap stays anchored to the list root.
 - iOS uses the same healthy-path contract: a fixed-height head sentinel
   automatically reveals the next local window and requests a 256 KiB host

@@ -129,8 +129,9 @@ describe("draft attachment transfer", () => {
   });
 
   it("keeps source images after a failed transfer and recovers when switching back", async () => {
+    // Its own path: a successful image read is cached per owner and path.
     const imageAttachment: AgentChatFileRef = {
-      path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
+      path: `${localBinding.rootPath}/.ade/attachments/clipboard-failed-transfer.png`,
       type: "image",
     };
     vi.mocked(window.ade.agentChat.getImageDataUrl).mockRejectedValueOnce(
@@ -246,7 +247,7 @@ describe("draft attachment transfer", () => {
 
   it("transfers restored images from their persisted owner instead of the selected machine", async () => {
     const imageAttachment: AgentChatFileRef = {
-      path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
+      path: `${localBinding.rootPath}/.ade/attachments/clipboard-restored-owner.png`,
       type: "image",
     };
     const attachmentOwnerBindingRef = { current: localBinding as OpenProjectBinding | null };

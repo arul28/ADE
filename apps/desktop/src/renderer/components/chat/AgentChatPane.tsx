@@ -4549,9 +4549,22 @@ export function AgentChatPane({
    * live tail off it without their asking; backfill stops there instead.
    */
   const backfillCappedSessionsRef = useRef<Set<string>>(new Set());
+  /**
+   * Set once the pane unmounts. A page request still in flight at unmount
+   * would otherwise register its retry wait after the unmount cancelled the
+   * others, and keep fetching for a pane that no longer exists.
+   */
+  const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  /**
+   * The selection as of the latest render. `selectedSessionIdRef` follows in a
+   * passive effect, which runs after the transcript list's own effects, so a
+   * list asking for backfill on its first commit would still see the old chat.
+   */
+  const renderSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  renderSelectedSessionIdRef.current = selectedSessionId;
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
@@ -7601,6 +7614,10 @@ export function AgentChatPane({
    */
   const waitBeforeOlderHistoryRetry = useCallback((delayMs: number) => (
     new Promise<boolean>((resolve) => {
+      if (olderHistoryPaneUnmountedRef.current) {
+        resolve(false);
+        return;
+      }
       const waiter = { handle: 0, resolve };
       waiter.handle = window.setTimeout(() => {
         olderHistoryRetryWaitersRef.current.delete(waiter);
@@ -7635,8 +7652,14 @@ export function AgentChatPane({
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null || cursor <= 0) return;
-    // Returns before any loading state flips, so the list's backfill does not re-arm.
-    if (options?.backfill && backfillCappedSessionsRef.current.has(sessionId)) return;
+    if (options?.backfill) {
+      // Backfill is for the chat on screen. During a switch the outgoing
+      // chat's list can still ask once, which would start a page (and a retry
+      // ladder) for a chat nobody is looking at.
+      if (sessionId !== renderSelectedSessionIdRef.current) return;
+      // Returns before any loading state flips, so the list's backfill does not re-arm.
+      if (backfillCappedSessionsRef.current.has(sessionId)) return;
+    }
     if (olderHistoryInFlightRef.current.has(sessionId)) return;
     if (typeof window.ade.agentChat.getEventHistoryPage !== "function") return;
     const requestId = ++olderHistoryRequestSequenceRef.current;
@@ -7648,7 +7671,8 @@ export function AgentChatPane({
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
       : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES;
     const isCurrentRequest = () => (
-      olderHistoryInFlightRef.current.get(sessionId) === requestId
+      !olderHistoryPaneUnmountedRef.current
+      && olderHistoryInFlightRef.current.get(sessionId) === requestId
       && olderHistoryCursorRef.current[sessionId] === cursor
       && (chatRuntimePinRef.current?.key ?? activeProjectBindingKeyRef.current) === requestRouteKey
       && renderedSessionIdRef.current === sessionId
@@ -7771,6 +7795,12 @@ export function AgentChatPane({
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
   useEffect(() => () => cancelOlderHistoryRetryWaits(), [cancelOlderHistoryRetryWaits, selectedSessionId]);
+  useEffect(() => {
+    olderHistoryPaneUnmountedRef.current = false;
+    return () => {
+      olderHistoryPaneUnmountedRef.current = true;
+    };
+  }, []);
 
   // Prop-driven chat switches already render the incoming transcript from
   // `renderedSessionId`. Apply the matching session/composer state before the
