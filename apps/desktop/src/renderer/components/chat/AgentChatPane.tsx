@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { applySteerOrder } from "../../../shared/steerOrder";
@@ -248,7 +249,7 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries } from "./chatExecutionSummary";
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
@@ -4600,9 +4601,28 @@ export function AgentChatPane({
   // switch or unmount can cancel them instead of stranding a timer that
   // resumes work for a chat nobody is looking at.
   const olderHistoryRetryWaitersRef = useRef<Set<{ handle: number; resolve: (proceed: boolean) => void }>>(new Set());
+  /**
+   * Sessions whose idle backfill reached the resident cap. The cap merge keeps
+   * the oldest events and detaches the view, which would take a reader at the
+   * live tail off it without their asking; backfill stops there instead.
+   */
+  const backfillCappedSessionsRef = useRef<Set<string>>(new Set());
+  /**
+   * Set once the pane unmounts. A page request still in flight at unmount
+   * would otherwise register its retry wait after the unmount cancelled the
+   * others, and keep fetching for a pane that no longer exists.
+   */
+  const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  /**
+   * The selection as of the latest render. `selectedSessionIdRef` follows in a
+   * passive effect, which runs after the transcript list's own effects, so a
+   * list asking for backfill on its first commit would still see the old chat.
+   */
+  const renderSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
+  renderSelectedSessionIdRef.current = selectedSessionId;
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
@@ -5610,7 +5630,11 @@ export function AgentChatPane({
     },
     [selectedSessionId],
   );
-  const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
+  // Rebuilt on every event; held while unchanged so memoized rows keep their props.
+  const selectedTurnDiffSummaries = useStableIdentity(
+    useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]),
+    sameTurnDiffSummaries,
+  );
   // The chat's one task list (plan or todos, every provider). Feeds the Chat
   // Info Tasks section, the drawer auto-open, and the toolbar badge.
   const selectedTaskList = useMemo(() => deriveChatTaskList(selectedEvents), [selectedEvents]);
@@ -6002,13 +6026,13 @@ export function AgentChatPane({
       activeProviderConnection = null;
       break;
   }
-  const pendingApprovalIds = useMemo(() => {
+  const pendingApprovalIds = useStableIdentity(useMemo(() => {
     const ids = new Set<string>();
     for (const entry of resolvedPendingInputsBySession[selectedSessionId ?? ""] ?? []) {
       ids.add(entry.itemId);
     }
     return ids;
-  }, [resolvedPendingInputsBySession, selectedSessionId]);
+  }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
@@ -7252,6 +7276,9 @@ export function AgentChatPane({
     for (const sessionId of [...detachedHistorySessionsRef.current]) {
       if (!retainedSessionIds.has(sessionId)) detachedHistorySessionsRef.current.delete(sessionId);
     }
+    for (const sessionId of [...backfillCappedSessionsRef.current]) {
+      if (!retainedSessionIds.has(sessionId)) backfillCappedSessionsRef.current.delete(sessionId);
+    }
     olderHistoryCursorRef.current = pruneSessionRecord(olderHistoryCursorRef.current, retainedSessionIds);
     for (const sessionId of [...loadedHistoryRef.current]) {
       if (!retainedSessionIds.has(sessionId)) {
@@ -7425,6 +7452,7 @@ export function AgentChatPane({
     releaseRetainedChatSession(sessionId);
     deleteAgentChatSessionViewCache(sessionId);
     detachedHistorySessionsRef.current.delete(sessionId);
+    backfillCappedSessionsRef.current.delete(sessionId);
     missingHistorySessionsRef.current.delete(sessionId);
     setSyncPendingBySession((prev) => (sessionId in prev ? { ...prev, [sessionId]: false } : prev));
     delete detachedLiveEventsBySessionRef.current[sessionId];
@@ -7598,6 +7626,7 @@ export function AgentChatPane({
       // A successful hydrate reattaches the view to the live tail, so drop the
       // detached marker BEFORE caching — the merged window is cacheable again.
       detachedHistorySessionsRef.current.delete(sessionId);
+      backfillCappedSessionsRef.current.delete(sessionId);
       missingHistorySessionsRef.current.delete(sessionId);
       delete detachedLiveEventsBySessionRef.current[sessionId];
       applyOlderHistoryCursor(sessionId, historyCursor);
@@ -7655,6 +7684,10 @@ export function AgentChatPane({
    */
   const waitBeforeOlderHistoryRetry = useCallback((delayMs: number) => (
     new Promise<boolean>((resolve) => {
+      if (olderHistoryPaneUnmountedRef.current) {
+        resolve(false);
+        return;
+      }
       const waiter = { handle: 0, resolve };
       waiter.handle = window.setTimeout(() => {
         olderHistoryRetryWaitersRef.current.delete(waiter);
@@ -7685,10 +7718,18 @@ export function AgentChatPane({
   const loadOlderHistory = useCallback(async (
     sessionId: string,
     pin: OpenProjectBinding | null,
-    options?: { interactive?: boolean },
+    options?: { interactive?: boolean; backfill?: boolean },
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null || cursor <= 0) return;
+    if (options?.backfill) {
+      // Backfill is for the chat on screen. During a switch the outgoing
+      // chat's list can still ask once, which would start a page (and a retry
+      // ladder) for a chat nobody is looking at.
+      if (sessionId !== renderSelectedSessionIdRef.current) return;
+      // Returns before any loading state flips, so the list's backfill does not re-arm.
+      if (backfillCappedSessionsRef.current.has(sessionId)) return;
+    }
     if (olderHistoryInFlightRef.current.has(sessionId)) return;
     if (typeof window.ade.agentChat.getEventHistoryPage !== "function") return;
     const requestId = ++olderHistoryRequestSequenceRef.current;
@@ -7700,7 +7741,8 @@ export function AgentChatPane({
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
       : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES;
     const isCurrentRequest = () => (
-      olderHistoryInFlightRef.current.get(sessionId) === requestId
+      !olderHistoryPaneUnmountedRef.current
+      && olderHistoryInFlightRef.current.get(sessionId) === requestId
       && olderHistoryCursorRef.current[sessionId] === cursor
       && (chatRuntimePinRef.current?.key ?? activeProjectBindingKeyRef.current) === requestRouteKey
       && renderedSessionIdRef.current === sessionId
@@ -7734,6 +7776,12 @@ export function AgentChatPane({
           maxEvents,
           maxBytes: maxResidentBytes,
         });
+        if (hitResidentCap && options?.backfill) {
+          // Leave the view and the cursor as they are; a reader who pages up
+          // themselves still can.
+          backfillCappedSessionsRef.current.add(sessionId);
+          return true;
+        }
         if (hitResidentCap) {
           detachedHistorySessionsRef.current.add(sessionId);
           delete detachedLiveEventsBySessionRef.current[sessionId];
@@ -7817,6 +7865,12 @@ export function AgentChatPane({
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
   useEffect(() => () => cancelOlderHistoryRetryWaits(), [cancelOlderHistoryRetryWaits, selectedSessionId]);
+  useEffect(() => {
+    olderHistoryPaneUnmountedRef.current = false;
+    return () => {
+      olderHistoryPaneUnmountedRef.current = true;
+    };
+  }, []);
 
   // Prop-driven chat switches already render the incoming transcript from
   // `renderedSessionId`. Apply the matching session/composer state before the
@@ -14229,6 +14283,48 @@ export function AgentChatPane({
       }
   ), [handoffForkReplaysTranscript, handoffSourceProviderLabel, laneId, laneDisplayLabel]);
 
+  // Handlers for the message list, stable across pane renders. The pane
+  // re-renders several times a second while idle (session, usage and runtime
+  // updates); fresh closures here broke the list's memo and re-rendered every
+  // mounted transcript row each time.
+  const listLoadOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? (options?: { backfill?: boolean }) => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { backfill: options?.backfill });
+        }
+      : undefined,
+  );
+  const listRetryOlderHistory = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
+        }
+      : undefined,
+  );
+  const listReturnToLatest = useLatestCallback(
+    !subagentView && renderedSessionId
+      ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
+      : undefined,
+  );
+  const listRevealChatTerminal = useLatestCallback(revealChatTerminal);
+  const listRewindFiles = useLatestCallback(
+    selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined,
+  );
+  const listStopSubagent = useLatestCallback(
+    !subagentView
+    && selectedSessionId
+    && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+      ? (taskId: string) => {
+          void window.ade.agentChat.stopTask({
+            sessionId: selectedSessionId,
+            taskId,
+          }, chatRuntimePinRef.current).catch((stopError) => {
+            setError(stopError instanceof Error ? stopError.message : String(stopError));
+          });
+        }
+      : undefined,
+  );
+
   if (!laneId) {
     return (
       <ChatSurfaceShell
@@ -16374,34 +16470,19 @@ export function AgentChatPane({
                             ? olderHistoryErrorBySession[renderedSessionId] ?? null
                             : null
                         }
-                        onLoadOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin);
-                              }
-                            : undefined
-                        }
-                        onRetryOlderHistory={
-                          !subagentView && renderedSessionId
-                            ? () => {
-                                void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { interactive: true });
-                              }
-                            : undefined
-                        }
-                        onReturnToLatest={
-                          !subagentView && renderedSessionId
-                            ? () => returnHistoryToLatest(renderedSessionId, renderedChatRuntimePin)
-                            : undefined
-                        }
+                        onLoadOlderHistory={listLoadOlderHistory}
+                        backfillOlderHistory
+                        onRetryOlderHistory={listRetryOlderHistory}
+                        onReturnToLatest={listReturnToLatest}
                         respondingApprovalIds={respondingApprovalIds}
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={insertComposerDraft}
-                        onRevealChatTerminal={revealChatTerminal}
+                        onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
-                        onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
+                        onRewindFiles={listRewindFiles}
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
@@ -16412,20 +16493,7 @@ export function AgentChatPane({
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
                         onRetryProviderFailure={handleListRetryProviderFailure}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
-                        onStopSubagent={
-                          !subagentView
-                          && selectedSessionId
-                          && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
-                            ? (taskId) => {
-                                void window.ade.agentChat.stopTask({
-                                  sessionId: selectedSessionId,
-                                  taskId,
-                                }, chatRuntimePinRef.current).catch((stopError) => {
-                                  setError(stopError instanceof Error ? stopError.message : String(stopError));
-                                });
-                              }
-                            : undefined
-                        }
+                        onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}
                         scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}

@@ -218,14 +218,14 @@ import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 import { formatTurnFoldHead, formatTurnFoldJobCount, formatTurnFoldLabel } from "../../../shared/chatTurnFold";
 import { pluralCount } from "../../../shared/formatting";
-import { sameKeyList, sameMapContents, sameSetContents, useStableIdentity } from "../../lib/stableIdentity";
+import { sameKeyList, sameMapContents, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import {
   getEventTurnId,
   useTranscriptPresentation,
 } from "./chatTranscriptPresentation";
 import {
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
@@ -254,8 +254,8 @@ function warnOnDuplicateRowKeys(keys: readonly string[]): void {
   }
 }
 export {
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   findAnchoredChatEventIndex,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
@@ -5159,6 +5159,15 @@ const SCROLL_RESTORE_MAX_CORRECTION_FRAMES = 60;
 const SCROLL_RESTORE_STABLE_FRAMES = 2;
 /** Automatic older pages allowed between two reader scrolls (not counting an underfilled pane). */
 const MAX_CHAINED_AUTO_OLDER_PAGES = 1;
+/** Longest an older-history backfill page waits for an idle slot before it runs anyway. */
+const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
+/** How often backfill looks again while a scroll restore is still landing. */
+const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
+  return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
+}
+/** Quiet time after the last scroll event before the exact scrollTop is committed to state. */
+const SCROLL_SETTLE_COMMIT_MS = 120;
 /** Keys that scroll the transcript pane; pressing one is the reader taking over. */
 const SCROLL_KEYS = new Set(["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "]);
 const SCROLL_UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
@@ -5393,6 +5402,7 @@ function AgentChatMessageListMain({
   loadingOlderHistory = false,
   olderHistoryError = null,
   onLoadOlderHistory,
+  backfillOlderHistory = false,
   onRetryOlderHistory,
   onReturnToLatest,
   mosaic,
@@ -5481,7 +5491,13 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: () => void;
+  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * Page the rest of the transcript in during idle time. Only for owners whose
+   * loader refuses a backfill page that would hit the resident cap (the cap
+   * merge keeps the oldest events, which would drop the reader's live tail).
+   */
+  backfillOlderHistory?: boolean;
   /** Called when the user explicitly retries a failed older-history page. */
   onRetryOlderHistory?: () => void;
   /** Called when a detached historical window returns to the live transcript tail. */
@@ -5536,6 +5552,8 @@ function AgentChatMessageListMain({
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
   const resolvedScrollMemoryKey = scrollMemoryKey ?? sessionId;
+  const resolvedScrollMemoryKeyRef = useRef(resolvedScrollMemoryKey);
+  resolvedScrollMemoryKeyRef.current = resolvedScrollMemoryKey;
   const initialScrollMemory = readChatScrollMemory(resolvedScrollMemoryKey);
   const restoredScrollMemoryRef = useRef(initialScrollMemory);
   const [stickToBottom, setStickToBottom] = useState(() => initialScrollMemory?.wasPinnedToBottom ?? true);
@@ -5670,6 +5688,22 @@ function AgentChatMessageListMain({
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
+  /** `scrollCommitKey` of the position the last render drew from. */
+  const renderedScrollKeyRef = useRef<string | null>(null);
+  /**
+   * The pane's real scrollTop as of the last scroll event or commit. Scroll
+   * events no longer commit every frame (see handleScroll), so the committed
+   * state can trail the pane; anything that sizes the mounted window reads this.
+   */
+  const liveScrollTopRef = useRef(0);
+  const committedScrollTopRef = useRef(scrollTop);
+  if (committedScrollTopRef.current !== scrollTop) {
+    committedScrollTopRef.current = scrollTop;
+    liveScrollTopRef.current = scrollTop;
+  }
+  /** What a scroll to `top` would change in the last render (mounted rows, active tick). */
+  const scrollCommitKeyRef = useRef<((top: number) => string) | null>(null);
+  const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [containerHeight, setContainerHeight] = useState(0);
   const [measurementTick, setMeasurementTick] = useState(0);
   const [anchoredRowKey, setAnchoredRowKey] = useState<string | null>(null);
@@ -5689,6 +5723,15 @@ function AgentChatMessageListMain({
     widthStep: -1,
     byKey: new Map(),
   });
+  /** Bumped on every `measuredHeights` write; keys the row-offset cache. */
+  const measuredHeightsVersionRef = useRef(0);
+  const rowOffsetsCacheRef = useRef<{
+    rowHeight: (index: number) => number;
+    rowCount: number;
+    rowGap: number;
+    heightsVersion: number;
+    offsets: number[];
+  } | null>(null);
   /** Best-known height of a row: measured, else its per-kind estimate. Reads refs only. */
   const heightForKey = useCallback((key: string | undefined): number => {
     if (!key) return ESTIMATED_ROW_HEIGHT;
@@ -5721,11 +5764,15 @@ function AgentChatMessageListMain({
    */
   const maybeRequestOlderHistory = useCallback((
     scrollTopNow: number,
-    source: "reader" | "auto" | "underfill",
+    source: "reader" | "auto" | "underfill" | "backfill",
   ) => {
     // Two viewport-heights of runway, falling back to the near-top threshold
     // before the pane has been measured. See PREFETCH_OLDER_VIEWPORT_HEIGHTS.
-    if (scrollTopNow > resolveOlderHistoryPrefetchTriggerPx(scrollRef.current?.clientHeight ?? 0)) return;
+    // Backfill pages wherever the reader is.
+    if (
+      source !== "backfill"
+      && scrollTopNow > resolveOlderHistoryPrefetchTriggerPx(scrollRef.current?.clientHeight ?? 0)
+    ) return;
     if (
       !hasOlderHistoryRef.current
       || loadingOlderHistoryRef.current
@@ -5737,7 +5784,7 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.();
+    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
   }, []);
 
   // Re-arm after a batch that changed nothing visible.
@@ -5763,6 +5810,50 @@ function AgentChatMessageListMain({
     if (root.scrollTop > resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)) return;
     maybeRequestOlderHistory(root.scrollTop, "auto");
   }, [loadingOlderHistory, hasOlderHistory, olderHistoryError, maybeRequestOlderHistory]);
+
+  // Backfill: page the rest of the transcript in during idle time, one page
+  // per idle slot, so older turns are already resident before the reader
+  // scrolls or jumps to them and the minimap rail holds every prompt. Re-arms
+  // as each page lands (`loadingOlderHistory` flips back) and stops at the
+  // head, on a latched error, or when the owner refuses a page that would hit
+  // the resident cap (no loading flip, so nothing re-arms). Idle slots keep it
+  // behind input, layout and streaming work.
+  useEffect(() => {
+    if (!backfillOlderHistory || !hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
+    let idleHandle: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      // jsdom (tests) has no idle callbacks.
+      if (typeof window.requestIdleCallback === "function") {
+        idleHandle = window.requestIdleCallback(run, { timeout: OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS });
+      } else {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS);
+      }
+    };
+    function run() {
+      idleHandle = null;
+      timer = null;
+      // A restore still landing owns the scroll position; look again shortly
+      // (a timer, not another idle slot, which can come back every frame).
+      if (scrollRestoreActiveRef.current) {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
+        return;
+      }
+      maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
+    }
+    // A reader already inside the prefetch runway is waiting on this page, and
+    // a busy frame can hold an idle slot for the whole timeout: fetch now.
+    const root = scrollRef.current;
+    if (root && !scrollRestoreActiveRef.current && root.scrollTop <= resolveOlderHistoryPrefetchTriggerPx(root.clientHeight)) {
+      run();
+      return;
+    }
+    schedule();
+    return () => {
+      if (idleHandle !== null) window.cancelIdleCallback(idleHandle);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [backfillOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError, maybeRequestOlderHistory, sessionId]);
 
   useEffect(() => {
     const root = scrollRef.current;
@@ -5826,12 +5917,22 @@ function AgentChatMessageListMain({
     writeTranscriptCollapseCache(resolvedTranscriptCollapseCacheKey, nextCache);
     return nextRows;
   }, [collapseCacheState, events, resolvedTranscriptCollapseCacheKey]);
+  // Rebuilt on every event; a turn whose copy text did not change keeps its
+  // previous info object, so its memoized last text row is not re-rendered.
+  const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
   const { assistantTurnCopyByRowKey, interimTextRowKeys } = useMemo(() => {
+    const previous = previousAssistantTurnCopyRef.current;
     const byRowKey = new Map<string, AssistantTurnCopyInfo>();
     const turnCopy = deriveAssistantTurnCopyMap(rows);
     for (const info of turnCopy.values()) {
-      if (info.textEventCount >= 2) byRowKey.set(info.lastTextEventKey, info);
+      if (info.textEventCount < 2) continue;
+      const prior = previous.get(info.lastTextEventKey);
+      byRowKey.set(
+        info.lastTextEventKey,
+        prior && prior.text === info.text && prior.textEventCount === info.textEventCount ? prior : info,
+      );
     }
+    previousAssistantTurnCopyRef.current = byRowKey;
     // Every text row of a turn except its last one is interim narration.
     const interim = new Set<string>();
     for (const row of rows) {
@@ -6667,6 +6768,10 @@ function AgentChatMessageListMain({
       scrollRafRef.current = null;
     }
     scrollFollowFramesRef.current = 0;
+    if (scrollSettleTimerRef.current) {
+      clearTimeout(scrollSettleTimerRef.current);
+      scrollSettleTimerRef.current = null;
+    }
   }, []);
 
   // Opening or closing a fold keeps the fold row where the reader clicked it.
@@ -7020,6 +7125,7 @@ function AgentChatMessageListMain({
     if (prev !== height) {
       const previousHeight = prev ?? heightForKey(key);
       measuredHeights.current.set(key, height);
+      measuredHeightsVersionRef.current += 1;
       const scrollEl = scrollRef.current;
       if (scrollEl && shouldVirtualize && !stickToBottomRef.current) {
         const adjustedScrollTop = reconcileMeasuredScrollTop({
@@ -7058,7 +7164,26 @@ function AgentChatMessageListMain({
   // A row-list change under a scrolled-up reader sizes this commit's window
   // from where the anchor row is about to be, not from the pre-change
   // scrollTop, so the row the list anchor reads back is mounted.
-  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? scrollTop;
+  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? liveScrollTopRef.current;
+  // Row start offsets under the height model, rebuilt only when rows or their
+  // heights change — never per scroll frame. Shared by the virtual window, the
+  // scroll-commit probe and the minimap. A measurement lands in the ref at once
+  // but `measurementTick` trails it by a debounce, so the cache is keyed on the
+  // ref's own version: offsets drawn from stale heights misplace the spacers.
+  const cachedRowOffsets = rowOffsetsCacheRef.current;
+  const rowStartOffsets = cachedRowOffsets
+    && cachedRowOffsets.rowHeight === rowHeight
+    && cachedRowOffsets.rowCount === groupedRows.length
+    && cachedRowOffsets.rowGap === timelineRowGapPx
+    && cachedRowOffsets.heightsVersion === measuredHeightsVersionRef.current
+    ? cachedRowOffsets.offsets
+    : (rowOffsetsCacheRef.current = {
+      rowHeight,
+      rowCount: groupedRows.length,
+      rowGap: timelineRowGapPx,
+      heightsVersion: measuredHeightsVersionRef.current,
+      offsets: computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx),
+    }).offsets;
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
@@ -7076,15 +7201,14 @@ function AgentChatMessageListMain({
       });
     }
 
-    return calculateVirtualWindow({
-      rowCount: groupedRows.length,
+    return calculateVirtualWindowFromOffsets({
+      offsets: rowStartOffsets,
       scrollTop: windowScrollTop,
       containerHeight,
       rowHeight,
-      rowGap: timelineRowGapPx,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, containerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
 
   useLayoutEffect(() => {
     if (stickToBottomRef.current) scrollToBottomSoon(2);
@@ -7242,7 +7366,8 @@ function AgentChatMessageListMain({
     };
   }, [measuredRowStartOffsets]);
 
-  // Keep a committed snapshot for each view. Passive cleanup runs after the
+  // Keep a committed snapshot for each view (scrolling also snapshots from
+  // handleScroll, which commits no render of its own). Passive cleanup runs after the
   // shared list has already rendered the next view, so reading live refs there
   // would save the child transcript under the parent's key. Skip until restore
   // has settled so a key switch cannot store the previous view's scrollTop
@@ -7428,6 +7553,7 @@ function AgentChatMessageListMain({
     // Ref write, not state: the per-chat scroll memory is snapshotted at unmount
     // so following the scroll costs zero renders.
     lastScrollTopRef.current = target.scrollTop;
+    liveScrollTopRef.current = target.scrollTop;
     // Absorb scroll events produced by our own programmatic scroll-to-bottom
     // writes so we never flip sticky state based on them — only the user's
     // own gesture (wheel / trackpad / keyboard) should break auto-follow.
@@ -7461,9 +7587,10 @@ function AgentChatMessageListMain({
     const scrolledDown = target.scrollTop > previousScrollTop + 0.5;
     const scrollUpAt = userScrollUpAtRef.current;
     const repinHeld = scrollUpAt != null && performance.now() - scrollUpAt < USER_SCROLL_UP_REPIN_HOLD_MS;
+    const stickToBottomBefore = stickToBottomRef.current;
     const nextStick = shouldStickToBottomAfterScroll({
       distanceFromBottom,
-      wasStuckToBottom: stickToBottomRef.current,
+      wasStuckToBottom: stickToBottomBefore,
       scrolledDown,
       repinHeld,
     });
@@ -7486,12 +7613,39 @@ function AgentChatMessageListMain({
         markDetachAnchor();
       }
     }
-    setScrollTop(target.scrollTop);
+    // Plain scrolling inside the mounted window changes nothing React draws, so
+    // it commits no render: only a change of the mounted rows or the active
+    // minimap tick does, plus one exact commit once the scroll settles (the
+    // scroll memory and anything else reading `scrollTop` see where it ended).
+    const commitKey = scrollCommitKeyRef.current;
+    if (
+      nextStick !== stickToBottomBefore
+      || !commitKey
+      || commitKey(target.scrollTop) !== renderedScrollKeyRef.current
+    ) {
+      setScrollTop(target.scrollTop);
+    }
+    if (scrollSettleTimerRef.current) clearTimeout(scrollSettleTimerRef.current);
+    scrollSettleTimerRef.current = setTimeout(() => {
+      scrollSettleTimerRef.current = null;
+      setScrollTop(lastScrollTopRef.current);
+    }, SCROLL_SETTLE_COMMIT_MS);
+    // The scroll memory follows the reader here rather than on a commit: this
+    // scroll may never render, and a chat switch can land before the settle
+    // commit. Same guards as the commit-time snapshot below.
+    const memoryKey = resolvedScrollMemoryKeyRef.current;
+    if (memoryKey && scrollRestoreSettledRef.current && !scrollRestoreActiveRef.current) {
+      rememberBoundedChatScrollMemory(
+        scrollMemorySnapshotByKeyRef.current,
+        memoryKey,
+        captureScrollMemory(groupedRowKeysRef.current, stickToBottomRef.current, target, target.scrollTop),
+      );
+    }
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
     autoOlderLoadsSinceUserScrollRef.current = 0;
     maybeRequestOlderHistory(target.scrollTop, "reader");
-  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
+  }, [captureScrollMemory, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
 
   /** The reader scrolled up (true) or down (false): starts or ends the re-pin hold. */
   const noteReaderScrollDirection = useCallback((up: boolean) => {
@@ -7585,16 +7739,28 @@ function AgentChatMessageListMain({
     return minimapIndex >= 0 ? minimapIndex : null;
   }, [presentedRows, minimapSourceEntries, scrollToPromptHistoryRequest]);
 
-  const rowStartOffsetsForMinimap = useMemo(() => {
-    void measurementTick;
-    return computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
-  }, [groupedRows, rowHeight, measurementTick, timelineRowGapPx]);
-
   // Ticks are 1:1 with entries, so the ordinal IS the rail index — no
   // display-index translation step exists any more.
+  // Same position the virtual window drew from, so the rail and the rows agree.
   const activeFullUserOrdinal = useMemo(
-    () => computeActiveFullUserOrdinal(scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap),
-    [scrollTop, minimapSourceEntries, rowStartOffsetsForMinimap],
+    () => computeActiveFullUserOrdinal(windowScrollTop, minimapSourceEntries, rowStartOffsets),
+    [windowScrollTop, minimapSourceEntries, rowStartOffsets],
+  );
+  // What a scroll to `top` would draw differently: the mounted rows and the
+  // active tick. handleScroll commits a render only when this moves off what
+  // this render drew (the same three values, already computed above).
+  const windowFollowsScroll = shouldVirtualize && !stickToBottom;
+  scrollCommitKeyRef.current = (top: number): string => {
+    const win = windowFollowsScroll
+      ? calculateVirtualWindowFromOffsets({ offsets: rowStartOffsets, scrollTop: top, containerHeight, rowHeight })
+      : null;
+    const ordinal = computeActiveFullUserOrdinal(top, minimapSourceEntries, rowStartOffsets);
+    return scrollCommitKeyOf(win?.startIndex ?? -1, win?.endIndex ?? -1, ordinal);
+  };
+  renderedScrollKeyRef.current = scrollCommitKeyOf(
+    windowFollowsScroll ? startIndex : -1,
+    windowFollowsScroll ? endIndex : -1,
+    activeFullUserOrdinal,
   );
 
   const jumpToRowFromMinimap = useCallback(
@@ -7621,6 +7787,12 @@ function AgentChatMessageListMain({
     },
     [groupedRows, rowHeight, scrollToRowKey, timelineRowGapPx],
   );
+
+  // Rows get stable handles for these two: both are rebuilt whenever a row is
+  // added (they close over the row keys), and a new identity re-rendered every
+  // mounted row on each streamed item. The call still reaches the latest one.
+  const rowMeasure = useLatestCallback(handleMeasure);
+  const rowScrollToRowKey = useLatestCallback(scrollToRowKey);
 
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
@@ -7671,7 +7843,7 @@ function AgentChatMessageListMain({
         <MeasuredEventRow
           key={envelope.key}
           index={index}
-          onMeasure={handleMeasure}
+          onMeasure={rowMeasure}
           envelope={envelope}
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
@@ -7723,7 +7895,7 @@ function AgentChatMessageListMain({
           runtimeName={runtimeName}
           mosaic={mosaic}
           anchored={anchored}
-          onScrollToRowKey={scrollToRowKey}
+          onScrollToRowKey={rowScrollToRowKey}
           assistantTurnCopy={assistantTurnCopy}
           interimText={interimText}
           staleInterruptReceipts={staleInterruptReceipts}
@@ -7794,7 +7966,7 @@ function AgentChatMessageListMain({
         runtimeName={runtimeName}
         mosaic={mosaic}
         anchored={anchored}
-        onScrollToRowKey={scrollToRowKey}
+        onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopy={assistantTurnCopy}
         interimText={interimText}
         staleInterruptReceipts={staleInterruptReceipts}
@@ -7809,7 +7981,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, allowLocalProofArtifactProtocol, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -7889,11 +8061,6 @@ function AgentChatMessageListMain({
         entries={minimapSourceEntries}
         activeIndex={activeFullUserOrdinal}
         onJumpToRow={jumpToRowFromMinimap}
-        hasOlderHistory={hasOlderHistory}
-        loadingOlderHistory={loadingOlderHistory}
-        olderHistoryError={olderHistoryError}
-        onLoadOlderHistory={onLoadOlderHistory}
-        onRetryOlderHistory={onRetryOlderHistory}
         listWidthPx={listRootBoxPx.width}
         listHeightPx={listRootBoxPx.height}
         columnWidthPx={columnWidthPx}

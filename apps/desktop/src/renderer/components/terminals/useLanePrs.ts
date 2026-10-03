@@ -118,12 +118,15 @@ export function laneHasAnyPr(
   return (byLane.get(laneAnyMachineKey(laneId))?.length ?? 0) > 0;
 }
 
+/** One shared empty list, so a lane without PRs passes the same array every render. */
+export const NO_LANE_PRS: PrSummary[] = [];
+
 /** What every row on the tab's own machine renders. */
 export function boundMachineLanePrs(
   byLane: Map<string, PrSummary[]>,
   laneId: string,
 ): PrSummary[] {
-  return byLane.get(laneBoundMachineKey(laneId)) ?? [];
+  return byLane.get(laneBoundMachineKey(laneId)) ?? NO_LANE_PRS;
 }
 
 /** What a foreign row renders — its own machine's answer, never another's. */
@@ -132,7 +135,7 @@ export function lanePrsForMachine(
   machineId: string,
   laneId: string,
 ): PrSummary[] {
-  return byLane.get(lanePrCompositeKey(machineId, laneId)) ?? [];
+  return byLane.get(lanePrCompositeKey(machineId, laneId)) ?? NO_LANE_PRS;
 }
 
 /**

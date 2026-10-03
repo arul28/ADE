@@ -65,8 +65,8 @@ import { useCallback, useMemo, useState } from "react";
 import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
-  calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
+  calculateVirtualWindowFromOffsets,
   deriveTranscriptToolActivity,
   deriveTurnModelState,
   estimateTranscriptRowHeight,
@@ -99,7 +99,7 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
 import { setPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
-import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
+import { CHAT_TIMELINE_ROW_GAP_PX, computeRowStartOffsets } from "./chatUserMinimap.logic";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -3381,18 +3381,14 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("recomputes virtualization windows when measured heights change", () => {
-    const baseline = calculateVirtualWindow({
-      rowCount: 100,
+    const windowFor = (rowHeight: (index: number) => number) => calculateVirtualWindowFromOffsets({
+      offsets: computeRowStartOffsets(100, rowHeight),
       scrollTop: 2000,
       containerHeight: 240,
-      rowHeight: () => 80,
+      rowHeight,
     });
-    const updated = calculateVirtualWindow({
-      rowCount: 100,
-      scrollTop: 2000,
-      containerHeight: 240,
-      rowHeight: (index) => (index === 0 ? 180 : 80),
-    });
+    const baseline = windowFor(() => 80);
+    const updated = windowFor((index) => (index === 0 ? 180 : 80));
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);

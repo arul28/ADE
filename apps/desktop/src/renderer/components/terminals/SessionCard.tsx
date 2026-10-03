@@ -1,4 +1,5 @@
 import React from "react";
+import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
   Brain,
@@ -445,7 +446,9 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   return <span className="min-w-0 truncate">{text ?? ""}</span>;
 }
 
-export const SessionCard = React.memo(function SessionCard({
+// The list rebuilds each card's handlers on every render (session updates,
+// timers); with them proxied a card re-renders only when what it shows changes.
+export const SessionCard = memoWithLatestHandlers(function SessionCard({
   session,
   lane,
   isSelected,

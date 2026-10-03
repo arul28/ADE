@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLatestCallback } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
@@ -1762,6 +1763,20 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * List/Board toggle, filters, new chat — must be the same control in every
    * mode, and the pane's cross-machine subscription must not run twice.
    */
+  // Stable handles for the session list: these callbacks are rebuilt whenever
+  // the sessions, selection or filters change (several times a second while
+  // agents run), and each new identity re-rendered every lane header and card.
+  const listSelectSession = useLatestCallback(handleSelectSession);
+  const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
+  const listClearSelection = useLatestCallback(() => {
+    setSelectedSessionIds(new Set());
+    setSelectionAnchorId(null);
+  });
+  const listBulkClose = useLatestCallback(handleBulkCloseSelected);
+  const listBulkDelete = useLatestCallback(handleBulkDeleteSelected);
+  const listBulkStopAndDelete = useLatestCallback(handleBulkStopAndDeleteSelected);
+  const listRefreshOrphanSessions = useLatestCallback(handleRefreshOrphanSessions);
+
   const sessionListPane = useMemo(
     () => (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
@@ -1788,16 +1803,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
-            onSelectSession={handleSelectSession}
-            onSelectForeignRuntimeSession={handleSelectForeignRuntimeSession}
-            onClearSelection={() => {
-              setSelectedSessionIds(new Set());
-              setSelectionAnchorId(null);
-            }}
-            onBulkClose={handleBulkCloseSelected}
-            onBulkDelete={handleBulkDeleteSelected}
-            onBulkStopAndDelete={handleBulkStopAndDeleteSelected}
-            onRefreshOrphanSessions={handleRefreshOrphanSessions}
+            onSelectSession={listSelectSession}
+            onSelectForeignRuntimeSession={listSelectForeignRuntimeSession}
+            onClearSelection={listClearSelection}
+            onBulkClose={listBulkClose}
+            onBulkDelete={listBulkDelete}
+            onBulkStopAndDelete={listBulkStopAndDelete}
+            onRefreshOrphanSessions={listRefreshOrphanSessions}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -1828,13 +1840,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work,
       active,
       sortedLanes,
-      handleSelectSession,
-      handleSelectForeignRuntimeSession,
+      listSelectSession,
+      listSelectForeignRuntimeSession,
+      listClearSelection,
       selectedSessionIds,
-      handleBulkCloseSelected,
-      handleBulkDeleteSelected,
-      handleBulkStopAndDeleteSelected,
-      handleRefreshOrphanSessions,
+      listBulkClose,
+      listBulkDelete,
+      listBulkStopAndDelete,
+      listRefreshOrphanSessions,
       handleContextMenu,
       handoffLaunchJobs,
       boardBesideList,

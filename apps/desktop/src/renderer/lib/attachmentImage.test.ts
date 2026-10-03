@@ -63,15 +63,17 @@ describe("readAttachmentImageDataUrl", () => {
     expect(localRead).toHaveBeenCalledWith("/local.png");
   });
 
+  // Successful reads are cached per owner and path for the life of the
+  // renderer, so each case reads paths no other case has read.
   it("treats no pin as the window's machine: local falls back, remote does not", async () => {
     useAppStore.setState({ projectBinding: localPin });
-    await expect(readAttachmentImageDataUrl("/local.png", null))
+    await expect(readAttachmentImageDataUrl("/no-pin-local.png", null))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
-    expect(runtimeRead).toHaveBeenCalledWith("/local.png", undefined);
+    expect(runtimeRead).toHaveBeenCalledWith("/no-pin-local.png", undefined);
 
     localRead.mockClear();
     useAppStore.setState({ projectBinding: remotePin });
-    await expect(readAttachmentImageDataUrl("/remote.png", null)).rejects.toThrow("Path does not exist.");
+    await expect(readAttachmentImageDataUrl("/no-pin-remote.png", null)).rejects.toThrow("Path does not exist.");
     expect(localRead).not.toHaveBeenCalled();
   });
 
@@ -80,9 +82,38 @@ describe("readAttachmentImageDataUrl", () => {
       configurable: true,
       value: { app: { getImageDataUrl: localRead } },
     });
-    await expect(readAttachmentImageDataUrl("/local.png", localPin))
+    await expect(readAttachmentImageDataUrl("/no-runtime-local.png", localPin))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
-    await expect(readAttachmentImageDataUrl("/remote.png", remotePin)).rejects.toThrow(/No image reader/);
+    await expect(readAttachmentImageDataUrl("/no-runtime-remote.png", remotePin)).rejects.toThrow(/No image reader/);
     expect(localRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads an attachment once per owner, retries a failed read, and reads fresh on request", async () => {
+    runtimeRead.mockResolvedValue({ dataUrl: "data:image/png;base64,FIRST" });
+    const first = readAttachmentImageDataUrl("/cache-once.png", remotePin);
+    const concurrent = readAttachmentImageDataUrl("/cache-once.png", remotePin);
+    await expect(first).resolves.toEqual({ dataUrl: "data:image/png;base64,FIRST" });
+    await expect(concurrent).resolves.toEqual({ dataUrl: "data:image/png;base64,FIRST" });
+    runtimeRead.mockResolvedValue({ dataUrl: "data:image/png;base64,SECOND" });
+    await expect(readAttachmentImageDataUrl("/cache-once.png", remotePin))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,FIRST" });
+    expect(runtimeRead).toHaveBeenCalledTimes(1);
+
+    // The same path on another owner is another file.
+    await expect(readAttachmentImageDataUrl("/cache-once.png", localPin))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
+    expect(runtimeRead).toHaveBeenCalledTimes(2);
+
+    // A rewritable path (an image an agent viewed) is never served stale.
+    await expect(readAttachmentImageDataUrl("/cache-once.png", remotePin, { cache: false }))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
+    expect(runtimeRead).toHaveBeenCalledTimes(3);
+
+    // A failure is not an answer: the next read asks again.
+    runtimeRead.mockRejectedValueOnce(new Error("runtime dropped"));
+    await expect(readAttachmentImageDataUrl("/cache-retry.png", remotePin)).rejects.toThrow("runtime dropped");
+    await expect(readAttachmentImageDataUrl("/cache-retry.png", remotePin))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,SECOND" });
+    expect(runtimeRead).toHaveBeenCalledTimes(5);
   });
 });

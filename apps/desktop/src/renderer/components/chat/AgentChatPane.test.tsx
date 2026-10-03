@@ -42,6 +42,7 @@ import {
 } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES } from "./chatHistoryWindow";
 import { confirmDialog } from "../ui/dialog/confirm";
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
@@ -12653,6 +12654,110 @@ describe("older transcript paging retries", () => {
     );
     expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
   }, 25_000);
+
+  it("stops idle backfill at the resident cap instead of dropping the live tail", async () => {
+    const session = buildSession("session-1", { title: "Huge chat" });
+    // One older event whose resident estimate alone is over the cap: the cap
+    // merge keeps the oldest events, so applying it would drop the tail.
+    const oversized = "x".repeat(Math.ceil(MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES / 2) + 1);
+    let pageRequests = 0;
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async (args) => {
+        pageRequests += 1;
+        return {
+          sessionId: args.sessionId,
+          // A whole older turn (one batch is one page). The oversized payload
+          // rides in a field the transcript never draws.
+          events: [{
+            sessionId: args.sessionId,
+            timestamp: "2026-07-10T11:00:00.000Z",
+            sequence: 0,
+            event: { type: "user_message", text: "older prompt", padding: oversized } as AgentChatEventEnvelope["event"],
+          }],
+          startOffset: Math.floor(args.beforeOffset / 2),
+          hasMore: true,
+          sessionFound: true,
+        };
+      },
+    });
+
+    // The reader sits at the live tail of a long chat, far from the top, so
+    // only idle backfill (not the near-top or underfill paths) asks for pages.
+    // jsdom has no layout or idle callbacks; give the transcript pane both.
+    const isPane = (el: Element) => el.classList.contains("ade-chat-timeline-pane");
+    const descriptors = (["scrollHeight", "clientHeight", "scrollTop"] as const)
+      .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
+    const geometry = { scrollHeight: 200_000, clientHeight: 600, scrollTop: 199_400 };
+    for (const [prop, original] of descriptors) {
+      Object.defineProperty(Element.prototype, prop, {
+        configurable: true,
+        get(this: Element) { return isPane(this) ? geometry[prop] : original.get?.call(this); },
+        set(this: Element, value: number) { if (!isPane(this)) original.set?.call(this, value); },
+      });
+    }
+    const originalIdle = [window.requestIdleCallback, window.cancelIdleCallback] as const;
+    window.requestIdleCallback = (callback: IdleRequestCallback) => window.setTimeout(
+      () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+      0,
+    );
+    window.cancelIdleCallback = (handle: number) => window.clearTimeout(handle);
+    try {
+      renderPane(session);
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      // No scroll: the Work pane backfills on its own.
+      await waitFor(() => expect(pageRequests).toBe(1));
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByText("newest visible message")).toBeTruthy();
+      expect(screen.queryByText("older prompt")).toBeNull();
+      // The refused page stops backfill for this chat rather than re-asking.
+      expect(pageRequests).toBe(1);
+    } finally {
+      for (const [prop, original] of descriptors) Object.defineProperty(Element.prototype, prop, original);
+      [window.requestIdleCallback, window.cancelIdleCallback] = originalIdle;
+    }
+  });
+
+  it("ends the retry ladder of a page request still in flight when the pane unmounts", async () => {
+    const session = buildSession("session-1", { title: "Long chat" });
+    let pageAttempts = 0;
+    let failFirstPage!: (error: Error) => void;
+    const firstPage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
+      failFirstPage = reject;
+    });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: historySnapshotWithOlderPages(session.sessionId),
+      eventHistoryPage: async () => {
+        pageAttempts += 1;
+        if (pageAttempts === 1) return firstPage;
+        throw new Error("remote hop dropped");
+      },
+    });
+
+    const view = renderPane(session);
+    await screen.findByText("newest visible message");
+    await requestOlderHistoryByScroll();
+    await waitFor(() => expect(pageAttempts).toBe(1));
+
+    // The pane goes away while its page is still out; the page then fails.
+    view.unmount();
+    vi.useFakeTimers();
+    try {
+      failFirstPage(new Error("remote hop dropped"));
+      // Past both backoff steps (800ms, 2400ms): nothing may retry for a pane
+      // that no longer exists.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(pageAttempts).toBe(1);
+      expect(window.ade.agentChat.getEventHistoryPage).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("cancels pending paging retries when the session switches", async () => {
     const sessionA = buildSession("session-1", { title: "Chat A" });
