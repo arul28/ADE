@@ -2494,6 +2494,16 @@ The active project's rich chat rows still come from the phone's synced local
 DB, but the machine roster is merged over that cache as an ephemeral display
 projection. Local rows win by id; roster-only lanes and chats fill the CRR
 arrival gap and disappear naturally when the authoritative row replaces them.
+The one exception is a chat's turn liveness. A chat row holds
+`status = "running"` between turns, and whether a turn is streaming lives only
+in the phone-only `runtime_state` column, which nothing but a full
+`work.listSessions` refresh writes. So the roster's live status is laid over
+the matching local row (`RemoteRosterChatStatus.applyingTurnState(to:)`):
+running, waiting-input, or idle. Settle, attention, and failure stay with the
+replicated local row. For the same reason, the Hub's local-roster merge
+(`RemoteRosterChat.merging(local:)`) never lets a fresher local running-or-idle
+replace the host's running-or-idle. Without that rule, a Done row would stay
+Done after a message until the user pulled to refresh.
 This keeps both the active Hub card and the Work list current when another
 client creates a chat, without persisting foreign/stub rows or activating every
 project. The Work bridge intentionally admits only non-archived chat-tool rows,

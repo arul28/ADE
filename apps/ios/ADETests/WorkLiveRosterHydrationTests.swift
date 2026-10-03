@@ -70,6 +70,32 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
     XCTAssertEqual(merged.lastActivityAt, "2026-07-22T12:05:00.000Z")
   }
 
+  /// A fresher local row wins lifecycle (settle, attention, failure), but
+  /// running vs idle on both sides is turn liveness: the local side read it off
+  /// a stale phone-only `runtime_state`, so the host's live value must survive.
+  func testFresherLocalRowKeepsHostTurnLivenessButWinsLifecycle() {
+    let cases: [(name: String, remote: RemoteRosterChatStatus, local: RemoteRosterChatStatus, localSettledAt: String?, expected: RemoteRosterChatStatus)] = [
+      ("host started a turn", .running, .idle, nil, .running),
+      ("host finished a turn", .idle, .running, nil, .idle),
+      ("local settle still wins", .running, .ended, "2026-07-22T12:05:00.000Z", .ended),
+    ]
+    for testCase in cases {
+      var remote = makeRosterChat(id: "chat-1", laneId: "lane-1")
+      remote.status = testCase.remote
+      remote.lifecycleUpdatedAt = "2026-07-22T12:04:00.000Z"
+      var local = makeRosterChat(id: "chat-1", laneId: "lane-1")
+      local.status = testCase.local
+      local.settledAt = testCase.localSettledAt
+      local.lifecycleUpdatedAt = "2026-07-22T12:05:00.000Z"
+
+      let merged = remote.merging(local: local)
+
+      XCTAssertEqual(merged.status, testCase.expected, testCase.name)
+      XCTAssertEqual(merged.settledAt, testCase.localSettledAt, testCase.name)
+      XCTAssertEqual(merged.lifecycleUpdatedAt, "2026-07-22T12:05:00.000Z", testCase.name)
+    }
+  }
+
   func testActivityReportOnlyFreshnessDoesNotBecomeLifecycleWhenMaterialized() {
     var chat = makeRosterChat(id: "chat-1", laneId: "lane-1")
     chat.lastActivityAt = "2026-07-22T12:05:00.000Z"
