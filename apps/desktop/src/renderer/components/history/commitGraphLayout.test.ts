@@ -263,11 +263,11 @@ describe("laneForkWaitsForStatus", () => {
   // A lane behind its base whose base tip is not in the loaded rows gets its
   // fork point from `ahead`. An unmeasured `ahead` must not place the divider.
   it.each([
-    ["an unmeasured status with the base tip off-screen waits", { statusStale: true, baseTipLoaded: false, laneType: "worktree" }, true],
-    ["a measured status never waits", { statusStale: false, baseTipLoaded: false, laneType: "worktree" }, false],
-    ["a loaded base tip is a commit, not a count, so it never waits", { statusStale: true, baseTipLoaded: true, laneType: "worktree" }, false],
-    ["the Primary lane has no band or divider to wait for", { statusStale: true, baseTipLoaded: false, laneType: "primary" }, false],
-    ["no focused lane never waits", { statusStale: true, baseTipLoaded: false, laneType: null }, false],
+    ["an unmeasured status with the base tip off-screen waits", { statusStale: true, baseTipLoaded: false, hasLane: true, baseLinePrimary: false }, true],
+    ["a measured status never waits", { statusStale: false, baseTipLoaded: false, hasLane: true, baseLinePrimary: false }, false],
+    ["a loaded base tip is a commit, not a count, so it never waits", { statusStale: true, baseTipLoaded: true, hasLane: true, baseLinePrimary: false }, false],
+    ["the base line has no band or divider to wait for", { statusStale: true, baseTipLoaded: false, hasLane: true, baseLinePrimary: true }, false],
+    ["no focused lane never waits", { statusStale: true, baseTipLoaded: false, hasLane: false, baseLinePrimary: false }, false],
   ])("%s", (_label, args, expected) => {
     expect(laneForkWaitsForStatus(args as Parameters<typeof laneForkWaitsForStatus>[0])).toBe(expected);
   });

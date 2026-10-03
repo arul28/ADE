@@ -290,6 +290,11 @@ export function useWorkLaneContextMenu(options?: {
                 onStartChat={startForeignChat}
                 onManage={manageForeignLane}
                 onOpenInLanes={openForeignLane}
+                onOpenHistory={() => {
+                  const { lane, machineId } = foreignMenuState;
+                  close();
+                  void navigate(historyCommitsPath(lane.id, machineId));
+                }}
               />
             </>
           ) : null}

@@ -66,13 +66,14 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 
 | File | Responsibility |
 |---|---|
-| `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, selected-lane mirroring when the URL is not driving lane state, commit-on-lane tracking for destructive action gates, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
+| `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, two-way lane sync with the lane list held beside History (`useHistoryLaneSync`), the commit's lane operations for the details pane's ADE activity rows, commit-on-lane tracking for destructive action gates, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
+| `useHistoryLaneSync.ts` | Keeps History's focused lane and the lane list held under it (the Lanes or Work sidebar) on one selection, in both directions. The list's selection is the store's lane on this machine, or the Lanes list's `machineId:laneId` row for a lane on another machine, through the shared `useForeignLaneSelection` store. |
 | `useTimelineStore.ts` | Zustand store: raw + enriched events, WIP-by-lane nodes, surface, focus lane, selected commit/event, view mode, scope level, filters, lane visibility, columns. `fetchEvents` merges `history.listOperations` with `fetchSupplementalTimelineRecords` and sorts/dedupes via `sortTimelineRecords`. |
 | `timelineTypes.ts` | `HistorySurface = "activity" \| "commits"`, `ViewMode = "graph" \| "list" \| "compact"`, `TimelineEvent` (enriched `OperationRecord`), `LaneTrack`, `GraphLayout`, `TimelineFilters`, `LaneVisibility`, `ColumnConfig`, `WIPNode`, `MinimapBucket`. `DEFAULT_COLUMNS` order is timestamp → graph → event → lane → author → status → duration → sha. |
 | `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`). |
 | `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(limit)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list` and `cto.getState`. Synthetic IDs are namespaced (`chat:`, `cto-session:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
 | `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
-| `commitGraphLayout.ts` | Pure graph algorithms. `buildCommitGraphLayout(rows, { trunkSha, gapAfterRow, gapHeight })` takes `GraphCommit[]` (wrap raw rows with `toGraphCommits`) and assigns columns newest-first (each column waits for one sha; the first parent stays in its column so a trunk stays straight; `trunkSha` pins the base branch to column 0). `contractCommitGraph(commits, keep)` hides commits while keeping the graph connected: kept commits' parents are rewritten to the nearest kept ancestors and each edge records how many commits it folds. `branchTipKeep` is the "fold to branch tips" predicate (refs, merges, roots, fork points). `assignCommitOwners` maps commits to lanes: base history to the base, each lane tip its first-parent run. `computeDividerAfterRow` places the lane/base divider under the lane's oldest own commit (-1 above row 0 for a lane with none; null while searching, in All lanes, or on Primary). `commitEdgePathD` draws an edge; `rowTop` / `rowCenter` place rows around the optional divider gap. |
+| `commitGraphLayout.ts` | Pure graph algorithms. `buildCommitGraphLayout(rows, { trunkSha, gapAfterRow, gapHeight })` takes `GraphCommit[]` (wrap raw rows with `toGraphCommits`) and assigns columns newest-first (each column waits for one sha; the first parent stays in its column so a trunk stays straight; `trunkSha` pins the base branch to column 0). `contractCommitGraph(commits, keep)` hides commits while keeping the graph connected: kept commits' parents are rewritten to the nearest kept ancestors and each edge records how many commits it folds. `branchTipKeep` is the "fold to branch tips" predicate (refs, merges, roots, fork points). `assignCommitOwners` maps commits to lanes: base history to the base, each lane tip its first-parent run. `computeDividerAfterRow` places the lane/base divider under the lane's oldest own commit (-1 above row 0 for a lane with none; null while searching, in All lanes, or on a Primary lane that is on its base branch). `commitEdgePathD` draws an edge; `rowTop` / `rowCenter` place rows around the optional divider gap. |
 | `CommitHistoryView.tsx` | Virtualized commit graph. Pages `git.listRecentCommits` 100 at a time with `skip` (no cap), in `lane` or `lanes` scope; `git.listBranches` for ref badges. Colours nodes and edges by owning lane, folds or filters through `contractCommitGraph`, keeps the scroll anchor by sha across refreshes, and adapts columns to the pane width. Row presentation lives in `CommitRow.tsx`. Enter / double-click opens the commit's changes full-page; transient action results go through the shared toast. |
 | `CommitRow.tsx` | One commit row: ref badges, agent logo, subject with its `(#123)` PR link, author avatar/name, age, and copy-SHA. Memoized, and each row's git context menu is gated on whether the commit is on the focused lane (`commitOnLaneHistory`), so an All-lanes row owned by another lane cannot run that lane's destructive actions. |
 | `CommitGraphLayer.tsx` | The SVG graph, drawn as memoized 40-row tiles above the rows. Hovering a node or edge focuses that lane's path (others fade) through one generated CSS rule, without React renders. |
@@ -86,7 +87,7 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 | `historyGitActions.ts` | Per-commit action catalogue and dispatcher: `Inspect` (checkout, open in Lanes git pane, compare-with-parent, view files), `Create` (branch, lane, tag), `Apply` (cherry-pick, revert, soft/mixed/hard reset), `Share` (open/copy GitHub link, copy patch via `git.listCommitFiles` + `diff.getFilePatch`, copy SHA, copy subject). Calls `window.ade.git.*` + `window.ade.lanes.create({ startPoint })` and centralizes disabled reasons for missing worktrees or commits not on the focused lane history. |
 | `historyUrlHydration.ts` | Pure URL-hydration helper used by `HistoryPage` tests and effects. Re-applies `commitSha` when a URL-driven lane focus change clears the store selection, while refusing to hydrate commit selections on the Activity surface. `historyCommitsPath(laneId, machineId?)` builds the link that every "Commit history" entry point uses. |
 | `historyLaneActions.ts` | Lane-level action catalogue surfaced through the Commits toolbar's "Lane git actions" menu: `Remote` (fetch, pull ff-only/rebase/merge, push, force-push-with-lease), `Recover` (undo/redo last head change), `Branch and PR` (copy branch name, open/copy branch link, open/copy PR link), `Lane` (rename, archive, delete worktree, delete + branch), `Integrate` (merge/rebase onto base), `Stash`, `Conflict` (rebase/merge continue + abort, only when a conflict is in progress), `Open` (jump to Lanes git pane). |
-| `HistoryLanePicker.tsx` | The Commits rail's lane picker: lane glyph in the lane's colour and the lane name; branch in the tooltip and the menu, grouped by machine. A mouse pick does not return focus to the trigger (no stray focus ring); a keyboard pick does. |
+| `HistoryLanePicker.tsx` | The Commits rail's lane picker: lane glyph in the lane's colour and the lane name; branch in the tooltip and the menu, grouped by machine. Primary leads each machine's group. A mouse pick does not return focus to the trigger (no stray focus ring); a keyboard pick or Escape does, however the menu was opened. |
 | `TimelineToolbar.tsx` | The shared toolbar above both surfaces. Renders the surface toggle (`Commits` / `Activity`), the lane selector + `LaneGitActionsMenu` on the Commits surface, and the activity controls (view-mode toggle, scope selector, search, export-to-JSON, column gear, category/status/time-range/lane filter chips). |
 | `TimelineGraph.tsx` (lazy) | SVG-based per-lane swimlane graph for the Activity surface — used when `viewMode === "graph"`. |
 | `TimelineListView.tsx` | Table-style activity list with column visibility driven by `columns` from the store. |
@@ -110,8 +111,12 @@ The git graph for the focused lane. **This lane** walks the lane's HEAD;
 **All lanes** walks HEAD, the lane's base and every active lane's branch
 (`scope: "lanes"`, `git log --date-order`), so one graph shows where every
 lane sits against its base. Colour means a lane's own work: each lane's
-commits take its colour, the base line (main or the Primary lane) is
-neutral grey and branches no lane owns are fainter still. Hovering a node or
+commits take its colour, the base line (main, or the Primary lane while it
+is on its base branch) is neutral grey and branches no lane owns are fainter
+still. A Primary lane on a feature branch is a lane like any other: its own
+commits take its colour above a `main` divider. A lane whose base is another
+lane's branch (a stack, or Primary on a feature branch) keeps grey for the
+branch under that lane. Hovering a node or
 line focuses that lane's path and fades the rest.
 
 In **This lane**, a divider row (`main · 34 behind`) sits under the lane's
@@ -130,7 +135,14 @@ opacity with a "Last known" tooltip, and an unmeasured `0/0` holds its place
 empty instead of reading as even.
 
 The lane picker in the rail shows the lane glyph in the lane's colour and
-the lane name. The branch is in its tooltip and in the menu.
+the lane name. The branch is in its tooltip and in the menu. The lane list
+beside History (the Lanes or Work sidebar it opened over) drives it too: a
+lane clicked there is the lane History shows, and a lane picked in History
+is the one the list highlights.
+
+Switching **This lane** / **All lanes** keeps a selected commit the new rows
+still show (and scrolls to it); otherwise the newest commit is selected, the
+same as arriving on a lane.
 
 Each row: ref badges, the agent logo when a `Co-authored-by` trailer
 names an agent, the subject with its `(#123)` PR number as a link, the
@@ -142,14 +154,16 @@ keeps refs, merges, roots and fork points and draws the folded runs
 dashed. The details pane shows the full message, the agent and the chat
 that was running when it was committed, the lane's PR, push state,
 parents, files (click to open that file's diff) and ADE activity rows
-that link to the Activity view. Enter, double-click or **Changes** opens
+that link to the Activity view. Those rows read the commit's lane operations
+(`history.listOperations({ laneId })`, cached per lane for 15 s) and do not
+wait for the Activity view to load. Enter, double-click or **Changes** opens
 the commit's changes full-page; Esc returns. Right-click — or the
 **⋯** menu in the details pane — opens the grouped git actions; see
 `historyGitActions.ts`.
 
 The lane overview in Lanes has a **Commit history** button, and the lane
-right-click menus (Lanes sidebar, Work lane rows, a Work chat's lane actions)
-have a **Commit history** item under Go to. Both open this view on that lane
+right-click menus (Lanes sidebar, Work lane rows, a Work lane on another
+machine, a Work chat's lane actions) have a **Commit history** item. Both open this view on that lane
 (with its machine for a lane on another machine) through `historyCommitsPath`.
 
 The search field in the rail parses through `filterCommitsForSearch`

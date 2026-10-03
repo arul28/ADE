@@ -35,7 +35,9 @@ import { CommitRow, type RowMenuContext } from "./CommitRow";
 import {
   buildRefBadges,
   githubRepoFromRemote,
+  isBaseLinePrimary,
   normalizeBranchName,
+  prsForLaneBranch,
 } from "./commitRowModel";
 import { useCommitViewPrefs } from "./commitViewPrefs";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
@@ -129,8 +131,16 @@ type CommitHistoryViewProps = {
   lanes: LaneSummary[];
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary, ownerLaneId: string | null) => void;
+  /**
+   * The lane whose work the selected commit is (null: base history), once the
+   * loaded rows contain it — however it was selected (a deep link, a parent
+   * link, a remount, a kept selection across a scope switch).
+   */
+  onSelectionOwner: (sha: string, ownerLaneId: string | null) => void;
   onOpenCommit: (commit: GitCommitSummary) => void;
   onFocusLane: (laneId: string) => void;
+  /** Lanes, on this lane's machine. */
+  onOpenLane: (laneId: string) => void;
   refreshToken?: number;
   active?: boolean;
 };
@@ -144,8 +154,10 @@ export function CommitHistoryView({
   lanes,
   selectedSha,
   onSelectCommit,
+  onSelectionOwner,
   onOpenCommit,
   onFocusLane,
+  onOpenLane,
   refreshToken = 0,
   active = true,
 }: CommitHistoryViewProps) {
@@ -178,8 +190,17 @@ export function CommitHistoryView({
   const anchorRef = useRef<{ sha: string; delta: number } | null>(null);
   /** The lane whose newest commit was opened on arrival; cleared when the lane changes. */
   const autoSelectedRef = useRef<string | null>(null);
-  /** The lane the loaded rows belong to, so a lane switch never acts on the previous lane's rows. */
-  const rowsLaneRef = useRef<string | null>(null);
+  /** The lane and scope the loaded rows belong to, so a switch never acts on the previous view's rows. */
+  const rowsViewRef = useRef<string | null>(null);
+  const viewKey = laneId ? `${laneId}\u0000${scope}` : null;
+  /**
+   * A view whose first rows must re-check the selection: a scope switch keeps
+   * the selected commit, which the new rows may not contain. (A lane switch
+   * clears the selection; a commit a URL names there is kept.)
+   */
+  const recheckViewRef = useRef<string | null>(null);
+  /** undefined until the first reset, so mounting (a deep link) is not a scope switch. */
+  const prevLaneRef = useRef<string | null | undefined>(undefined);
 
   /* ── Loading ── */
 
@@ -219,7 +240,7 @@ export function CommitHistoryView({
           if (sha) anchorRef.current = { sha, delta: el.scrollTop - geometry.rowTop(topIndex) };
         }
       }
-      rowsLaneRef.current = laneId;
+      rowsViewRef.current = `${laneId}\u0000${scope}`;
       setCommits(rows);
       setBranches(branchRows);
       setHasMore(rows.length >= target);
@@ -232,7 +253,7 @@ export function CommitHistoryView({
     } finally {
       if (loadSeq.current === seq) setLoading(false);
     }
-  }, [laneId, pin, readPage]);
+  }, [laneId, pin, readPage, scope]);
 
   const loadOlder = useCallback(async (pageSize = PAGE_SIZE) => {
     if (!laneId || loadingMore || loading || !hasMore) return;
@@ -268,7 +289,9 @@ export function CommitHistoryView({
     setLoading(false);
     setLoadingMore(false);
     anchorRef.current = null;
-    rowsLaneRef.current = null;
+    rowsViewRef.current = null;
+    recheckViewRef.current = prevLaneRef.current === laneId && laneId ? `${laneId}\u0000${scope}` : null;
+    prevLaneRef.current = laneId;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [laneId, scope]);
   useEffect(() => {
@@ -319,7 +342,12 @@ export function CommitHistoryView({
     }
     return map;
   }, [liveLanes]);
-  const primaryLane = useMemo(() => liveLanes.find((lane) => lane.laneType === "primary") ?? null, [liveLanes]);
+  // Primary is the base line only while it sits on its base branch; on a
+  // feature branch it is a lane like any other.
+  const baseLinePrimaryId = useMemo(
+    () => liveLanes.find((lane) => isBaseLinePrimary(lane))?.id ?? null,
+    [liveLanes],
+  );
 
   const branchTip = useCallback((name: string): string | null => {
     const local = branches.find((b) => !b.isRemote && b.name === name);
@@ -333,26 +361,51 @@ export function CommitHistoryView({
     return scope === "lane" ? commits[0]?.sha ?? null : null;
   }, [branches, commits, scope]);
 
-  const baseName = normalizeBranchName(focusLane?.laneType === "primary" ? focusLane.branchRef : focusLane?.baseRef);
-  const baseSha = baseName ? branchTip(baseName) : null;
-  // The owner key the base history is filed under, so a row can tell whether
-  // it is on the focused lane's own line.
+  const focusIsBaseLine = focusLane != null && focusLane.id === baseLinePrimaryId;
+  const baseName = normalizeBranchName(focusIsBaseLine ? focusLane.branchRef : focusLane?.baseRef);
+  // The neutral line: the lane's base, or — when that base is itself a lane's
+  // branch (a stack, or Primary on a feature branch) — that lane's own base,
+  // followed down to a branch no lane owns as its work.
+  const trunkName = useMemo(() => {
+    let name = baseName;
+    const seen = new Set<string>();
+    for (let lane = lanesByBranch.get(name); lane && lane.id !== baseLinePrimaryId && !seen.has(lane.id); lane = lanesByBranch.get(name)) {
+      seen.add(lane.id);
+      const next = normalizeBranchName(lane.baseRef);
+      if (!next || next === name) break;
+      name = next;
+    }
+    return name;
+  }, [baseLinePrimaryId, baseName, lanesByBranch]);
+  const baseSha = trunkName ? branchTip(trunkName) : null;
+  // The owner keys of the focused lane's base and of the neutral line, so a
+  // row can tell whether it is on the focused lane's own line.
   const baseOwnerKey = useMemo(() => {
     const baseLane = baseName ? lanesByBranch.get(baseName) ?? null : null;
     return baseLane?.id ?? (baseName ? `base:${baseName}` : null);
   }, [baseName, lanesByBranch]);
   const baseTipLoaded = Boolean(baseSha && commits.some((c) => c.sha === baseSha));
-  // Without the base tip loaded, the fork point comes from `ahead`, which is
-  // not measured yet. A stale count would put the divider (and the lane's
-  // colour) on the wrong rows, so both wait for the measured value.
-  const forkWaitsForStatus = laneForkWaitsForStatus({ statusStale, baseTipLoaded, laneType: focusLane?.laneType });
+  // Without the base tip loaded, the fork point comes from `ahead`, which may
+  // not be measured yet. A stale count would put the divider (and the lane's
+  // colour) on the wrong rows, so both wait for the measured value. Only a
+  // lane that draws a band waits; the base line does not.
+  const forkWaitsForStatus = laneForkWaitsForStatus({
+    statusStale,
+    baseTipLoaded,
+    hasLane: focusLane != null,
+    baseLinePrimary: focusIsBaseLine,
+  });
+  const trunkOwnerKey = useMemo(() => {
+    const trunkLane = trunkName ? lanesByBranch.get(trunkName) ?? null : null;
+    return trunkLane?.id ?? (trunkName ? `base:${trunkName}` : null);
+  }, [lanesByBranch, trunkName]);
   const owners = useMemo(() => {
     if (commits.length === 0) return new Map<string, string>();
-    const baseKey = baseOwnerKey ?? `base:${baseName}`;
+    const baseKey = trunkOwnerKey ?? `base:${trunkName}`;
     let baseFrom = baseTipLoaded ? baseSha : null;
     // A lane behind its base never reaches the base tip; its fork point is
     // `ahead` first-parent steps below its head.
-    if (!baseFrom && !forkWaitsForStatus && focusLane && focusLane.laneType !== "primary" && headSha && focusLane.status) {
+    if (!baseFrom && !forkWaitsForStatus && focusLane && !focusIsBaseLine && trunkName === baseName && headSha && focusLane.status) {
       const bySha = new Map(commits.map((c) => [c.sha, c]));
       let sha: string | undefined = headSha;
       for (let step = 0; sha && step < Math.max(0, focusLane.status.ahead); step += 1) sha = bySha.get(sha)?.parents[0];
@@ -360,26 +413,26 @@ export function CommitHistoryView({
     }
     const base: LaneTip | null = baseFrom ? { key: baseKey, sha: baseFrom } : null;
     const tips: LaneTip[] = [];
-    if (focusLane && headSha && focusLane.laneType !== "primary" && !forkWaitsForStatus) tips.push({ key: focusLane.id, sha: headSha });
+    if (focusLane && headSha && !focusIsBaseLine && !forkWaitsForStatus) tips.push({ key: focusLane.id, sha: headSha });
     for (const lane of liveLanes) {
-      if (lane.id === focusLane?.id || lane.laneType === "primary") continue;
+      if (lane.id === focusLane?.id || lane.id === baseLinePrimaryId) continue;
       const sha = branchTip(normalizeBranchName(lane.branchRef));
       if (sha) tips.push({ key: lane.id, sha });
     }
     return assignCommitOwners({ commitsNewestFirst: commits, base, tips });
-  }, [baseName, baseOwnerKey, baseSha, baseTipLoaded, branchTip, commits, focusLane, forkWaitsForStatus, headSha, liveLanes]);
+  }, [baseLinePrimaryId, baseName, baseSha, baseTipLoaded, branchTip, commits, focusIsBaseLine, focusLane, forkWaitsForStatus, headSha, liveLanes, trunkName, trunkOwnerKey]);
 
-  // Colour means "a lane's own work". The base line (main, or the primary
-  // lane) is neutral so no lane colour can be mistaken for it; other branches
-  // are fainter still.
+  // Colour means "a lane's own work". The base line (main, or the Primary
+  // lane on it) is neutral so no lane colour can be mistaken for it; other
+  // branches are fainter still.
   const colorOf = useCallback((owner: string): string => {
-    if (owner !== primaryLane?.id) {
+    if (owner !== baseLinePrimaryId) {
       const lane = laneColor.get(owner);
       if (lane) return lane;
     }
     if (owner.startsWith("col:")) return "color-mix(in srgb, var(--color-fg) 24%, transparent)";
     return "color-mix(in srgb, var(--color-fg) 46%, transparent)";
-  }, [laneColor, primaryLane]);
+  }, [baseLinePrimaryId, laneColor]);
 
   /* ── Refs and PRs ── */
 
@@ -388,7 +441,7 @@ export function CommitHistoryView({
     const map = new Map<string, PrSummary>();
     if (pin) return map;
     for (const lane of liveLanes) {
-      const prs = boundMachineLanePrs(lanePrMap, lane.id);
+      const prs = prsForLaneBranch(boundMachineLanePrs(lanePrMap, lane.id), lane);
       const live = prs.find((pr) => pr.state === "open" || pr.state === "draft") ?? prs[0];
       if (live) map.set(lane.id, live);
     }
@@ -433,7 +486,7 @@ export function CommitHistoryView({
   // base history starts. Base commits merged into the lane can sit above it;
   // they are drawn as base. A lane with no commits of its own gets the band
   // on top.
-  const ownLaneId = scope === "lane" && focusLane && focusLane.laneType !== "primary" && !forkWaitsForStatus ? focusLane.id : null;
+  const ownLaneId = scope === "lane" && focusLane && !focusIsBaseLine && !forkWaitsForStatus ? focusLane.id : null;
   const dividerAfterRow = useMemo(
     () => computeDividerAfterRow({ rows: graphRows, owners, ownLaneId, searching: matches != null }),
     [graphRows, matches, owners, ownLaneId],
@@ -540,10 +593,20 @@ export function CommitHistoryView({
     [graphRows, selectedSha],
   );
 
+  // The lane whose work a row is; null for base history. The base-line
+  // Primary's rows are base history unless Primary is the lane on screen.
   const laneOwnerOf = useCallback((sha: string): string | null => {
     const owner = owners.get(sha);
-    return owner && laneColor.has(owner) ? owner : null;
-  }, [laneColor, owners]);
+    if (!owner || !laneColor.has(owner)) return null;
+    return owner === baseLinePrimaryId && owner !== laneId ? null : owner;
+  }, [baseLinePrimaryId, laneColor, laneId, owners]);
+
+  // The selected commit's owner, from the rows that hold it.
+  const loadedShas = useMemo(() => new Set(commits.map((c) => c.sha)), [commits]);
+  useEffect(() => {
+    if (!selectedSha || !viewKey || rowsViewRef.current !== viewKey || !loadedShas.has(selectedSha)) return;
+    onSelectionOwner(selectedSha, laneOwnerOf(selectedSha));
+  }, [laneOwnerOf, loadedShas, onSelectionOwner, selectedSha, viewKey]);
 
   const selectIndex = useCallback((index: number) => {
     const row = graphRowsRef.current[index];
@@ -590,14 +653,24 @@ export function CommitHistoryView({
     if (row != null) selectIndex(Number(row));
   }, [selectIndex]);
 
-  // Arriving on a lane opens its newest commit, so the details pane is never blank.
+  // Arriving on a lane opens its newest commit, so the details pane is never
+  // blank. After a scope switch, a selection the new rows do not show gives
+  // way to the newest one the same way; one they still show is kept.
   useEffect(() => {
-    if (!laneId || selectedSha || graphRows.length === 0 || autoSelectedRef.current === laneId) return;
-    if (rowsLaneRef.current !== laneId) return;
+    if (!laneId || !viewKey || graphRows.length === 0 || rowsViewRef.current !== viewKey) return;
+    const newest = () => Math.max(0, headSha ? graphRows.findIndex((row) => row.commit.sha === headSha) : 0);
+    if (recheckViewRef.current === viewKey) {
+      recheckViewRef.current = null;
+      autoSelectedRef.current = laneId;
+      const kept = selectedSha ? graphRows.findIndex((row) => row.commit.sha === selectedSha) : -1;
+      if (kept < 0) selectIndex(newest());
+      else virtualizer.scrollToIndex(virtualIndexOf(kept), { align: "center" });
+      return;
+    }
+    if (selectedSha || autoSelectedRef.current === laneId) return;
     autoSelectedRef.current = laneId;
-    const index = Math.max(0, headSha ? graphRows.findIndex((row) => row.commit.sha === headSha) : 0);
-    selectIndex(index);
-  }, [graphRows, headSha, laneId, selectIndex, selectedSha]);
+    selectIndex(newest());
+  }, [graphRows, headSha, laneId, selectIndex, selectedSha, viewKey, virtualIndexOf, virtualizer]);
 
   /* ── Row actions ── */
 
@@ -612,10 +685,7 @@ export function CommitHistoryView({
   }, [navigate]);
 
   const badgeActions: RefBadgeActions = useMemo(() => ({
-    onOpenLane: (id) => {
-      const params = new URLSearchParams({ laneId: id });
-      navigate(`/lanes?${params.toString()}`);
-    },
+    onOpenLane,
     onFocusLane,
     onOpenPr: (badge) => {
       if (!badge.pr) return;
@@ -627,7 +697,7 @@ export function CommitHistoryView({
         .catch(() => notify("Could not copy branch name", true));
     },
     onFocusOwner: focusOwner,
-  }), [focusOwner, navigate, notify, onFocusLane, openPr]);
+  }), [focusOwner, notify, onFocusLane, onOpenLane, openPr]);
 
   const openPrNumber = useMemo(
     () => (repo ? (number: number) => openPr({ number, linkedPrId: null, owner: repo.owner, name: repo.name }) : null),
@@ -635,6 +705,21 @@ export function CommitHistoryView({
   );
   const colorOfLane = useCallback((id: string) => laneColor.get(id) ?? null, [laneColor]);
   const ownerOfLane = useCallback((id: string) => (laneColor.has(id) ? id : null), [laneColor]);
+
+  // A row's git actions act on the lane whose work it is; base rows and
+  // branches no lane owns act on the focused lane.
+  const laneTipShas = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lane of liveLanes) {
+      const sha = lane.id === laneId ? headSha : branchTip(normalizeBranchName(lane.branchRef));
+      if (sha) map.set(lane.id, sha);
+    }
+    return map;
+  }, [branchTip, headSha, laneId, liveLanes]);
+  const laneHasOwnWorktree = useCallback(
+    (id: string) => !pin && Boolean(liveLanes.find((lane) => lane.id === id)?.worktreePath?.trim()),
+    [liveLanes, pin],
+  );
 
   const worktreeMissing = error != null && /worktree is missing/i.test(error);
   const commitGitActionsEnabled = Boolean(laneId) && laneHasWorktree && !worktreeMissing;
@@ -644,13 +729,11 @@ export function CommitHistoryView({
   }, [notify, reload]);
   const onRowError = useCallback((message: string) => notify(message, true), [notify]);
   const rowMenu: RowMenuContext = useMemo(() => ({
-    laneId: laneId ?? "",
-    hasWorktree: commitGitActionsEnabled,
     remoteMachineName,
     onNotice: onRowNotice,
     onError: onRowError,
     navigate: (path: string) => navigate(path),
-  }), [commitGitActionsEnabled, laneId, navigate, onRowError, onRowNotice, remoteMachineName]);
+  }), [navigate, onRowError, onRowNotice, remoteMachineName]);
 
   /* ── Render ── */
 
@@ -789,9 +872,12 @@ export function CommitHistoryView({
               // "This lane" only ever walks HEAD, so every row is on it. In
               // "All lanes", a row is on the focused lane only when it is the
               // lane's own commit or base history — never another lane's.
+              const rowLaneId = laneOwnerOf(commit.sha);
+              const actionLaneId = rowLaneId ?? laneId;
               const commitOnLaneHistory = scope === "lane"
-                || owner === laneId
-                || (baseOwnerKey != null && owner === baseOwnerKey);
+                || rowLaneId != null
+                || (baseOwnerKey != null && owner === baseOwnerKey)
+                || (trunkOwnerKey != null && owner === trunkOwnerKey);
               // The first row under the divider starts a new run of authors.
               const prevCommit = rowIndex > 0 && rowIndex !== (gapAfter ?? -2) + 1 ? graphRows[rowIndex - 1]!.commit : null;
               return (
@@ -806,6 +892,9 @@ export function CommitHistoryView({
                     muted={ownLaneId != null && owners.get(commit.sha) !== ownLaneId}
                     author={singleAuthor ? "hidden" : !prevCommit || authorKey(prevCommit) !== authorKey(commit) ? "shown" : "blank"}
                     isHead={commit.sha === headSha}
+                    actionLaneId={actionLaneId}
+                    actionIsHead={commit.sha === (rowLaneId ? laneTipShas.get(rowLaneId) : headSha)}
+                    actionHasWorktree={rowLaneId && rowLaneId !== laneId ? laneHasOwnWorktree(rowLaneId) && commitGitActionsEnabled : commitGitActionsEnabled}
                     commitOnLaneHistory={commitOnLaneHistory}
                     badges={badgesBySha.get(commit.sha)}
                     columns={columns}

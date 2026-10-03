@@ -16,12 +16,15 @@ import { CommitHistoryView } from "./CommitHistoryView";
 import {
   TimelineStoreProvider,
   createTimelineStore,
+  enrichEvent,
   useTimelineStore,
   type TimelineStoreApi,
 } from "./useTimelineStore";
 import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
+import { useCommitViewPrefs } from "./commitViewPrefs";
+import { useHistoryLaneSync } from "./useHistoryLaneSync";
 import type { TimelineEvent } from "./timelineTypes";
-import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding, OperationRecord } from "../../../shared/types";
 import {
   createLaneMachineRouter,
   foreignLaneKey,
@@ -30,7 +33,7 @@ import {
   useStableBinding,
 } from "../../state/laneMachineRouting";
 import { pinKey } from "../../state/projectMachines";
-import type { MachineReadLoad } from "../../state/foreignMachineReads";
+import { machineScopedId, type MachineReadLoad } from "../../state/foreignMachineReads";
 import type { HistoryMachineSource } from "./useTimelineStore";
 
 const TimelineGraph = React.lazy(async () => {
@@ -52,6 +55,9 @@ const CommitDetailPanel = React.lazy(async () => {
   const mod = await import("./CommitDetailPanel");
   return { default: mod.CommitDetailPanel };
 });
+
+/** How long a lane's operations, read for a commit's details, stay fresh. */
+const LANE_OPERATIONS_TTL_MS = 15_000;
 
 /** Saved split sizes of the timeline and detail panes, in percent. */
 const HISTORY_SPLIT_LAYOUT_ID = "history:split:v1";
@@ -77,9 +83,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   /** False when the selected commit object exists but is not reachable from the lane head. */
   const [commitOnLaneHistory, setCommitOnLaneHistory] = useState(true);
   const [selectedCommitLaneId, setSelectedCommitLaneId] = useState<string | null>(null);
-  /** The lane whose work the selected commit is, when the graph knows. */
-  // undefined: not known (deep link) → the focused lane; null: base history, no lane.
-  const [commitOwnerLaneId, setCommitOwnerLaneId] = useState<string | null | undefined>(undefined);
+  /** The lane whose work a commit is (null: base history), as the graph's rows say. */
+  const [commitOwner, setCommitOwner] = useState<{ sha: string; laneId: string | null } | null>(null);
   /** The selected commit's changes fill the page (Enter / double-click / "Changes"). */
   const [diffTarget, setDiffTarget] = useState<{ commit: GitCommitSummary; path: string | null } | null>(null);
   const openCommitChanges = useCallback((commit: GitCommitSummary, path: string | null = null) => {
@@ -98,6 +103,15 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const selectedCommit = useTimelineStore((s) => s.selectedCommit);
   const selectedCommitRef = useRef(selectedCommit);
   selectedCommitRef.current = selectedCommit;
+  // The selected commit's owner. Until the graph's rows say: in This lane every
+  // row is on the focused lane (undefined → the focused lane); in All lanes it
+  // is never assumed (null → no lane).
+  const commitScope = useCommitViewPrefs((s) => s.scope);
+  const commitOwnerLaneId: string | null | undefined = commitOwner && commitOwner.sha === selectedCommitSha
+    ? commitOwner.laneId
+    : commitScope === "lanes" ? null : undefined;
+  /** The lane the selected commit's git actions, details and changes read and act on. */
+  const actionLaneId = typeof commitOwnerLaneId === "string" ? commitOwnerLaneId : focusLaneId;
   const selectedEventId = useTimelineStore((s) => s.selectedEventId);
   const hoveredLaneId = useTimelineStore((s) => s.hoveredLaneId);
   const columns = useTimelineStore((s) => s.columns);
@@ -320,21 +334,19 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     setSearchParams,
   ]);
 
-  // Keep History destructive git actions aligned with the lane selected elsewhere
-  // (Lanes / Work), unless the URL is driving lane or commit-only deeplink state.
-  useEffect(() => {
-    if (!active) return;
-    if (syncingFromUrlRef.current) return;
-    if (searchParams.get("laneId")) return;
-    if (searchParams.get("commitSha") && !searchParams.get("laneId")) return;
-    // A lane picked on another machine is not overridden by this machine's selection.
-    if (focusLaneMachineId) return;
-    const selected =
-      selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : null;
-    if (selected && focusLaneId !== selected) {
-      setFocusLaneId(selected);
-    }
-  }, [active, focusLaneId, focusLaneMachineId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
+  // History and the lane list beside it (the Lanes or Work sidebar held under
+  // History) show one lane, in both directions.
+  const handleLanePicked = useCallback(() => setDiffTarget(null), []);
+  useHistoryLaneSync({
+    active,
+    projectStateKey,
+    focusLaneId,
+    focusLaneMachineId,
+    setFocusLane,
+    onLanePicked: handleLanePicked,
+    lanes,
+    lanesByKey: allMachineLanes.lanesByKey,
+  });
 
   useEffect(() => {
     if (!active || surface === "commits") return;
@@ -389,8 +401,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     const selectedCommitIsCurrentLane =
       selectedCommit?.sha === selectedCommitSha &&
-      selectedCommitLaneId === focusLaneId;
-    if (!active || !focusLaneId || !focusLaneReadable || !selectedCommitSha || selectedCommitIsCurrentLane) {
+      selectedCommitLaneId === actionLaneId;
+    if (!active || !actionLaneId || !focusLaneReadable || !selectedCommitSha || selectedCommitIsCurrentLane) {
       if (!selectedCommitSha) {
         setCommitOnLaneHistory(true);
         setSelectedCommitLaneId(null);
@@ -399,13 +411,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId: focusLaneId, limit: 500, scope: "lane" }, commitPin)
+      .listRecentCommits({ laneId: actionLaneId, limit: 500, scope: "lane" }, commitPin)
       .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
         if (found) {
           setCommitOnLaneHistory(true);
-          setSelectedCommitLaneId(focusLaneId);
+          setSelectedCommitLaneId(actionLaneId);
           // Keep the row the graph handed over: it carries email and co-authors.
           if (selectedCommitRef.current?.sha !== found.sha) setSelectedCommit(found);
           return;
@@ -417,38 +429,38 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         }
         try {
           const targeted = await window.ade.git.getCommit({
-            laneId: focusLaneId,
+            laneId: actionLaneId,
             commitSha: selectedCommitSha,
           }, commitPin);
           if (!cancelled) {
             const isOnLane = targeted
               ? await window.ade.git.isCommitInLaneHistory({
-                laneId: focusLaneId,
+                laneId: actionLaneId,
                 commitSha: selectedCommitSha,
               }, commitPin).catch(() => false)
               : false;
             if (cancelled) return;
             setCommitOnLaneHistory(isOnLane);
-            setSelectedCommitLaneId(focusLaneId);
+            setSelectedCommitLaneId(actionLaneId);
             if (targeted && selectedCommitRef.current?.sha !== targeted.sha) setSelectedCommit(targeted);
           }
         } catch {
           if (!cancelled) {
             setCommitOnLaneHistory(false);
-            setSelectedCommitLaneId(focusLaneId);
+            setSelectedCommitLaneId(actionLaneId);
           }
         }
       })
       .catch(() => {
         if (!cancelled) {
           setCommitOnLaneHistory(false);
-          setSelectedCommitLaneId(focusLaneId);
+          setSelectedCommitLaneId(actionLaneId);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [active, commitPin, focusLaneId, focusLaneReadable, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
+  }, [active, actionLaneId, commitPin, focusLaneReadable, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
 
   useEffect(() => {
     if (!active || syncingFromUrlRef.current) return;
@@ -521,14 +533,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   const handleSelectCommit = useCallback(
     (commit: GitCommitSummary, ownerLaneId?: string | null) => {
-      setCommitOwnerLaneId(ownerLaneId);
-      // Settle the destructive-action gate from the row's owner immediately.
-      // Without this, selecting another lane's commit in All lanes leaves the
-      // previous lane's "on history" verdict in place. A null owner means base
-      // history, which is on the focused lane; the reachability effect below
-      // still refines this for a deep link.
+      setCommitOwner({ sha: commit.sha, laneId: ownerLaneId ?? null });
+      // Settle the destructive-action gate from the row's owner immediately: a
+      // lane's own commit is on that lane, which its actions act on. Base
+      // history acts on the focused lane; the reachability effect checks it.
       setSelectedCommitLaneId(ownerLaneId ?? null);
-      setCommitOnLaneHistory(ownerLaneId == null || ownerLaneId === focusLaneId);
+      setCommitOnLaneHistory(true);
       setSelectedCommit(commit);
       setSelectedEventId(null);
       setSearchParams((prev) => {
@@ -578,35 +588,95 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     [focusLaneMachineId, setFocusLane, setSelectedCommit],
   );
 
+  // However a commit was selected, the graph names its owner once its rows hold it.
+  const commitOwnerRef = useRef(commitOwner);
+  commitOwnerRef.current = commitOwner;
+  const handleSelectionOwner = useCallback((sha: string, ownerLaneId: string | null) => {
+    const prev = commitOwnerRef.current;
+    if (prev?.sha === sha && prev.laneId === ownerLaneId) return;
+    commitOwnerRef.current = { sha, laneId: ownerLaneId };
+    setCommitOwner(commitOwnerRef.current);
+    if (ownerLaneId) {
+      setSelectedCommitLaneId(ownerLaneId);
+      setCommitOnLaneHistory(true);
+    }
+  }, []);
+
+  // Ref badges name lanes of the machine whose graph is on screen.
+  const handleOpenGraphLane = useCallback(
+    (laneId: string) => handleNavigateToLane(laneId, focusLaneMachineId),
+    [focusLaneMachineId, handleNavigateToLane],
+  );
+
   // A lane switch closes a full-page diff of the previous lane's commit.
   useEffect(() => {
     setDiffTarget(null);
-    setCommitOwnerLaneId(undefined);
+    setCommitOwner(null);
   }, [focusLaneId, focusLaneMachineId, surface]);
 
-  const selectedEvent: TimelineEvent | null = selectedEventId
-    ? (events.find((e) => e.id === selectedEventId) ?? null)
-    : null;
+  // An event opened from a commit's details can be one the Activity filters
+  // hide; the details pane still shows it.
+  const selectedEvent: TimelineEvent | null = useMemo(() => {
+    if (!selectedEventId) return null;
+    const visible = events.find((e) => e.id === selectedEventId);
+    if (visible) return visible;
+    const raw = rawEvents.find((e) => e.id === selectedEventId);
+    return raw ? enrichEvent(raw) : null;
+  }, [events, rawEvents, selectedEventId]);
+
+  // The details pane's "ADE activity" rows on the Commits surface. The full
+  // Activity feed loads only on that surface, so the commit's lane operations
+  // are read here: once per lane, again after a git action or when the read
+  // is older than LANE_OPERATIONS_TTL_MS, never once per commit click.
+  const [laneOperations, setLaneOperations] = useState<Record<string, OperationRecord[]>>({});
+  /** When each lane's read started, keyed with the git-action refresh token. */
+  const laneOperationsReadsRef = useRef(new Map<string, number>());
+  // In All lanes the graph names the lane whose work the commit is; its
+  // operations were recorded on that lane (on the same machine).
+  const operationsLaneId = commitOwnerLaneId ?? focusLaneId;
+  const laneOperationsKey = operationsLaneId ? `${focusLaneMachineId ?? ""}\u0000${operationsLaneId}` : null;
+  useEffect(() => {
+    if (!active || surface !== "commits" || !selectedCommitSha || !operationsLaneId || !laneOperationsKey || !focusLaneReadable) return;
+    const readKey = `${laneOperationsKey}\u0000${commitRefreshToken}`;
+    const reads = laneOperationsReadsRef.current;
+    const startedAt = reads.get(readKey);
+    if (startedAt != null && Date.now() - startedAt < LANE_OPERATIONS_TTL_MS) return;
+    reads.set(readKey, Date.now());
+    void window.ade.history
+      .listOperations({ laneId: operationsLaneId, limit: 500 }, commitPin)
+      .then((rows) => {
+        setLaneOperations((prev) => ({ ...prev, [laneOperationsKey]: Array.isArray(rows) ? rows : [] }));
+      })
+      .catch(() => {
+        // The rows from the Activity feed (when loaded) still show; try again next time.
+        reads.delete(readKey);
+      });
+  }, [active, commitPin, commitRefreshToken, focusLaneReadable, laneOperationsKey, operationsLaneId, selectedCommitSha, surface]);
 
   const relatedEventsForCommit = useMemo(() => {
     if (!selectedCommitSha) return [];
-    return rawEvents
-      .filter(
-        (op) =>
-          op.preHeadSha === selectedCommitSha ||
-          op.postHeadSha === selectedCommitSha,
-      )
-      .map((op) => {
-        const found = events.find((e) => e.id === op.id);
-        return found;
-      })
-      .filter((e): e is TimelineEvent => e != null);
-  }, [selectedCommitSha, rawEvents, events]);
+    const matches = (op: OperationRecord) =>
+      op.preHeadSha === selectedCommitSha || op.postHeadSha === selectedCommitSha;
+    const byId = new Map<string, TimelineEvent>();
+    // Ids as the Activity feed has them, so a row opens the same event there.
+    const laneRows = laneOperationsKey ? laneOperations[laneOperationsKey] ?? [] : [];
+    for (const op of laneRows) {
+      if (!matches(op)) continue;
+      const id = focusLaneMachineId ? machineScopedId(focusLaneMachineId, op.id) : op.id;
+      byId.set(id, enrichEvent({ ...op, id }));
+    }
+    for (const op of rawEvents) {
+      if (matches(op) && !byId.has(op.id)) byId.set(op.id, enrichEvent(op));
+    }
+    return [...byId.values()].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  }, [focusLaneMachineId, laneOperations, laneOperationsKey, rawEvents, selectedCommitSha]);
 
   const focusLane = focusLaneMachineId
     ? (focusLaneId ? allMachineLanes.lanesByKey.get(foreignLaneKey(focusLaneMachineId, focusLaneId))?.lane ?? null : null)
     : lanes.find((l) => l.id === focusLaneId) ?? null;
   const focusLaneHasWorktree = !focusLaneMachineId && Boolean(focusLane?.worktreePath?.trim());
+  const actionLane = actionLaneId === focusLaneId ? focusLane : lanes.find((l) => l.id === actionLaneId) ?? null;
+  const actionLaneHasWorktree = !focusLaneMachineId && Boolean(actionLane?.worktreePath?.trim());
   const machineLanes = useMemo(
     () => (focusLaneMachineId
       ? allMachineLanes.lanes.filter((row) => row.machineId === focusLaneMachineId).map((row) => row.lane)
@@ -665,8 +735,10 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         lanes={machineLanes}
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
+        onSelectionOwner={handleSelectionOwner}
         onOpenCommit={openCommitChanges}
         onFocusLane={handleFocusLane}
+        onOpenLane={handleOpenGraphLane}
         active={active}
         refreshToken={rawEvents.length + commitRefreshToken}
       />
@@ -739,21 +811,18 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     surface === "commits" ? (
       <Suspense fallback={panelFallback}>
         <CommitDetailPanel
-          laneId={focusLaneReadable ? focusLaneId : null}
+          laneId={focusLaneReadable ? actionLaneId : null}
           pin={commitPin}
           remoteMachineName={focusRemoteMachineName}
           laneMachineId={focusLaneMachineId}
-          laneHasWorktree={focusLaneHasWorktree}
+          laneHasWorktree={actionLaneHasWorktree}
           commit={selectedCommit}
           commitOnLaneHistory={commitOnLaneHistory}
           ownerLane={commitOwnerLane}
           relatedEvents={relatedEventsForCommit}
           ownerLaneColor={commitOwnerLaneColor}
           onOpenChanges={openCommitChanges}
-          onSelectSha={(sha) => {
-            setCommitOwnerLaneId(undefined);
-            setSelectedCommitSha(sha);
-          }}
+          onSelectSha={setSelectedCommitSha}
           onOpenEvent={handleSelectEvent}
           onClose={handleCloseDetail}
           onNavigateToLane={handleNavigateToLane}
@@ -779,9 +848,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         commitListControls={!diffTarget}
         onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
       />
-      {surface === "commits" && diffTarget && focusLaneReadable && focusLaneId ? (
+      {surface === "commits" && diffTarget && focusLaneReadable && actionLaneId ? (
         <CommitChangesPage
-          laneId={focusLaneId}
+          laneId={actionLaneId}
           pin={commitPin}
           commit={diffTarget.commit}
           initialPath={diffTarget.path}

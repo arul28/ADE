@@ -40,8 +40,10 @@ export function HistoryLanePicker({
     if (hit) current = { lane: hit.lane, color: colorFor(group, hit.lane), machineName: group.machineName };
   }
   // A mouse pick does not hand focus back to the trigger: that would leave a
-  // focus ring and the tooltip up. A keyboard pick does.
-  const openedByPointer = useRef(false);
+  // focus ring and the tooltip up. A keyboard pick or Escape does, however
+  // the menu was opened, so the keyboard keeps its place. This is the input
+  // that last acted on the picker.
+  const lastInput = useRef<"pointer" | "keyboard">("keyboard");
   const branch = current ? normalizeBranchName(current.lane.branchRef) : "";
   const tip = current
     ? [current.lane.name, branch, current.machineName].filter(Boolean).join(" · ")
@@ -54,10 +56,10 @@ export function HistoryLanePicker({
             type="button"
             aria-label={current ? `Lane ${current.lane.name}` : "Choose a lane"}
             onPointerDown={() => {
-              openedByPointer.current = true;
+              lastInput.current = "pointer";
             }}
             onKeyDown={() => {
-              openedByPointer.current = false;
+              lastInput.current = "keyboard";
             }}
             className={cn(
               "inline-flex h-7 min-w-0 max-w-[260px] shrink items-center gap-1.5 rounded-[7px] px-2 text-[12.5px] font-medium text-fg/90",
@@ -77,8 +79,16 @@ export function HistoryLanePicker({
           align="start"
           sideOffset={4}
           collisionPadding={8}
+          // Capture: an item acts on its own keydown/pointerup, before the
+          // event would bubble here.
+          onPointerDownCapture={() => {
+            lastInput.current = "pointer";
+          }}
+          onKeyDownCapture={() => {
+            lastInput.current = "keyboard";
+          }}
           onCloseAutoFocus={(event) => {
-            if (openedByPointer.current) event.preventDefault();
+            if (lastInput.current === "pointer") event.preventDefault();
           }}
           className="max-h-[min(70vh,520px)] min-w-[260px] max-w-[380px] overflow-y-auto rounded-[9px] border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
           style={{ zIndex: Z_LAYERS.popover }}
@@ -92,7 +102,11 @@ export function HistoryLanePicker({
                   {group.disabledReason ? " · unavailable" : ""}
                 </DropdownMenu.Label>
               ) : null}
-              {group.options.map((option) => {
+              {/* Primary leads, as in the lane list; colours keep the group's own order. */}
+              {[
+                ...group.options.filter((option) => option.lane.laneType === "primary"),
+                ...group.options.filter((option) => option.lane.laneType !== "primary"),
+              ].map((option) => {
                 const optionBranch = normalizeBranchName(option.lane.branchRef);
                 const selected = option.value === value;
                 return (

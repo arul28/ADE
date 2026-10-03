@@ -33,6 +33,8 @@ import {
   findCommitSession,
   githubAvatarForEmail,
   githubRepoFromRemote,
+  isBaseLinePrimary,
+  prsForLaneBranch,
   reflowCommitBody,
   splitPrSuffix,
 } from "./commitRowModel";
@@ -188,8 +190,8 @@ export function CommitDetailPanel({
 
   const lanePrMap = useLanePrsByLaneId();
   const subjectPr = resolvedCommit ? splitPrSuffix(resolvedCommit.subject) : { text: "", pr: null };
-  const lanePr = ownerLane && !pin && ownerLane.laneType !== "primary"
-    ? boundMachineLanePrs(lanePrMap, ownerLane.id)[0] ?? null
+  const lanePr = ownerLane && !pin && !isBaseLinePrimary(ownerLane)
+    ? prsForLaneBranch(boundMachineLanePrs(lanePrMap, ownerLane.id), ownerLane)[0] ?? null
     : null;
   const pr = lanePr
     ? { number: lanePr.githubPrNumber, title: lanePr.title, state: lanePr.state, linkedPrId: lanePr.unmapped ? null : lanePr.id, owner: lanePr.repoOwner, name: lanePr.repoName }
