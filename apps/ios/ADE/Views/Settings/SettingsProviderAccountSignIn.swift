@@ -76,8 +76,13 @@ final class ProviderAccountSignInController: ObservableObject {
         guard let self, !Task.isCancelled, let syncService = self.syncService,
               let current = self.login, current.isLive else { return }
         do {
-          self.login = try await syncService.providerAccountLoginStatus(loginId: current.loginId)
+          let status = try await syncService.providerAccountLoginStatus(loginId: current.loginId)
+          // A retry may have started a new sign-in while this reply was in
+          // flight; a reply for the replaced one must not overwrite it.
+          guard !Task.isCancelled, self.login?.loginId == current.loginId else { return }
+          self.login = status
         } catch {
+          guard !Task.isCancelled, self.login?.loginId == current.loginId else { return }
           // A dropped connection is retried on the next tick. A connected host
           // that refuses (it restarted and lost the sign-in) is final: say so
           // rather than spinning on a sign-in that no longer exists.
