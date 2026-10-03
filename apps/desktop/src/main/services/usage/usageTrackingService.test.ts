@@ -7532,6 +7532,82 @@ describe("per-account quota attribution", () => {
     service.dispose();
   });
 
+  it("marks the account smart balance would use next for a new chat", async () => {
+    writeClaudeAccount(path.join(tempHome, ".claude"), "default@example.com");
+    writeClaudeAccount(workHome, "work@example.com");
+    const signedInInstances = (): ProviderInstance[] => [
+      { ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+      { ...workInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true },
+    ];
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [
+            {
+              provider: "claude" as const,
+              windowType: "weekly" as const,
+              accountId: "claude:claude",
+              percentUsed: 50,
+              resetsAt: new Date(Date.now() + 6 * 24 * 60 * 60_000).toISOString(),
+              resetsInMs: 6 * 24 * 60 * 60_000,
+              windowDurationMs: 7 * 24 * 60 * 60_000,
+            },
+            {
+              provider: "claude" as const,
+              windowType: "weekly" as const,
+              accountId: "claude:work",
+              percentUsed: 50,
+              resetsAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+              resetsInMs: 60 * 60_000,
+              windowDurationMs: 7 * 24 * 60 * 60_000,
+            },
+          ],
+          errors: [] as never[],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude"
+          ? [defaultInstance(), workInstance()]
+          : []),
+        providerInstanceStore: {
+          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+          list: (provider?: string) => (provider === "claude" ? signedInInstances() : []),
+        },
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+
+    // `work`'s weekly room resets in an hour, `claude`'s in six days.
+    expect(snapshot.balanceNext).toEqual([{ provider: "claude", instanceId: "work" }]);
+    service.dispose();
+  });
+
+  it("leaves a skipped balance pick off the snapshot's next-account mark", async () => {
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+        listProviderInstances: (provider) => (provider === "claude" ? [defaultInstance()] : []),
+        providerInstanceStore: {
+          getProviderSettings: () => ({ smartBalance: true, autoStartWindows: false }),
+          list: (provider?: string): ProviderInstance[] => (provider === "claude"
+            ? [{ ...defaultInstance(), provider: "claude", createdAt: new Date(0).toISOString(), signedIn: true }]
+            : []),
+        },
+        ...scannerStubs(),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+
+    // One signed-in account is `skip: one_account`, which is not a balance decision.
+    expect(snapshot.balanceNext).toBeUndefined();
+    service.dispose();
+  });
+
   it("names the default account for a window that arrived without attribution", async () => {
     writeClaudeAccount(path.join(tempHome, ".claude"), "solo@example.com");
     const service = createUsageTrackingService({

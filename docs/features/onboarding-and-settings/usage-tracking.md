@@ -49,14 +49,16 @@ brain scope is running, which is also the only time that tracker polls.
 Smart balance applies to Claude and Codex when it is enabled for that provider.
 New chats consider only signed-in instances, and an account whose stored login
 is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Each account is scored by the rate it must burn to use its
-remaining room before the reset: its weekly headroom per hour until the weekly
-reset, scaled down when less than half of its five-hour window is left, so a
-nearly-spent short window cannot win on a long weekly reading. An account with
-a weekly reading and no five-hour window is idle, so it counts as full
-five-hour room. An account at or below its minimum five-hour or weekly headroom
-is out. The highest rate wins; a tie prefers the higher five-hour headroom,
-then the default. No usable readings fall back to the default, and
+are not room. Weekly room left at the reset is lost, so the account whose
+weekly window resets soonest wins: it is spent first, and accounts that reset
+later keep their room for after it. An account with less than 25% of its
+five-hour window left, and more than an hour until that window resets, ranks
+after every account without that limit. An account with a weekly reading and no
+five-hour window is idle, so it counts as full five-hour room; an account with
+no weekly reading counts as a week from its reset. An account at or below its
+minimum five-hour or weekly headroom is out. A tie prefers the higher five-hour
+headroom, then the default. The usage-limit move to another account uses the
+same order. No usable readings fall back to the default, and
 `UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
 could not run. An explicit account selection always wins over balancing.
 

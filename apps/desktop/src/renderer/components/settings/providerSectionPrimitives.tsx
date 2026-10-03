@@ -37,6 +37,8 @@ export function ProviderPanel({
   count,
   actions,
   bodyStyle,
+  autoCollapsed = false,
+  summary,
   children,
 }: {
   title: string;
@@ -46,8 +48,19 @@ export function ProviderPanel({
   actions?: React.ReactNode;
   /** Merged over the body's flex column. */
   bodyStyle?: React.CSSProperties;
+  /**
+   * The panel has nothing to show, so it folds to its header (with `summary`
+   * beside the title) until the user opens it. A click on the title flips it
+   * either way; once the user has chosen, their choice holds even when the
+   * contents change.
+   */
+  autoCollapsed?: boolean;
+  /** One muted phrase shown beside the title while collapsed. */
+  summary?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? !autoCollapsed;
   return (
     <section style={panel({ padding: 0, display: "flex", flexDirection: "column", minWidth: 0 })}>
       <header
@@ -59,13 +72,38 @@ export function ProviderPanel({
           flexWrap: "wrap",
           minHeight: 40,
           padding: "6px 14px",
-          borderBottom: `1px solid ${COLORS.border}`,
+          borderBottom: open ? `1px solid ${COLORS.border}` : "none",
         }}
       >
-        <div style={SECTION_LABEL_STYLE}>
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setUserOpen(!open)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: 0,
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            ...SECTION_LABEL_STYLE,
+          }}
+        >
+          <CaretRight
+            size={10}
+            weight="bold"
+            aria-hidden
+            style={{ color: COLORS.textDim, transform: open ? "rotate(90deg)" : undefined, transition: "transform 120ms ease" }}
+          />
           {title}
           {count != null ? ` · ${count}` : ""}
-        </div>
+          {!open && summary ? (
+            <span style={{ marginLeft: 6, fontWeight: 400, textTransform: "none", letterSpacing: 0, color: COLORS.textDim }}>
+              {summary}
+            </span>
+          ) : null}
+        </button>
         {actions ? (
           <div
             data-provider-panel-actions=""
@@ -75,9 +113,11 @@ export function ProviderPanel({
           </div>
         ) : null}
       </header>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, minWidth: 0, ...bodyStyle }}>
-        {children}
-      </div>
+      {open ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, minWidth: 0, ...bodyStyle }}>
+          {children}
+        </div>
+      ) : null}
     </section>
   );
 }

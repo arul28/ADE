@@ -139,6 +139,8 @@ import {
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
+import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
+import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { bootedUsageScopeRoot } from "../usage/bootedUsageScope";
 import {
   parseProductAnalyticsCapture,
@@ -760,6 +762,7 @@ import type {
   ProviderInstanceProvider,
   ProviderInstanceRemoveResult,
   ProviderInstanceSettings,
+  ProviderLoginStatus,
 } from "../../../shared/types";
 import type {
   ApiCredentialGetArgs,
@@ -6703,6 +6706,12 @@ export function registerIpc({
     return id;
   };
 
+  /** A sign-in field that must arrive as a string; a coerced value never reaches the PTY. */
+  const providerLoginString = (value: unknown, label: string): string => {
+    if (typeof value !== "string") throw new Error(`A provider sign-in ${label} is required.`);
+    return value;
+  };
+
   const providerInstanceProvider = (value: unknown): ProviderInstanceProvider => {
     if (!isProviderInstanceProvider(value)) {
       throw new Error("A provider account provider must be \"claude\" or \"codex\".");
@@ -6761,6 +6770,32 @@ export function registerIpc({
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
   });
 
+  ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
+    return getMachineProviderInstanceStore().dismissReplaced(providerInstanceId(arg));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().start(providerInstanceId(arg), {
+      deviceAuth: providerInstanceArgs(arg).deviceAuth === true,
+    });
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    const args = providerInstanceArgs(arg);
+    return getMachineProviderLoginRunner().submitCode(
+      providerLoginString(args.loginId, "id"),
+      providerLoginString(args.code, "code"),
+    );
+  });
+
+  ipcMain.handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+    return getMachineProviderLoginRunner().cancel(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+  });
+
   ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     return getMachineProviderInstanceStore()
       .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
@@ -6787,10 +6822,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
-    const provider = providerInstanceArgs(arg).provider;
-    return getMachineProviderInstanceStore().refreshAccounts(
-      provider == null ? undefined : providerInstanceProvider(provider),
-    );
+    const args = providerInstanceArgs(arg);
+    const provider = args.provider == null ? undefined : providerInstanceProvider(args.provider);
+    const instanceId = typeof args.instanceId === "string" ? args.instanceId : undefined;
+    return refreshProviderAccounts({ provider, instanceId }, getCtx().usageTrackingService);
   });
 
 

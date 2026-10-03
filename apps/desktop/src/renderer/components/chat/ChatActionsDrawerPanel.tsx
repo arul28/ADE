@@ -102,8 +102,15 @@ function DrawerSectionRegion({
  */
 export function ChatActionsDrawerPanel({
   sections,
+  footer,
 }: {
   sections: ReadonlyArray<ChatActionsDrawerSection | null | false | undefined>;
+  /**
+   * Pinned below the sections and never scrolled away (the chat's account
+   * note). Shown with the empty line too. A footer component that renders
+   * null leaves no divider behind.
+   */
+  footer?: ReactNode;
 }) {
   const present = sections.filter((section): section is ChatActionsDrawerSection => Boolean(section));
   const [emptyKeys, setEmptyKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -145,6 +152,11 @@ export function ChatActionsDrawerPanel({
           </p>
         </div>
       </div>
+      {footer ? (
+        <div data-testid="chat-actions-drawer-footer" className="shrink-0 border-t border-white/[0.06] empty:hidden">
+          {footer}
+        </div>
+      ) : null}
     </div>
   );
 }

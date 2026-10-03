@@ -809,6 +809,8 @@ const now = new Date().toISOString();
  * the real store synthesizes on read. Mutable so the mock's create/rename/
  * remove handlers round-trip in the preview instead of looking broken.
  */
+const mockLogins = new Map<string, import("../shared/types").ProviderLoginStatus>();
+
 const mockProviderInstances: Array<{
   id: string;
   provider: "claude" | "codex";
@@ -819,6 +821,9 @@ const mockProviderInstances: Array<{
   createdAt: string;
   account?: { email?: string; plan?: string };
   signedIn: boolean;
+  loginBroken?: boolean;
+  sameLoginAs?: string;
+  replacedAccount?: { email: string; plan?: string; replacedAt: string };
 }> = [
   {
     id: "claude",
@@ -1351,6 +1356,9 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetKind: "session",
       targetId: "mock-session-claude-1",
       launch: {},
+      // Launched on the second Claude sign-in, so the chat account note has
+      // a non-default account to show.
+      instanceId: "claude-work",
     },
   },
   {
@@ -2099,6 +2107,9 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
       session.resumeMetadata?.opencodePermissionMode ?? undefined,
     droidPermissionMode:
       session.resumeMetadata?.droidPermissionMode ?? undefined,
+    instanceId: session.resumeMetadata?.instanceId ?? undefined,
+    presetId: session.resumeMetadata?.presetId ?? undefined,
+    credentialId: session.resumeMetadata?.credentialId ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -7182,6 +7193,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         for (const other of mockProviderInstances) {
           if (other.provider === instance.provider) other.isDefault = other.id === instance.id;
         }
+        return instance;
+      },
+      // A simulated sign-in: the link appears at once, the code prompt after a
+      // beat, and a pasted code finishes it — enough to walk every state.
+      loginStart: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        const loginId = `mock-login-${Date.now()}`;
+        mockLogins.set(loginId, {
+          loginId,
+          instanceId: instance.id,
+          provider: instance.provider,
+          state: "running",
+          url: instance.provider === "claude"
+            ? "https://claude.ai/oauth/authorize?code=true&client_id=mock&response_type=code"
+            : "https://auth.openai.com/oauth/authorize?client_id=mock",
+          awaitingCode: false,
+          output: "Opening browser to sign in…\nIf the browser didn't open, visit the link below.\n",
+          startedAt: new Date().toISOString(),
+        });
+        setTimeout(() => {
+          const login = mockLogins.get(loginId);
+          if (login?.state === "running") {
+            login.awaitingCode = true;
+            login.output += "Paste code here if prompted > ";
+          }
+        }, 1500);
+        return { ...mockLogins.get(loginId)! };
+      },
+      loginStatus: async (args: { loginId: string }) => ({ ...mockLogins.get(args.loginId)! }),
+      loginSubmitCode: async (args: { loginId: string; code: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.awaitingCode = false;
+        login.state = "verifying";
+        login.output += "\nLogin successful.\n";
+        setTimeout(() => {
+          const instance = mockProviderInstanceById(login.instanceId);
+          instance.signedIn = true;
+          instance.account = instance.account ?? { email: "new.account@example.com", plan: "Claude Max 20x" };
+          login.state = "succeeded";
+          login.email = instance.account.email;
+          login.endedAt = new Date().toISOString();
+        }, 900);
+        return { ...login };
+      },
+      loginCancel: async (args: { loginId: string }) => {
+        const login = mockLogins.get(args.loginId)!;
+        login.state = "cancelled";
+        return { ...login };
+      },
+      dismissReplaced: async (args: { id: string }) => {
+        const instance = mockProviderInstanceById(args.id);
+        delete instance.replacedAccount;
         return instance;
       },
       setAccent: async (args: { id: string; accentColor: string | null }) => {

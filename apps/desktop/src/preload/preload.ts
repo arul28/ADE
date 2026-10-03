@@ -148,6 +148,11 @@ import type {
   ProviderInstanceRemoveResult,
   ProviderInstanceRenameArgs,
   ProviderInstanceSetAccentArgs,
+  ProviderInstanceDismissReplacedArgs,
+  ProviderLoginRefArgs,
+  ProviderLoginStartArgs,
+  ProviderLoginStatus,
+  ProviderLoginSubmitCodeArgs,
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
@@ -4233,6 +4238,14 @@ function normalizeProviderInstanceResult(
   return isRecord(result) && "instance" in result
     ? result.instance as ProviderInstance
     : result as ProviderInstance;
+}
+
+function normalizeProviderLoginStatus(
+  result: ProviderLoginStatus | { login: ProviderLoginStatus },
+): ProviderLoginStatus {
+  return isRecord(result) && "login" in result
+    ? result.login as ProviderLoginStatus
+    : result as ProviderLoginStatus;
 }
 
 function normalizeProviderInstanceSettingsResult(
@@ -10054,6 +10067,61 @@ const adeBridge = {
         "setAccent",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesSetAccent, args),
+      ).then(normalizeProviderInstanceResult),
+    loginStart: async (
+      args: ProviderLoginStartArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderLoginStatus | { login: ProviderLoginStatus }>(
+        pin,
+        "provider_instances",
+        "loginStart",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginStart, args),
+      ).then(normalizeProviderLoginStatus),
+    loginStatus: async (
+      args: ProviderLoginRefArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderLoginStatus | { login: ProviderLoginStatus }>(
+        pin,
+        "provider_instances",
+        "loginStatus",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginStatus, args),
+      ).then(normalizeProviderLoginStatus),
+    loginSubmitCode: async (
+      args: ProviderLoginSubmitCodeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderLoginStatus | { login: ProviderLoginStatus }>(
+        pin,
+        "provider_instances",
+        "loginSubmitCode",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginSubmitCode, args),
+      ).then(normalizeProviderLoginStatus),
+    loginCancel: async (
+      args: ProviderLoginRefArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderLoginStatus | { login: ProviderLoginStatus }>(
+        pin,
+        "provider_instances",
+        "loginCancel",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesLoginCancel, args),
+      ).then(normalizeProviderLoginStatus),
+    dismissReplaced: async (
+      args: ProviderInstanceDismissReplacedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProviderInstance> =>
+      callPinnedOrBoundRuntimeActionOr<ProviderInstance | { instance: ProviderInstance }>(
+        pin,
+        "provider_instances",
+        "dismissReplaced",
+        { args: { ...args } },
+        () => ipcRenderer.invoke(IPC.providerInstancesDismissReplaced, args),
       ).then(normalizeProviderInstanceResult),
     getSettings: async (
       args: ProviderInstanceGetSettingsArgs,

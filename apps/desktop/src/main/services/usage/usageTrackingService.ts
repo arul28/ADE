@@ -88,6 +88,7 @@ import {
   isCodexTokenStale,
   readClaudeLogin,
   readCodexCredentials,
+  type ClaudeLoginRead,
 } from "../ai/providerCredentialSources";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -853,6 +854,40 @@ function noteAccountLogin(accountId: string, instanceId: string, login: UsageAcc
   } catch {
     // An unreadable registry already degrades every reader to its defaults.
   }
+}
+
+/**
+ * Reads the saved login of Claude accounts marked signed out, now, for a
+ * refresh the user asked for. Returns the ids whose login works again.
+ *
+ * Only a usage poll clears the signed-out mark, and a background poll serves
+ * the credential miss cache, so a fresh sign-in stayed "signed out" for one
+ * idle poll cycle (up to five minutes). The add-account sheet refreshes once
+ * when its login shell exits, so it reported a successful sign-in as failed.
+ * `instanceId` re-reads that one account even when it is not marked.
+ */
+export async function recheckSignedOutLogins(
+  args: { provider?: ProviderInstanceProvider; instanceId?: string } = {},
+): Promise<string[]> {
+  if (args.provider && args.provider !== "claude") return [];
+  const wanted = args.instanceId?.trim();
+  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
+    wanted ? instance.id === wanted : instance.loginBroken === true
+  ));
+  const restored: string[] = [];
+  await Promise.all(targets.map(async (instance) => {
+    const configHome = isBaseProviderInstance(instance) ? undefined : instance.configHome;
+    invalidateCachedClaudeCredentials(configHome);
+    const login = await readClaudeLogin({
+      allowKeychain: true,
+      skipMissCache: true,
+      ...(configHome ? { configHome } : {}),
+    }).catch((): ClaudeLoginRead => ({ state: "unreadable" }));
+    if (login.state === "unreadable") return;
+    noteAccountLogin(usageAccountId({ provider: "claude", instanceId: instance.id }), instance.id, login.state);
+    if (login.state !== "signed_out" && instance.loginBroken === true) restored.push(instance.id);
+  }));
+  return restored;
 }
 
 function attachAccountLogins(accounts: UsageAccount[]): void {
@@ -4577,11 +4612,62 @@ export function createUsageTrackingService({
     return issues;
   }
 
-  /** The snapshot with this moment's balance issues in place of any it carried. */
+  function windowsByAccount(windows: readonly UsageWindow[]): Map<string, UsageWindow[]> {
+    const byAccount = new Map<string, UsageWindow[]>();
+    for (const window of windows) {
+      if (!window.accountId) continue;
+      const accountWindows = byAccount.get(window.accountId) ?? [];
+      accountWindows.push(window);
+      byAccount.set(window.accountId, accountWindows);
+    }
+    return byAccount;
+  }
+
+  /**
+   * Smart balance's pick for a provider on one snapshot, or `null` when the
+   * provider has balance off. Chat creation and the Settings preview both use
+   * it, so the account marked "Next chat" is the one a new chat gets.
+   */
+  function balancedPick(provider: ProviderInstanceProvider, snapshot: UsageSnapshot): AccountBalanceResult | null {
+    if (!providerInstanceStore.getProviderSettings(provider).smartBalance) return null;
+    return pickInstanceForNewChat({
+      provider,
+      instances: providerInstanceStore.list(provider),
+      accounts: snapshot.accounts ?? [],
+      windowsByAccountId: windowsByAccount(snapshot.windows),
+      nowMs: Date.now(),
+    });
+  }
+
+  /**
+   * The account each balancing provider would give a new chat now, so
+   * Settings can mark it. A pick that skipped balancing is not a decision and
+   * is left out.
+   */
+  function computeBalanceNext(snapshot: UsageSnapshot): NonNullable<UsageSnapshot["balanceNext"]> {
+    const next: NonNullable<UsageSnapshot["balanceNext"]> = [];
+    for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+      try {
+        const result = balancedPick(provider, snapshot);
+        if (result && !result.skip) next.push({ provider, instanceId: result.instanceId });
+      } catch {
+        // A preview that cannot run leaves the mark off; chat creation reports
+        // its own failure through `balanceIssues`.
+      }
+    }
+    return next;
+  }
+
+  /** The snapshot with this moment's balance issues and next picks in place of any it carried. */
   function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
-    const { balanceIssues: _previousIssues, ...rest } = snapshot;
+    const { balanceIssues: _previousIssues, balanceNext: _previousNext, ...rest } = snapshot;
     const balanceIssues = computeBalanceIssues(rest);
-    return balanceIssues.length > 0 ? { ...rest, balanceIssues } : rest;
+    const balanceNext = computeBalanceNext(rest);
+    return {
+      ...rest,
+      ...(balanceIssues.length > 0 ? { balanceIssues } : {}),
+      ...(balanceNext.length > 0 ? { balanceNext } : {}),
+    };
   }
 
   function publishSnapshot(snapshot: UsageSnapshot): UsageSnapshot {
@@ -5560,24 +5646,13 @@ export function createUsageTrackingService({
    */
   function resolveBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
     try {
-      const settings = providerInstanceStore.getProviderSettings(provider);
-      if (!settings.smartBalance) return null;
-      const instances = providerInstanceStore.list(provider);
-      if (instances.filter((instance) => instance.signedIn).length < 2) return null;
-      const windowsByAccountId = new Map<string, UsageWindow[]>();
-      for (const window of lastSnapshot.windows) {
-        if (!window.accountId) continue;
-        const accountWindows = windowsByAccountId.get(window.accountId) ?? [];
-        accountWindows.push(window);
-        windowsByAccountId.set(window.accountId, accountWindows);
+      const result = balancedPick(provider, lastSnapshot);
+      if (!result) return null;
+      if (result.skip === "one_account") {
+        // Nothing to balance; an issue from an earlier pick no longer applies.
+        setBalancePickIssue(provider, null);
+        return null;
       }
-      const result = pickInstanceForNewChat({
-        provider,
-        instances,
-        accounts: lastSnapshot.accounts ?? [],
-        windowsByAccountId,
-        nowMs: Date.now(),
-      });
       if (result.skip === "no_usage_data") {
         logger.warn("usage.account_balance_skipped", { provider, ...result });
         setBalancePickIssue(provider, {

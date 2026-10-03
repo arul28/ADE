@@ -169,8 +169,6 @@ export type ProvidersActions = {
   saveCustomModelSlugs: () => Promise<void>;
 
 
-  revealClaudeLoginTerminal: (terminal: { terminalId: string; laneId: string }) => void;
-
   /** Flip a provider off (or back on). Writes the whole `disabledProviders` list. */
   setProviderDisabled: (provider: SettingsProviderId, disabled: boolean) => Promise<void>;
   /** Read binary path, config home, version, and last probe verdict. Spawns. */
