@@ -105,8 +105,8 @@ outside the selection keeps its own menu. It renders through the shared
 `ui/ContextMenu` primitive and offers only actions that apply to every
 selected row: open in a grid (up to `MAX_WORK_GRID_TILES`, this tab's
 sessions only), remove from grid, pin/unpin, stop runtimes, snooze, wake,
-settle, unsettle, copy IDs, clear selection, and delete or stop & delete
-(the last three reuse the header's `handleBulk*` handlers). Rows that apply to
+settle, unsettle, copy IDs, clear selection, and delete or stop & delete.
+Stop, delete and stop & delete reuse the header's `handleBulk*` handlers. Rows that apply to
 part of the selection show "k of N". Lifecycle writes go through the batch
 helpers in `sessionLifecycleActions.ts`, each row pinned to its own machine,
 with one failure toast and one Undo per batch. Bulk settle follows the
