@@ -164,6 +164,12 @@ describe("classifyAgentCliError", () => {
     ["pi", "Pi session \"abc\" was not found in the authorized session directory."],
     ["opencode", "403 Forbidden: insufficient balance"],
     ["codex", "Error on line 401 of the config"],
+    // A harness that answers an unknown slash command named like the binary,
+    // a foreign executable, and a bare non-command "not found" are not missing
+    // CLIs and must not send the user to reinstall.
+    ["opencode", "Command not found: opencode"],
+    ["opencode", "spawn git ENOENT"],
+    ["opencode", "git is not recognized as an internal or external command"],
   ])("does not classify %s's %j as a CLI problem", (agent, message) => {
     expect(classifyAgentCliError(message, agent)).toBeNull();
   });
@@ -175,6 +181,8 @@ describe("classifyAgentCliError", () => {
     ["opencode", "OpenCode: not-installed: OpenCode binary could not be found. Install OpenCode or ensure it is on your PATH."],
     ["opencode", 'exec: "opencode": executable file not found in $PATH'],
     ["opencode", "spawn /Users/me/bin/my-opencode-wrapper ENOENT"],
+    ["opencode", "spawn C:\\Program Files\\OpenCode\\opencode.exe ENOENT"],
+    ["opencode", "'opencode' is not recognized as an internal or external command"],
     ["grok", "Grok was not found on this machine."],
     ["codex", "codex executable not found"],
   ])("classifies %s's %j as a missing CLI", (agent, message) => {

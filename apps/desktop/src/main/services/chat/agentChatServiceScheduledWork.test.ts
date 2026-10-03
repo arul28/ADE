@@ -8,6 +8,7 @@ import {
   createAgentChatService,
   createScheduledWorkDb,
   createService,
+  fs,
   mockState,
   deriveScheduledWorkSnapshots,
   installClaudeResponseFixture,
@@ -16,6 +17,7 @@ import {
   readPersistedChatState,
   runGit,
   storedWakeup,
+  tmpRoot,
   waitFor,
   waitForEvent,
   waitForFakeTimerCondition,
@@ -557,6 +559,75 @@ describe("createAgentChatService", () => {
         event.sessionId === session.id
         && event.event.type === "user_message"
         && event.event.metadata?.scheduledWake?.scheduleId === actionSchedule.item.id
+      )).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("expands an ADE skill when a scheduled wake delivers its prompt", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: ship",
+        "description: Ship the lane",
+        "---",
+        "",
+        "Ship the lane.",
+        "",
+        "Task: $ARGUMENTS",
+        "",
+      ].join("\n"));
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-wake-skill", slash_commands: [] };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wake-skill",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "1 * * * *",
+        prompt: "/ship resume for lane x",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await waitForFakeTimerCondition(
+        () => send.mock.calls.some((call) => String(call[0]).includes("Ship the lane.")),
+        "the scheduled wake to deliver the expanded skill",
+      );
+
+      const delivered = send.mock.calls
+        .map((call) => String(call[0]))
+        .find((prompt) => prompt.includes("Ship the lane."));
+      expect(delivered).toContain("Task: resume for lane x");
+      expect(delivered?.trimStart().startsWith("/ship")).toBe(false);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake != null
       )).toBe(true);
       service.forceDisposeAll();
     });

@@ -1073,6 +1073,36 @@ describe("acp chat runtime", () => {
       if (expectStart) expect(sent.startsWith(expectStart)).toBe(true);
       if (expectContains) expect(sent).toContain(expectContains);
     });
+
+    it("recognizes a command list delivered in the same turn as the session/new result", async () => {
+      // The agent can write its first `available_commands_update` in the same
+      // stdout chunk as the `session/new` response. The runtime object does not
+      // exist yet, so the coordinator buffers the list and replays it; without
+      // that, an advertised command would be sent as text with the "not a
+      // command" note.
+      const harness = await openAcpHarness({
+        provider: "kimi",
+        model: "kimi-for-coding",
+        modelId: "moonshot/kimi-for-coding",
+      });
+      harness.agent.on("session/new", () => {
+        agentEmitCommands(harness.agent, "acp-session-1", [{ name: "compact", description: "compact" }]);
+        return { result: { sessionId: "acp-session-1" } };
+      });
+      scriptPrompt(harness.agent, []);
+
+      await harness.service.sendMessage({ sessionId: harness.session.id, text: "/compact now" });
+      await vi.waitFor(() => {
+        expect(eventsOfType(harness, "done")).toHaveLength(1);
+      });
+
+      const prompts = harness.agent.received.filter((entry) => entry.method === "session/prompt");
+      const sent = ((prompts.at(-1)?.params as { prompt: Array<{ type: string; text?: string }> }).prompt)
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n");
+      expect(sent).toBe("/compact now");
+    });
   });
 
   it("emits one visible error and a terminal done when the agent cannot start", async () => {

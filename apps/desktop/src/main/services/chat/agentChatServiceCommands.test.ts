@@ -803,6 +803,32 @@ describe("createAgentChatService", () => {
         message: expect.stringContaining("Command not found: ship"),
       }));
     });
+
+    it("redacts secrets in a failed turn's log and never logs the user prompt", async () => {
+      // Low-entropy and built at runtime: a real-looking key literal would trip
+      // the repo's gitleaks secret-scan, and `redactSecrets` still strips it.
+      const secret = "z".repeat(40);
+      mockState.openCodePromptError = new Error(`Command not found: ship — Bearer ${secret} rejected`);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "PROMPTMARKER please ship it" }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(events.some((entry) => entry.event.type === "error")).toBe(true);
+      });
+      const logCall = logger.warn.mock.calls.find(([event]) => event === "agent_chat.turn_error");
+      const logged = logCall?.[1] as { message?: string } | undefined;
+      expect(logged?.message, "the failed turn is logged").toBeTruthy();
+      expect(logged?.message).not.toContain(secret);
+      expect(logged?.message).not.toContain("PROMPTMARKER");
+      expect(logged?.message?.length).toBeLessThanOrEqual(300);
+    });
   });
 
   describe("Codex 0.149 app-server composer commands", () => {
