@@ -153,11 +153,7 @@ import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
 import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
-  permissionLevelForClaude,
-  permissionLevelForCodex,
-  permissionLevelForDroid,
-  permissionLevelForCursorMode,
-  permissionLevelForOpenCode,
+  permissionLevelForFamily,
   resolvePermissionLevel,
   type PermissionLadderFamily,
 } from "../../../shared/permissionLadder";
@@ -8228,16 +8224,17 @@ export function AgentChatPane({
     const autoseed = handoffModelAutoseedRef.current;
     // Fork and brief both start on the model this chat runs on now. The user
     // picks another one on purpose.
-    const sourceAvailable = Boolean(selectedSessionModelId)
-      && handoffAvailableModelIds.includes(selectedSessionModelId!);
-    const preferredTargetId = sourceAvailable ? selectedSessionModelId! : handoffAvailableModelIds[0] ?? "";
+    const sourceModelId = selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)
+      ? selectedSessionModelId
+      : null;
+    const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
       if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
       return preferredTargetId;
     });
     // Until the source model is in the catalog, a later catalog update may
     // still replace the fallback with it.
-    if (sourceAvailable) handoffModelAutoseedRef.current = false;
+    if (sourceModelId) handoffModelAutoseedRef.current = false;
   }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
@@ -8253,22 +8250,18 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
-      // The composer holds only the source family's real choice; the others sit
-      // on their defaults. Carry the source level to every other family, so a
-      // Full auto chat hands off as Full auto to any model.
-      const sourceLevel = (() => {
-        switch (activeLadderFamily) {
-          case "claude": return permissionLevelForClaude(claudePermissionMode);
-          case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
-          case "opencode":
-          case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
-          case "droid": return permissionLevelForDroid(droidPermissionMode);
-          case "cursor": return permissionLevelForCursorMode(cursorModeId);
-          default: return null;
-        }
-      })();
-      if (sourceLevel) {
-        const resolved = resolvePermissionLevel(sourceLevel);
+      // Only the source family's control is this chat's real choice; the others
+      // hold defaults or an older choice. Carry the source level to every other
+      // family, so a Full auto chat hands off as Full auto to any model.
+      if (activeLadderFamily) {
+        const resolved = resolvePermissionLevel(permissionLevelForFamily(activeLadderFamily, {
+          claudePermissionMode,
+          codexApprovalPolicy,
+          codexSandbox,
+          opencodePermissionMode,
+          droidPermissionMode,
+          cursorModeId,
+        }));
         if (activeLadderFamily !== "claude") setHandoffClaudePermissionMode(resolved.claudePermissionMode);
         if (activeLadderFamily !== "codex") {
           setHandoffCodexApprovalPolicy(resolved.codexApprovalPolicy);
@@ -9671,23 +9664,16 @@ export function AgentChatPane({
       return;
     }
 
-    const level = (() => {
-      switch (previous) {
-        case "claude": return permissionLevelForClaude(claudePermissionMode);
-        case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
-        case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
-        case "droid": return permissionLevelForDroid(droidPermissionMode);
-        // Switching AWAY from Cursor or an ACP provider must carry a level too;
-        // without these the ladder was one-directional for those families.
-        case "cursor": return permissionLevelForCursorMode(cursorModeId);
-        // ACP has no separate control on this surface; it rides the in-process
-        // mode that the OpenCode picker owns, which is what the apply branch
-        // below writes back.
-        case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
-        default: return null;
-      }
-    })();
-    if (!level) return;
+    // Switching AWAY from Cursor or an ACP provider carries a level too, so the
+    // ladder works in both directions for every family.
+    const level = permissionLevelForFamily(previous, {
+      claudePermissionMode,
+      codexApprovalPolicy,
+      codexSandbox,
+      opencodePermissionMode,
+      droidPermissionMode,
+      cursorModeId,
+    });
 
     // ACP takes its mode from the OpenCode table on this surface, so it must be
     // RESOLVED as that family too: resolving as "acp" reported an un-stepped

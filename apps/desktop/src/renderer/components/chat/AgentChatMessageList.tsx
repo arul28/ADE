@@ -915,6 +915,31 @@ const USER_MESSAGE_STATUS_TONE_CLASS: Record<UserMessageStatusTone, string> = {
   error: "text-amber-300/85",
 };
 
+/** The accent hairline that marks where a forked or briefed chat began. */
+function ChatOriginDivider({ icon, label, className, testId }: {
+  icon: React.ReactNode;
+  label: string;
+  className: string;
+  testId: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]",
+        className,
+      )}
+      data-testid={testId}
+    >
+      <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+      <span className="inline-flex shrink-0 items-center gap-1.5">
+        {icon}
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
+    </div>
+  );
+}
+
 function UserMessageStatusGlyph({ icon }: { icon: UserMessageStatus["icon"] }) {
   const glyphClass = "shrink-0 opacity-85";
   if (icon === "clock") return <Clock size={11} weight="bold" className={glyphClass} aria-hidden />;
@@ -2609,19 +2634,14 @@ function renderEvent(
         transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
         {handoffBriefLabel ? (
-          <div
-            className="mb-3 flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]"
-            data-testid="handoff-brief-divider"
-          >
-            <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-            <span className="inline-flex shrink-0 items-center gap-1.5">
-              {metadataKind === "cross_machine_handoff"
-                ? <CloudArrowUp size={12} weight="regular" className="opacity-80" aria-hidden />
-                : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
-              {handoffBriefLabel}
-            </span>
-            <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-          </div>
+          <ChatOriginDivider
+            className="mb-3"
+            testId="handoff-brief-divider"
+            label={handoffBriefLabel}
+            icon={metadataKind === "cross_machine_handoff"
+              ? <CloudArrowUp size={12} weight="regular" className="opacity-80" aria-hidden />
+              : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
+          />
         ) : null}
         <div
           className={cn(
@@ -4783,17 +4803,12 @@ const EventRow = React.memo(function EventRow({
       )}
     >
       {showForkHistoryDivider ? (
-        <div
-          className="my-3 flex items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]"
-          data-testid="fork-history-divider"
-        >
-          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-          <span className="inline-flex shrink-0 items-center gap-1.5">
-            <GitFork size={12} weight="regular" className="opacity-80" aria-hidden />
-            Forked from the previous chat — full history above
-          </span>
-          <span className="h-px flex-1 bg-[color:color-mix(in_srgb,var(--chat-accent)_28%,transparent)]" />
-        </div>
+        <ChatOriginDivider
+          className="my-3"
+          testId="fork-history-divider"
+          label="Forked from the previous chat — full history above"
+          icon={<GitFork size={12} weight="regular" className="opacity-80" aria-hidden />}
+        />
       ) : null}
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
