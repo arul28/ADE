@@ -732,7 +732,14 @@ describe("createAgentChatService", () => {
         text: "/init the repo",
         command: { name: "init", text: "the repo" },
       },
-    ])("$label", async ({ text, prompt, command }) => {
+      {
+        // The chat's first turn: nothing has listed OpenCode's commands yet.
+        label: "runs OpenCode's own command over a same-named ADE skill on the first turn",
+        text: "/ship resume for lane x",
+        openCodeCommands: ["init", "ship"],
+        command: { name: "ship", text: "resume for lane x" },
+      },
+    ])("$label", async ({ text, prompt, command, openCodeCommands }) => {
       const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
       fs.mkdirSync(skillDir, { recursive: true });
       fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
@@ -746,7 +753,7 @@ describe("createAgentChatService", () => {
         "Task: $ARGUMENTS",
         "",
       ].join("\n"));
-      mockState.openCodeCommands = ["init"];
+      mockState.openCodeCommands = openCodeCommands ?? ["init"];
 
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });

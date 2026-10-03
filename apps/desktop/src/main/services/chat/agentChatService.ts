@@ -2742,6 +2742,14 @@ function slashCommandKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+/** How long a leading-slash ACP turn waits for the agent's first command list. */
+const ACP_COMMAND_LIST_TIMEOUT_MS = 1_500;
+/** Leads an ACP prompt that starts with a `/word` the agent did not advertise. */
+const ACP_UNADVERTISED_SLASH_NOTE = "The user's message below starts with \"/\", but it is not a command you provide. Read it as plain text.";
+
+/** How long a leading-slash OpenCode turn waits for the server's command list. */
+const OPENCODE_COMMAND_LIST_TIMEOUT_MS = 1_500;
+
 const LOG_TEXT_MAX_CHARS = 300;
 
 /** Error text for a local log line: secrets redacted, one line, bounded. */
@@ -29793,6 +29801,7 @@ export function createAgentChatService(args: {
         onSlashCommands: (runtime, commands) => {
           if (!runtime || managed.runtime !== runtime) return;
           runtime.slashCommands = commands;
+          noteAcpCommandsAdvertised(runtime);
         },
         onConfigOptions: (runtime, snapshot) => {
           if (!runtime) return;
@@ -29952,6 +29961,63 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** ACP runtimes whose agent has sent at least one command list. */
+  const acpCommandsAdvertised = new WeakSet<AcpRuntime>();
+  const acpCommandWaiters = new WeakMap<AcpRuntime, Array<() => void>>();
+
+  const noteAcpCommandsAdvertised = (runtime: AcpRuntime): void => {
+    acpCommandsAdvertised.add(runtime);
+    const waiters = acpCommandWaiters.get(runtime) ?? [];
+    acpCommandWaiters.delete(runtime);
+    for (const resolve of waiters) resolve();
+  };
+
+  /**
+   * Wait, bounded, for the agent's first `available_commands_update`. It
+   * follows `session/new`, so a chat's first turn can start before it lands.
+   */
+  const awaitAcpCommandsAdvertised = (runtime: AcpRuntime, timeoutMs: number): Promise<void> => {
+    if (acpCommandsAdvertised.has(runtime)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref?.();
+      const waiters = acpCommandWaiters.get(runtime) ?? [];
+      waiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+      acpCommandWaiters.set(runtime, waiters);
+    });
+  };
+
+  /**
+   * What an ACP turn sends for a leading `/<name>`. Only a command the agent
+   * advertised goes to it as a command, bare: lane guidance or carried-over
+   * context in front of it would stop the agent from reading it as one. Any
+   * other name is ADE's to expand, or plain text. A bare unknown `/word` is
+   * not left to the agent: Kimi answers it with "Unknown ACP command" and no
+   * model turn, and Qwen fails the turn for a name it knows only from its
+   * terminal UI, so the text goes in with a note that it is not a command.
+   */
+  const resolveAcpSlashRoute = async (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    args: { promptText: string; userText?: string; providerSlashCommand?: boolean },
+  ): Promise<{ body: string; agentCommand: boolean }> => {
+    const sentText = (args.userText ?? args.promptText).trim();
+    const sentSlash = args.providerSlashCommand ? extractLeadingSlashCommand(sentText) : null;
+    if (!sentSlash) return { body: args.promptText, agentCommand: false };
+    await awaitAcpCommandsAdvertised(runtime, ACP_COMMAND_LIST_TIMEOUT_MS);
+    const advertised = runtime.slashCommands.some((command) =>
+      slashCommandKey(command.name.startsWith("/") ? command.name : `/${command.name}`) === sentSlash);
+    if (advertised) return { body: sentText, agentCommand: true };
+    const sentRaw = args.promptText.trim() === sentText;
+    if (!sentRaw) return { body: args.promptText, agentCommand: false };
+    const expanded = expandAdeSlashCommand(managed, sentText);
+    if (expanded != null) return { body: carryChatMentionBlocks(sentText, expanded), agentCommand: false };
+    return { body: `${ACP_UNADVERTISED_SLASH_NOTE}\n\n${args.promptText}`, agentCommand: false };
+  };
+
   const runAcpTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -29963,6 +30029,7 @@ export function createAgentChatService(args: {
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
@@ -30041,8 +30108,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
 
     try {
-      let prompt = args.promptText;
-      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      const slashRoute = await resolveAcpSlashRoute(managed, runtime, args);
+      let prompt = slashRoute.body;
+      const pendingContext = consumePendingTurnContextPrefix(managed, slashRoute.agentCommand)?.composed;
       if (pendingContext) prompt = `${pendingContext}\n\n${prompt}`;
       if (devinCloudTurn) {
         // ADE's lane guidance describes this machine (paths, the `ade` CLI);
@@ -30053,7 +30121,11 @@ export function createAgentChatService(args: {
           firstTurn: devinCloudFirstTurn,
         });
         if (pin) prompt = `${pin}\n\n${prompt}`;
-      } else if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
+      } else if (
+        !slashRoute.agentCommand
+        && !isPersonalSession(managed.session)
+        && managed.lastLaneDirectiveKey !== args.laneDirectiveKey
+      ) {
         const guidance = buildAdeGuidanceForLane(
           managed.laneWorktreePath,
           managed.session,
@@ -31081,9 +31153,16 @@ export function createAgentChatService(args: {
     runtime: OpenCodeRuntime,
   ): Promise<ReadonlySet<string> | null> => {
     try {
-      const listed = await runtime.handle.client.command.list({
-        location: { directory: runtime.handle.directory },
-      });
+      // Bounded: only a leading-slash turn waits on this, and a slow server
+      // must not hold the turn. On a timeout the last good list (or none, so
+      // the ADE expansion stands) decides.
+      const listed = await withTimeout(
+        runtime.handle.client.command.list({
+          location: { directory: runtime.handle.directory },
+        }),
+        OPENCODE_COMMAND_LIST_TIMEOUT_MS,
+        `OpenCode command list timed out after ${OPENCODE_COMMAND_LIST_TIMEOUT_MS}ms.`,
+      );
       runtime.commandNames = new Set(
         (listed?.data ?? []).map((command) => slashCommandKey(`/${command.name.replace(/^\//, "")}`)),
       );
@@ -31213,10 +31292,17 @@ export function createAgentChatService(args: {
       const files = openCodePromptFiles(resolvedAttachments
         .filter((attachment) => !attachmentIsReferenceOnly(attachment))
         .map((attachment) => attachment._resolvedPath));
-      const slash = providerSlashCommand ? /^\/(\S+)\s*([\s\S]*)$/.exec(args.promptText.trim()) : null;
+      // Parsed from what the user sent, not from `promptText`: an ADE skill
+      // of the same name has already been expanded into `promptText`, and
+      // OpenCode's own command must still win over it. The cached list is
+      // empty on a chat's first turn, so the server is asked here, after the
+      // runtime exists, before the expansion is used.
+      const slash = providerSlashCommand
+        ? /^\/(\S+)\s*([\s\S]*)$/.exec((args.userText ?? args.promptText).trim())
+        : null;
       // Only a command OpenCode lists goes to its command endpoint. ADE's own
-      // commands and skills were already expanded into the prompt; anything
-      // else (`/nonexistent hello`, a path) is the user's text.
+      // commands and skills go as their expansion; anything else
+      // (`/nonexistent hello`, a path) is the user's text.
       const commandNames = slash ? await listOpenCodeCommandNames(managed, runtime) : null;
       if (slash && commandNames?.has(slashCommandKey(`/${slash[1]!}`))) {
         await client.session.command({
@@ -31226,7 +31312,12 @@ export function createAgentChatService(args: {
           ...(files.length ? { files } : {}),
         });
       } else {
-        const text = [pendingContext, `${args.promptText}${attachmentHint}`]
+        // The reverse of the clash above: a cached list named this an OpenCode
+        // command, so the send was left unexpanded, and the server no longer
+        // lists it. Expand it now rather than send the bare `/name`.
+        const sentRaw = slash != null && args.promptText.trim() === slash[0].trim();
+        const body = (sentRaw ? expandAdeSlashCommand(managed, slash[0].trim()) : null) ?? args.promptText;
+        const text = [pendingContext, `${body}${attachmentHint}`]
           .filter((section): section is string => Boolean(section))
           .join("\n\n");
         await client.session.prompt({ sessionID, text, ...(files.length ? { files } : {}) });
@@ -49540,6 +49631,7 @@ export function createAgentChatService(args: {
         resolvedAttachments,
         metadata,
         laneDirectiveKey,
+        providerSlashCommand,
         onDispatched,
         onBackendDispatched,
       });
