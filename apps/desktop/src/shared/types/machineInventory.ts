@@ -3,8 +3,10 @@
  * directory, plus the live detail returned by a paired runtime.
  *
  * Keep these shapes deliberately smaller than ProviderInstance and
- * HarnessPreset. In particular, config homes, credential references, logos,
- * and provider launch details must never cross the machine boundary.
+ * HarnessPreset. In particular, config homes, credential references, and
+ * provider launch details must never cross the machine boundary. A preset's
+ * mark crosses only as its identity — the kind, the provider it names, and the
+ * accent — never uploaded image bytes.
  */
 
 export type MachineInventoryProviderSummary = {
@@ -32,11 +34,24 @@ export type MachineInventoryProviderDetail = {
   modelCount: number;
 };
 
+/**
+ * A preset's mark, as an identity rather than artwork. `provider` names the
+ * brand mark to draw; `ade` is the built-in Custom mark; `upload` and
+ * `generated` are a preset whose picture lives only on its own machine, which
+ * a remote surface draws as the Custom mark in the preset's accent.
+ */
+export type MachineInventoryPresetLogo = {
+  kind: "ade" | "provider" | "upload" | "generated";
+  providerId?: string;
+};
+
 export type MachineInventoryPreset = {
   id: string;
   name: string;
   harness: string;
   model: string;
+  logo: MachineInventoryPresetLogo;
+  accentColor?: string;
   bound: boolean;
 };
 
@@ -64,6 +79,8 @@ export type MachineInventoryPresetInput = {
   name: string;
   harness: string;
   model: string;
+  logo?: MachineInventoryPresetLogo;
+  accentColor?: string;
 };
 
 export type MachineInventoryModelCounts = Readonly<Record<string, number>>;
@@ -104,13 +121,37 @@ function normalizeProviderInput(value: MachineInventoryProviderInput): {
   };
 }
 
+const MACHINE_INVENTORY_LOGO_KINDS = new Set(["ade", "provider", "upload", "generated"]);
+/** `#rrggbb`, the one accent form the renderer draws. */
+const MACHINE_INVENTORY_ACCENT_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function normalizePresetLogo(value: unknown): MachineInventoryPresetLogo {
+  if (!value || typeof value !== "object") return { kind: "ade" };
+  const candidate = value as Record<string, unknown>;
+  const kind = typeof candidate.kind === "string" ? candidate.kind.trim().toLowerCase() : "";
+  if (!MACHINE_INVENTORY_LOGO_KINDS.has(kind)) return { kind: "ade" };
+  if (kind === "provider") {
+    const providerId = safeOptionalText(candidate.providerId);
+    return providerId ? { kind: "provider", providerId } : { kind: "ade" };
+  }
+  return { kind: kind as MachineInventoryPresetLogo["kind"] };
+}
+
 function normalizePresetInput(value: MachineInventoryPresetInput): Omit<MachineInventoryPreset, "bound"> | null {
   const id = safeText(value.id);
   const name = safeText(value.name);
   const harness = safeText(value.harness);
   const model = safeText(value.model);
   if (!id || !name || !harness || !model) return null;
-  return { id, name, harness, model };
+  const accent = safeText(value.accentColor, 16);
+  return {
+    id,
+    name,
+    harness,
+    model,
+    logo: normalizePresetLogo(value.logo),
+    ...(MACHINE_INVENTORY_ACCENT_PATTERN.test(accent) ? { accentColor: accent } : {}),
+  };
 }
 
 function normalizedPresets(

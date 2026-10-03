@@ -32,6 +32,14 @@ struct WorkModelPickerSheet: View {
   /// a narrower contract than "every configured model" pass one — the CTO only
   /// accepts providers that can redirect a live turn.
   let modelFilter: ((WorkModelOption) -> Bool)?
+  /// The connected machine's saved Custom harnesses, from
+  /// `account.getMachineInventory`. Empty against a host that does not
+  /// advertise the action, which also hides the Custom rail entry.
+  let harnessPresets: [SyncMachineInventoryPreset]
+  /// Launching with a preset is only meaningful where the caller can carry the
+  /// id through its create/launch call. Surfaces that cannot pass one leave
+  /// this nil and never see the Custom section.
+  let onSelectPreset: ((SyncMachineInventoryPreset) -> Void)?
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
   init(
@@ -43,8 +51,10 @@ struct WorkModelPickerSheet: View {
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
     lanes: [LaneSummary] = [],
     commandScope: WorkModelPickerScope = .project,
+    harnessPresets: [SyncMachineInventoryPreset] = [],
     isBusy: Bool,
     modelFilter: ((WorkModelOption) -> Bool)? = nil,
+    onSelectPreset: ((SyncMachineInventoryPreset) -> Void)? = nil,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
     self.currentModelId = currentModelId
@@ -57,6 +67,8 @@ struct WorkModelPickerSheet: View {
     self.commandScope = commandScope
     self.isBusy = isBusy
     self.modelFilter = modelFilter
+    self.harnessPresets = harnessPresets
+    self.onSelectPreset = onSelectPreset
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
     _selectedRuntimeProvider = State(initialValue: currentProvider)
@@ -128,14 +140,34 @@ struct WorkModelPickerSheet: View {
     Dictionary(flattenedModels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
-  /// Rail entries: Favorites + Recents first, then one row per provider that
-  /// has at least one model in the active catalog.
+  /// Rail entries, in the desktop rail's order: Custom first, then Favorites
+  /// and Recents, then one row per provider with models in the active catalog.
+  /// A saved setup is a whole launch configuration, so it is the first thing to
+  /// reach for when you have one.
   private var railEntries: [ModelPickerRailEntry] {
-    var entries: [ModelPickerRailEntry] = [.favorites, .recents]
+    var entries: [ModelPickerRailEntry] = []
+    if !harnessPresets.isEmpty, onSelectPreset != nil {
+      entries.append(.custom)
+    }
+    entries.append(contentsOf: [.favorites, .recents])
     for group in catalog {
       entries.append(.providerGroup(key: group.key, label: groupLabel(group)))
     }
     return entries
+  }
+
+  private var customHarnessesAvailable: Bool {
+    !harnessPresets.isEmpty && onSelectPreset != nil
+  }
+
+  private var visibleHarnessPresets: [SyncMachineInventoryPreset] {
+    let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return harnessPresets }
+    return harnessPresets.filter { preset in
+      preset.name.lowercased().contains(needle)
+        || preset.model.lowercased().contains(needle)
+        || preset.harness.lowercased().contains(needle)
+    }
   }
 
   private var isSearching: Bool {
@@ -174,9 +206,9 @@ struct WorkModelPickerSheet: View {
     NavigationStack {
       VStack(spacing: 0) {
         topControlBar
-        if isLoadingCatalog && catalog.isEmpty {
+        if isLoadingCatalog && catalog.isEmpty && !customHarnessesAvailable {
           loadingState
-        } else if catalog.isEmpty {
+        } else if catalog.isEmpty && !customHarnessesAvailable {
           catalogEmptyState
         } else {
           Divider().overlay(ADEColor.glassBorder)
@@ -195,34 +227,38 @@ struct WorkModelPickerSheet: View {
               }
             )
             Divider().overlay(ADEColor.glassBorder)
-            ModelPickerContentPane(
-              selection: effectiveSelection,
-              isSearching: isSearching,
-              searchText: searchText,
-              models: visibleModels,
-              groupedRows: groupedRows,
-              providerTabs: providerTabs,
-              selectedProviderTabKey: selectedProviderTabKey,
-              selectedModelId: selectedModelId,
-              selectedReasoningEffort: selectedReasoningEffort,
-              selectedCodexFastMode: selectedCodexFastMode,
-              favorites: picker.favorites,
-              isBusy: isBusy,
-              onSelect: { model in select(model: model) },
-              onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
-              onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
-              onSelectProviderTab: { selectedProviderTabKey = $0 },
-              onToggleFavorite: { modelId in
-                guard commandScope == .project else { return }
-                picker.toggleFavorite(modelId, syncService: syncService)
-              },
-              onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
-              isClaudeLoginBusy: claudeLoginBusy,
-              claudeLoginError: claudeLoginError,
-              onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
-              isPiLoginBusy: piLoginBusy,
-              piLoginError: piLoginError
-            )
+            if effectiveSelection == .custom {
+              customHarnessPane
+            } else {
+              ModelPickerContentPane(
+                selection: effectiveSelection,
+                isSearching: isSearching,
+                searchText: searchText,
+                models: visibleModels,
+                groupedRows: groupedRows,
+                providerTabs: providerTabs,
+                selectedProviderTabKey: selectedProviderTabKey,
+                selectedModelId: selectedModelId,
+                selectedReasoningEffort: selectedReasoningEffort,
+                selectedCodexFastMode: selectedCodexFastMode,
+                favorites: picker.favorites,
+                isBusy: isBusy,
+                onSelect: { model in select(model: model) },
+                onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
+                onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
+                onSelectProviderTab: { selectedProviderTabKey = $0 },
+                onToggleFavorite: { modelId in
+                  guard commandScope == .project else { return }
+                  picker.toggleFavorite(modelId, syncService: syncService)
+                },
+                onClaudeLogin: commandScope == .project ? { Task { await openClaudeLoginTerminal() } } : nil,
+                isClaudeLoginBusy: claudeLoginBusy,
+                claudeLoginError: claudeLoginError,
+                onPiLogin: commandScope == .project ? { Task { await openPiLoginTerminal() } } : nil,
+                isPiLoginBusy: piLoginBusy,
+                piLoginError: piLoginError
+              )
+            }
           }
           Divider().overlay(ADEColor.glassBorder)
           currentModelBar
@@ -262,6 +298,8 @@ struct WorkModelPickerSheet: View {
     switch selection {
     case .favorites, .recents:
       return selection
+    case .custom:
+      return customHarnessesAvailable ? selection : (firstProviderSelection() ?? .favorites)
     case .providerGroup(let key, _):
       if catalog.contains(where: { $0.key == key }) {
         return selection
@@ -345,6 +383,8 @@ struct WorkModelPickerSheet: View {
         let group = catalog.first(where: { $0.key == key })
         let providers = filteredProviders(for: group)
         pool = providers.flatMap { $0.models }
+      case .custom:
+        pool = []
       }
     }
 
@@ -369,6 +409,9 @@ struct WorkModelPickerSheet: View {
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
     case .providerGroup:
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
+    case .custom:
+      // The Custom pane renders presets, not model rows.
+      return []
     }
   }
 
@@ -521,6 +564,98 @@ struct WorkModelPickerSheet: View {
       Spacer(minLength: 24)
     }
     .frame(maxWidth: .infinity)
+  }
+
+  /// The machine's saved Custom harnesses, drawn like model rows. Selecting one
+  /// hands the preset id to the caller's launch, which the host resolves
+  /// against its own key and config stores — the secret never leaves the
+  /// machine.
+  @ViewBuilder
+  private var customHarnessPane: some View {
+    let presets = visibleHarnessPresets
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 6) {
+        if presets.isEmpty {
+          VStack(spacing: 8) {
+            WorkCustomToolMark(size: 22)
+              .opacity(0.85)
+            Text(isSearching ? "No custom harnesses match." : "No custom harnesses on this machine.")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("Create one on the paired machine in Settings → Custom providers.")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textSecondary)
+              .multilineTextAlignment(.center)
+          }
+          .frame(maxWidth: .infinity)
+          .padding(.top, 28)
+          .padding(.horizontal, 24)
+        } else {
+          ForEach(presets) { preset in
+            customHarnessRow(preset)
+          }
+        }
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  @ViewBuilder
+  private func customHarnessRow(_ preset: SyncMachineInventoryPreset) -> some View {
+    let harnessLabel = workHarnessPresetBodyLabel(preset.harness)
+    let modelLabel = workPrettyModelNameFromId(preset.model) ?? preset.model
+    let isSelected = workModelIdsEquivalent(preset.model, selectedModelId)
+    Button {
+      guard preset.bound else { return }
+      onSelectPreset?(preset)
+      dismiss()
+    } label: {
+      HStack(spacing: 10) {
+        WorkHarnessPresetLogoView(preset: preset, size: 22)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(preset.name)
+            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+            .foregroundStyle(preset.bound ? ADEColor.textPrimary : ADEColor.textMuted)
+            .lineLimit(1)
+          Text("\(harnessLabel) · \(modelLabel)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 6)
+        if !preset.bound {
+          Text("Set up on the machine")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(1)
+        } else if isSelected {
+          Image(systemName: "checkmark")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(ADEColor.accent)
+        } else {
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        isSelected ? ADEColor.accent.opacity(0.12) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!preset.bound)
+    .accessibilityLabel(
+      "\(preset.name), \(harnessLabel), \(modelLabel)"
+        + (preset.bound ? "" : ", unavailable on this machine")
+    )
+    .accessibilityHint(preset.bound ? "Starts the chat with this custom harness." : "")
   }
 
   private var selectedModel: WorkModelOption? {
@@ -703,11 +838,15 @@ enum ModelPickerRailSelection: Equatable {
   case favorites
   case recents
   case providerGroup(key: String, label: String)
+  /// The machine's saved Custom harnesses (`account.getMachineInventory`).
+  /// Only offered when the surface can launch one.
+  case custom
 
   static func == (lhs: ModelPickerRailSelection, rhs: ModelPickerRailSelection) -> Bool {
     switch (lhs, rhs) {
     case (.favorites, .favorites): return true
     case (.recents, .recents): return true
+    case (.custom, .custom): return true
     case (.providerGroup(let lk, _), .providerGroup(let rk, _)): return lk == rk
     default: return false
     }
@@ -718,12 +857,14 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
   case favorites
   case recents
   case providerGroup(key: String, label: String)
+  case custom
 
   var id: String {
     switch self {
     case .favorites: return "_favorites"
     case .recents: return "_recents"
     case .providerGroup(let key, _): return "provider:\(key)"
+    case .custom: return "_custom"
     }
   }
 
@@ -732,7 +873,124 @@ enum ModelPickerRailEntry: Identifiable, Equatable {
     case .favorites: return .favorites
     case .recents: return .recents
     case .providerGroup(let key, let label): return .providerGroup(key: key, label: label)
+    case .custom: return .custom
     }
+  }
+}
+
+/// The mark for Custom — ADE's own saved agent-plus-model setups. A port of
+/// `CustomToolMark.tsx`: a gear with a wrench inside it, drawn rather than
+/// imported so it lands on the same baseline as the provider marks beside it.
+/// Used by the Custom rail entry and by a preset whose picture (`upload` /
+/// `generated`) lives only on its own machine.
+struct WorkCustomToolMark: View {
+  /// The desktop mark's violet, `#a78bfa`.
+  static let defaultColor = Color(red: 0.655, green: 0.545, blue: 0.980)
+
+  var size: CGFloat = 18
+  var color: Color = WorkCustomToolMark.defaultColor
+
+  var body: some View {
+    Canvas { context, canvasSize in
+      let scale = min(canvasSize.width, canvasSize.height) / 24
+      func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        CGPoint(x: x * scale, y: y * scale)
+      }
+
+      // Gear ring — eight teeth, with the centre cut out (even-odd).
+      var gear = Path()
+      let teeth: [(CGFloat, CGFloat)] = [
+        (21.09, 10.04), (23.30, 10.48), (23.30, 13.52), (21.09, 13.96),
+        (19.81, 17.04), (21.06, 18.92), (18.92, 21.06), (17.04, 19.81),
+        (13.96, 21.09), (13.52, 23.30), (10.48, 23.30), (10.04, 21.09),
+        (6.96, 19.81), (5.08, 21.06), (2.94, 18.92), (4.19, 17.04),
+        (2.91, 13.96), (0.70, 13.52), (0.70, 10.48), (2.91, 10.04),
+        (4.19, 6.96), (2.94, 5.08), (5.08, 2.94), (6.96, 4.19),
+        (10.04, 2.91), (10.48, 0.70), (13.52, 0.70), (13.96, 2.91),
+        (17.04, 4.19), (18.92, 2.94), (21.06, 5.08), (19.81, 6.96),
+      ]
+      gear.move(to: point(teeth[0].0, teeth[0].1))
+      for tooth in teeth.dropFirst() {
+        gear.addLine(to: point(tooth.0, tooth.1))
+      }
+      gear.closeSubpath()
+      gear.addEllipse(in: CGRect(x: 5.6 * scale, y: 5.6 * scale, width: 12.8 * scale, height: 12.8 * scale))
+      context.fill(gear, with: .color(color), style: FillStyle(eoFill: true))
+
+      // Wrench head — the long arc under the slot, then down into the slot and
+      // back, so the head is one outline instead of a disc minus a rectangle.
+      let headRadius: CGFloat = 3.2
+      let halfChord: CGFloat = 1.1
+      let headCenterY = 6.8 + sqrt(headRadius * headRadius - halfChord * halfChord)
+      let headCenter = point(12, headCenterY)
+      var head = Path()
+      head.addArc(
+        center: headCenter,
+        radius: headRadius * scale,
+        startAngle: Angle(radians: atan2(6.8 - headCenterY, 10.9 - 12)),
+        endAngle: Angle(radians: atan2(6.8 - headCenterY, 13.1 - 12)),
+        clockwise: true
+      )
+      head.addLine(to: point(13.1, 9.5))
+      head.addLine(to: point(10.9, 9.5))
+      head.closeSubpath()
+      context.fill(head, with: .color(color))
+
+      // Wrench handle — from the head down into the gear ring.
+      var handle = Path()
+      handle.addRoundedRect(
+        in: CGRect(x: 10.75 * scale, y: 11.6 * scale, width: 2.5 * scale, height: 9.2 * scale),
+        cornerSize: CGSize(width: 1.1 * scale, height: 1.1 * scale)
+      )
+      context.fill(handle, with: .color(color))
+    }
+    .frame(width: size, height: size)
+    .accessibilityHidden(true)
+  }
+}
+
+/// A preset's mark, mirroring `HarnessLogo.tsx`: a provider's brand mark, or
+/// the Custom mark in the preset's own accent. An `upload`/`generated` picture
+/// never leaves its machine, so a remote surface draws the Custom mark for it
+/// rather than a wrong company's logo.
+struct WorkHarnessPresetMark: View {
+  let logo: SyncMachineInventoryPresetLogo?
+  let accentColor: String?
+  var size: CGFloat = 22
+
+  private var resolvedAccent: Color? {
+    LaneColorPalette.color(forHex: accentColor)
+  }
+
+  var body: some View {
+    let providerId = logo?.providerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    Group {
+      if logo?.kind == "provider", !providerId.isEmpty {
+        WorkProviderBareLogo(
+          provider: providerId,
+          fallbackSymbol: providerIcon(providerId),
+          tint: providerTint(providerId),
+          size: size
+        )
+      } else {
+        WorkCustomToolMark(size: size, color: resolvedAccent ?? WorkCustomToolMark.defaultColor)
+      }
+    }
+    .frame(width: size, height: size)
+    .overlay {
+      if let resolvedAccent {
+        Circle().stroke(resolvedAccent, lineWidth: 1.5)
+      }
+    }
+  }
+}
+
+private struct WorkHarnessPresetLogoView: View {
+  let preset: SyncMachineInventoryPreset
+  var size: CGFloat = 22
+
+  var body: some View {
+    WorkHarnessPresetMark(logo: preset.logo, accentColor: preset.accentColor, size: size)
   }
 }
 
@@ -807,7 +1065,7 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites: return favoritesCount
     case .recents: return recentsCount
-    case .providerGroup: return nil
+    case .providerGroup, .custom: return nil
     }
   }
 
@@ -829,6 +1087,10 @@ struct ModelPickerRail: View {
         tint: providerTint(key),
         size: 18
       )
+    case .custom:
+      WorkCustomToolMark(size: 18)
+        .frame(width: 18, height: 18)
+        .opacity(isActive ? 1 : 0.85)
     }
   }
 
@@ -837,6 +1099,7 @@ struct ModelPickerRail: View {
     case .favorites: return "Favorites (\(favoritesCount))"
     case .recents: return "Recents (\(recentsCount))"
     case .providerGroup(_, let label): return label
+    case .custom: return "Custom"
     }
   }
 }
@@ -888,6 +1151,8 @@ struct ModelPickerContentPane: View {
       return .compact
     case .providerGroup:
       return .detailed
+    case .custom:
+      return .compact
     }
   }
 
@@ -1191,6 +1456,10 @@ struct ModelPickerContentPane: View {
           tint: providerTint(key),
           size: 16
         )
+      case .custom:
+        Image(systemName: "slider.horizontal.3")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
       }
     }
   }
@@ -1204,6 +1473,7 @@ struct ModelPickerContentPane: View {
     case .favorites: return "Favorites"
     case .recents: return "Recents"
     case .providerGroup(_, let label): return label
+    case .custom: return "Custom"
     }
   }
 
@@ -1233,6 +1503,7 @@ struct ModelPickerContentPane: View {
     case .favorites: return "star"
     case .recents: return "clock"
     case .providerGroup(let key, _): return providerFamilyKey(key) == "pi" ? "terminal.fill" : "cpu"
+    case .custom: return "slider.horizontal.3"
     }
   }
 
@@ -1243,6 +1514,7 @@ struct ModelPickerContentPane: View {
     case .recents: return "No recent models."
     case .providerGroup(let key, _):
       return providerFamilyKey(key) == "pi" ? "No Pi models are available." : "No models in this provider."
+    case .custom: return "No custom harnesses."
     }
   }
 
@@ -1260,6 +1532,8 @@ struct ModelPickerContentPane: View {
         return "Use Pi’s native /login or configure a local Pi provider on the paired machine, then refresh."
       }
       return "Sign in to this provider on the paired machine to load its models."
+    case .custom:
+      return "Create a custom harness on the paired machine in Settings → Custom providers."
     }
   }
 }

@@ -12,6 +12,7 @@ import type {
   AdeAccountMachinesResult,
   MachineInventoryModelCounts,
   MachineInventoryPresetInput,
+  MachineInventoryPresetLogo,
   MachineInventoryProviderInput,
   MachineInventoryDetail,
 } from "../../../shared/types";
@@ -71,6 +72,8 @@ export async function readLocalMachineInventoryDetail(args: {
     name: preset.name,
     harness: preset.harness,
     model: preset.model,
+    logo: preset.logo,
+    accentColor: preset.accentColor,
   }));
   const boundPresetIds = new Set(args.providerInstanceStore.getPresetBindings?.() ?? []);
   for (const preset of normalizedPresets) {
@@ -161,7 +164,26 @@ function sanitizeDetail(value: unknown, machineKey: string): MachineInventoryDet
       const harness = boundedText(raw.harness);
       const model = boundedText(raw.model);
       if (!id || !name || !harness || !model) return [];
-      return [{ id, name, harness, model, bound: raw.bound === true }];
+      // The mark crosses as an identity (kind + provider id), never artwork.
+      const rawLogo = raw.logo && typeof raw.logo === "object" && !Array.isArray(raw.logo)
+        ? raw.logo as Record<string, unknown>
+        : null;
+      const logoKind = rawLogo ? boundedText(rawLogo.kind) : "";
+      const logoProviderId = rawLogo ? boundedText(rawLogo.providerId) : "";
+      const logo: MachineInventoryPresetLogo =
+        logoKind === "provider" && logoProviderId
+          ? { kind: "provider", providerId: logoProviderId }
+          : { kind: logoKind === "upload" || logoKind === "generated" ? logoKind : "ade" };
+      const accentColor = boundedText(raw.accentColor);
+      return [{
+        id,
+        name,
+        harness,
+        model,
+        logo,
+        ...(/^#[0-9a-fA-F]{6}$/.test(accentColor) ? { accentColor } : {}),
+        bound: raw.bound === true,
+      }];
     })
     : [];
   return { machineKey, providers, presets };

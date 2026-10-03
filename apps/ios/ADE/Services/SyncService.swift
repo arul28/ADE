@@ -13013,6 +13013,7 @@ final class SyncService: ObservableObject {
     modelId: String? = nil,
     reasoningEffort: String? = nil,
     fastMode: Bool? = nil,
+    presetId: String? = nil,
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
@@ -13040,6 +13041,9 @@ final class SyncService: ObservableObject {
     }
     if let fastMode {
       args["fastMode"] = fastMode
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let cols, cols > 0 {
       args["cols"] = cols
@@ -13835,6 +13839,35 @@ final class SyncService: ObservableObject {
     ].joined(separator: "\u{1f}")
   }
 
+  // MARK: - Machine inventory (Custom harness presets)
+
+  /// The connected machine's saved Custom harnesses, with their bound state.
+  /// Feature-detected: a host that never registered `account.getMachineInventory`
+  /// throws, and the caller shows no Custom section.
+  func fetchMachineInventory(machineKey: String) async throws -> SyncMachineInventoryDetail {
+    try requireInvokableRemoteAction("account.getMachineInventory")
+    return try await sendDecodableCommand(
+      action: "account.getMachineInventory",
+      args: ["machineKey": machineKey],
+      as: SyncMachineInventoryDetail.self
+    )
+  }
+
+  /// The machine key `account.getMachineInventory` wants for the focused host:
+  /// its account-directory key when the directory row is known, else the saved
+  /// profile key. The host reads its own local store either way; the key only
+  /// names which machine the answer is about.
+  var focusedHostInventoryMachineKey: String? {
+    if let fleetKey = focusedMachineKey,
+       let identity = HiddenMachineStore.identity(fromFleetKey: fleetKey),
+       let machine = AccountService.shared.machines.first(where: {
+         $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
+       }) {
+      return machine.machineKey
+    }
+    return focusedMachineKey
+  }
+
   // MARK: - Cross-surface model picker (favorites + recents)
   //
   // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
@@ -13928,7 +13961,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -13951,7 +13985,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     // Offline: queue the create with a stable command id and record a snapshot
     // so the Work list shows a "Pending sync" row until the queued command
@@ -14019,7 +14054,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     var (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -14042,7 +14078,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     args["kickoffText"] = kickoffText
 
@@ -14104,7 +14141,8 @@ final class SyncService: ObservableObject {
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
-    requestedCwd: String?
+    requestedCwd: String?,
+    presetId: String?
   ) -> ([String: Any], String) {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -14114,6 +14152,9 @@ final class SyncService: ObservableObject {
     ]
     if !trimmedModel.isEmpty {
       args["modelId"] = trimmedModel
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort

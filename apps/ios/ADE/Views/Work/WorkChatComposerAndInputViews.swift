@@ -389,6 +389,14 @@ let workComposerControlsCollapseThreshold: CGFloat = 360
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
+  /// The upstream maker's key for the model mark. Nil falls back to `provider`,
+  /// which is the right answer for every direct (non-gateway) harness.
+  var modelBrandKey: String? = nil
+  /// When the composer runs on a saved Custom harness, its own mark and accent
+  /// replace the provider mark — the desktop composer shows the preset, not
+  /// the harness, for the same selection.
+  var presetMark: SyncMachineInventoryPresetLogo? = nil
+  var presetAccentColor: String? = nil
   let reasoningEffort: String
   let currentMode: String
   let modeOptions: [WorkRuntimeModeOption]
@@ -555,12 +563,16 @@ struct WorkComposerControlsRow: View {
       onOpenModelPicker?()
     } label: {
       HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: provider,
-          fallbackSymbol: providerIcon(provider),
-          tint: providerTint(provider),
-          size: 16
-        )
+        if presetMark != nil || presetAccentColor != nil {
+          WorkHarnessPresetMark(logo: presetMark, accentColor: presetAccentColor, size: 16)
+        } else {
+          WorkProviderLogo(
+            provider: modelBrandKey ?? provider,
+            fallbackSymbol: providerIcon(modelBrandKey ?? provider),
+            tint: providerTint(modelBrandKey ?? provider),
+            size: 16
+          )
+        }
         Text(modelDisplayName)
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -630,6 +642,7 @@ struct WorkComposerChipStrip: View {
           WorkComposerControlsRow(
             provider: chatSummary.provider,
             modelDisplayName: chatSummary.modelLabel,
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
             reasoningEffort: chatSummary.reasoningEffort,
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),

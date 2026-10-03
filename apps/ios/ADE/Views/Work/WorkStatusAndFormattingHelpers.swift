@@ -484,6 +484,24 @@ func toolTypeForProvider(_ provider: String) -> String {
   }
 }
 
+/// The harness's display name on a Custom harness row, mirroring
+/// `HARNESS_PRESET_BODY_LABELS` in `shared/harnessPresets.ts`.
+func workHarnessPresetBodyLabel(_ harness: String) -> String {
+  switch harness.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude": return "Claude Code"
+  case "codex": return "Codex CLI"
+  case "opencode": return "OpenCode"
+  case "droid": return "Droid"
+  case "pi": return "Pi"
+  case "qwen": return "Qwen Code"
+  case "kimi": return "Kimi"
+  case "grok": return "Grok"
+  case "copilot": return "GitHub Copilot"
+  case "cursor": return "Cursor"
+  default: return harness.isEmpty ? "Custom" : harness
+  }
+}
+
 func providerLabel(_ provider: String) -> String {
   switch providerFamilyKey(provider) {
   case "codex": return "Codex"
@@ -499,6 +517,7 @@ func providerLabel(_ provider: String) -> String {
   case "lmstudio": return "LM Studio"
   case "qwen": return "Qwen"
   case "kimi": return "Kimi"
+  case "deepseek": return "DeepSeek"
   case "grok": return "Grok"
   case "copilot": return "GitHub Copilot"
   default: return provider.capitalized
@@ -598,6 +617,8 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderQwen"
   case "kimi":
     return "ProviderKimi"
+  case "deepseek":
+    return "ProviderDeepSeek"
   case "grok":
     return "ProviderXAI"
   case "copilot":
@@ -699,6 +720,13 @@ func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: Strin
   }
 
   if group == "opencode" || modelId.hasPrefix("opencode/") {
+    // The catalog has already resolved the upstream maker for a gateway route
+    // (OpenCode Go's DeepSeek); prefer it over the route segment, which names
+    // the gateway rather than the model's maker.
+    let resolvedBrand = providerFamilyKey(model.provider)
+    if workKnownUpstreamBrandKeys.contains(resolvedBrand), resolvedBrand != "opencode" {
+      return resolvedBrand
+    }
     if modelId.hasPrefix("opencode/") {
       let parts = modelId.split(separator: "/", omittingEmptySubsequences: true)
       if parts.count >= 3 {
@@ -783,6 +811,8 @@ func providerTint(_ provider: String?) -> Color {
     return .purple
   case "kimi":
     return .primary
+  case "deepseek":
+    return Color(red: 0.30, green: 0.42, blue: 1.0)
   case "grok":
     return .red
   case "copilot":

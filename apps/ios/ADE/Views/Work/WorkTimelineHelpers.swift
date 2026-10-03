@@ -3733,7 +3733,7 @@ func buildWorkEventCards(
       break
     }
   }
-  var cards = order.compactMap { byId[$0] }
+  var cards = foldingWorkDiagnosticCards(order.compactMap { byId[$0] })
   // The chat's ONE task list sits where the list last changed (desktop
   // `upsertTaskListRow` re-appends it at each plan or todo update), not at
   // the end of the thread.
@@ -3757,6 +3757,103 @@ func buildWorkEventCards(
     ))
   }
   return cards
+}
+
+// MARK: - Mobile diagnostics fold
+
+/// A card the diagnostics fold can absorb: a per-turn "Turn details" receipt,
+/// or a routine warning notice (the `notice` kind whose tint is `.warning` —
+/// Codex config warnings, hook notices, rate-limit warnings).
+///
+/// Deliberately narrow. Danger notices (auth, thread errors) and actionable
+/// notices (a reset credit, a host sleep, a spawn chip) keep their own rows,
+/// because those are what the user acts on next.
+func workIsFoldableDiagnosticCard(_ card: WorkEventCardModel) -> Bool {
+  if card.kind == "turnDiagnostics" { return true }
+  return card.kind == "notice" && card.tint == .warning
+}
+
+/// Mobile-only consolidation of startup diagnostics.
+///
+/// A Codex thread's first turns leave a wall of near-identical receipt cards: a
+/// config warning, then "Turn details · 2 optional integrations unavailable",
+/// then "Turn details · 1 optional integration unavailable". Desktop folds
+/// these into its per-turn work summary; the phone has no such summary, so a
+/// contiguous run of two or more foldable cards becomes ONE single-line
+/// disclosure that expands to the full text. Runs of one are left exactly as
+/// they render today — every card here is already a single-line disclosure.
+func foldingWorkDiagnosticCards(_ cards: [WorkEventCardModel]) -> [WorkEventCardModel] {
+  guard cards.contains(where: workIsFoldableDiagnosticCard) else { return cards }
+  var folded: [WorkEventCardModel] = []
+  var run: [WorkEventCardModel] = []
+
+  func flushRun() {
+    guard !run.isEmpty else { return }
+    if run.count < 2 {
+      folded.append(contentsOf: run)
+    } else {
+      folded.append(mergedWorkDiagnosticCards(run))
+    }
+    run.removeAll(keepingCapacity: true)
+  }
+
+  for card in cards {
+    if workIsFoldableDiagnosticCard(card) {
+      run.append(card)
+    } else {
+      flushRun()
+      folded.append(card)
+    }
+  }
+  flushRun()
+  return folded
+}
+
+private func mergedWorkDiagnosticCards(_ cards: [WorkEventCardModel]) -> WorkEventCardModel {
+  var timestamp = cards.first?.timestamp ?? ""
+  var moderationChecks = 0
+  var integrationFailures: [AgentChatOptionalIntegrationFailure] = []
+  var warnings: [WorkTurnDiagnosticWarning] = []
+
+  for card in cards {
+    timestamp = laterWorkTimestamp(timestamp, card.timestamp)
+    moderationChecks += card.diagnosticModerationChecks
+    integrationFailures += card.diagnosticIntegrationFailures
+    warnings += card.diagnosticWarnings
+    if card.kind == "notice",
+       let message = nonEmptyWorkTimelineText(card.body) {
+      warnings.append(WorkTurnDiagnosticWarning(
+        title: card.title,
+        message: message,
+        icon: card.icon
+      ))
+    }
+  }
+
+  // One row per distinct sentence: a host that repeats the same warning in two
+  // turns should not make the disclosure read as two different warnings.
+  var seenWarnings = Set<String>()
+  warnings = warnings.filter { warning in
+    seenWarnings.insert("\(warning.title)\u{1F}\(warning.message)").inserted
+  }
+  let normalizedFailures = normalizedWorkIntegrationFailures(integrationFailures)
+
+  return WorkEventCardModel(
+    // The first card's id keeps the reader's expansion state across re-renders
+    // as later diagnostics arrive at the tail of the run.
+    id: "turn-diagnostics-fold:\(cards[0].id)",
+    kind: "turnDiagnostics",
+    title: "Turn details",
+    icon: warnings.isEmpty ? "checkmark.shield" : "exclamationmark.triangle",
+    tint: warnings.isEmpty ? .secondary : .warning,
+    timestamp: timestamp,
+    body: nil,
+    bullets: [],
+    metadata: [],
+    diagnosticModerationChecks: moderationChecks,
+    diagnosticIntegrationFailures: normalizedFailures,
+    diagnosticWarnings: warnings
+  )
 }
 
 private func workTodoTurnKey(sessionId: String, turnId: String?) -> String {
@@ -4398,6 +4495,10 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
     let normalizedFailures = normalizedWorkIntegrationFailures(
       existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
     )
+    var seenWarnings = Set<String>()
+    let mergedWarnings = (existing.diagnosticWarnings + incoming.diagnosticWarnings).filter { warning in
+      seenWarnings.insert("\(warning.title)\u{1F}\(warning.message)").inserted
+    }
     return WorkEventCardModel(
       id: incoming.id,
       kind: incoming.kind,
@@ -4412,7 +4513,8 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
         existing.diagnosticModerationChecks,
         incoming.diagnosticModerationChecks
       ),
-      diagnosticIntegrationFailures: normalizedFailures
+      diagnosticIntegrationFailures: normalizedFailures,
+      diagnosticWarnings: mergedWarnings
     )
   }
   if existing.kind == "codexRecovery",

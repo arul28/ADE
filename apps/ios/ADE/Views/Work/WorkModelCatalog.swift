@@ -1046,7 +1046,12 @@ private func workCatalogModelOption(
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id),
     tagline: tagline,
-    provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
+    provider: workModelBrandKey(
+      topLevelProvider: topLevelProvider,
+      providerKey: providerKey,
+      family: model.family,
+      modelId: model.id
+    ),
     reasoningEfforts: workVisibleReasoningEfforts(modelId: reasoningModelId, advertised: model.reasoningEfforts),
     defaultReasoningEffort: workVisibleDefaultReasoningEffort(
       modelId: reasoningModelId,
@@ -1677,16 +1682,133 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
   }
 }
 
-private func workModelBrandKey(topLevelProvider: String, providerKey: String) -> String {
+/// Best-effort human name for a model id that has no catalog entry yet: the
+/// last path segment, hyphens to spaces, known maker tokens cased. Used where a
+/// raw route (`opencode/opencode-go/deepseek-v4.1-flash`) would otherwise leak
+/// into a label; never returns a full route.
+func workPrettyModelNameFromId(_ raw: String?) -> String? {
+  let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmed.isEmpty else { return nil }
+  let last = trimmed.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? trimmed
+  var tokens = last.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+  // A trailing 8-digit build date is noise, exactly as `shortModelLabel` says.
+  if let final = tokens.last, final.count == 8, final.allSatisfy(\.isNumber) {
+    tokens.removeLast()
+  }
+  guard !tokens.isEmpty else { return nil }
+  let known: [String: String] = [
+    "gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek", "opencode": "OpenCode",
+    "kimi": "Kimi", "qwen": "Qwen", "minimax": "MiniMax", "gemini": "Gemini",
+    "sonnet": "Sonnet", "opus": "Opus", "haiku": "Haiku", "fable": "Fable",
+    "llama": "Llama", "mistral": "Mistral", "grok": "Grok", "claude": "Claude",
+  ]
+  var words: [String] = []
+  for token in tokens {
+    let lower = token.lowercased()
+    if let mapped = known[lower] {
+      words.append(mapped)
+      continue
+    }
+    // Version tokens stay as written: "4.1", "v4.1", "6.1".
+    if lower.first?.isNumber == true {
+      words.append(lower)
+      continue
+    }
+    if lower.first == "v", lower.dropFirst().first?.isNumber == true {
+      words.append("V" + lower.dropFirst())
+      continue
+    }
+    words.append(lower.prefix(1).uppercased() + lower.dropFirst())
+  }
+  return words
+    .joined(separator: " ")
+    .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+}
+
+/// Upstream maker families a model row or composer chip can wear a mark for.
+/// A gateway provider (OpenCode Go, OpenCode Zen, a custom endpoint) fronts
+/// models from many makers, so the route key alone would brand every row with
+/// the gateway. Kept internal so the picker's row-logo resolver reads the same
+/// list instead of re-stating it.
+let workKnownUpstreamBrandKeys: Set<String> = [
+  "claude", "codex", "google", "xai", "grok", "deepseek", "kimi", "moonshot",
+  "qwen", "mistral", "groq", "openrouter", "together", "meta", "minimax",
+  "zai", "perplexity", "nvidia", "cohere", "huggingface", "cerebras",
+  "baseten", "fireworks", "xiaomi", "cursor", "droid", "copilot",
+]
+
+/// The maker named by a model id, for a route whose provider key names the
+/// gateway rather than the maker (`opencode-go/deepseek-v4.1-flash`). First
+/// match wins, and the list is ordered so a compound id (`gpt-5-codex`,
+/// `claude-opus`) lands on one brand.
+func workUpstreamBrandInModelId(_ raw: String) -> String? {
+  let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard !id.isEmpty else { return nil }
+  let checks: [(needle: String, brand: String)] = [
+    ("deepseek", "deepseek"),
+    ("gemini", "google"),
+    ("kimi", "kimi"),
+    ("moonshot", "kimi"),
+    ("qwen", "qwen"),
+    ("glm", "zai"),
+    ("minimax", "minimax"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+    ("llama", "meta"),
+    ("grok", "grok"),
+    ("claude", "claude"),
+    ("opus", "claude"),
+    ("sonnet", "claude"),
+    ("haiku", "claude"),
+    ("fable", "claude"),
+    ("gpt", "codex"),
+    ("codex", "codex"),
+  ]
+  for check in checks where id.contains(check.needle) {
+    return check.brand
+  }
+  return nil
+}
+
+func workModelBrandKey(
+  topLevelProvider: String,
+  providerKey: String,
+  family: String? = nil,
+  modelId: String? = nil
+) -> String {
   if topLevelProvider == "claude" { return "claude" }
   if topLevelProvider == "codex" { return "codex" }
   if topLevelProvider == "pi" { return "pi" }
 
-  switch providerKey {
+  let provider = providerKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  switch provider {
   case "anthropic": return "claude"
   case "openai": return "codex"
-  default: return providerKey
+  default: break
   }
+
+  // Only a gateway group fronts models from many makers. A direct harness
+  // (Cursor, Droid, Qwen…) keeps its own mark no matter which family the model
+  // underneath belongs to.
+  guard topLevelProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "opencode" else {
+    return providerKey
+  }
+  // 1. The host's upstream family, when it names a maker.
+  if let family {
+    let normalizedFamily = providerFamilyKey(family)
+    if workKnownUpstreamBrandKeys.contains(normalizedFamily), normalizedFamily != "opencode" {
+      return normalizedFamily
+    }
+  }
+  // 2. The route key itself, when it names a maker.
+  let normalizedProvider = providerFamilyKey(provider)
+  if workKnownUpstreamBrandKeys.contains(normalizedProvider), normalizedProvider != "opencode" {
+    return normalizedProvider
+  }
+  // 3. The maker named by the model id (OpenCode Go's `deepseek-v4.1-flash`).
+  if let modelId, let inferred = workUpstreamBrandInModelId(modelId) { return inferred }
+
+  return providerKey
 }
 
 private func workDynamicModelOption(
@@ -1740,7 +1862,12 @@ private func workDynamicModelOption(
     tagline: tagline,
     provider: topLevelProvider.lowercased() == "pi"
       ? "pi"
-      : (curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey)),
+      : (curated?.provider ?? workModelBrandKey(
+        topLevelProvider: topLevelProvider,
+        providerKey: providerKey,
+        family: model.family,
+        modelId: model.id
+      )),
     reasoningEfforts: workVisibleReasoningEfforts(
       modelId: reasoningModelId,
       advertised: model.reasoningEfforts,
@@ -1847,10 +1974,16 @@ private func injectCurrentWorkModelIfNeeded(
         : (providerLower.isEmpty ? "other" : providerLower)
       let injected = WorkModelOption(
         id: currentModelId,
-        displayName: currentModelId,
+        displayName: workKnownModelDisplayName(currentModelId)
+          ?? workPrettyModelNameFromId(currentModelId)
+          ?? currentModelId,
         tier: .balanced,
         tagline: "In use on the paired machine",
-        provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey),
+        provider: workModelBrandKey(
+          topLevelProvider: targetGroupKey,
+          providerKey: providerKey,
+          modelId: currentModelId
+        ),
         runtimeModelId: targetGroupKey == "pi" ? currentModelId : nil,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,

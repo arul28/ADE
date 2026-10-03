@@ -1322,6 +1322,14 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The New Chat page with fixture lanes and Claude/Codex limits. See
   /// `WorkNewChatPreviewHost` in `WorkNewChatScreen.swift`.
   case newChat = "new-chat"
+  /// The New Chat page started on a gateway-routed model
+  /// (`opencode/opencode-go/deepseek-v4.1-flash`) and the long-branch lane, so
+  /// the model chip's name/mark and the lane-selector layout are screenshotable
+  /// with no pairing.
+  case newChatDeepSeek = "new-chat-deepseek"
+  /// The real model picker with fixture Custom harnesses. See
+  /// `WorkModelPickerPreviewHost`.
+  case modelPicker = "model-picker"
   /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
   /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
   case hubComposer = "hub-composer"
@@ -1452,10 +1460,69 @@ struct ADEPreviewScreenHost: View {
       WorkListPreviewHost()
     case .newChat:
       WorkNewChatPreviewHost()
+    case .newChatDeepSeek:
+      WorkNewChatPreviewHost(usesGatewayModelFixture: true)
+    case .modelPicker:
+      WorkModelPickerPreviewHost()
     case .hubComposer:
       HubComposerPreviewHost()
     }
   }
+}
+
+/// The real model picker with fixture Custom harnesses, presented as the sheet
+/// the phone shows. The host has no catalog, so the Custom rail and pane are
+/// what this fixture proves.
+private struct WorkModelPickerPreviewHost: View {
+  var body: some View {
+    NavigationStack {
+      WorkModelPickerSheet(
+        currentModelId: WorkModelPickerPreviewData.currentModelId,
+        currentProvider: "opencode",
+        cursorAvailabilityMode: .chat,
+        harnessPresets: WorkModelPickerPreviewData.presets,
+        isBusy: false,
+        onSelectPreset: { _ in },
+        onSelect: { _, _, _, _ in }
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    }
+  }
+}
+
+@MainActor
+private enum WorkModelPickerPreviewData {
+  static let currentModelId = "opencode/opencode-go/deepseek-v4.1-flash"
+
+  static let presets: [SyncMachineInventoryPreset] = [
+    SyncMachineInventoryPreset(
+      id: "hp_deepseek_flash",
+      name: "DeepSeek Flash",
+      harness: "opencode",
+      model: "opencode/opencode-go/deepseek-v4.1-flash",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "deepseek"),
+      accentColor: "#4d6bfe",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_opus_work",
+      name: "Opus on work",
+      harness: "claude",
+      model: "claude-opus-5-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "ade", providerId: nil),
+      accentColor: "#7c5ce0",
+      bound: true
+    ),
+    SyncMachineInventoryPreset(
+      id: "hp_haiku_sweeps",
+      name: "Haiku sweeps",
+      harness: "claude",
+      model: "claude-haiku-4-5",
+      logo: SyncMachineInventoryPresetLogo(kind: "provider", providerId: "claude"),
+      accentColor: nil,
+      bound: false
+    ),
+  ]
 }
 
 /// Backdrop that opens `WorkQueuedSteerDetailSheet` on appear, so the fixture

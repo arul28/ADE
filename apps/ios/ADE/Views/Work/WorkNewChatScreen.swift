@@ -695,6 +695,13 @@ struct WorkNewChatScreen: View {
   /// re-derived from the curated iOS catalog — which can miss a freshly
   /// advertised fast model and wrongly hide the toggle.
   @State private var selectedModelOption: WorkModelOption?
+  /// The connected machine's saved Custom harnesses
+  /// (`account.getMachineInventory`). Empty against a host that does not
+  /// advertise the action, which hides the picker's Custom section.
+  @State private var harnessPresets: [SyncMachineInventoryPreset] = []
+  /// The Custom harness the next launch runs under, when the user picked one
+  /// from the Custom section. Cleared by any manual model choice.
+  @State private var selectedPreset: SyncMachineInventoryPreset?
   @State private var sessionMode: WorkNewSessionMode = .chat
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
@@ -1028,8 +1035,23 @@ struct WorkNewChatScreen: View {
         currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
+        // Custom harnesses are the connected host's own; another machine's list
+        // would offer a preset this launch cannot resolve.
+        harnessPresets: selectedMachineKey == nil ? harnessPresets : [],
         isBusy: false,
+        onSelectPreset: { preset in
+          selectedPreset = preset
+          selectedModelOption = nil
+          modelId = preset.model
+          provider = sessionMode == .chat
+            ? workNormalizedChatProvider(preset.harness)
+            : preset.harness
+          if !reasoningEffort.isEmpty { reasoningEffort = "" }
+          if codexFastMode { codexFastMode = false }
+          machineModelHint = nil
+        },
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
+          selectedPreset = nil
           selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
@@ -1040,6 +1062,9 @@ struct WorkNewChatScreen: View {
           if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
         }
       )
+    }
+    .task(id: syncService.focusedHostInventoryMachineKey ?? "") {
+      await loadHarnessPresets()
     }
   }
 
@@ -1059,12 +1084,18 @@ struct WorkNewChatScreen: View {
   private var laneSelector: some View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 8) {
+        // Neither pill may be `fixedSize()`: the machine name and the lane name
+        // + branch are user data, and an ideal width larger than the screen
+        // made the whole page — usage card and composer included — lay out
+        // wider than the viewport until some later interaction forced a
+        // relayout. The machine pill keeps its width; the lane pill absorbs the
+        // squeeze and its own label truncates.
         WorkNewChatMachineDropdown(
           options: machineOptions,
           selected: selectedMachineOption,
           onSelect: selectMachine
         )
-        .fixedSize()
+        .layoutPriority(1)
         if remoteLanesLoading {
           ProgressView().controlSize(.small)
         } else {
@@ -1074,10 +1105,12 @@ struct WorkNewChatScreen: View {
             onMenuPresentationChange: handleLaneSheetPresentation,
             floatingGlass: true
           )
-          .fixedSize()
         }
         Spacer(minLength: 0)
       }
+      // A hard clamp: however wide the pills' ideal sizes are, the row reports
+      // the container's width, so nothing above it can grow.
+      .frame(maxWidth: .infinity, alignment: .leading)
       if let machineModelHint {
         Text(machineModelHint)
           .font(.caption)
@@ -1138,6 +1171,29 @@ struct WorkNewChatScreen: View {
     }
   }
 
+  /// The connected machine's saved Custom harnesses. Silent on any failure:
+  /// a host that does not advertise the action, or is offline, simply shows no
+  /// Custom section.
+  @MainActor
+  private func loadHarnessPresets() async {
+    guard syncService.supportsRemoteAction("account.getMachineInventory"),
+          let machineKey = syncService.focusedHostInventoryMachineKey,
+          !machineKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      harnessPresets = []
+      return
+    }
+    do {
+      let detail = try await syncService.fetchMachineInventory(machineKey: machineKey)
+      harnessPresets = detail.presets
+      if let selectedPreset, !detail.presets.contains(where: { $0.id == selectedPreset.id }) {
+        self.selectedPreset = nil
+      }
+    } catch {
+      harnessPresets = []
+    }
+  }
+
   /// The chosen model needs an account on the chosen machine. When that
   /// machine has none for the model's provider, pick its first provider's
   /// default model and say so.
@@ -1156,6 +1212,9 @@ struct WorkNewChatScreen: View {
       machineModelHint = "\(machineName) has no account for this model."
     case .fallback(let fallbackModelId, let fallbackProvider):
       let previous = prettyNewChatModelName(modelId)
+      // The machine cannot run the preset's model; a preset whose model no
+      // longer matches must not ride along with the launch.
+      selectedPreset = nil
       selectedModelOption = nil
       modelId = fallbackModelId
       provider = sessionMode == .chat ? workNormalizedChatProvider(fallbackProvider) : fallbackProvider
@@ -1297,7 +1356,10 @@ struct WorkNewChatScreen: View {
       sessionMode: sessionMode,
       provider: $provider,
       modelId: modelId,
-      modelName: prettyNewChatModelName(modelId),
+      modelName: selectedPreset?.name ?? prettyNewChatModelName(modelId),
+      modelBrandKey: modelBrandKey,
+      presetMark: selectedPreset?.logo,
+      presetAccentColor: selectedPreset?.accentColor,
       busy: busy,
       canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
       attachmentsAvailable: attachmentsAvailable,
@@ -1314,20 +1376,34 @@ struct WorkNewChatScreen: View {
   private func prettyNewChatModelName(_ model: String) -> String {
     let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "Model" }
+    // The live host catalog names the model the same way the desktop picker
+    // does ("DeepSeek V4.1 Flash"). Only when it has never been seen does the
+    // label fall back to a prettified id — never the raw route.
+    if let entry = WorkModelMentionDirectory.shared.entry(for: trimmed) {
+      let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !title.isEmpty { return title }
+    }
+    if let option = selectedModelOption, workModelIdsEquivalent(option.id, trimmed) {
+      let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !name.isEmpty { return name }
+    }
     if let known = workKnownModelDisplayName(trimmed) {
       return known
     }
-    let lower = trimmed.lowercased()
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      let joined = tail.split(separator: "-").map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }.joined(separator: " ")
-      return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+    if let pretty = workPrettyModelNameFromId(trimmed) {
+      return pretty
     }
     return trimmed
+  }
+
+  /// The mark the composer's model pill wears. A gateway model (OpenCode Go's
+  /// DeepSeek) is branded by its maker, not by the runtime that routes it; the
+  /// catalog directory carries that resolution once the picker has loaded.
+  private var modelBrandKey: String {
+    if let entry = WorkModelMentionDirectory.shared.entry(for: modelId) {
+      return entry.brandKey
+    }
+    return provider
   }
 
   @MainActor
@@ -1443,6 +1519,7 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       reasoningEffort: reasoningEffort,
       codexFastMode: codexFastMode,
+      presetId: selectedPreset?.id,
       piMetadata: piMetadata,
       wire: wire,
       projectId: activeProjectId,
@@ -1551,6 +1628,7 @@ struct WorkNewChatScreen: View {
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
+          presetId: selectedPreset?.id,
           cols: 48,
           rows: 24
         )
@@ -1612,7 +1690,8 @@ struct WorkNewChatScreen: View {
         cursorModeId: wire.cursorModeId,
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
-        pendingDisplayName: opener
+        pendingDisplayName: opener,
+        presetId: selectedPreset?.id
       )
       createdChatSummary = summary
       createdChatAttachments = attachmentRefs
@@ -1813,6 +1892,12 @@ private struct WorkNewChatComposerBar: View {
   @Binding var provider: String
   let modelId: String
   let modelName: String
+  /// The model pill's mark, resolved upstream of the gateway route.
+  let modelBrandKey: String
+  /// A selected Custom harness's own mark and accent, which replace the
+  /// provider mark while the composer runs on that preset.
+  let presetMark: SyncMachineInventoryPresetLogo?
+  let presetAccentColor: String?
   let busy: Bool
   let canStart: Bool
   let attachmentsAvailable: Bool
@@ -1907,6 +1992,9 @@ private struct WorkNewChatComposerBar: View {
           WorkComposerControlsRow(
             provider: provider,
             modelDisplayName: modelName,
+            modelBrandKey: modelBrandKey,
+            presetMark: presetMark,
+            presetAccentColor: presetAccentColor,
             reasoningEffort: reasoningEffort,
             currentMode: runtimeMode,
             modeOptions: runtimeOptions,
@@ -1991,16 +2079,37 @@ struct WorkNewChatRoute: Hashable {
 struct WorkNewChatPreviewHost: View {
   @EnvironmentObject private var syncService: SyncService
 
-  init() {
+  /// `new-chat-deepseek`: start the composer on a gateway-routed model
+  /// (`opencode/opencode-go/deepseek-v4.1-flash`), seed the live catalog that
+  /// names it, and open on the long-branch lane — the inputs the model-chip and
+  /// layout fixes are about, provable with no pairing.
+  let usesGatewayModelFixture: Bool
+
+  init(usesGatewayModelFixture: Bool = false) {
+    self.usesGatewayModelFixture = usesGatewayModelFixture
     MobileUsageQuotaStore.shared.pinPreviewSnapshot(WorkNewChatPreviewFixtures.quotaSnapshot())
     WorkUsageActivityCarousel.previewStats = WorkNewChatPreviewFixtures.stats()
+    if usesGatewayModelFixture {
+      WorkComposerPreferences.save(
+        provider: "opencode",
+        modelId: WorkNewChatPreviewFixtures.gatewayModelId,
+        runtimeMode: "default",
+        reasoningEffort: "",
+        codexFastMode: false
+      )
+      if let catalog = WorkNewChatPreviewFixtures.gatewayCatalog() {
+        WorkModelMentionDirectory.shared.record(catalog: catalog)
+      }
+    }
   }
 
   var body: some View {
     NavigationStack {
       WorkNewChatScreen(
         lanes: WorkNewChatPreviewFixtures.lanes,
-        preferredLaneId: WorkNewChatPreviewFixtures.lanes.first?.id,
+        preferredLaneId: usesGatewayModelFixture
+          ? WorkNewChatPreviewFixtures.lanes[1].id
+          : WorkNewChatPreviewFixtures.lanes.first?.id,
         activeProjectId: "preview-project",
         activeProjectRootPath: "/Users/preview/Projects/ADE",
         onStarted: { _, _, _, _, _ in },
@@ -2018,6 +2127,20 @@ enum WorkNewChatPreviewFixtures {
     lane(id: "preview-lane-glass", name: "Glass composer", type: "worktree", branch: "ade/glass-composer-4c06a9a3", color: "purple"),
     lane(id: "preview-lane-usage", name: "Usage panel", type: "worktree", branch: "ade/usage-panel-19ab22", color: "green"),
   ]
+
+  /// The gateway-routed model the chip fixture starts on: OpenCode Go fronts
+  /// DeepSeek, so the route names the gateway and the maker is the model.
+  static let gatewayModelId = "opencode/opencode-go/deepseek-v4.1-flash"
+
+  /// The host's `chat.modelCatalog` row for `gatewayModelId`, decoded from the
+  /// same JSON shape the wire carries so the fixture cannot drift from the
+  /// contract.
+  static func gatewayCatalog() -> AgentChatModelCatalog? {
+    let raw = """
+    {"fetchedAt":"2026-10-02T00:00:00.000Z","groups":[{"key":"opencode","displayName":"OpenCode","providers":[{"key":"opencode-go","displayName":"OpenCode Go","badgeColor":"#4D6BFE","modelCount":1,"subsections":[{"key":"opencode-go","label":"OpenCode Go","models":[{"id":"opencode/opencode-go/deepseek-v4.1-flash","runtimeModelId":"deepseek-v4.1-flash","provider":"opencode","providerKey":"opencode-go","groupKey":"opencode","displayName":"DeepSeek V4.1 Flash","description":"DeepSeek V4.1 Flash (OpenCode)","isDefault":false,"family":"opencode","supportsReasoning":true,"supportsTools":true,"isAvailable":true}]}]}]}]}
+    """
+    return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: Data(raw.utf8))
+  }
 
   private static func lane(id: String, name: String, type: String, branch: String, color: String) -> LaneSummary {
     LaneSummary(

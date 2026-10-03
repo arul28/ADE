@@ -1839,6 +1839,15 @@ struct WorkChatTaskListSnapshot: Hashable {
   }
 }
 
+/// One routine warning absorbed by the mobile diagnostics fold — the notice's
+/// own title ("Warning", "Hook notice") plus the host's full sentence, which is
+/// what the expanded disclosure shows in place of the truncated collapsed line.
+struct WorkTurnDiagnosticWarning: Hashable {
+  let title: String
+  let message: String
+  let icon: String
+}
+
 struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
@@ -1882,6 +1891,10 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// of rendering each routine moderation or optional integration event.
   let diagnosticModerationChecks: Int
   let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
+  /// Routine warning notices (a Codex config warning, a hook notice, a
+  /// rate-limit warning) absorbed by the mobile diagnostics fold, in the order
+  /// they were seen. Empty for every other card.
+  let diagnosticWarnings: [WorkTurnDiagnosticWarning]
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
   /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
   /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
@@ -1923,6 +1936,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
+    diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
     spawnCompletionChildId: String? = nil,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
@@ -1950,6 +1964,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.recoveryReceipt = recoveryReceipt
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
+    self.diagnosticWarnings = diagnosticWarnings
     self.spawnCompletionChildId = spawnCompletionChildId
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
