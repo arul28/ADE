@@ -13013,6 +13013,7 @@ final class SyncService: ObservableObject {
     modelId: String? = nil,
     reasoningEffort: String? = nil,
     fastMode: Bool? = nil,
+    presetId: String? = nil,
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
@@ -13040,6 +13041,9 @@ final class SyncService: ObservableObject {
     }
     if let fastMode {
       args["fastMode"] = fastMode
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let cols, cols > 0 {
       args["cols"] = cols
@@ -13928,7 +13932,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -13951,7 +13956,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     // Offline: queue the create with a stable command id and record a snapshot
     // so the Work list shows a "Pending sync" row until the queued command
@@ -14019,7 +14025,8 @@ final class SyncService: ObservableObject {
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
-    pendingDisplayName: String? = nil
+    pendingDisplayName: String? = nil,
+    presetId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     var (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -14042,7 +14049,8 @@ final class SyncService: ObservableObject {
       cursorModeId: cursorModeId,
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
-      requestedCwd: requestedCwd
+      requestedCwd: requestedCwd,
+      presetId: presetId
     )
     args["kickoffText"] = kickoffText
 
@@ -14104,7 +14112,8 @@ final class SyncService: ObservableObject {
     cursorModeId: String?,
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
-    requestedCwd: String?
+    requestedCwd: String?,
+    presetId: String?
   ) -> ([String: Any], String) {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -14114,6 +14123,9 @@ final class SyncService: ObservableObject {
     ]
     if !trimmedModel.isEmpty {
       args["modelId"] = trimmedModel
+    }
+    if let presetId, !presetId.isEmpty {
+      args["presetId"] = presetId
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort

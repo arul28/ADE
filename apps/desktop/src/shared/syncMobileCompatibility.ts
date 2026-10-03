@@ -13,6 +13,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // This machine's last-used chat model and settings, to seed a new chat.
   // Optional: against an older brain the phone keeps its own last choice.
   "chat.getLaunchDefaults",
+  // Machine inventory detail (provider accounts and saved Custom harness
+  // presets, with their bound state). The phone's model picker lists the
+  // machine's custom harnesses from it, and hides that section against an
+  // older host that omits the action.
+  "account.getMachineInventory",
   // New-lane launches owned by the brain. Optional: a phone falls back to the
   // chained lanes.create → chat.create flow against a brain without them.
   "chat.startLaunch",

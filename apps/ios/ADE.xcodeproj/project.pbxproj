@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */; };
+		CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */; };
 		CA1A00000000000000000017 /* WorkChatLaunchSetupCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */; };
 		CA1A00000000000000000018 /* WorkChatLaunchPendingScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */; };
 		CA1A00000000000000000019 /* WorkLaneSetupTranscriptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */; };
@@ -438,6 +439,7 @@
 
 /* Begin PBXFileReference section */
 		CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ChatLaunch.swift"; path = "ADE/Services/SyncService+ChatLaunch.swift"; sourceTree = "<group>"; };
+		CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+MachineInventory.swift"; path = "ADE/Services/SyncService+MachineInventory.swift"; sourceTree = "<group>"; };
 		CA1A00000000000000000007 /* WorkChatLaunchSetupCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchSetupCard.swift; path = ADE/Views/Work/WorkChatLaunchSetupCard.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000008 /* WorkChatLaunchPendingScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchPendingScreen.swift; path = ADE/Views/Work/WorkChatLaunchPendingScreen.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneSetupTranscriptCard.swift; path = ADE/Views/Work/WorkLaneSetupTranscriptCard.swift; sourceTree = "<group>"; };
@@ -1256,6 +1258,7 @@
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
+				CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */,
 				B80000000000000000000005 /* SyncMachineWake.swift */,
 				B80000000000000000000003 /* SyncTerminalInputQueue.swift */,
 				CA1A00000000000000000002 /* ChatLaunchStore.swift */,
@@ -1874,6 +1877,7 @@
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
 				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
 				CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */,
+				CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */,
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
 				B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */,
 				CA1A00000000000000000012 /* ChatLaunchStore.swift in Sources */,

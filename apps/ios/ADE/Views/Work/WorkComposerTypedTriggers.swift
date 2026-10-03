@@ -752,6 +752,10 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
     /// Chat runtime provider (harness group key), so the chip's permission menu
     /// offers this provider's own modes.
     let provider: String
+    /// The upstream maker's key for the row/chip mark — "deepseek" for
+    /// `opencode/opencode-go/deepseek-v4.1-flash`, where `provider` alone is the
+    /// gateway.
+    let brandKey: String
     let reasoningTiers: [String]
     let defaultEffort: String?
     let isAvailable: Bool
@@ -798,6 +802,16 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
                 route: routed ? provider.displayName : nil
               ),
               provider: group.key,
+              // The mark the chip should wear. Only the OpenCode gateway fronts
+              // many makers; every direct harness keeps its own mark.
+              brandKey: group.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "opencode"
+                ? workModelBrandKey(
+                  topLevelProvider: group.key,
+                  providerKey: provider.key,
+                  family: model.family,
+                  modelId: model.id
+                )
+                : group.key,
               reasoningTiers: tiers,
               defaultEffort: WorkModelMentionDetector.defaultEffort(
                 tiers: tiers,

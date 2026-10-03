@@ -6532,7 +6532,14 @@ describe("CTO-gated Linear sync commands", () => {
         if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
-        const scope = action === "chat.resolveSourceFavicons" ? "runtime" : "project";
+        // Optional actions answered by the runtime's own stores rather than a
+        // project service are registered at runtime scope; the phone sees the
+        // scope in the descriptor either way.
+        const RUNTIME_SCOPED_OPTIONAL_ACTIONS = new Set([
+          "chat.resolveSourceFavicons",
+          "account.getMachineInventory",
+        ]);
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) ? "runtime" : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.
