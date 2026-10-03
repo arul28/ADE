@@ -2017,6 +2017,44 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("stamps who is calling on chat actions so an agent cannot pose as the user or the CTO", async () => {
+    const { runtime } = createRuntime();
+    const updateSession = (runtime.agentChatService as any).updateSession as ReturnType<typeof vi.fn>;
+
+    const agentHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(agentHandler, { role: "agent", chatSessionId: "session-1" });
+    await callTool(agentHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      args: { sessionId: "session-1", title: "Renamed", runtimeActor: { kind: "cto" } },
+    });
+    expect(updateSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      runtimeActor: { kind: "agent", chatSessionId: "session-1" },
+    }));
+
+    // Positional args would skip the stamp, so an agent must send one object.
+    const positional = await callTool(agentHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      argsList: [{ sessionId: "session-1", title: "Again" }],
+    });
+    expect(positional.isError).toBe(true);
+    expect(JSON.stringify(positional.error)).toMatch(/one object argument/i);
+    expect(updateSession).toHaveBeenCalledTimes(1);
+
+    // The user's own client is never capped: a value it sends is dropped, not trusted.
+    const userHandler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(userHandler);
+    await callTool(userHandler, "run_ade_action", {
+      domain: "chat",
+      action: "updateSession",
+      args: { sessionId: "session-1", title: "Mine", runtimeActor: { kind: "agent", chatSessionId: "session-1" } },
+    });
+    expect(updateSession).toHaveBeenCalledTimes(2);
+    expect(updateSession.mock.calls[1]![0]).not.toHaveProperty("runtimeActor");
+  });
+
   it("creates a work chat for cto callers and returns a work navigation suggestion", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

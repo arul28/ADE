@@ -444,6 +444,50 @@ describe("createAgentChatService", () => {
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("forks from an earlier turn with only the turns through it", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-fork-point";
+      const turn = (turnId: string, minute: number, text: string): AgentChatEventEnvelope[] => [
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:00.000Z`, event: { type: "user_message", messageId: `${turnId}-user`, text: `${text} question`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:10.000Z`, event: { type: "text", messageId: `${turnId}-reply`, text: `${text} answer`, turnId } },
+        { sessionId: source.id, timestamp: `2026-07-10T11:0${minute}:20.000Z`, event: { type: "done", turnId, status: "completed" } },
+      ] as AgentChatEventEnvelope[];
+      writeTestTranscriptEnvelopes(source.id, [...turn("turn-1", 1, "KEEP-ONE"), ...turn("turn-2", 2, "DROP-TWO")]);
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-1",
+      });
+
+      const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${result.session.id}.jsonl`);
+      await vi.waitFor(() => {
+        const copied = fs.readFileSync(targetTranscript, "utf8");
+        expect(copied).toContain("KEEP-ONE answer");
+        expect(copied).not.toContain("DROP-TWO");
+      });
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        throughTurnId: "turn-missing",
+      })).rejects.toThrow(/finished turn/i);
+      await expect(service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "brief",
+        throughTurnId: "turn-1",
+      })).rejects.toThrow(/only applies to a fork/i);
+    });
+
     it("seeds local fork history with handoff provenance", async () => {
       installRealTranscriptParser();
       const { service } = createService();
