@@ -93,7 +93,11 @@ export function createParentWakeBatcher(deps: {
       const parentBusy = deps.isParentBusy(parentSessionId);
       if (!existing && parentBusy) {
         return deps.deliverWake(parentSessionId, wakeText, spawnCompletion).then(() => {
-          deps.onDelivered({ parentSessionId, completions: 1, heldMs: 0, joinedLiveTurn: true });
+          try {
+            deps.onDelivered({ parentSessionId, completions: 1, heldMs: 0, joinedLiveTurn: true });
+          } catch {
+            // Telemetry only; rejecting here would make the caller wake the parent again.
+          }
         });
       }
       return new Promise<void>((resolve, reject) => {

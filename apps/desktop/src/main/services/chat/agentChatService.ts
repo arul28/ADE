@@ -41128,10 +41128,14 @@ export function createAgentChatService(args: {
     }
 
     if (parentPermissionCeiling) {
+      // The cap is the lower of the parent's level and the calling agent's;
+      // name whichever one set it.
+      const cappedByParent = normalizedParentSessionId != null
+        && resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId }) === parentPermissionCeiling.level;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: normalizedParentSessionId
+        message: cappedByParent
           ? `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`
           : `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}": an agent can't start a chat with more access than its own.`,
       });
@@ -51996,11 +52000,13 @@ export function createAgentChatService(args: {
       const nextIds = moveSteerId(ids, steerId, toIndex);
       if (!nextIds) throw new Error("This message is no longer queued.");
       persistedSteerOrder.set(managed, nextIds);
-      emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
-      persistChatState(managed);
-      // The file now holds this order; keeping the override would re-sort a
-      // later live reorder back to it on the next torn-down persist.
+      const saved = persistChatState(managed);
+      // Either way the override goes: on success the file now holds this
+      // order (keeping it would re-sort a later live reorder back to it), and
+      // on failure the file still holds the old one, which is the truth.
       persistedSteerOrder.delete(managed);
+      if (!saved) throw new Error("Couldn't save the new order.");
+      emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
       return;
     }
     // Already refused by provider above; kept so the type narrows to the
