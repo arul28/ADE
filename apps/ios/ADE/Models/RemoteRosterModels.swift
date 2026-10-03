@@ -23,6 +23,51 @@ enum RemoteRosterChatStatus: String, Codable, Equatable {
     let raw = try decoder.singleValueContainer().decode(String.self)
     self = RemoteRosterChatStatus(rawValue: raw) ?? .idle
   }
+
+  /// Running vs idle is turn liveness, not a lifecycle marker. The host
+  /// computes it live; a phone-built row can only derive it from the
+  /// phone-only `runtime_state` column, which nothing but a full
+  /// `work.listSessions` refresh writes.
+  var isTurnLiveness: Bool { self == .running || self == .idle }
+
+  /// A local chat row with this live roster turn state laid over it.
+  ///
+  /// A chat's `terminal_sessions` row holds `status = "running"` between turns
+  /// on purpose, and the host never replicates `runtime_state`, so a turn
+  /// starting or finishing changes nothing in the replica: without this the
+  /// Work row kept its last pull-to-refresh state ("Done" while the agent was
+  /// working). Settle, attention and failure columns DO replicate (and carry
+  /// the phone's pending overlays), so `.ended`/`.failed` leave the row alone.
+  ///
+  /// Returns the row untouched when it already agrees, so the common case (no
+  /// turn change) copies nothing.
+  func applyingTurnState(to session: TerminalSessionSummary) -> TerminalSessionSummary {
+    switch self {
+    case .running:
+      guard session.status != "running" || session.runtimeState != "running" || session.chatIdleSinceAt != nil
+      else { return session }
+      var next = session
+      next.status = "running"
+      next.runtimeState = "running"
+      next.chatIdleSinceAt = nil
+      return next
+    case .awaiting:
+      guard session.runtimeState != "waiting-input" || session.chatIdleSinceAt != nil else { return session }
+      var next = session
+      next.runtimeState = "waiting-input"
+      next.chatIdleSinceAt = nil
+      return next
+    case .idle:
+      // Only a live chat can go quiet; an ended row stays ended. The host
+      // writes `status` lowercase, so no per-row case folding is needed.
+      guard session.status == "running", session.runtimeState != "idle" else { return session }
+      var next = session
+      next.runtimeState = "idle"
+      return next
+    case .ended, .failed:
+      return session
+    }
+  }
 }
 
 struct RemoteRosterChat: Codable, Equatable, Identifiable {
@@ -102,7 +147,12 @@ extension RemoteRosterChat {
     let remoteLifecycle = lifecycleFreshness
     if let localLifecycle,
        remoteLifecycle.map({ localLifecycle.date >= $0.date }) ?? true {
-      merged.status = local.status
+      // Lifecycle transitions (settle, attention, failure) follow freshness,
+      // but running vs idle on both sides is liveness, which only the host
+      // knows: the local side read it off a stale `runtime_state`.
+      if !(local.status.isTurnLiveness && status.isTurnLiveness) {
+        merged.status = local.status
+      }
       merged.awaitingInput = local.awaitingInput ?? awaitingInput
       merged.pinned = local.pinned ?? pinned
       merged.archived = local.archived ?? archived

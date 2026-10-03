@@ -31,10 +31,21 @@ func overlayActiveProjectRoster(
   var sessionIds = Set<String>()
   var sessions: [TerminalSessionSummary] = []
   sessions.reserveCapacity(localSessions.count + rosterChats.count)
+  // Status only: this runs on the main actor on every roster delta, so keep
+  // it to one small map (at most `workActiveProjectRosterSessionLimit`).
+  var rosterStatusById: [String: RemoteRosterChatStatus] = [:]
+  rosterStatusById.reserveCapacity(rosterChats.count)
+  for chat in rosterChats where rosterStatusById[chat.id] == nil {
+    rosterStatusById[chat.id] = chat.status
+  }
   for session in localSessions
     where !identitySessionIds.contains(session.id) && sessionIds.insert(session.id).inserted
   {
-    sessions.append(session)
+    if let status = rosterStatusById[session.id] {
+      sessions.append(status.applyingTurnState(to: session))
+    } else {
+      sessions.append(session)
+    }
   }
 
   let projectedRosterLaneIds = Set(rosterChats.map(\.laneId))
