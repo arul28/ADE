@@ -12,12 +12,15 @@ import type {
   AdeAccountMachinesResult,
   MachineInventoryModelCounts,
   MachineInventoryPresetInput,
-  MachineInventoryPresetLogo,
   MachineInventoryProviderInput,
   MachineInventoryDetail,
 } from "../../../shared/types";
 import { normalizeHarnessPresetList } from "../../../shared/harnessPresets";
-import { buildMachineInventoryDetail } from "../../../shared/types/machineInventory";
+import {
+  buildMachineInventoryDetail,
+  normalizeMachineInventoryAccent,
+  normalizeMachineInventoryPresetLogo,
+} from "../../../shared/types/machineInventory";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
@@ -165,23 +168,16 @@ function sanitizeDetail(value: unknown, machineKey: string): MachineInventoryDet
       const model = boundedText(raw.model);
       if (!id || !name || !harness || !model) return [];
       // The mark crosses as an identity (kind + provider id), never artwork.
-      const rawLogo = raw.logo && typeof raw.logo === "object" && !Array.isArray(raw.logo)
-        ? raw.logo as Record<string, unknown>
-        : null;
-      const logoKind = rawLogo ? boundedText(rawLogo.kind) : "";
-      const logoProviderId = rawLogo ? boundedText(rawLogo.providerId) : "";
-      const logo: MachineInventoryPresetLogo =
-        logoKind === "provider" && logoProviderId
-          ? { kind: "provider", providerId: logoProviderId }
-          : { kind: logoKind === "upload" || logoKind === "generated" ? logoKind : "ade" };
-      const accentColor = boundedText(raw.accentColor);
+      // One shared validator, so a detail that crossed the wire and one read
+      // locally cannot disagree about what a mark is.
+      const accentColor = normalizeMachineInventoryAccent(raw.accentColor);
       return [{
         id,
         name,
         harness,
         model,
-        logo,
-        ...(/^#[0-9a-fA-F]{6}$/.test(accentColor) ? { accentColor } : {}),
+        logo: normalizeMachineInventoryPresetLogo(raw.logo),
+        ...(accentColor ? { accentColor } : {}),
         bound: raw.bound === true,
       }];
     })

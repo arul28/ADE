@@ -125,7 +125,12 @@ const MACHINE_INVENTORY_LOGO_KINDS = new Set(["ade", "provider", "upload", "gene
 /** `#rrggbb`, the one accent form the renderer draws. */
 const MACHINE_INVENTORY_ACCENT_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
-function normalizePresetLogo(value: unknown): MachineInventoryPresetLogo {
+/**
+ * The one place a preset mark's identity is validated. Shared with the remote
+ * sanitizer so a detail that crossed the wire and one read locally cannot
+ * disagree about what a mark is.
+ */
+export function normalizeMachineInventoryPresetLogo(value: unknown): MachineInventoryPresetLogo {
   if (!value || typeof value !== "object") return { kind: "ade" };
   const candidate = value as Record<string, unknown>;
   const kind = typeof candidate.kind === "string" ? candidate.kind.trim().toLowerCase() : "";
@@ -137,20 +142,26 @@ function normalizePresetLogo(value: unknown): MachineInventoryPresetLogo {
   return { kind: kind as MachineInventoryPresetLogo["kind"] };
 }
 
+/** The preset accent, or undefined when it is not the one accepted form. */
+export function normalizeMachineInventoryAccent(value: unknown): string | undefined {
+  const accent = safeText(value, 16);
+  return MACHINE_INVENTORY_ACCENT_PATTERN.test(accent) ? accent : undefined;
+}
+
 function normalizePresetInput(value: MachineInventoryPresetInput): Omit<MachineInventoryPreset, "bound"> | null {
   const id = safeText(value.id);
   const name = safeText(value.name);
   const harness = safeText(value.harness);
   const model = safeText(value.model);
   if (!id || !name || !harness || !model) return null;
-  const accent = safeText(value.accentColor, 16);
+  const accent = normalizeMachineInventoryAccent(value.accentColor);
   return {
     id,
     name,
     harness,
     model,
-    logo: normalizePresetLogo(value.logo),
-    ...(MACHINE_INVENTORY_ACCENT_PATTERN.test(accent) ? { accentColor: accent } : {}),
+    logo: normalizeMachineInventoryPresetLogo(value.logo),
+    ...(accent ? { accentColor: accent } : {}),
   };
 }
 

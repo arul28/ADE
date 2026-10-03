@@ -679,6 +679,43 @@ func workUpstreamBrand(modelId: String) -> String? {
   return nil
 }
 
+/// Upstream maker families a model row or composer chip can wear a mark for.
+/// A gateway provider (OpenCode Go, OpenCode Zen, a custom endpoint) fronts
+/// models from many makers, so the route key alone would brand every row with
+/// the gateway.
+let workKnownUpstreamBrandKeys: Set<String> = [
+  "claude", "codex", "google", "xai", "grok", "deepseek", "kimi", "moonshot",
+  "qwen", "mistral", "groq", "openrouter", "together", "meta", "minimax",
+  "zai", "perplexity", "nvidia", "cohere", "huggingface", "cerebras",
+  "baseten", "fireworks", "xiaomi", "cursor", "droid", "copilot",
+]
+
+/// The maker named by a model id, for a route whose provider key names the
+/// gateway rather than the maker (`opencode-go/deepseek-v4.1-flash`). The
+/// shared table answers first; the rest is ordered so a compound id
+/// (`gpt-5-codex`, `claude-opus`) lands on one brand.
+func workUpstreamBrandInModelId(_ raw: String) -> String? {
+  let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard !id.isEmpty else { return nil }
+  if let shared = workUpstreamBrand(modelId: id) { return shared }
+  let checks: [(needle: String, brand: String)] = [
+    ("deepseek", "deepseek"),
+    ("kimi", "kimi"),
+    ("moonshot", "kimi"),
+    ("qwen", "qwen"),
+    ("glm", "zai"),
+    ("minimax", "minimax"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+    ("llama", "meta"),
+    ("grok", "grok"),
+  ]
+  for check in checks where id.contains(check.needle) {
+    return check.brand
+  }
+  return nil
+}
+
 /// Per-model row logo key. Mirrors desktop `ModelRowLogo` so Cursor/Droid/OpenCode
 /// rows show the upstream brand (Claude, OpenAI, Gemini, etc.) instead of the
 /// runtime group logo.
@@ -724,7 +761,7 @@ func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: Strin
     // (OpenCode Go's DeepSeek); prefer it over the route segment, which names
     // the gateway rather than the model's maker.
     let resolvedBrand = providerFamilyKey(model.provider)
-    if workKnownUpstreamBrandKeys.contains(resolvedBrand), resolvedBrand != "opencode" {
+    if workKnownUpstreamBrandKeys.contains(resolvedBrand) {
       return resolvedBrand
     }
     if modelId.hasPrefix("opencode/") {

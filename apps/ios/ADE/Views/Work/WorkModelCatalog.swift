@@ -1725,51 +1725,6 @@ func workPrettyModelNameFromId(_ raw: String?) -> String? {
     .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
 }
 
-/// Upstream maker families a model row or composer chip can wear a mark for.
-/// A gateway provider (OpenCode Go, OpenCode Zen, a custom endpoint) fronts
-/// models from many makers, so the route key alone would brand every row with
-/// the gateway. Kept internal so the picker's row-logo resolver reads the same
-/// list instead of re-stating it.
-let workKnownUpstreamBrandKeys: Set<String> = [
-  "claude", "codex", "google", "xai", "grok", "deepseek", "kimi", "moonshot",
-  "qwen", "mistral", "groq", "openrouter", "together", "meta", "minimax",
-  "zai", "perplexity", "nvidia", "cohere", "huggingface", "cerebras",
-  "baseten", "fireworks", "xiaomi", "cursor", "droid", "copilot",
-]
-
-/// The maker named by a model id, for a route whose provider key names the
-/// gateway rather than the maker (`opencode-go/deepseek-v4.1-flash`). First
-/// match wins, and the list is ordered so a compound id (`gpt-5-codex`,
-/// `claude-opus`) lands on one brand.
-func workUpstreamBrandInModelId(_ raw: String) -> String? {
-  let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  guard !id.isEmpty else { return nil }
-  let checks: [(needle: String, brand: String)] = [
-    ("deepseek", "deepseek"),
-    ("gemini", "google"),
-    ("kimi", "kimi"),
-    ("moonshot", "kimi"),
-    ("qwen", "qwen"),
-    ("glm", "zai"),
-    ("minimax", "minimax"),
-    ("mistral", "mistral"),
-    ("codestral", "mistral"),
-    ("llama", "meta"),
-    ("grok", "grok"),
-    ("claude", "claude"),
-    ("opus", "claude"),
-    ("sonnet", "claude"),
-    ("haiku", "claude"),
-    ("fable", "claude"),
-    ("gpt", "codex"),
-    ("codex", "codex"),
-  ]
-  for check in checks where id.contains(check.needle) {
-    return check.brand
-  }
-  return nil
-}
-
 func workModelBrandKey(
   topLevelProvider: String,
   providerKey: String,
@@ -1794,16 +1749,12 @@ func workModelBrandKey(
     return providerKey
   }
   // 1. The host's upstream family, when it names a maker.
-  if let family {
-    let normalizedFamily = providerFamilyKey(family)
-    if workKnownUpstreamBrandKeys.contains(normalizedFamily), normalizedFamily != "opencode" {
-      return normalizedFamily
-    }
+  if let family, workKnownUpstreamBrandKeys.contains(providerFamilyKey(family)) {
+    return providerFamilyKey(family)
   }
   // 2. The route key itself, when it names a maker.
-  let normalizedProvider = providerFamilyKey(provider)
-  if workKnownUpstreamBrandKeys.contains(normalizedProvider), normalizedProvider != "opencode" {
-    return normalizedProvider
+  if workKnownUpstreamBrandKeys.contains(providerFamilyKey(provider)) {
+    return providerFamilyKey(provider)
   }
   // 3. The maker named by the model id (OpenCode Go's `deepseek-v4.1-flash`).
   if let modelId, let inferred = workUpstreamBrandInModelId(modelId) { return inferred }

@@ -702,6 +702,11 @@ struct WorkNewChatScreen: View {
   /// The Custom harness the next launch runs under, when the user picked one
   /// from the Custom section. Cleared by any manual model choice.
   @State private var selectedPreset: SyncMachineInventoryPreset?
+  /// The preset id the persisted composer preference last sent with. Resolved
+  /// against the connected machine's list once it arrives, then dropped, so a
+  /// relaunch keeps the harness the user chose instead of silently falling back
+  /// to the machine's default sign-in.
+  @State private var restoredPresetId: String?
   @State private var sessionMode: WorkNewSessionMode = .chat
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
@@ -763,6 +768,7 @@ struct WorkNewChatScreen: View {
       _runtimeMode = State(initialValue: saved.runtimeMode)
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
+      _restoredPresetId = State(initialValue: saved.presetId)
     }
     // Restore the last explicitly chosen Chat/CLI interface for this project so
     // the choice survives app restarts, project switches, and launching a
@@ -824,7 +830,8 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       runtimeMode: runtimeMode,
       reasoningEffort: reasoningEffort,
-      codexFastMode: codexFastMode
+      codexFastMode: codexFastMode,
+      presetId: selectedPreset?.id
     )
   }
 
@@ -1050,6 +1057,7 @@ struct WorkNewChatScreen: View {
           if codexFastMode { codexFastMode = false }
           machineModelHint = nil
         },
+        selectedPresetId: selectedPreset?.id,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedPreset = nil
           selectedModelOption = option
@@ -1133,6 +1141,10 @@ struct WorkNewChatScreen: View {
       remoteLanes = []
       selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : (workNewChatPrimaryLane(lanes)?.id ?? "")
     } else {
+      // A saved Custom harness resolves against the machine that owns its key
+      // and sign-in. Another machine's picker hides presets for exactly that
+      // reason, so a selection made on the primary host must not ride along.
+      selectedPreset = nil
       selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : ""
       Task { await loadRemoteLanes(keepSelection: keepsAutoCreate) }
     }
@@ -1186,12 +1198,34 @@ struct WorkNewChatScreen: View {
     do {
       let detail = try await syncService.fetchMachineInventory(machineKey: machineKey)
       harnessPresets = detail.presets
+      resolveRestoredPreset()
       if let selectedPreset, !detail.presets.contains(where: { $0.id == selectedPreset.id }) {
         self.selectedPreset = nil
       }
     } catch {
       harnessPresets = []
     }
+  }
+
+  /// Re-adopt the harness the last send ran under, once the machine's list
+  /// proves the preset still exists and is bound. A manual pick already made
+  /// while the fetch was in flight wins, and a preset only belongs to the
+  /// primary host — the picker hides them for any other machine for the same
+  /// reason.
+  @MainActor
+  private func resolveRestoredPreset() {
+    guard selectedMachineKey == nil,
+          selectedPreset == nil,
+          selectedModelOption == nil,
+          let restoredPresetId else { return }
+    self.restoredPresetId = nil
+    guard let preset = harnessPresets.first(where: { $0.id == restoredPresetId && $0.bound }) else { return }
+    selectedPreset = preset
+    modelId = preset.model
+    provider = sessionMode == .chat
+      ? workNormalizedChatProvider(preset.harness)
+      : preset.harness
+    machineModelHint = nil
   }
 
   /// The chosen model needs an account on the chosen machine. When that
@@ -1358,8 +1392,7 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       modelName: selectedPreset?.name ?? prettyNewChatModelName(modelId),
       modelBrandKey: modelBrandKey,
-      presetMark: selectedPreset?.logo,
-      presetAccentColor: selectedPreset?.accentColor,
+      preset: selectedPreset,
       busy: busy,
       canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
       attachmentsAvailable: attachmentsAvailable,
@@ -1894,10 +1927,9 @@ private struct WorkNewChatComposerBar: View {
   let modelName: String
   /// The model pill's mark, resolved upstream of the gateway route.
   let modelBrandKey: String
-  /// A selected Custom harness's own mark and accent, which replace the
-  /// provider mark while the composer runs on that preset.
-  let presetMark: SyncMachineInventoryPresetLogo?
-  let presetAccentColor: String?
+  /// A selected Custom harness, whose own mark and accent replace the provider
+  /// mark while the composer runs on it.
+  let preset: SyncMachineInventoryPreset?
   let busy: Bool
   let canStart: Bool
   let attachmentsAvailable: Bool
@@ -1993,8 +2025,7 @@ private struct WorkNewChatComposerBar: View {
             provider: provider,
             modelDisplayName: modelName,
             modelBrandKey: modelBrandKey,
-            presetMark: presetMark,
-            presetAccentColor: presetAccentColor,
+            preset: preset,
             reasoningEffort: reasoningEffort,
             currentMode: runtimeMode,
             modeOptions: runtimeOptions,

@@ -180,7 +180,6 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   // An empty model is fine: the launch service auto-picks one (same as chat.create).
   const create: ChatLaunchChatArgs["create"] = {
     ...parseAgentChatCreateFields(rawCreate),
-    ...(asTrimmedString(rawCreate.presetId) ? { presetId: asTrimmedString(rawCreate.presetId)! } : {}),
     ...(asTrimmedString(rawCreate.credentialId) ? { credentialId: asTrimmedString(rawCreate.credentialId)! } : {}),
     ...(asTrimmedString(rawCreate.instanceId) ? { instanceId: asTrimmedString(rawCreate.instanceId)! } : {}),
   };

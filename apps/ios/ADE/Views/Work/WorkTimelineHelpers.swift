@@ -2340,7 +2340,10 @@ private let workTurnFoldTrivialEventKinds: Set<String> = [
 private func workTurnFoldNoticeRole(_ card: WorkEventCardModel) -> WorkTurnFoldRole {
   if card.spawnCompletionChildId != nil { return .history }
   if card.tint == .danger { return .keep }
-  let kind = (card.metadata.first ?? "").lowercased().replacingOccurrences(of: " ", with: "_")
+  // The card carries the host's raw kind; the metadata label is only the
+  // fallback for a card built before it did.
+  let kind = card.noticeKind?.lowercased()
+    ?? (card.metadata.first ?? "").lowercased().replacingOccurrences(of: " ", with: "_")
   switch kind {
   case "auth", "provider_health", "thread_error", "error", "rate_limit":
     return .keep
@@ -3762,16 +3765,26 @@ func buildWorkEventCards(
 // MARK: - Mobile diagnostics fold
 
 /// A card the diagnostics fold can absorb: a per-turn "Turn details" receipt,
-/// or a routine warning notice (the `notice` kind whose tint is `.warning` —
-/// Codex config warnings, hook notices, rate-limit warnings).
+/// or a routine notice — the kinds desktop also files as history (Codex config
+/// warnings, hook notices, rate-limit warnings).
 ///
 /// Deliberately narrow. Danger notices (auth, thread errors) and actionable
 /// notices (a reset credit, a host sleep, a spawn chip) keep their own rows,
 /// because those are what the user acts on next.
 func workIsFoldableDiagnosticCard(_ card: WorkEventCardModel) -> Bool {
   if card.kind == "turnDiagnostics" { return true }
-  return card.kind == "notice" && card.tint == .warning
+  guard card.kind == "notice" else { return false }
+  if let noticeKind = card.noticeKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+     workRoutineNoticeKinds.contains(noticeKind) {
+    return true
+  }
+  // A host too old to send a kind the phone knows still folds by tint.
+  return card.tint == .warning
 }
+
+/// Notice kinds desktop folds into a turn's history rather than drawing as an
+/// actionable row (`classifySystemNotice` in `chatTurnFold.ts`).
+private let workRoutineNoticeKinds: Set<String> = ["warning", "hook", "rate_limit", "config"]
 
 /// Mobile-only consolidation of startup diagnostics.
 ///
@@ -3809,6 +3822,18 @@ func foldingWorkDiagnosticCards(_ cards: [WorkEventCardModel]) -> [WorkEventCard
   return folded
 }
 
+/// One row per distinct sentence, so a host that repeats the same warning in
+/// two turns cannot make the disclosure read as two different warnings. Shared
+/// by the diagnostics fold and the same-id card merge.
+func dedupedWorkDiagnosticWarnings(
+  _ warnings: [WorkTurnDiagnosticWarning]
+) -> [WorkTurnDiagnosticWarning] {
+  var seen = Set<String>()
+  return warnings.filter { warning in
+    seen.insert("\(warning.title)\u{1F}\(warning.message)").inserted
+  }
+}
+
 private func mergedWorkDiagnosticCards(_ cards: [WorkEventCardModel]) -> WorkEventCardModel {
   var timestamp = cards.first?.timestamp ?? ""
   var moderationChecks = 0
@@ -3832,10 +3857,7 @@ private func mergedWorkDiagnosticCards(_ cards: [WorkEventCardModel]) -> WorkEve
 
   // One row per distinct sentence: a host that repeats the same warning in two
   // turns should not make the disclosure read as two different warnings.
-  var seenWarnings = Set<String>()
-  warnings = warnings.filter { warning in
-    seenWarnings.insert("\(warning.title)\u{1F}\(warning.message)").inserted
-  }
+  warnings = dedupedWorkDiagnosticWarnings(warnings)
   let normalizedFailures = normalizedWorkIntegrationFailures(integrationFailures)
 
   return WorkEventCardModel(
@@ -4495,10 +4517,9 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
     let normalizedFailures = normalizedWorkIntegrationFailures(
       existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
     )
-    var seenWarnings = Set<String>()
-    let mergedWarnings = (existing.diagnosticWarnings + incoming.diagnosticWarnings).filter { warning in
-      seenWarnings.insert("\(warning.title)\u{1F}\(warning.message)").inserted
-    }
+    let mergedWarnings = dedupedWorkDiagnosticWarnings(
+      existing.diagnosticWarnings + incoming.diagnosticWarnings
+    )
     return WorkEventCardModel(
       id: incoming.id,
       kind: incoming.kind,
@@ -4846,6 +4867,9 @@ func eventCard(
         body: message,
         bullets: detail.map { [$0] } ?? [],
         metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized],
+        // The raw kind, so the diagnostics fold can treat a routine kind whose
+        // tint is not amber (a Codex `config` notice) as foldable.
+        noticeKind: kind,
         // Resolved here, once per card, rather than re-parsed on every timeline
         // rebuild by the fold. The wording stays exactly as the host wrote it —
         // only the child key is lifted out of the detail.
@@ -5506,25 +5530,9 @@ private func prettyWorkChatBaseModelName(_ trimmed: String) -> String {
   if let known = workKnownModelDisplayName(trimmed) {
     return known
   }
-  switch trimmed.lowercased() {
-  case let lower where lower.hasPrefix("claude-"):
-    return "Claude " + beautifyWorkModelSegment(String(trimmed.dropFirst("claude-".count)))
-  default:
-    return beautifyWorkModelSegment(trimmed)
-  }
-}
-
-private func beautifyWorkModelSegment(_ raw: String) -> String {
-  raw
-    .split(separator: "-")
-    .map { part -> String in
-      let s = String(part)
-      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-      if s.lowercased() == "gpt" { return "GPT" }
-      return s.prefix(1).uppercased() + s.dropFirst()
-    }
-    .joined(separator: " ")
-    .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+  // The canonical route-aware prettifier: a gateway id renders as its model
+  // ("DeepSeek V4.1 Flash"), never as "Opencode/opencode Go/deepseek …".
+  return workPrettyModelNameFromId(trimmed) ?? trimmed
 }
 
 func makeWorkUsageSummary(

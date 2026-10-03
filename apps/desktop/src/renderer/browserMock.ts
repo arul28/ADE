@@ -4381,8 +4381,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           // One preset bound to something this machine has, one that is not:
           // the unbound row is the state the "not set up here" note exists for.
           presets: [
-            { id: "hp_1", name: "Opus on work account", harness: "claude", model: "claude-opus-4-1", bound: true },
-            { id: "hp_9", name: "Droid on a key this Mac lacks", harness: "droid", model: "claude-sonnet-4-5", bound: false },
+            {
+              id: "hp_1",
+              name: "Opus on work account",
+              harness: "claude",
+              model: "claude-opus-4-1",
+              logo: { kind: "provider", providerId: "anthropic" },
+              accentColor: "#7c5ce0",
+              bound: true,
+            },
+            {
+              id: "hp_9",
+              name: "Droid on a key this Mac lacks",
+              harness: "droid",
+              model: "claude-sonnet-4-5",
+              logo: { kind: "ade" },
+              bound: false,
+            },
           ],
         }),
         listMachines: async () => {
