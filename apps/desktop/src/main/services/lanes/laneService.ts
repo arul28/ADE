@@ -4959,9 +4959,10 @@ export function createLaneService({
           // attempt would see a folder and stop without a reason.
           await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
           if (fs.existsSync(targetPath)) await removeWorktreeDirectoryWithRecovery(targetPath).catch(() => undefined);
-          // If `remove` could not clear a half-made entry, the folder is gone
-          // now and git reports it prunable; drop it so the next `add` works.
-          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
+          // With the folder gone, a path-scoped `remove` clears an entry the
+          // first one could not. Never a repository-wide `prune`: that would
+          // also drop other lanes whose folders are only briefly missing.
+          await runGit(["worktree", "remove", "--force", targetPath], { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => null);
           throw error;
         } finally {
           untrack();
