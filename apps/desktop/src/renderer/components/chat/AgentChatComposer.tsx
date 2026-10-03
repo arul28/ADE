@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -66,6 +66,8 @@ import {
 import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
+  CHAT_MENTION_DND_MIME,
+  parseChatMentionDragPayload,
   isChatMentionTokenBody,
   parseChatMentions,
   chatMentionKindFromToken,
@@ -1293,6 +1295,23 @@ function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | 
 }
 
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
+/** Drag payload type for a staged message, so file drops never read as a reorder. */
+const PENDING_STEER_DND_MIME = "application/x-ade-pending-steer";
+
+type PendingSteerReorder = {
+  index: number;
+  count: number;
+  dragging: boolean;
+  dropEdge: "before" | "after" | null;
+  /** Move this row to `toIndex` in the current list. */
+  onMove: (toIndex: number) => void;
+  onDragStart: () => void;
+  onDragOverRow: (edge: "before" | "after") => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
+  handleRef: (element: HTMLButtonElement | null) => void;
+};
+
 function PendingSteerItem({
   steer,
   capability,
@@ -1300,6 +1319,8 @@ function PendingSteerItem({
   onEdit,
   onSendNow,
   onInterrupt,
+  reorder,
+  attachmentTray,
 }: {
   steer: {
     steerId: string;
@@ -1312,11 +1333,71 @@ function PendingSteerItem({
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
+  /** Present only when the queue can be reordered and holds more than one row. */
+  reorder?: PendingSteerReorder;
+  /** The message's files and context, as the composer's own tray draws them. */
+  attachmentTray?: React.ReactNode;
 }) {
   const interruptCopy = activeTurnSendCopy("interrupt", capability);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   return (
-    <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
-      <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+    <div
+      ref={rowRef}
+      data-testid="pending-steer-item"
+      className={cn(
+        "group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5 transition-opacity",
+        reorder?.dragging && "opacity-40",
+        reorder?.dropEdge === "before" && "shadow-[inset_0_2px_0_var(--chat-accent)]",
+        reorder?.dropEdge === "after" && "shadow-[inset_0_-2px_0_var(--chat-accent)]",
+      )}
+      onDragOver={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        reorder.onDragOverRow(event.clientY < rect.top + rect.height / 2 ? "before" : "after");
+      } : undefined}
+      onDrop={reorder ? (event) => {
+        if (!event.dataTransfer.types.includes(PENDING_STEER_DND_MIME)) return;
+        event.preventDefault();
+        reorder.onDrop();
+      } : undefined}
+    >
+      {reorder ? (
+        <SmartTooltip forceEnabled side="left" content={{ label: "Reorder", description: "Drag to change when this message is sent, or focus and use the arrow keys." }}>
+          <button
+            type="button"
+            ref={reorder.handleRef}
+            draggable
+            data-testid="pending-steer-reorder-handle"
+            aria-label={`Reorder queued message, position ${reorder.index + 1} of ${reorder.count}`}
+            aria-keyshortcuts="ArrowUp ArrowDown Home End"
+            className="-ml-1 inline-flex h-4 w-3.5 shrink-0 cursor-grab items-center justify-center rounded text-[var(--chat-accent)]/45 hover:text-[var(--chat-accent)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 active:cursor-grabbing"
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(PENDING_STEER_DND_MIME, steer.steerId);
+              if (rowRef.current) event.dataTransfer.setDragImage(rowRef.current, 12, 12);
+              reorder.onDragStart();
+            }}
+            onDragEnd={reorder.onDragEnd}
+            onKeyDown={(event) => {
+              const target = event.key === "ArrowUp" ? reorder.index - 1
+                : event.key === "ArrowDown" ? reorder.index + 1
+                  : event.key === "Home" ? 0
+                    : event.key === "End" ? reorder.count - 1
+                      : null;
+              if (target == null) return;
+              event.preventDefault();
+              if (target < 0 || target >= reorder.count || target === reorder.index) return;
+              reorder.onMove(target);
+            }}
+          >
+            <DotsSixVertical size={11} weight="bold" />
+          </button>
+        </SmartTooltip>
+      ) : (
+        <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
+      )}
       <div className="flex-1 min-w-0">
         <div className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.14em] text-[var(--chat-accent)]/60">
           Sends after turn
@@ -1324,6 +1405,7 @@ function PendingSteerItem({
         <div className="truncate text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/62">
           {steer.text}
         </div>
+        {attachmentTray}
       </div>
       {/* Hidden until hover ONLY where hovering exists. A touch pointer never
           hovers, so gating on `opacity-0` alone left every queued-message
@@ -1458,12 +1540,14 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  canReorder?: boolean;
   /** Why some staged messages cannot be sent during the turn, when any cannot. */
   inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
     ...(args.canInterrupt ? ["interrupt with this message"] : []),
+    ...(args.canReorder ? ["drag to reorder"] : []),
     "edit",
     "remove",
   ];
@@ -1900,6 +1984,7 @@ export function AgentChatComposer({
   onEditSteer,
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
+  onMoveSteer,
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
@@ -2152,6 +2237,12 @@ export function AgentChatComposer({
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
   /**
+   * Moves a staged message to `toIndex`. Absent when the provider keeps its own
+   * queue (see `queuedSteersCanReorder`). Rejects when the host refused, which
+   * drops the optimistic order.
+   */
+  onMoveSteer?: (steerId: string, toIndex: number) => Promise<void>;
+  /**
    * Active-turn split-button primary: submit the current draft and immediately
    * fold it into the running turn (Claude Code parity). Only supplied for
    * providers whose runtime can dispatch a queued steer into a live turn.
@@ -2319,6 +2410,61 @@ export function AgentChatComposer({
       + appControlContextItems.length
       + builtInBrowserContextItems.length,
   });
+  // Staged-queue reorder. The host publishes the order back as an event, so
+  // the local order is optimistic only until the list it overrides changes.
+  const [optimisticSteerOrder, setOptimisticSteerOrder] = useState<string[] | null>(null);
+  const [steerDrag, setSteerDrag] = useState<{
+    steerId: string;
+    over: { steerId: string; edge: "before" | "after" } | null;
+  } | null>(null);
+  const steerHandleRefs = useRef(new Map<string, HTMLButtonElement>());
+  const focusSteerHandleRef = useRef<string | null>(null);
+  const pendingSteerOrderKey = pendingSteers.map((steer) => steer.steerId).join("\u0000");
+  useEffect(() => {
+    setOptimisticSteerOrder(null);
+  }, [pendingSteerOrderKey]);
+  const orderedPendingSteers = useMemo(() => {
+    if (!optimisticSteerOrder) return pendingSteers;
+    const rank = new Map(optimisticSteerOrder.map((id, index) => [id, index] as const));
+    return [...pendingSteers].sort((a, b) =>
+      (rank.get(a.steerId) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.steerId) ?? Number.MAX_SAFE_INTEGER));
+  }, [pendingSteers, optimisticSteerOrder]);
+  const canReorderSteers = Boolean(onMoveSteer) && orderedPendingSteers.length > 1;
+  useLayoutEffect(() => {
+    const steerId = focusSteerHandleRef.current;
+    if (!steerId) return;
+    focusSteerHandleRef.current = null;
+    steerHandleRefs.current.get(steerId)?.focus();
+  });
+  const moveStagedSteer = (steerId: string, toIndex: number, options?: { focus?: boolean }) => {
+    if (!onMoveSteer) return;
+    const ids = orderedPendingSteers.map((steer) => steer.steerId);
+    const from = ids.indexOf(steerId);
+    if (from === -1 || toIndex === from) return;
+    ids.splice(from, 1);
+    ids.splice(toIndex, 0, steerId);
+    setOptimisticSteerOrder(ids);
+    // Blur, then refocus once the row has moved: arrow keys keep moving the
+    // same message, and the blur closes the handle's tooltip, which is
+    // positioned once and would otherwise stay over the row's old slot.
+    if (options?.focus) {
+      steerHandleRefs.current.get(steerId)?.blur();
+      focusSteerHandleRef.current = steerId;
+    }
+    void onMoveSteer(steerId, toIndex).catch(() => setOptimisticSteerOrder(null));
+  };
+  const dropStagedSteer = () => {
+    const drag = steerDrag;
+    setSteerDrag(null);
+    if (!drag?.over || drag.over.steerId === drag.steerId) return;
+    const ids = orderedPendingSteers.map((steer) => steer.steerId);
+    const from = ids.indexOf(drag.steerId);
+    const targetIndex = ids.indexOf(drag.over.steerId);
+    if (from === -1 || targetIndex === -1) return;
+    const insertAt = targetIndex + (drag.over.edge === "after" ? 1 : 0);
+    moveStagedSteer(drag.steerId, insertAt > from ? insertAt - 1 : insertAt);
+  };
+
   const stagedSteerInlineBlock = (steer: {
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
@@ -2372,7 +2518,7 @@ export function AgentChatComposer({
   }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
@@ -5454,11 +5600,18 @@ export function AgentChatComposer({
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
+    if (event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)) {
+      if (composerInputLocked) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive("reference");
+      return;
+    }
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
     const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
     if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
-    setDragActive(true);
+    setDragActive("files");
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -5470,6 +5623,23 @@ export function AgentChatComposer({
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     setDragActive(false);
+    const mention = event.dataTransfer.types.includes(CHAT_MENTION_DND_MIME)
+      ? parseChatMentionDragPayload(event.dataTransfer.getData(CHAT_MENTION_DND_MIME))
+      : null;
+    if (mention) {
+      event.preventDefault();
+      if (composerInputLocked || mention.id === sessionId) return;
+      const token = formatChatMentionToken(mention.kind, mention.id);
+      mentionLabelsRef.current.set(token, mention.title);
+      onMentionLabelChange?.(token, mention.title);
+      if (useRichComposer) {
+        insertTextIntoRichEditor(`${token} `);
+      } else {
+        const separator = draft.length && !/\s$/.test(draft) ? " " : "";
+        onDraftChange(`${draft}${separator}${token} `);
+      }
+      return;
+    }
     const hasFiles = event.dataTransfer.files.length > 0;
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!hasFiles && !hasUriList)) return;
@@ -7100,7 +7270,7 @@ export function AgentChatComposer({
         >
           {dragActive ? (
             <div className="pointer-events-none absolute inset-0 z-[1]">
-              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
+              <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} reference={dragActive === "reference"} />
             </div>
           ) : null}
 
@@ -7451,17 +7621,48 @@ export function AgentChatComposer({
                 canSendNow: Boolean(onDispatchSteerInline)
                   && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
                 canInterrupt: Boolean(onDispatchSteerInterrupt),
+                canReorder: canReorderSteers,
                 inlineBlockedReason: onDispatchSteerInline
                   ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
                   : null,
               })}
             </span>
           </div>
-          {pendingSteers.map((steer) => (
+          {orderedPendingSteers.map((steer, index) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
               capability={activeTurnSendCapability}
+              attachmentTray={steer.attachments.length || steer.contextAttachments.length ? (
+                <ChatAttachmentTray
+                  attachments={steer.attachments}
+                  contextAttachments={steer.contextAttachments}
+                  machinePin={composerMachineBinding}
+                  mode={surfaceMode}
+                  className="mt-1 gap-1.5 px-0 py-0"
+                />
+              ) : null}
+              reorder={canReorderSteers ? {
+                index,
+                count: orderedPendingSteers.length,
+                dragging: steerDrag?.steerId === steer.steerId,
+                dropEdge: steerDrag?.over?.steerId === steer.steerId && steerDrag.steerId !== steer.steerId
+                  ? steerDrag.over.edge
+                  : null,
+                onMove: (toIndex) => moveStagedSteer(steer.steerId, toIndex, { focus: true }),
+                onDragStart: () => setSteerDrag({ steerId: steer.steerId, over: null }),
+                onDragOverRow: (edge) => setSteerDrag((current) => (
+                  current && (current.over?.steerId !== steer.steerId || current.over.edge !== edge)
+                    ? { ...current, over: { steerId: steer.steerId, edge } }
+                    : current
+                )),
+                onDrop: () => dropStagedSteer(),
+                onDragEnd: () => setSteerDrag(null),
+                handleRef: (element) => {
+                  if (element) steerHandleRefs.current.set(steer.steerId, element);
+                  else steerHandleRefs.current.delete(steer.steerId);
+                },
+              } : undefined}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,

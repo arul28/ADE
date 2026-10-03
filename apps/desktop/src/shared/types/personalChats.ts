@@ -14,6 +14,7 @@ import type {
   AgentChatRestoreCancelledQueueArgs,
   AgentChatDispatchSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   PendingInputRequest,
@@ -44,6 +45,7 @@ export const PERSONAL_CHAT_ACTIONS = [
   "steer",
   "cancelSteer",
   "editSteer",
+  "moveSteer",
   "dispatchSteer",
   "cancelDispatchedSteer",
   "interrupt",
@@ -130,6 +132,7 @@ export type PersonalChatCallArgs =
   | { action: "steer"; args: AgentChatSteerArgs }
   | { action: "cancelSteer"; args: AgentChatCancelSteerArgs }
   | { action: "editSteer"; args: AgentChatEditSteerArgs }
+  | { action: "moveSteer"; args: AgentChatMoveSteerArgs }
   | { action: "dispatchSteer"; args: AgentChatDispatchSteerArgs }
   | { action: "cancelDispatchedSteer"; args: AgentChatCancelDispatchedSteerArgs }
   | { action: "interrupt"; args: AgentChatInterruptArgs }

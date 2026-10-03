@@ -5574,6 +5574,15 @@ async function runTool(args: {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
     }
+    if (domain === "chat" && action === "updateSession" && !argsList && !hasScalarArg) {
+      // Only the runtime sets this flag, whatever the caller sent: an agent's
+      // update may never lift a spawned chat above its parent's permissions.
+      // The user's own clients and the CTO may.
+      const { enforceParentPermissionCeiling: _callerValue, ...rest } = scopedObjectArgs;
+      scopedObjectArgs = isUserClient || callerIsCto
+        ? rest
+        : { ...rest, enforceParentPermissionCeiling: true };
+    }
     if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
       // Same remote-first default as the `create_lane` tool and the sync
       // layer's `lanes.create`: a base-less `ade actions run lane.create`

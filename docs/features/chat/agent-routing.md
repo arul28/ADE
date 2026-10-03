@@ -1378,6 +1378,27 @@ Two rules keep it honest:
 Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
 reverse, and Codex is where it matters: both axes are required for `full-auto`,
 because "never ask" with `workspace-write` is a user who still wants a sandbox.
+
+### Parent permission ceiling
+
+A spawned chat (`orchestrationParentSessionId` set) never runs with more
+freedom than the chat that started it, in any provider. `sessionPermissionLevel`
+reads each session's concrete fields onto the ladder and
+`permissionFieldsForLevel` writes a level back in the child's own vocabulary.
+A field the ladder cannot read resolves in the safe direction for its side: an
+unreadable parent counts as `ask`, an unreadable child (Codex `config-toml`, a
+Cursor `agent` mode) as above it, so the child is pinned to explicit flags.
+
+- **At creation** (`createSessionInternal`) a child above its parent is clamped
+  to the parent's level, and the child's transcript gets one info notice
+  ("Permissions capped at … to match the chat that started this one").
+  Identity-pinned sessions keep their locked mode.
+- **On update** an agent cannot lift a spawned chat above its parent:
+  `updateSession` refuses when `enforceParentPermissionCeiling` is set, and only
+  the runtime sets it — `adeRpcServer` strips any caller-sent value and stamps it
+  on every `chat.updateSession` that does not come from a user client or the
+  CTO. A person raising a subagent's mode in the desktop, web, or phone UI is
+  not limited.
 Treating that as `full-auto` would hand Claude `bypassPermissions` on a family
 switch — unsandboxed, in a family with no sandbox axis at all. OpenCode
 `config-toml` reads as `ask` for the same reason: it defers to the user's own
@@ -1576,6 +1597,36 @@ logged. The check runs on every `done` event, ACP turns included: an ACP turn
 whose `done.servedModel` names another model is logged the same way. Claude's
 served model comes from `claudeTurnUsage.ts` (`pickClaudeLeadingModelUsage`,
 `resolveClaudeServedModel`).
+
+## Fork from an earlier turn
+
+`handoffSession({ mode: "fork", throughTurnId })` forks only the conversation
+through one finished turn ("Fork from here" on a turn's end line; `ade chat
+fork --through-turn <turn-id>`). `sliceTranscriptThroughTurn` cuts the source
+transcript after that turn's last envelope and refuses a turn that is missing or
+never got its `done`. The latest turn is an ordinary full fork. An earlier one
+forks natively only where the provider can cut at a turn — Codex to Codex on a
+server with `thread/fork beforeTurnId` (the id of the next turn) — and
+everywhere else the kept turns travel as a transcript replay, the same portable
+context a cross-provider fork uses. The new chat's copied history holds only
+the kept turns; the source chat is not changed. The desktop fork form shows the
+chosen point ("From the turn that ended at …") with a **Whole chat** escape.
+
+## Machine launch defaults
+
+The model and settings a person last launched or switched a chat to are kept by
+the brain, one record per machine, in `<ADE home>/chat-launch-defaults.json`
+(`chatLaunchDefaults.ts`). A top-level Work chat's creation writes it, and so
+does a user's `updateSession` that changes model, effort, Fast, or any
+permission field; subagents, CTO and identity chats, automation runs, and agent
+updates do not. Every client reads `chat.getLaunchDefaults` to seed a new chat
+ahead of its own local memory: the desktop draft composer (refetched when the
+target machine changes, a chat is created, or the window regains focus), the
+iOS new-chat screen (while the user has not picked anything there, chat mode,
+focused machine), and the TUI on connect (while its model is the one it opened
+on). An older brain answers nothing and each client keeps its own last choice.
+The service only writes the file when built with `machineAdeHome`; tests and
+embedders keep the record in memory.
 
 ## Model switching mid-session
 

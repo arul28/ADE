@@ -202,6 +202,7 @@ import {
   fitTranscriptReplayTextToBudget,
   replayContextSharePercent,
   replayMaxCharsForProvider,
+  sliceTranscriptThroughTurn,
   toReplayForkDisclosure,
   type TranscriptReplayFit,
 } from "./crossProviderReplayFork";
@@ -252,6 +253,15 @@ import {
 } from "../builtInBrowser/builtInBrowserActorCapabilities";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneLaunchContext";
+import { launchDefaultsFromSession, readChatLaunchDefaults, writeChatLaunchDefaults } from "./chatLaunchDefaults";
+import {
+  permissionFieldsForLevel,
+  permissionLevelLabel,
+  permissionLevelRank,
+  sessionPermissionLevel,
+  type PermissionLevel,
+  type SessionPermissionFields,
+} from "../../../shared/permissionLadder";
 import {
   compactChatEventForStorage,
   compactRunningCommandOutput,
@@ -426,6 +436,8 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatDisposeArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -601,6 +613,7 @@ import {
   AgentChatBackgroundTurnResult,
   AgentChatBackgroundTurnStatus,
   activeTurnDispatchModes,
+  queuedSteersCanReorder,
   defaultActiveTurnDispatchMode,
   providerSupportsLiveRedirect,
   supportsActiveTurnDispatchMode,
@@ -6651,13 +6664,41 @@ function forgetPersistedSteer(managed: ManagedChatSession, steerId: string): voi
   ids.add(steerId);
 }
 
+/**
+ * Order set by `moveSteer` on a torn-down session, applied the same way the
+ * cancel tombstones are: `persistChatState` carries the persisted queue forward
+ * through `survivingPersistedSteers`, so the order has to be applied there or
+ * the next write would restore the old one.
+ */
+const persistedSteerOrder = new WeakMap<ManagedChatSession, string[]>();
+
 function survivingPersistedSteers(
   managed: ManagedChatSession,
   steers: readonly PersistedPendingSteer[],
 ): PersistedPendingSteer[] {
   const cancelled = cancelledPersistedSteerIds.get(managed);
-  if (!cancelled?.size) return [...steers];
-  return steers.filter((steer) => !cancelled.has(steer.steerId));
+  const surviving = cancelled?.size ? steers.filter((steer) => !cancelled.has(steer.steerId)) : [...steers];
+  const order = persistedSteerOrder.get(managed);
+  if (!order?.length) return surviving;
+  const rank = new Map(order.map((id, index) => [id, index] as const));
+  // Stable: rows the order does not name keep their place after the named ones.
+  return surviving
+    .map((steer, index) => ({ steer, key: rank.get(steer.steerId) ?? order.length + index }))
+    .sort((a, b) => a.key - b.key)
+    .map(({ steer }) => steer);
+}
+
+/**
+ * `ids` with `id` moved to `toIndex` (clamped), or null when `id` is absent.
+ * Returns the same order when the move is a no-op.
+ */
+function moveId(ids: readonly string[], id: string, toIndex: number): string[] | null {
+  const from = ids.indexOf(id);
+  if (from === -1) return null;
+  const next = ids.filter((candidate) => candidate !== id);
+  const target = Math.max(0, Math.min(next.length, Number.isFinite(toIndex) ? Math.trunc(toIndex) : from));
+  next.splice(target, 0, id);
+  return next;
 }
 
 function cursorSdkSilentRunError(): Error {
@@ -9541,6 +9582,11 @@ export type ChatAccountUsage = {
 
 export function createAgentChatService(args: {
   projectRoot: string;
+  /**
+   * Machine ADE home where this machine's chat launch defaults live. Absent
+   * (tests, embedders) keeps them in memory only, never in someone's real home.
+   */
+  machineAdeHome?: string | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -16245,10 +16291,71 @@ export function createAgentChatService(args: {
     return sha.length ? sha : null;
   };
 
+  /**
+   * The ceiling a parent chat puts on a child's permissions: null when the
+   * child is at or below the parent's level, otherwise the fields that bring
+   * the child down to it. A parent ADE cannot load caps at `ask`.
+   */
+  const resolveParentPermissionCeiling = (
+    parentSessionId: string,
+    child: SessionPermissionFields,
+  ): { level: PermissionLevel; requested: PermissionLevel; patch: ReturnType<typeof permissionFieldsForLevel> } | null => {
+    let parent: AgentChatSession | null = null;
+    try {
+      parent = ensureManagedSession(parentSessionId).session;
+    } catch {
+      parent = null;
+    }
+    const parentLevel = parent ? sessionPermissionLevel(parent, "ask") : "ask";
+    const requested = sessionPermissionLevel(child, "full-auto");
+    if (permissionLevelRank(requested) <= permissionLevelRank(parentLevel)) return null;
+    return { level: parentLevel, requested, patch: permissionFieldsForLevel(child.provider, parentLevel) };
+  };
+
   const resolveManagedExecutionLaneId = (managed: ManagedChatSession): string =>
     trimLine(managed.preferredExecutionLaneId)
     ?? trimLine(managed.selectedExecutionLaneId)
     ?? managed.session.laneId;
+
+  /**
+   * Before a fresh turn, rebuild the lane worktree if its folder vanished, so
+   * the send runs instead of failing in `resolveLaneLaunchContext`. Every
+   * refusal (archived, branch gone, locked, outside ADE's folder) leaves the
+   * existing "Restore or recreate the lane" error to surface unchanged. A
+   * success is announced in the transcript: uncommitted edits in the old
+   * folder are gone, and the agent must not assume its earlier files exist.
+   */
+  const recoverMissingLaneWorktree = async (managed: ManagedChatSession): Promise<void> => {
+    if (resolvePersonalHostCwd(managed.session)) return;
+    const recreate = laneService.recreateMissingWorktree;
+    if (!recreate) return;
+    // No pre-check here: the execution lane can differ from the one the
+    // runtime last resolved, and the service returns before any git work when
+    // the folder exists (one row read and one stat).
+    const laneId = resolveManagedExecutionLaneId(managed);
+    let result: Awaited<ReturnType<typeof recreate>>;
+    try {
+      result = await recreate({ laneId });
+    } catch (error) {
+      logger.warn("agent_chat.worktree_recreate_failed", {
+        sessionId: managed.session.id,
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (!result.recreated) {
+      if (result.reason) {
+        logger.info("agent_chat.worktree_recreate_skipped", { sessionId: managed.session.id, laneId, reason: result.reason });
+      }
+      return;
+    }
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `The lane's worktree folder was missing, so ADE recreated it from branch '${result.branch}'. Uncommitted changes from the old folder are gone.`,
+    });
+  };
 
   const refreshHeadShaStartForManagedExecutionLane = async (managed: ManagedChatSession): Promise<void> => {
     const headStart = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
@@ -39784,6 +39891,117 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Child completions waiting to wake an idle parent together. A parent that is
+   * mid-turn takes each result inline as it lands, at no extra cost; an idle
+   * parent would otherwise start one full turn per finished child, so results
+   * from siblings that finish close together share one wake. A batch flushes as
+   * soon as no sibling subagent is still running, or after the hold limit.
+   */
+  type PendingParentWake = {
+    entries: Array<{
+      childSessionId: string;
+      wakeText: string;
+      spawnCompletion: AgentChatSpawnCompletion;
+      resolve: () => void;
+      reject: (error: unknown) => void;
+    }>;
+    timer: ReturnType<typeof setTimeout> | null;
+    startedAt: number;
+  };
+  const pendingParentWakes = new Map<string, PendingParentWake>();
+  /** Longest an idle parent waits for siblings before its wake goes anyway. */
+  const PARENT_WAKE_BATCH_HOLD_MS = 15_000;
+
+  const parentHasRunningSubagent = (parentSessionId: string, exceptChildId: string): boolean => {
+    for (const candidate of managedSessions.values()) {
+      if (candidate.deleted || candidate.session.id === exceptChildId) continue;
+      if (candidate.session.orchestrationParentSessionId?.trim() !== parentSessionId) continue;
+      if (candidate.session.spawnKind !== "subagent") continue;
+      if (candidate.session.status === "active" || runtimeMidTurn(candidate)) return true;
+    }
+    return false;
+  };
+
+  const flushParentWake = async (parentSessionId: string): Promise<void> => {
+    const batch = pendingParentWakes.get(parentSessionId);
+    if (!batch) return;
+    pendingParentWakes.delete(parentSessionId);
+    if (batch.timer) clearTimeout(batch.timer);
+    const [lead, ...rest] = batch.entries;
+    if (!lead) return;
+    try {
+      const parent = ensureManagedSession(parentSessionId);
+      const text = rest.length
+        ? [`${batch.entries.length} of your subagents finished:`, ...batch.entries.map((entry) => entry.wakeText)].join("\n\n")
+        : lead.wakeText;
+      await messageSession({
+        sessionId: parentSessionId,
+        kind: "wake",
+        text,
+        metadata: { spawnCompletion: lead.spawnCompletion },
+      }, { trustedSpawnCompletion: true });
+      // Each extra child keeps its own completion row, which is also its
+      // delivery dedupe anchor. Written only once the wake landed, so a failed
+      // wake leaves them undelivered and the retry carries them again.
+      for (const entry of rest) {
+        emitChatEvent(parent, {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "spawn_completed",
+          message: spawnCompletedNoticeMessage(entry.spawnCompletion.childTitle ?? "Subagent"),
+          detail: { spawnCompletion: entry.spawnCompletion },
+        });
+      }
+      logger.info("agent_chat.parent_wake_delivered", {
+        parentSessionId,
+        completions: batch.entries.length,
+        heldMs: Date.now() - batch.startedAt,
+      });
+      for (const entry of batch.entries) entry.resolve();
+    } catch (error) {
+      for (const entry of batch.entries) entry.reject(error);
+    }
+  };
+
+  /**
+   * Wake a parent with one child's completion, batching with siblings when
+   * the parent is idle and other subagents of it are still running.
+   */
+  const wakeParentWithChildCompletion = (
+    parent: ManagedChatSession,
+    childSessionId: string,
+    wakeText: string,
+    spawnCompletion: AgentChatSpawnCompletion,
+  ): Promise<void> => {
+    const parentSessionId = parent.session.id;
+    const parentBusy = parent.session.status === "active" || runtimeMidTurn(parent);
+    const pending = pendingParentWakes.get(parentSessionId);
+    if (parentBusy && !pending) {
+      return messageSession({
+        sessionId: parentSessionId,
+        kind: "wake",
+        text: wakeText,
+        metadata: { spawnCompletion },
+      }, { trustedSpawnCompletion: true }).then(() => {
+        logger.info("agent_chat.parent_wake_delivered", { parentSessionId, completions: 1, heldMs: 0, joinedLiveTurn: true });
+      });
+    }
+    return new Promise<void>((resolve, reject) => {
+      const batch: PendingParentWake = pending ?? { entries: [], timer: null, startedAt: Date.now() };
+      batch.entries.push({ childSessionId, wakeText, spawnCompletion, resolve, reject });
+      pendingParentWakes.set(parentSessionId, batch);
+      if (!parentHasRunningSubagent(parentSessionId, childSessionId)) {
+        void flushParentWake(parentSessionId);
+        return;
+      }
+      if (!batch.timer) {
+        batch.timer = setTimeout(() => { void flushParentWake(parentSessionId); }, PARENT_WAKE_BATCH_HOLD_MS);
+        batch.timer.unref?.();
+      }
+    });
+  };
+
+  /**
    * Route one child completion into its parent: the `subagent_result` that
    * closes the parent's card, then a wake (subagent) or a quiet notice (peer),
    * or the one-line CTO report. Shared by chat children (per finished turn) and
@@ -39887,12 +40105,7 @@ export function createAgentChatService(args: {
               }, { trustedSpawnCompletion: true });
             }
           } else if (parentShouldWake) {
-            await messageSession({
-              sessionId: parentSessionId,
-              kind: "wake",
-              text: delivery.wakeText,
-              metadata: { spawnCompletion },
-            }, { trustedSpawnCompletion: true });
+            await wakeParentWithChildCompletion(parent, childSessionId, delivery.wakeText, spawnCompletion);
           } else {
             emitChatEvent(parent, {
               type: "system_notice",
@@ -40761,6 +40974,17 @@ export function createAgentChatService(args: {
           ?? chatConfig.opencodePermissionMode,
       };
       })();
+      // A spawned chat never runs with more freedom than the chat that spawned
+      // it (see `sessionPermissionLevel`). Identity-pinned sessions are locked
+      // to their own mode and stay out of it.
+      const parentPermissionCeiling = normalizedParentSessionId && !permissionsPinned
+        ? resolveParentPermissionCeiling(normalizedParentSessionId, {
+            provider: effectiveProvider,
+            ...nativePermissionFields,
+            permissionMode: effectivePermissionMode
+              ?? ("permissionMode" in nativePermissionFields ? nativePermissionFields.permissionMode : undefined),
+          })
+        : null;
       const initialClaudeOutputStyle = effectiveProvider === "claude"
         ? normalizePersistedOutputStyle(requestedClaudeOutputStyle)
           ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
@@ -40842,6 +41066,7 @@ export function createAgentChatService(args: {
           ...nativePermissionFields,
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
+          ...(parentPermissionCeiling?.patch ?? {}),
         ...(callerMcpServers ? { mcpServers: callerMcpServers } : {}),
         ...(typeof requestedStrictMcpConfig === "boolean"
           ? { strictMcpConfig: requestedStrictMcpConfig }
@@ -40981,6 +41206,20 @@ export function createAgentChatService(args: {
       prewarmClaudeQuery(managed);
     }
 
+    if (parentPermissionCeiling) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`,
+      });
+      logger.info("agent_chat.parent_permission_ceiling", {
+        sessionId,
+        parentSessionId: normalizedParentSessionId,
+        requested: parentPermissionCeiling.requested,
+        applied: parentPermissionCeiling.level,
+      });
+    }
+
     try {
       notifyParentSessionOfSpawn(managed, initialTitle);
     } catch (spawnNoticeError) {
@@ -40993,6 +41232,7 @@ export function createAgentChatService(args: {
     }
 
     persistChatState(managed);
+    rememberLaunchDefaults(managed.session);
     return managed.session;
   };
 
@@ -41155,9 +41395,33 @@ export function createAgentChatService(args: {
     }
     const targetLaneId = resolvedTargetLaneId;
     const sourceProvider = managed.session.provider;
+    // "Fork from here": keep the conversation only through one finished turn.
+    // The latest turn is an ordinary full fork. An earlier one forks natively
+    // only where the provider can cut at a turn (Codex `thread/fork
+    // beforeTurnId`); everywhere else the kept turns travel as a transcript
+    // replay, the same portable context a cross-provider fork uses.
+    const requestedThroughTurnId = args.throughTurnId?.trim() || null;
+    if (requestedThroughTurnId && handoffMode !== "fork") {
+      throw new Error("Choosing a turn to fork from only applies to a fork.");
+    }
+    const forkPoint = requestedThroughTurnId
+      ? sliceTranscriptThroughTurn(readTranscriptEnvelopes(managed, { includeBuffered: true }), requestedThroughTurnId)
+      : null;
+    if (requestedThroughTurnId && !forkPoint) {
+      throw new Error("That turn isn't in this chat, or it hasn't finished. Fork from a finished turn.");
+    }
+    const forkFromEarlierTurn = forkPoint?.nextTurnId != null;
+    let codexForkBeforeTurnId: string | null = null;
+    if (forkFromEarlierTurn && sourceProvider === "codex" && targetProvider === "codex") {
+      const codexRuntime = await ensureCodexSessionRuntime(managed);
+      if (codexServerSupportsForkBeforeTurn(codexRuntime.serverVersion)) {
+        codexForkBeforeTurnId = forkPoint.nextTurnId;
+      }
+    }
     const nativeFork = handoffMode === "fork"
       && providerSupportsHandoffFork(sourceProvider)
-      && targetProvider === sourceProvider;
+      && targetProvider === sourceProvider
+      && (!forkFromEarlierTurn || codexForkBeforeTurnId != null);
     // Cursor's "native" fork is native only in the sense that it stays on the
     // same provider — there is no SDK fork API, so the new chat starts on a
     // fresh agent and needs the same full transcript replay a cross-provider
@@ -41193,6 +41457,7 @@ export function createAgentChatService(args: {
       const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
         threadId: sourceThreadId,
         excludeTurns: true,
+        ...(codexForkBeforeTurnId ? { beforeTurnId: codexForkBeforeTurnId } : {}),
         ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion)
           ? { deferGoalContinuation: true }
           : {}),
@@ -41271,7 +41536,9 @@ export function createAgentChatService(args: {
     const targetModelLabel = targetDescriptor.displayName?.trim() || targetDescriptor.id;
     const replayFit = replayFork
       ? buildFittedTranscriptReplay(
-        readTranscriptEnvelopes(managed, { includeBuffered: true }),
+        forkPoint && forkFromEarlierTurn
+          ? forkPoint.envelopes
+          : readTranscriptEnvelopes(managed, { includeBuffered: true }),
         targetDescriptor.contextWindow,
         replayMaxCharsForProvider(targetProvider),
       )
@@ -41380,7 +41647,11 @@ export function createAgentChatService(args: {
     }
 
     if (handoffMode === "fork") {
-      const sourceEnvelopes = readTranscriptEnvelopes(managed).map((envelope) => ({
+      const persistedEnvelopes = readTranscriptEnvelopes(managed);
+      const keptEnvelopes = requestedThroughTurnId && forkFromEarlierTurn
+        ? sliceTranscriptThroughTurn(persistedEnvelopes, requestedThroughTurnId)?.envelopes ?? persistedEnvelopes
+        : persistedEnvelopes;
+      const sourceEnvelopes = keptEnvelopes.map((envelope) => ({
         ...envelope,
         sessionId: created.id,
         provenance: {
@@ -50186,6 +50457,7 @@ export function createAgentChatService(args: {
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     await refreshCtoLiveStateForTurn(args.sessionId);
+    if (!options?.preparedMessage) await recoverMissingLaneWorktree(managed);
     const prepared = options?.preparedMessage
       ?? prepareSendMessage({ ...args, ...(options?.rerunToken ? { rerunToken: options.rerunToken } : {}) });
     if (!prepared) return;
@@ -51774,6 +52046,49 @@ export function createAgentChatService(args: {
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
+    });
+    persistChatState(managed);
+  };
+
+  /**
+   * Moves one staged steer to `toIndex` in its queue and publishes the queue's
+   * new order as a `queue_reordered` event. Only ADE-held queues move (see
+   * `queuedSteersCanReorder`); a row an inline dispatch owns is refused, the
+   * same as edit and cancel, because the agent may already have it.
+   */
+  const moveSteer = async ({ sessionId, steerId, toIndex }: AgentChatMoveSteerArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    if (!queuedSteersCanReorder(managed.session.provider)) {
+      throw new Error("This provider keeps its own queue, so its order can't be changed.");
+    }
+    const runtime = managed.runtime;
+    if (!runtime) {
+      // Torn down (e.g. after a restart, before the chat warms): the persisted
+      // queue is the only copy, and the next runtime hydrates it in order.
+      const persisted = survivingPersistedSteers(managed, readPersistedState(managed.session.id)?.pendingSteers ?? []);
+      const ids = persisted.map((steer) => steer.steerId);
+      const nextIds = moveId(ids, steerId, toIndex);
+      if (!nextIds) throw new Error("This message is no longer queued.");
+      persistedSteerOrder.set(managed, nextIds);
+      emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
+      persistChatState(managed);
+      return;
+    }
+    if (runtime.kind === "codex" || runtime.kind === "opencode") {
+      throw new Error("This provider keeps its own queue, so its order can't be changed.");
+    }
+    if (isSteerDispatchInFlight(runtime, steerId)) {
+      throw new Error("This message is already being dispatched.");
+    }
+    const queue = runtime.pendingSteers;
+    const nextIds = moveId(queue.map((steer) => steer.steerId), steerId, toIndex);
+    if (!nextIds) throw new Error("This message is no longer queued.");
+    const byId = new Map(queue.map((steer) => [steer.steerId, steer] as const));
+    queue.splice(0, queue.length, ...nextIds.map((id) => byId.get(id)!));
+    emitChatEvent(managed, {
+      type: "queue_reordered",
+      steerIds: nextIds,
+      turnId: runtime.activeTurnId ?? undefined,
     });
     persistChatState(managed);
   };
@@ -57726,6 +58041,7 @@ export function createAgentChatService(args: {
     autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
     mcpServers: requestedMcpServers,
     attachmentRoots: requestedAttachmentRoots,
+    enforceParentPermissionCeiling,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     // Cursor's Fast toggle sent as a model option by an older client becomes
     // the chat's Fast tier; an option record left empty by the fold clears.
@@ -57738,6 +58054,27 @@ export function createAgentChatService(args: {
       ? foldedCursorFast.configValues ?? null
       : requestedCursorConfigValuesArg;
     const managed = ensureManagedSession(sessionId);
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim();
+    if (enforceParentPermissionCeiling && parentSessionId) {
+      const defined = <T,>(value: T | null | undefined): T | undefined => value ?? undefined;
+      const ceiling = resolveParentPermissionCeiling(parentSessionId, {
+        ...managed.session,
+        ...(claudePermissionMode !== undefined ? { claudePermissionMode: defined(claudePermissionMode) } : {}),
+        ...(codexApprovalPolicy !== undefined ? { codexApprovalPolicy: defined(codexApprovalPolicy) } : {}),
+        ...(codexSandbox !== undefined ? { codexSandbox: defined(codexSandbox) } : {}),
+        ...(codexConfigSource !== undefined ? { codexConfigSource: defined(codexConfigSource) } : {}),
+        ...(opencodePermissionMode !== undefined ? { opencodePermissionMode: defined(opencodePermissionMode) } : {}),
+        ...(droidPermissionMode !== undefined ? { droidPermissionMode: defined(droidPermissionMode) } : {}),
+        ...(cursorModeId !== undefined ? { cursorModeId: defined(cursorModeId) } : {}),
+        ...(requestedAcpPermissionMode !== undefined ? { acpPermissionMode: defined(requestedAcpPermissionMode) } : {}),
+        ...(permissionMode !== undefined ? { permissionMode: defined(permissionMode) } : {}),
+      });
+      if (ceiling) {
+        throw new Error(
+          `A spawned chat can't have more permissions than the chat that started it ("${permissionLevelLabel(ceiling.level)}").`,
+        );
+      }
+    }
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
       throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);
     }
@@ -58540,6 +58877,39 @@ export function createAgentChatService(args: {
     persistChatState(managed);
     return managed.session;
   };
+
+  let inMemoryLaunchDefaults: AgentChatLaunchDefaults | null = null;
+
+  /**
+   * Remember a user's chat settings as this machine's launch defaults. Only a
+   * top-level Work chat counts: subagents, CTO and identity chats, and
+   * automation runs launch on settings someone else picked.
+   */
+  const rememberLaunchDefaults = (session: AgentChatSession): void => {
+    if ((session.surface ?? "work") !== "work") return;
+    if (session.orchestrationParentSessionId?.trim() || session.identityKey || session.automationId) return;
+    const defaults = launchDefaultsFromSession(session);
+    if (!defaults) return;
+    if (args.machineAdeHome) writeChatLaunchDefaults(args.machineAdeHome, defaults);
+    else inMemoryLaunchDefaults = defaults;
+  };
+
+  const LAUNCH_DEFAULT_UPDATE_FIELDS = [
+    "modelId", "reasoningEffort", "fastMode", "codexFastMode", "interactionMode", "permissionMode",
+    "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource",
+    "opencodePermissionMode", "droidPermissionMode", "cursorModeId", "cursorConfigValues", "acpPermissionMode",
+  ] as const;
+
+  /** The public update: a person changing a chat's settings also moves the machine defaults. */
+  const updateSessionAndRememberDefaults = async (args: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    const session = await updateSession(args);
+    const touchesDefaults = LAUNCH_DEFAULT_UPDATE_FIELDS.some((field) => (args as Record<string, unknown>)[field] !== undefined);
+    if (touchesDefaults && !args.enforceParentPermissionCeiling) rememberLaunchDefaults(session);
+    return session;
+  };
+
+  const getLaunchDefaults = (): AgentChatLaunchDefaults | null =>
+    args.machineAdeHome ? readChatLaunchDefaults(args.machineAdeHome) : inMemoryLaunchDefaults;
 
   /**
    * Explicitly pre-warm a provider query for an existing chat session.
@@ -61431,6 +61801,7 @@ export function createAgentChatService(args: {
     steerUserMessage,
     cancelSteer,
     editSteer,
+    moveSteer,
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
@@ -61534,7 +61905,8 @@ export function createAgentChatService(args: {
     unarchiveSession,
     disposeAll,
     forceDisposeAll,
-    updateSession,
+    updateSession: updateSessionAndRememberDefaults,
+    getLaunchDefaults,
     regenerateSessionMetadata,
     setSpawnKind,
     dismissSubagentTakeoverPrompt,

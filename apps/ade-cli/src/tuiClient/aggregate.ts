@@ -912,6 +912,19 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+      continue;
+    }
+    if (event.type === "queue_reordered") {
+      // The host's order after a reorder; ids it does not name stay after it.
+      const entries = new Map(steerMap);
+      steerMap.clear();
+      for (const id of event.steerIds) {
+        const entry = entries.get(id);
+        if (!entry) continue;
+        steerMap.set(id, entry);
+        entries.delete(id);
+      }
+      for (const [id, entry] of entries) steerMap.set(id, entry);
     }
   }
   return Array.from(steerMap.values());

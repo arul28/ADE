@@ -1906,6 +1906,16 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /**
+       * The staged queue's full order after a reorder. Surfaces that list
+       * queued messages sort by it; ids it does not name keep their place after
+       * the named ones.
+       */
+      type: "queue_reordered";
+      steerIds: string[];
+      turnId?: string;
+    }
+  | {
       type: "command_lifecycle";
       commandUuid: string;
       status: "queued" | "started" | "completed" | "cancelled" | "discarded";
@@ -3967,6 +3977,12 @@ export type AgentChatHandoffArgs = {
   /** Optional user-authored note appended to the handoff prompt. Blank notes are ignored. */
   handoffNote?: string | null;
   /**
+   * Fork only: keep the conversation through this finished turn and drop the
+   * later ones ("Fork from here"). Omitted, or the latest turn, forks the
+   * whole chat.
+   */
+  throughTurnId?: string | null;
+  /**
    * When set (including `null` for "no extra reasoning"), combined with the target
    * model to pick a valid reasoning tier. When omitted, inherits from the source
    * session the same way as a legacy handoff.
@@ -4362,6 +4378,16 @@ export function activeTurnDispatchModes(
   return ACTIVE_TURN_DISPATCH_MODES[provider ?? ""] ?? QUEUE_ONLY_ACTIVE_TURN_MODES;
 }
 
+/**
+ * True when ADE itself holds `provider`'s staged queue and can change its
+ * order. Codex keeps follow-ups in its app-server queue keyed by message id,
+ * and OpenCode in its own inbox; neither has a move operation. iOS mirrors
+ * this by hand beside `ACTIVE_TURN_DISPATCH_MODES`.
+ */
+export function queuedSteersCanReorder(provider: AgentChatProvider | null | undefined): boolean {
+  return provider !== "codex" && provider !== "opencode";
+}
+
 /** Pre-selected mode for a fresh session on `provider`. */
 export function defaultActiveTurnDispatchMode(
   provider: AgentChatProvider | null | undefined,
@@ -4726,6 +4752,39 @@ export type AgentChatEditSteerArgs = {
   text: string;
 };
 
+/**
+ * The model and settings this machine last launched or switched a chat to.
+ * Kept by the brain, one per machine, so every client (desktop, web, phone,
+ * TUI) opens a new chat on the same defaults instead of its own local memory.
+ */
+export type AgentChatLaunchDefaults = {
+  version: 1;
+  provider: AgentChatProvider;
+  modelId: string;
+  reasoningEffort: string | null;
+  fastMode: boolean;
+  executionMode?: AgentChatExecutionMode | null;
+  interactionMode?: AgentChatInteractionMode | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  claudePermissionMode?: AgentChatClaudePermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
+  opencodePermissionMode?: AgentChatOpenCodePermissionMode | null;
+  droidPermissionMode?: AgentChatDroidPermissionMode | null;
+  acpPermissionMode?: AgentChatAcpPermissionMode | null;
+  cursorModeId?: string | null;
+  cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
+  updatedAt: string;
+};
+
+export type AgentChatMoveSteerArgs = {
+  sessionId: string;
+  steerId: string;
+  /** Destination position in the queue, 0 = delivered next. Clamped to the queue. */
+  toIndex: number;
+};
+
 export type AgentChatDispatchSteerArgs = {
   sessionId: string;
   steerId: string;
@@ -4989,6 +5048,12 @@ export type AgentChatDismissSubagentTakeoverPromptArgs = {
 
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
+  /**
+   * Set by the runtime (never trusted from a caller) when an agent makes the
+   * update: refuses a permission change that would lift a spawned chat above
+   * its parent. A person changing a subagent's mode in the UI is not limited.
+   */
+  enforceParentPermissionCeiling?: boolean;
   title?: string | null;
   tag?: string | null;
   manuallyNamed?: boolean;

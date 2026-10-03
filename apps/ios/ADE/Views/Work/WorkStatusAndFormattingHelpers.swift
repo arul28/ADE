@@ -1316,42 +1316,69 @@ func modelSupportsReasoning(modelId: String, provider: String) -> Bool {
 }
 
 func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
-  switch providerFamilyKey(summary.provider) {
+  workRuntimeMode(
+    provider: summary.provider,
+    interactionMode: summary.interactionMode,
+    permissionMode: summary.permissionMode,
+    claudePermissionMode: summary.claudePermissionMode,
+    codexConfigSource: summary.codexConfigSource,
+    codexApprovalPolicy: summary.codexApprovalPolicy,
+    codexSandbox: summary.codexSandbox,
+    opencodePermissionMode: summary.opencodePermissionMode,
+    cursorModeId: summary.cursorModeIdWasCleared == true
+      ? nil
+      : (summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot)),
+    droidPermissionMode: summary.droidPermissionMode
+  )
+}
+
+/// The picker's access mode for a provider's permission fields. Shared by a
+/// live session and the host's launch defaults, so both read the same way.
+func workRuntimeMode(
+  provider: String,
+  interactionMode: String?,
+  permissionMode: String?,
+  claudePermissionMode: String?,
+  codexConfigSource: String?,
+  codexApprovalPolicy: String?,
+  codexSandbox: String?,
+  opencodePermissionMode: String?,
+  cursorModeId: String?,
+  droidPermissionMode: String?
+) -> String {
+  switch providerFamilyKey(provider) {
   case "claude":
-    if summary.interactionMode == "plan" || summary.permissionMode == "plan" {
+    if interactionMode == "plan" || permissionMode == "plan" {
       return "plan"
     }
-    if summary.claudePermissionMode == "auto" || summary.permissionMode == "auto" {
+    if claudePermissionMode == "auto" || permissionMode == "auto" {
       return "auto"
     }
-    if summary.claudePermissionMode == "bypassPermissions" || summary.permissionMode == "full-auto" {
+    if claudePermissionMode == "bypassPermissions" || permissionMode == "full-auto" {
       return "full-auto"
     }
-    if summary.claudePermissionMode == "acceptEdits" || summary.permissionMode == "edit" {
+    if claudePermissionMode == "acceptEdits" || permissionMode == "edit" {
       return "edit"
     }
     return "default"
   case "codex":
-    if summary.codexConfigSource == "config-toml" || summary.permissionMode == "config-toml" {
+    if codexConfigSource == "config-toml" || permissionMode == "config-toml" {
       return "config-toml"
     }
-    if (summary.codexApprovalPolicy == "on-request" || summary.codexApprovalPolicy == "untrusted") && summary.codexSandbox == "read-only" {
+    if (codexApprovalPolicy == "on-request" || codexApprovalPolicy == "untrusted") && codexSandbox == "read-only" {
       return "plan"
     }
-    if summary.codexApprovalPolicy == "untrusted" && summary.codexSandbox == "workspace-write" {
+    if codexApprovalPolicy == "untrusted" && codexSandbox == "workspace-write" {
       return "edit"
     }
-    if summary.codexApprovalPolicy == "never" && summary.codexSandbox == "danger-full-access" {
+    if codexApprovalPolicy == "never" && codexSandbox == "danger-full-access" {
       return "full-auto"
     }
     return "default"
   case "opencode":
-    return workNormalizedOpenCodeRuntimeMode(summary.opencodePermissionMode ?? summary.permissionMode)
+    return workNormalizedOpenCodeRuntimeMode(opencodePermissionMode ?? permissionMode)
   case "cursor":
-    if summary.cursorModeIdWasCleared == true {
-      return "default"
-    }
-    switch summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) {
+    switch cursorModeId {
     case "plan": return "plan"
     case "ask": return "edit"
     case "full-auto": return "full-auto"
@@ -1359,11 +1386,11 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     }
   case "droid", "factory":
     return workDroidRuntimeMode(
-      droidPermissionMode: summary.droidPermissionMode,
-      permissionMode: summary.permissionMode
+      droidPermissionMode: droidPermissionMode,
+      permissionMode: permissionMode
     ) ?? "auto-low"
   case "pi":
-    switch summary.permissionMode {
+    switch permissionMode {
     case "edit": return "edit"
     case "full-auto": return "full-auto"
     // A desktop-set plan session must not read back as the ask-first tier;

@@ -323,6 +323,8 @@ import type {
   AgentChatSteerResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
+  AgentChatMoveSteerArgs,
+  AgentChatLaunchDefaults,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerResult,
   AgentChatCancelDispatchedSteerArgs,
@@ -2187,6 +2189,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
+        moveSteer: (
+          args: AgentChatMoveSteerArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
         dispatchSteer: (
           args: AgentChatDispatchSteerArgs,
           pin?: OpenProjectBinding | null,
@@ -2240,6 +2246,7 @@ declare global {
           args: AgentChatDismissPendingInputArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        launchDefaults: (pin?: OpenProjectBinding | null) => Promise<AgentChatLaunchDefaults | null>;
         models: (
           args: AgentChatModelsArgs,
           pin?: OpenProjectBinding | null,

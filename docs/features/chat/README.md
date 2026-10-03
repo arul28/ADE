@@ -2613,6 +2613,16 @@ based on the child's current `spawnKind`:
   `spawn_wake_divider` labeled **Subagent returned** whether the completion
   joined an active turn or started idle work. This is intentionally distinct
   from scheduled wakes, which remain deferred to a safe turn boundary.
+  **Batching.** A parent that is mid-turn takes each result inline as it
+  lands. An idle parent would otherwise start one full turn per finished
+  child, so `wakeParentWithChildCompletion` holds the wake while another
+  subagent of that parent is still running, for at most
+  `PARENT_WAKE_BATCH_HOLD_MS` (15 s), and delivers every held result in one
+  wake ("N of your subagents finished: …"). The lead child rides the wake's
+  `spawnCompletion`; each other child gets its own `spawn_completed` notice,
+  written only after the wake landed so a failed wake is retried with them.
+  `agent_chat.parent_wake_delivered` logs `completions` and `heldMs` per wake,
+  which is the measure: parent wakes per finished subagent.
 - **`peer`** — a quiet `system_notice` with `status: "spawn_completed"`
   carrying the same `spawnCompletion` in its detail. Rendered as a compact
   navigable chip; the parent is not woken. Peers never wake, so they never pay

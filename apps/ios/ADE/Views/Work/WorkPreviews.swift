@@ -537,6 +537,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkC
     onEditSteer: { _, _ in },
     onDispatchSteerInline: nil,
     onDispatchSteerInterrupt: nil,
+    onMoveSteer: nil,
     onSelectModel: { _ in },
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },

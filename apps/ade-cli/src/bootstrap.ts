@@ -1965,6 +1965,7 @@ export async function createAdeRuntime(args: {
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
+        machineAdeHome: resolveMachineAdeLayout().adeDir,
         runtimeBudget: chatRuntimeBudget,
         browserActorCapabilityIssuer,
         projectRoot,

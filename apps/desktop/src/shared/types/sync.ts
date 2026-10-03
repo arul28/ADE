@@ -2552,6 +2552,8 @@ export type SyncRemoteCommandAction =
   | "chat.steer"
   | "chat.cancelSteer"
   | "chat.editSteer"
+  | "chat.moveSteer"
+  | "chat.getLaunchDefaults"
   | "chat.dispatchSteer"
   | "chat.cancelDispatchedSteer"
   | "chat.interruptWithQueueMode"

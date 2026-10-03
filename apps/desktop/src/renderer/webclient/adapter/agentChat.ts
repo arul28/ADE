@@ -10,6 +10,7 @@ import type {
   AgentChatLaunchCliResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatModelCatalog,
+  AgentChatLaunchDefaults,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
@@ -335,6 +336,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     editSteer: async (args: unknown) => {
       await callRequiredMutation("chat.editSteer", args);
     },
+    moveSteer: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("moveSteer", pin);
+      await callRequiredMutation("chat.moveSteer", args);
+    },
     dispatchSteer: async (args, pin) => {
       guardPin("dispatchSteer", pin);
       return await callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args);
@@ -384,6 +389,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("dismissPendingInput", pin);
       await call("chat.dismissPendingInput", args, undefined, false);
+    },
+    launchDefaults: async (pin?: RuntimePinArg) => {
+      guardPin("launchDefaults", pin);
+      return await call<AgentChatLaunchDefaults | null>("chat.getLaunchDefaults", {}, null);
     },
     models: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("models", pin);

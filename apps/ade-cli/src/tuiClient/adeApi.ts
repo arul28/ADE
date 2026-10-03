@@ -43,6 +43,7 @@ import type {
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelInfo,
+  AgentChatLaunchDefaults,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
@@ -796,6 +797,22 @@ export async function setClaudeOutputStyle(
 
 export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
   return discoverAllProjectSlashCommands(workspaceRoot);
+}
+
+/** The machine's last-used chat model and settings; null when none or an older brain. */
+export async function getLaunchDefaults(connection: AdeCodeConnection): Promise<AgentChatLaunchDefaults | null> {
+  try {
+    const value = await connection.action<unknown>("chat", "getLaunchDefaults", {});
+    // Only a well-formed record counts; anything else (an older brain, a
+    // proxy's default reply) leaves the TUI on its own last choice.
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Partial<AgentChatLaunchDefaults>;
+    return typeof record.modelId === "string" && record.modelId.trim() && typeof record.provider === "string"
+      ? record as AgentChatLaunchDefaults
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getAvailableModels(
