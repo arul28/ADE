@@ -32,11 +32,8 @@ import {
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
-import {
-  SessionBulkContextMenu,
-  type BulkLaneIntent,
-  type SessionBulkContextMenuState,
-} from "./SessionBulkContextMenu";
+import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
   AgentChatSession,
@@ -215,7 +212,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   ));
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
-  const [bulkMenu, setBulkMenu] = useState<SessionBulkContextMenuState>(null);
+  const [bulkMenu, setBulkMenu] = useState<ContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -745,13 +742,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .filter((session): session is TerminalSessionSummary => session != null),
     [selectableSessionsById, selectedSessionIds],
   );
-  // The bulk menu lists and grids the selection in sidebar order, not click order.
-  const selectedSessionsInSidebarOrder = useMemo(() => {
-    const order = new Map(selectableSessions.map((session, index) => [session.id, index] as const));
-    return [...selectedSessions].sort(
-      (a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER),
-    );
-  }, [selectableSessions, selectedSessions]);
+  // The bulk menu lists and grids the selection in sidebar order, not click
+  // order: this tab's roster first, then each other machine's rows.
+  const selectedSessionsInSidebarOrder = useMemo(
+    () => [...selectableSessionsById.values()].filter((session) => selectedSessionIds.has(session.id)),
+    [selectableSessionsById, selectedSessionIds],
+  );
+  // A bulk menu whose selection fell below two rows (a refresh dropped one) is
+  // closed, not parked to reappear at stale coordinates.
+  useEffect(() => {
+    if (selectedSessionsInSidebarOrder.length < 2) setBulkMenu(null);
+  }, [selectedSessionsInSidebarOrder.length]);
 
   // One selected row's delete, routed to the machine that owns it. Bulk delete
   // used to call the unpinned RPC for every row, so a selection spanning
@@ -2016,7 +2017,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setSelectedSessionIds(new Set());
           setSelectionAnchorId(null);
         }}
-        deleting={deletingSessionId === "bulk"}
       />
 
       <SessionInfoPopover

@@ -17,33 +17,28 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
-import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { canBulkDeleteSession, canBulkStopSession, isChatToolType } from "../../lib/sessions";
-import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
-import { isSessionSnoozed, resolveSnoozePresets, type SnoozeDurationKey } from "../../lib/sessionSnooze";
+import { canBulkStopSession } from "../../lib/sessions";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionIsMidFlight,
+  sessionNeedsYou,
+} from "../../lib/terminalAttention";
+import { isSessionSnoozed, resolveSnoozePresets } from "../../lib/sessionSnooze";
 import { MAX_WORK_GRID_TILES } from "../../lib/workGrid";
+import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
 import {
-  DESTRUCTIVE_ITEM_CLASS,
-  MENU_ITEM_CLASS,
-  MenuRowIcon,
-  MenuSectionLabel,
-  MenuSeparator,
-  MenuSubmenu,
-} from "../ui/MenuSubmenu";
-import {
-  settleSession,
+  settleSessions,
   snoozeSessionsForDuration,
-  unsettleSession,
-  wakeSessionNow,
+  unsettleSessions,
+  wakeSessions,
 } from "./sessionLifecycleActions";
-
-export type SessionBulkContextMenuState = { x: number; y: number } | null;
 
 /** What the Lanes tab should do with the lanes behind a multi-selection. */
 export type BulkLaneIntent = "open" | "manage" | "archive" | "delete";
 
 type SessionBulkContextMenuProps = {
-  menu: SessionBulkContextMenuState;
+  menu: ContextMenuState;
   /** The live selection, in the order the sidebar shows it. */
   sessions: TerminalSessionSummary[];
   /** The tab's own lanes. Lanes on other machines are not in here. */
@@ -63,26 +58,16 @@ type SessionBulkContextMenuProps = {
   onCopySessionIds: (sessionIds: string[]) => void;
   onLanes: (laneIds: string[], intent: BulkLaneIntent) => void;
   onClearSelection: () => void;
-  deleting: boolean;
 };
-
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
 
 /**
  * The right-click menu for a multi-selection in the Work sidebar. It only offers
  * actions that mean the same thing for every selected row, so it is a much
  * shorter list than the single-row menu: identity edits (rename, tag, handoff)
- * are per-chat and stay there. Each row states how many of the selection it
- * will touch, because a mixed selection rarely qualifies as a whole.
+ * are per-chat and stay there. A row that applies to only part of the selection
+ * says how many it will touch.
  */
-export function SessionBulkContextMenu(props: SessionBulkContextMenuProps) {
-  if (!props.menu || props.sessions.length < 2) return null;
-  return <SessionBulkContextMenuPanel {...props} menu={props.menu} />;
-}
-
-function SessionBulkContextMenuPanel({
+export function SessionBulkContextMenu({
   menu,
   sessions,
   lanes,
@@ -100,249 +85,276 @@ function SessionBulkContextMenuPanel({
   onCopySessionIds,
   onLanes,
   onClearSelection,
-  deleting,
-}: SessionBulkContextMenuProps & { menu: NonNullable<SessionBulkContextMenuState> }) {
-  const { ref: menuRef, position } = useClampedFixedPosition({ x: menu.x, y: menu.y }, false);
+}: SessionBulkContextMenuProps) {
+  // Resolved when the submenu opens, not from the static vocabulary, so "This
+  // evening" is never offered at 11pm (see the single-row menu).
   const [snoozePresets, setSnoozePresets] = useState(() => resolveSnoozePresets());
 
-  const model = useMemo(() => {
+  const entries = useMemo((): ContextMenuEntry[] => {
+    const total = sessions.length;
+    if (total < 2) return [];
+    const hint = (count: number) => (count < total ? `${count} of ${total}` : undefined);
+
     const pinned = new Set(pinnedSessionIds);
     const inGrid = new Set(gridSessionIds);
     const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const withPins = sessions.map((session) => ({ session, pin: resolvePin(session) }));
+    const targets = sessions.map((session) => ({ session, pin: resolvePin(session) }));
+
     const gridable = sessions.filter((session) => gridableSessionIds.has(session.id)).map((session) => session.id);
+    const gridIds = gridable.slice(0, MAX_WORK_GRID_TILES);
+    const inGridIds = sessions.filter((session) => inGrid.has(session.id)).map((session) => session.id);
+    const unpinnedIds = sessions.filter((session) => !pinned.has(session.id)).map((session) => session.id);
+    const snoozable = targets.filter(({ session }) => !isSessionSnoozed(session));
+    const snoozed = targets.filter(({ session }) => isSessionSnoozed(session));
+    const settledTargets = targets.filter(({ session }) => sessionCanonicalUiState(session).phase === "settled");
+    // Same rule as the header's bulk settle: at-rest rows only, and never a row
+    // waiting on the user — bulk settle does not dismiss pending input.
+    const settleable = targets.filter(({ session }) =>
+      sessionCanonicalUiState(session).phase !== "settled"
+      && !sessionIsMidFlight(session)
+      && !sessionNeedsYou(canonicalInputFromSummary(session)));
+    const stoppableCount = sessions.filter(canBulkStopSession).length;
 
     const laneIds: string[] = [];
-    let foreignLaneCount = 0;
-    const seenForeign = new Set<string>();
-    for (const { session, pin } of withPins) {
+    const otherMachineLanes = new Set<string>();
+    for (const { session, pin } of targets) {
       if (pin || !lanesById.has(session.laneId)) {
-        const key = `${pin?.key ?? "?"}:${session.laneId}`;
-        if (!seenForeign.has(key)) { seenForeign.add(key); foreignLaneCount += 1; }
-        continue;
+        otherMachineLanes.add(`${pin?.key ?? ""}:${session.laneId}`);
+      } else if (!laneIds.includes(session.laneId)) {
+        laneIds.push(session.laneId);
       }
-      if (!laneIds.includes(session.laneId)) laneIds.push(session.laneId);
     }
     const manageableLaneIds = laneIds.filter((id) => lanesById.get(id)?.laneType !== "primary");
+    const manageHint = manageableLaneIds.length < laneIds.length
+      ? `${manageableLaneIds.length} of ${laneIds.length}`
+      : undefined;
+    const singleLane = laneIds.length === 1 ? lanesById.get(laneIds[0]!) : undefined;
 
-    return {
-      withPins,
-      allPinned: sessions.every((session) => pinned.has(session.id)),
-      unpinnedIds: sessions.filter((session) => !pinned.has(session.id)).map((session) => session.id),
-      gridCandidates: gridable.slice(0, MAX_WORK_GRID_TILES),
-      gridableCount: gridable.length,
-      inGridIds: sessions.filter((session) => inGrid.has(session.id)).map((session) => session.id),
-      snoozable: withPins.filter(({ session }) => !isSessionSnoozed(session)),
-      snoozed: withPins.filter(({ session }) => isSessionSnoozed(session)),
-      settleable: withPins.filter(({ session }) => {
-        const phase = sessionCanonicalUiState(session).phase;
-        if (phase === "settled" || sessionIsMidFlight(session)) return false;
-        // A CLI blocked on a terminal prompt has to be answered first; the
-        // single-row menu disables settle for the same rows.
-        return phase !== "needs_you" || isChatToolType(session.toolType) || Boolean(session.attentionRequestedAt);
-      }),
-      settled: withPins.filter(({ session }) => sessionCanonicalUiState(session).phase === "settled"),
-      stoppableCount: sessions.filter(canBulkStopSession).length,
-      deletableCount: sessions.filter(canBulkDeleteSession).length,
-      laneIds,
-      manageableLaneIds,
-      foreignLaneCount,
-      singleLane: laneIds.length === 1 ? lanesById.get(laneIds[0]!) ?? null : null,
-    };
-  }, [gridSessionIds, gridableSessionIds, lanes, pinnedSessionIds, resolvePin, sessions]);
+    const laneEntries: ContextMenuEntry[] = [];
+    if (laneIds.length) {
+      laneEntries.push({
+        kind: "item",
+        key: "lanes-open",
+        label: "Open in Lanes",
+        icon: ArrowSquareOut,
+        onSelect: () => onLanes(laneIds, "open"),
+      });
+    }
+    if (manageableLaneIds.length) {
+      laneEntries.push(
+        {
+          kind: "item",
+          key: "lanes-manage",
+          label: "Manage…",
+          icon: Gear,
+          hint: manageHint,
+          title: manageHint ? "The primary lane can't be managed here" : undefined,
+          onSelect: () => onLanes(manageableLaneIds, "manage"),
+        },
+        {
+          kind: "item",
+          key: "lanes-archive",
+          label: "Archive…",
+          icon: Archive,
+          hint: manageHint,
+          onSelect: () => onLanes(manageableLaneIds, "archive"),
+        },
+        {
+          kind: "item",
+          key: "lanes-delete",
+          label: "Delete…",
+          icon: Trash,
+          danger: true,
+          hint: manageHint,
+          onSelect: () => onLanes(manageableLaneIds, "delete"),
+        },
+      );
+    }
+    if (otherMachineLanes.size) {
+      laneEntries.push(
+        { kind: "separator", key: "lanes-foreign-sep" },
+        {
+          kind: "label",
+          key: "lanes-foreign",
+          label: `${otherMachineLanes.size} on other machines left out`,
+        },
+      );
+    }
 
-  const total = sessions.length;
-  const run = (action: () => void) => () => { action(); onClose(); };
-  const chooseSnooze = (key: SnoozeDurationKey) => {
-    void snoozeSessionsForDuration(model.snoozable, key);
-    onClose();
-  };
-  const countHint = (count: number) => (count < total
-    ? <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">{count} of {total}</span>
-    : null);
+    let lanesLabel = "Lanes";
+    if (singleLane) lanesLabel = `Lane · ${singleLane.name}`;
+    else if (laneIds.length > 1) lanesLabel = `${laneIds.length} lanes`;
 
-  const laneCount = model.laneIds.length;
-  const manageCount = model.manageableLaneIds.length;
-  const laneNoun = model.singleLane ? `“${model.singleLane.name}”` : plural(laneCount, "lane");
+    return [
+      { kind: "label", key: "count", label: `${total} selected` },
+      ...(gridIds.length >= 2
+        ? [{
+            kind: "item" as const,
+            key: "grid",
+            label: `Open ${gridIds.length} in grid`,
+            icon: SquaresFour,
+            hint: hint(gridIds.length),
+            title: gridable.length > MAX_WORK_GRID_TILES
+              ? `A grid holds up to ${MAX_WORK_GRID_TILES} sessions; the first ${MAX_WORK_GRID_TILES} open`
+              : undefined,
+            onSelect: () => onOpenInGrid(gridIds),
+          }]
+        : []),
+      ...(inGridIds.length
+        ? [{
+            kind: "item" as const,
+            key: "ungrid",
+            label: "Remove from grid",
+            icon: SquaresFour,
+            hint: hint(inGridIds.length),
+            onSelect: () => onRemoveFromGrid(inGridIds),
+          }]
+        : []),
+      unpinnedIds.length
+        ? {
+            kind: "item",
+            key: "pin",
+            label: "Pin to front",
+            icon: PushPin,
+            hint: hint(unpinnedIds.length),
+            onSelect: () => onSetPinned(unpinnedIds, true),
+          }
+        : {
+            kind: "item",
+            key: "unpin",
+            label: "Unpin from front",
+            icon: PushPinSlash,
+            onSelect: () => onSetPinned(sessions.map((session) => session.id), false),
+          },
+
+      { kind: "separator", key: "lifecycle-sep" },
+      { kind: "label", key: "lifecycle", label: "Lifecycle" },
+      ...(stoppableCount
+        ? [{
+            kind: "item" as const,
+            key: "stop",
+            label: stoppableCount === 1 ? "Stop runtime…" : "Stop runtimes…",
+            icon: Stop,
+            hint: hint(stoppableCount),
+            onSelect: onStopRuntimes,
+          }]
+        : []),
+      ...(snoozable.length
+        ? [{
+            kind: "submenu" as const,
+            key: "snooze",
+            label: "Snooze…",
+            icon: ClockCountdown,
+            testId: "session-bulk-menu-snooze",
+            onOpen: () => setSnoozePresets(resolveSnoozePresets()),
+            entries: snoozePresets.map((preset): ContextMenuEntry => ({
+              kind: "item",
+              key: preset.key,
+              label: preset.label,
+              icon: ClockCountdown,
+              hint: preset.whenLabel,
+              onSelect: () => { void snoozeSessionsForDuration(snoozable, preset.key); },
+            })),
+          }]
+        : []),
+      ...(snoozed.length
+        ? [{
+            kind: "item" as const,
+            key: "wake",
+            label: "Wake now",
+            icon: Alarm,
+            hint: hint(snoozed.length),
+            onSelect: () => { void wakeSessions(snoozed); },
+          }]
+        : []),
+      ...(settleable.length
+        ? [{
+            kind: "item" as const,
+            key: "settle",
+            label: "Settle",
+            icon: CheckCircle,
+            hint: hint(settleable.length),
+            onSelect: () => { void settleSessions(settleable); },
+          }]
+        : []),
+      ...(settledTargets.length
+        ? [{
+            kind: "item" as const,
+            key: "unsettle",
+            label: "Unsettle",
+            icon: ArrowCounterClockwise,
+            hint: hint(settledTargets.length),
+            onSelect: () => { void unsettleSessions(settledTargets); },
+          }]
+        : []),
+
+      { kind: "separator", key: "lanes-sep" },
+      ...(laneEntries.length
+        ? [{
+            kind: "submenu" as const,
+            key: "lanes",
+            label: lanesLabel,
+            icon: GitBranch,
+            testId: "session-bulk-menu-lanes",
+            entries: laneEntries,
+          }]
+        : []),
+      {
+        kind: "item",
+        key: "copy",
+        label: "Copy session IDs",
+        icon: Copy,
+        onSelect: () => onCopySessionIds(sessions.map((session) => session.id)),
+      },
+      { kind: "item", key: "clear", label: "Clear selection", icon: X, onSelect: onClearSelection },
+
+      { kind: "separator", key: "destructive-sep" },
+      // Stop & delete covers a selection with running CLIs in it; plain delete
+      // would refuse those rows.
+      stoppableCount
+        ? {
+            kind: "item",
+            key: "stop-delete",
+            label: `Stop & delete ${total}…`,
+            icon: Trash,
+            danger: true,
+            onSelect: onStopAndDelete,
+          }
+        : {
+            kind: "item",
+            key: "delete",
+            label: `Delete ${total}…`,
+            icon: Trash,
+            danger: true,
+            onSelect: onDelete,
+          },
+    ];
+  }, [
+    gridSessionIds,
+    gridableSessionIds,
+    lanes,
+    onClearSelection,
+    onCopySessionIds,
+    onDelete,
+    onLanes,
+    onOpenInGrid,
+    onRemoveFromGrid,
+    onSetPinned,
+    onStopAndDelete,
+    onStopRuntimes,
+    pinnedSessionIds,
+    resolvePin,
+    sessions,
+    snoozePresets,
+  ]);
 
   return (
-    <>
-      <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label={`${total} selected sessions`}
-        data-testid="session-bulk-menu"
-        className="ade-liquid-glass-menu fixed z-50 min-w-[200px] py-1"
-        style={{ ...(position ?? { left: menu.x, top: menu.y }), visibility: position ? "visible" : "hidden" }}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        <MenuSectionLabel>{total} selected</MenuSectionLabel>
-
-        {/* ── View: arrange the selection on screen. ── */}
-        {model.gridCandidates.length >= 2 ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            title={model.gridableCount > MAX_WORK_GRID_TILES
-              ? `A grid holds up to ${MAX_WORK_GRID_TILES} sessions; the first ${MAX_WORK_GRID_TILES} open`
-              : undefined}
-            onClick={run(() => onOpenInGrid(model.gridCandidates))}
-          >
-            <MenuRowIcon icon={SquaresFour} />
-            Open {model.gridCandidates.length} in grid
-            {model.gridCandidates.length < total ? countHint(model.gridCandidates.length) : null}
-          </button>
-        ) : null}
-        {model.inGridIds.length ? (
-          <button type="button" className={MENU_ITEM_CLASS} onClick={run(() => onRemoveFromGrid(model.inGridIds))}>
-            <MenuRowIcon icon={SquaresFour} />
-            Remove from grid
-            {countHint(model.inGridIds.length)}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className={MENU_ITEM_CLASS}
-          onClick={run(() => (model.allPinned
-            ? onSetPinned(sessions.map((session) => session.id), false)
-            : onSetPinned(model.unpinnedIds, true)))}
-        >
-          <MenuRowIcon icon={model.allPinned ? PushPinSlash : PushPin} />
-          {model.allPinned ? "Unpin all from front" : "Pin all to front"}
-          {model.allPinned ? null : countHint(model.unpinnedIds.length)}
-        </button>
-
-        {/* ── Lifecycle ── */}
-        <MenuSeparator />
-        <MenuSectionLabel>Lifecycle</MenuSectionLabel>
-        {model.snoozable.length ? (
-          <MenuSubmenu
-            label="Snooze…"
-            icon={<MenuRowIcon icon={ClockCountdown} />}
-            className={MENU_ITEM_CLASS}
-            data-testid="session-bulk-menu-snooze"
-            onOpen={() => setSnoozePresets(resolveSnoozePresets())}
-          >
-            {snoozePresets.map((preset) => (
-              <button key={preset.key} type="button" className={MENU_ITEM_CLASS} onClick={() => chooseSnooze(preset.key)}>
-                <MenuRowIcon icon={ClockCountdown} />
-                {preset.label}
-                <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">{preset.whenLabel}</span>
-              </button>
-            ))}
-          </MenuSubmenu>
-        ) : null}
-        {model.snoozed.length ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={run(() => { for (const { session, pin } of model.snoozed) void wakeSessionNow(session, pin); })}
-          >
-            <MenuRowIcon icon={Alarm} />
-            Wake now
-            {countHint(model.snoozed.length)}
-          </button>
-        ) : null}
-        {model.settleable.length ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={run(() => { for (const { session, pin } of model.settleable) void settleSession(session, pin); })}
-          >
-            <MenuRowIcon icon={CheckCircle} />
-            Settle
-            {countHint(model.settleable.length)}
-          </button>
-        ) : null}
-        {model.settled.length ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={run(() => { for (const { session, pin } of model.settled) void unsettleSession(session, pin); })}
-          >
-            <MenuRowIcon icon={ArrowCounterClockwise} />
-            Unsettle
-            {countHint(model.settled.length)}
-          </button>
-        ) : null}
-        {model.stoppableCount ? (
-          <button type="button" className={MENU_ITEM_CLASS} onClick={run(onStopRuntimes)}>
-            <MenuRowIcon icon={Stop} />
-            Stop {model.stoppableCount === 1 ? "runtime" : "runtimes"}…
-            {countHint(model.stoppableCount)}
-          </button>
-        ) : null}
-
-        {/* ── Lanes: the same multi-lane actions the Lanes tab offers for a
-            Cmd-click selection, aimed at the lanes these sessions live in. ── */}
-        {laneCount || model.foreignLaneCount ? (
-          <>
-            <MenuSeparator />
-            <MenuSubmenu
-              label={laneCount === 1 ? "Lane" : `Lanes (${laneCount})`}
-              icon={<MenuRowIcon icon={GitBranch} />}
-              className={MENU_ITEM_CLASS}
-              data-testid="session-bulk-menu-lanes"
-            >
-              {laneCount ? (
-                <button type="button" className={MENU_ITEM_CLASS} onClick={run(() => onLanes(model.laneIds, "open"))}>
-                  <MenuRowIcon icon={ArrowSquareOut} />
-                  Open {laneNoun} in Lanes
-                </button>
-              ) : null}
-              {manageCount ? (
-                <>
-                  <button type="button" className={MENU_ITEM_CLASS} onClick={run(() => onLanes(model.manageableLaneIds, "manage"))}>
-                    <MenuRowIcon icon={Gear} />
-                    {manageCount === 1 ? "Manage lane…" : `Manage ${manageCount} lanes…`}
-                  </button>
-                  <button type="button" className={MENU_ITEM_CLASS} onClick={run(() => onLanes(model.manageableLaneIds, "archive"))}>
-                    <MenuRowIcon icon={Archive} />
-                    {manageCount === 1 ? "Archive lane…" : `Archive ${manageCount} lanes…`}
-                  </button>
-                  <button type="button" className={DESTRUCTIVE_ITEM_CLASS} onClick={run(() => onLanes(model.manageableLaneIds, "delete"))}>
-                    <MenuRowIcon icon={Trash} danger />
-                    {manageCount === 1 ? "Delete lane…" : `Delete ${manageCount} lanes…`}
-                  </button>
-                </>
-              ) : null}
-              {laneCount > manageCount ? (
-                <div className="px-3 py-1 text-[10px] text-muted-fg/50">The primary lane can't be archived or deleted</div>
-              ) : null}
-              {model.foreignLaneCount ? (
-                <div className="px-3 py-1 text-[10px] text-muted-fg/50">
-                  {plural(model.foreignLaneCount, "lane")} on other machines not included
-                </div>
-              ) : null}
-            </MenuSubmenu>
-          </>
-        ) : null}
-
-        <MenuSeparator />
-        <button type="button" className={MENU_ITEM_CLASS} onClick={run(() => onCopySessionIds(sessions.map((session) => session.id)))}>
-          <MenuRowIcon icon={Copy} />
-          Copy session IDs
-        </button>
-        <button type="button" className={MENU_ITEM_CLASS} onClick={run(onClearSelection)}>
-          <MenuRowIcon icon={X} />
-          Clear selection
-        </button>
-
-        {/* ── Destructive, last and fenced off. ── */}
-        <MenuSeparator />
-        {model.stoppableCount ? (
-          <button type="button" className={DESTRUCTIVE_ITEM_CLASS} disabled={deleting} onClick={run(onStopAndDelete)}>
-            <MenuRowIcon icon={Trash} danger />
-            {deleting ? "Deleting…" : `Stop & delete ${total}…`}
-          </button>
-        ) : (
-          <button type="button" className={DESTRUCTIVE_ITEM_CLASS} disabled={deleting || !model.deletableCount} onClick={run(onDelete)}>
-            <MenuRowIcon icon={Trash} danger />
-            {deleting ? "Deleting…" : `Delete ${total}…`}
-          </button>
-        )}
-      </div>
-    </>
+    <ContextMenu
+      menu={entries.length ? menu : null}
+      entries={entries}
+      onClose={onClose}
+      label={`${sessions.length} selected sessions`}
+      testId="session-bulk-menu"
+    />
   );
 }

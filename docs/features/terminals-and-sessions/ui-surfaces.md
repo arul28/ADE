@@ -99,6 +99,24 @@ It also owns the sidebar's multi-select state:
 - `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
   permanently deletes every selected session once the user confirms.
 
+Right-clicking a row that is part of a multi-selection opens
+`SessionBulkContextMenu` instead of the single-row `SessionContextMenu`; a row
+outside the selection keeps its own menu. It renders through the shared
+`ui/ContextMenu` primitive and offers only actions that apply to every
+selected row: open in a grid (up to `MAX_WORK_GRID_TILES`, this tab's
+sessions only), remove from grid, pin/unpin, stop runtimes, snooze, wake,
+settle, unsettle, copy IDs, clear selection, and delete or stop & delete
+(the last three reuse the header's `handleBulk*` handlers). Rows that apply to
+part of the selection show "k of N". Lifecycle writes go through the batch
+helpers in `sessionLifecycleActions.ts`, each row pinned to its own machine,
+with one failure toast and one Undo per batch. Bulk settle follows the
+header's rule and skips `Needs you` rows, so it never dismisses pending input.
+The Lanes submenu sends the selection's own-machine lanes to the Lanes tab:
+`/lanes?action=select&laneIds=…` multi-selects them, and
+`action=batch` (optionally `manageTab=archive|delete`) also opens the batch
+manage dialog. Both leave the lanes multi-selected in the Lanes sidebar, and
+the Work lane menu's "Manage N Open Lanes" shares the same `batch` link.
+
 Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
 don't leak across filter changes.
