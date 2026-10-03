@@ -3449,9 +3449,21 @@ the existing paired-host recovery path is the only account-less continuation.
 
 The **AI accounts** page lives in Settings → App (and is also reachable from a
 connected machine's page, where each provider's account count becomes a
-`NavigationLink`). It is gated on the host advertising `providerAccounts.list`;
-a host without it shows `ProviderAccountsUnavailableView` ("update ADE on the
-host"). A segmented Claude/Codex picker swaps between two `ProviderAccountsStore`
+`NavigationLink` that opens the page on that machine). Logins live on each
+machine, so each machine has its own accounts, default and smart balance. The
+**Accounts on** picker (`ProviderAccountsMachinePicker`) lists the primary
+machine plus every live fleet machine whose roster connection advertises
+`providerAccounts.list`, and switches between them without changing which
+machine is primary. Commands go through `ProviderAccountsHost`: `SyncService`
+for the primary, `MachineConnection` (the roster socket; the commands are
+runtime-scoped, so no project is needed) for the others, wrapped by the typed
+`ProviderAccountsClient`. Each machine is a `ProviderAccountsMachine` holding a
+store per provider and its own `usage.getQuotaSnapshot` reading — account ids
+repeat across machines (every default is `claude`), so one machine's accounts
+are never matched against another machine's quota. The primary is gated on the
+host advertising `providerAccounts.list`; a host without it shows
+`ProviderAccountsUnavailableView` ("update ADE on the host"). A segmented
+Claude/Codex picker swaps between the machine's two `ProviderAccountsStore`
 instances. Each `ProviderAccountRow` carries the account's quota meters
 (`providerAccountWindows` / `ProviderAccountQuotaMeter`), ordered by the shared
 `adeUsageWindowRank`, and

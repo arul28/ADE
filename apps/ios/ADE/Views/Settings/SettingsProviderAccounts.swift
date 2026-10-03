@@ -35,32 +35,65 @@ func providerAccountRemoveMessage(hostName: String?) -> String {
 
 // MARK: - Page
 
-/// Settings → AI accounts: the connected machine's Claude and Codex logins.
+/// A machine the AI accounts page can show.
+struct ProviderAccountsMachineOption: Identifiable, Equatable {
+  let id: String
+  let name: String
+  let isPrimary: Bool
+}
+
+/// Settings → AI accounts: the Claude and Codex logins of each connected
+/// machine. Logins live on the machine, so each machine has its own accounts,
+/// default and smart balance; the picker switches between them without
+/// changing which machine is primary.
 struct SettingsProviderAccountsPage: View {
   @ObservedObject var syncService: SyncService
+  @EnvironmentObject private var fleet: MachineFleet
   @State private var provider: ProviderAccountProvider
-  @StateObject private var claude: ProviderAccountsStore
-  @StateObject private var codex: ProviderAccountsStore
+  @State private var selectedMachineId: String?
+  @StateObject private var directory = ProviderAccountsMachineDirectory()
 
-  init(syncService: SyncService, provider: ProviderAccountProvider = .claude) {
+  /// `machineKey` opens on that machine (from its machine page); nil opens on
+  /// the primary machine.
+  init(syncService: SyncService, provider: ProviderAccountProvider = .claude, machineKey: String? = nil) {
     self.syncService = syncService
     _provider = State(initialValue: provider)
-    _claude = StateObject(wrappedValue: ProviderAccountsStore(provider: .claude, syncService: syncService))
-    _codex = StateObject(wrappedValue: ProviderAccountsStore(provider: .codex, syncService: syncService))
+    _selectedMachineId = State(initialValue: machineKey)
+  }
+
+  private var primaryId: String { syncService.focusedMachineKey ?? "primary" }
+
+  /// The primary machine, then every live machine on the phone's fleet that
+  /// can manage its accounts from here.
+  private var choices: [(option: ProviderAccountsMachineOption, host: ProviderAccountsHost)] {
+    var result: [(ProviderAccountsMachineOption, ProviderAccountsHost)] = [(
+      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "This machine", isPrimary: true),
+      syncService
+    )]
+    for machine in fleet.machines where machine.state == .live && machine.machineKey != primaryId {
+      guard let connection = fleet.connection(for: machine.machineKey), connection.supportsProviderAccounts else { continue }
+      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name, isPrimary: false), connection))
+    }
+    return result
   }
 
   var body: some View {
+    let choices = self.choices
+    let selected = choices.first { $0.option.id == (selectedMachineId ?? primaryId) } ?? choices[0]
     Group {
-      if !syncService.supportsProviderAccounts {
-        ProviderAccountsUnavailableView(hostName: syncService.hostName, connected: syncService.connectionState == .connected)
+      if !selected.host.supportsProviderAccounts {
+        ProviderAccountsUnavailableView(hostName: selected.option.name, connected: selected.host.providerAccountsConnected)
       } else {
+        let machine = directory.machine(id: selected.option.id, name: selected.option.name, host: selected.host)
         ProviderAccountsScreen(
           provider: $provider,
-          store: provider == .claude ? claude : codex,
-          hostName: syncService.hostName,
-          canChange: syncService.canChangeProviderAccounts,
-          syncService: syncService
+          machine: machine,
+          store: machine.store(for: provider),
+          canChange: selected.host.canChangeProviderAccounts,
+          machines: choices.map(\.option),
+          selectedMachineId: Binding(get: { selected.option.id }, set: { selectedMachineId = $0 })
         )
+        .id(machine.id)
       }
     }
     .navigationTitle("AI accounts")
@@ -68,15 +101,77 @@ struct SettingsProviderAccountsPage: View {
   }
 }
 
+/// Which machine's accounts are on screen, and a menu to switch when there
+/// is more than one.
+struct ProviderAccountsMachinePicker: View {
+  let machines: [ProviderAccountsMachineOption]
+  @Binding var selectedId: String
+
+  private var selected: ProviderAccountsMachineOption? { machines.first { $0.id == selectedId } }
+
+  var body: some View {
+    if machines.count > 1 {
+      Menu {
+        ForEach(machines) { machine in
+          Button {
+            selectedId = machine.id
+          } label: {
+            // Two texts make an iOS menu row a title and a subtitle.
+            Text(machine.name)
+            Text(machine.isPrimary ? "Primary connection" : "Connected")
+            Image(systemName: machine.id == selectedId ? "checkmark" : "desktopcomputer")
+          }
+        }
+      } label: { label(showsChevron: true) }
+      .accessibilityLabel("Machine: \(selected?.name ?? "")")
+    } else {
+      label(showsChevron: false)
+    }
+  }
+
+  private func label(showsChevron: Bool) -> some View {
+    HStack(spacing: 8) {
+      Image(systemName: "desktopcomputer")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      VStack(alignment: .leading, spacing: 1) {
+        Text("ACCOUNTS ON")
+          .font(.caption2.weight(.semibold))
+          .tracking(0.5)
+          .foregroundStyle(ADEColor.textMuted)
+        Text(selected?.name ?? "This machine")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+      }
+      Spacer(minLength: 8)
+      if showsChevron {
+        HStack(spacing: 4) {
+          Text("\(machines.count) machines")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .contentShape(Rectangle())
+  }
+}
+
 /// The page body, with no host of its own: the live page and the fixture
 /// screens both render it.
 struct ProviderAccountsScreen: View {
   @Binding var provider: ProviderAccountProvider
+  @ObservedObject var machine: ProviderAccountsMachine
   @ObservedObject var store: ProviderAccountsStore
-  var hostName: String?
   var canChange = true
-  var syncService: SyncService?
-  @ObservedObject private var quota = MobileUsageQuotaStore.shared
+  var machines: [ProviderAccountsMachineOption] = []
+  var selectedMachineId: Binding<String>?
   @State private var addPresented = false
   @State private var signIn: ProviderAccountSignInRoute?
   @State private var renaming: ProviderAccount?
@@ -87,6 +182,10 @@ struct ProviderAccountsScreen: View {
   var body: some View {
     List {
       Section {
+        if let selectedMachineId {
+          ProviderAccountsMachinePicker(machines: machines, selectedId: selectedMachineId)
+            .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16), separator: .hidden)
+        }
         Picker("Provider", selection: $provider) {
           ForEach(ProviderAccountProvider.allCases) { Text($0.title).tag($0) }
         }
@@ -113,9 +212,9 @@ struct ProviderAccountsScreen: View {
         ForEach(store.accounts) { account in
           NavigationLink {
             ProviderAccountDetailPage(
+              machine: machine,
               store: store,
               accountId: account.id,
-              hostName: hostName,
               canChange: canChange,
               onSignIn: { signIn = ProviderAccountSignInRoute(account: $0) }
             )
@@ -123,7 +222,7 @@ struct ProviderAccountsScreen: View {
             ProviderAccountRow(
               account: account,
               ownerLabel: ownerLabel(account),
-              windows: providerAccountWindows(account, snapshot: quota.snapshot),
+              windows: providerAccountWindows(account, snapshot: machine.quota),
               isNext: isBalanceNext(account),
               busy: store.busyAccountId == account.id
             )
@@ -172,11 +271,11 @@ struct ProviderAccountsScreen: View {
     .adeFlatList()
     .refreshable {
       await store.load(refresh: true)
-      if let syncService { await quota.load(using: syncService, refresh: true) }
+      await machine.loadQuota(refresh: true)
     }
     .task(id: provider) {
       if !store.loaded { await store.load() }
-      if let syncService, quota.snapshot == nil { await quota.load(using: syncService) }
+      if machine.quota == nil { await machine.loadQuota() }
     }
     .animation(.snappy, value: store.accounts)
     .adeToast($toast)
@@ -193,7 +292,7 @@ struct ProviderAccountsScreen: View {
       .presentationDetents([.medium, .large])
     }
     .sheet(item: $signIn) { route in
-      ProviderAccountSignInSheet(account: route.account, syncService: syncService) { email in
+      ProviderAccountSignInSheet(account: route.account, host: machine.host) { email in
         signIn = nil
         toast = ADEToastMessage(text: email.map { "Signed in as \($0)" } ?? "Signed in")
         Task { await store.refreshAfterSignIn(id: route.account.id) }
@@ -227,7 +326,7 @@ struct ProviderAccountsScreen: View {
       }
       Button("Cancel", role: .cancel) { removing = nil }
     } message: {
-      Text(providerAccountRemoveMessage(hostName: hostName))
+      Text(providerAccountRemoveMessage(hostName: machine.name))
     }
   }
 
@@ -274,7 +373,7 @@ struct ProviderAccountsScreen: View {
   }
 
   private var footerText: String {
-    let machine = hostName.map { "on \($0)" } ?? "on the connected machine"
+    let machine = "on \(self.machine.name)"
     return "These logins live \(machine). Switching the default only changes new chats; chats already running stay on their account."
   }
 
@@ -309,7 +408,7 @@ struct ProviderAccountsScreen: View {
 
   private func isBalanceNext(_ account: ProviderAccount) -> Bool {
     guard store.settings?.smartBalance == true else { return false }
-    return quota.snapshot?.balanceNext?.contains { $0.provider == account.provider && $0.instanceId == account.id } == true
+    return machine.quota?.balanceNext?.contains { $0.provider == account.provider && $0.instanceId == account.id } == true
   }
 
   private func ownerLabel(_ account: ProviderAccount) -> String? {
@@ -418,12 +517,11 @@ struct ProviderAccountQuotaMeter: View {
 // MARK: - Detail
 
 struct ProviderAccountDetailPage: View {
+  @ObservedObject var machine: ProviderAccountsMachine
   @ObservedObject var store: ProviderAccountsStore
   let accountId: String
-  var hostName: String?
   var canChange = true
   var onSignIn: (ProviderAccount) -> Void = { _ in }
-  @ObservedObject private var quota = MobileUsageQuotaStore.shared
   @Environment(\.dismiss) private var dismiss
   @State private var renameText = ""
   @State private var renamePresented = false
@@ -444,7 +542,7 @@ struct ProviderAccountDetailPage: View {
   }
 
   private func content(_ account: ProviderAccount) -> some View {
-    let windows = providerAccountWindows(account, snapshot: quota.snapshot)
+    let windows = providerAccountWindows(account, snapshot: machine.quota)
     return List {
       Section {
         VStack(spacing: 10) {
@@ -505,7 +603,7 @@ struct ProviderAccountDetailPage: View {
 
       Section {
         if let plan = account.plan { fact("Plan", plan.capitalized) }
-        fact("Machine", hostName ?? "Connected machine")
+        fact("Machine", machine.name)
         fact("Folder", account.configHome, mono: true)
       } header: {
         ADEFlatSectionHeader("Details")
@@ -538,7 +636,7 @@ struct ProviderAccountDetailPage: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text(providerAccountRemoveMessage(hostName: hostName))
+      Text(providerAccountRemoveMessage(hostName: machine.name))
     }
   }
 

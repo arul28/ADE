@@ -12,19 +12,19 @@ final class ProviderAccountSignInController: ObservableObject {
   @Published var errorMessage: String?
 
   let account: ProviderAccount
-  private let syncService: SyncService?
+  private let client: ProviderAccountsClient?
   private var pollTask: Task<Void, Never>?
   private var closed = false
 
-  init(account: ProviderAccount, syncService: SyncService?) {
+  init(account: ProviderAccount, host: ProviderAccountsHost?) {
     self.account = account
-    self.syncService = syncService
+    self.client = host.map(ProviderAccountsClient.init(host:))
   }
 
   #if DEBUG
   init(account: ProviderAccount, fixture: ProviderAccountLogin?) {
     self.account = account
-    self.syncService = nil
+    self.client = nil
     self.login = fixture
   }
   #endif
@@ -32,13 +32,13 @@ final class ProviderAccountSignInController: ObservableObject {
   var provider: ProviderAccountProvider { ProviderAccountProvider(rawValue: account.provider) ?? .claude }
 
   func start() async {
-    guard let syncService, !starting else { return }
+    guard let client, !starting else { return }
     starting = true
     closed = false
     errorMessage = nil
     defer { starting = false }
     do {
-      let started = try await syncService.startProviderAccountLogin(id: account.id, provider: provider)
+      let started = try await client.startLogin(id: account.id, provider: provider)
       login = started
       // The sheet closed while the host was starting: end this sign-in too.
       if closed { cancel(); return }
@@ -49,11 +49,11 @@ final class ProviderAccountSignInController: ObservableObject {
   }
 
   func submit(code: String) async {
-    guard let syncService, let loginId = login?.loginId else { return }
+    guard let client, let loginId = login?.loginId else { return }
     submitting = true
     defer { submitting = false }
     do {
-      login = try await syncService.submitProviderAccountLoginCode(loginId: loginId, code: code)
+      login = try await client.submitLoginCode(loginId: loginId, code: code)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -63,9 +63,9 @@ final class ProviderAccountSignInController: ObservableObject {
   func cancel() {
     closed = true
     pollTask?.cancel()
-    guard let syncService, let login, login.isLive else { return }
+    guard let client, let login, login.isLive else { return }
     let loginId = login.loginId
-    Task { _ = try? await syncService.cancelProviderAccountLogin(loginId: loginId) }
+    Task { _ = try? await client.cancelLogin(loginId: loginId) }
   }
 
   private func poll() {
@@ -73,10 +73,10 @@ final class ProviderAccountSignInController: ObservableObject {
     pollTask = Task { [weak self] in
       while !Task.isCancelled {
         try? await Task.sleep(for: .milliseconds(1200))
-        guard let self, !Task.isCancelled, let syncService = self.syncService,
+        guard let self, !Task.isCancelled, let client = self.client,
               let current = self.login, current.isLive else { return }
         do {
-          let status = try await syncService.providerAccountLoginStatus(loginId: current.loginId)
+          let status = try await client.loginStatus(loginId: current.loginId)
           // A retry may have started a new sign-in while this reply was in
           // flight; a reply for the replaced one must not overwrite it.
           guard !Task.isCancelled, self.login?.loginId == current.loginId else { return }
@@ -86,7 +86,7 @@ final class ProviderAccountSignInController: ObservableObject {
           // A dropped connection is retried on the next tick. A connected host
           // that refuses (it restarted and lost the sign-in) is final: say so
           // rather than spinning on a sign-in that no longer exists.
-          guard syncService.connectionState == .connected else { continue }
+          guard client.host.providerAccountsConnected else { continue }
           self.errorMessage = error.localizedDescription
           return
         }
@@ -108,8 +108,8 @@ struct ProviderAccountSignInSheet: View {
   @State private var reportedDone = false
   @FocusState private var codeFocused: Bool
 
-  init(account: ProviderAccount, syncService: SyncService?, onDone: @escaping (String?) -> Void) {
-    _controller = StateObject(wrappedValue: ProviderAccountSignInController(account: account, syncService: syncService))
+  init(account: ProviderAccount, host: ProviderAccountsHost?, onDone: @escaping (String?) -> Void) {
+    _controller = StateObject(wrappedValue: ProviderAccountSignInController(account: account, host: host))
     self.onDone = onDone
   }
 
