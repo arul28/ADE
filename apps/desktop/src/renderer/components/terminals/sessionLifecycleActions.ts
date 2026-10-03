@@ -96,6 +96,40 @@ export async function snoozeSessionForDuration(
   });
 }
 
+/**
+ * Snooze a multi-selection to one shared deadline. One toast and one Undo for
+ * the whole batch: per-row toasts would stack N copies of the same message, and
+ * undoing one of them would leave the rest snoozed.
+ */
+export async function snoozeSessionsForDuration(
+  targets: ReadonlyArray<{ session: Pick<TerminalSessionSummary, "id">; pin?: OpenProjectBinding | null }>,
+  key: SnoozeDurationKey,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  if (!targets.length) return;
+  const untilIso = snoozeDeadlineIso(key, nowMs);
+  const results = await Promise.allSettled(targets.map(({ session, pin }) => (pin
+    ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
+    : window.ade.sessions.snoozeSession(session.id, untilIso))));
+  const snoozed = targets.filter((_, index) => results[index]?.status === "fulfilled");
+  const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (firstFailure) {
+    reportFailure("Snooze", targets[results.indexOf(firstFailure)]!.session.id, firstFailure.reason);
+  }
+  if (!snoozed.length) return;
+  showToast({
+    id: `session-snooze-bulk:${untilIso}`,
+    title: `Snoozed ${snoozed.length} session${snoozed.length === 1 ? "" : "s"} ${snoozeConfirmationLabel(key)}`,
+    durationMs: UNDO_TOAST_MS,
+    actions: [{
+      label: "Undo",
+      onClick: () => {
+        for (const { session, pin } of snoozed) void wakeSessionNow(session, pin);
+      },
+    }],
+  });
+}
+
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
 export async function wakeSessionNow(
   session: Pick<TerminalSessionSummary, "id">,

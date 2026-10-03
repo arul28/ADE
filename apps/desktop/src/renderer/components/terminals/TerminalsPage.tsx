@@ -32,6 +32,11 @@ import {
   type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
+import {
+  SessionBulkContextMenu,
+  type BulkLaneIntent,
+  type SessionBulkContextMenuState,
+} from "./SessionBulkContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
   AgentChatSession,
@@ -53,7 +58,13 @@ import {
   isChatToolType,
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
-import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import {
+  addSessionBesideTarget,
+  makeGridLayoutId,
+  makeGridSetId,
+  MAX_WORK_GRID_TILES,
+  removeSessionFromGrids,
+} from "../../lib/workGrid";
 import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
@@ -204,6 +215,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   ));
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
+  const [bulkMenu, setBulkMenu] = useState<SessionBulkContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -407,6 +419,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       openIn?: SessionContextMenuOpenIn | null,
       laneType?: LaneSummary["laneType"] | null,
     ) => {
+      // Right-clicking a row inside a multi-selection acts on the selection, the
+      // way Finder does; a row outside it keeps its own single-row menu.
+      if (selectedSessionIds.size > 1 && selectedSessionIds.has(session.id)) {
+        setContextMenu(null);
+        setBulkMenu({ x: e.clientX, y: e.clientY });
+        return;
+      }
+      setBulkMenu(null);
       setContextMenu({
         session,
         x: e.clientX,
@@ -418,7 +438,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(laneType ? { laneType } : {}),
       });
     },
-    [],
+    [selectedSessionIds],
   );
   const handleOpenChatSession = useCallback(
     (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
@@ -725,6 +745,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .filter((session): session is TerminalSessionSummary => session != null),
     [selectableSessionsById, selectedSessionIds],
   );
+  // The bulk menu lists and grids the selection in sidebar order, not click order.
+  const selectedSessionsInSidebarOrder = useMemo(() => {
+    const order = new Map(selectableSessions.map((session, index) => [session.id, index] as const));
+    return [...selectedSessions].sort(
+      (a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }, [selectableSessions, selectedSessions]);
 
   // One selected row's delete, routed to the machine that owns it. Bulk delete
   // used to call the unpinned RPC for every row, so a selection spanning
@@ -1290,6 +1317,40 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => work.gridSets.flatMap((set) => set.sessionIds),
     [work.gridSets],
   );
+
+  // Bulk menu → grid: the selection becomes one new grid set, pulled out of any
+  // set its members already sat in.
+  const handleOpenSessionsInGrid = useCallback((sessionIds: string[]) => {
+    const ids = sessionIds.filter((id) => work.sessionsById.has(id)).slice(0, MAX_WORK_GRID_TILES);
+    if (ids.length < 2) return;
+    const detached = ids.reduce((sets, id) => removeSessionFromGrids(sets, id), work.gridSets);
+    const id = makeGridSetId();
+    const layoutId = makeGridLayoutId(projectStateKey, id);
+    window.ade.tilingTree.set(layoutId, buildWorkSessionTilingTree(ids)).catch(() => {});
+    work.setGridSets([...detached, { id, layoutId, sessionIds: ids }]);
+    work.openSessionTab(ids[0]!);
+    work.setActiveItemId(ids[0]!);
+  }, [projectStateKey, work]);
+
+  const handleRemoveSessionsFromGrid = useCallback((sessionIds: string[]) => {
+    work.setGridSets((prev) => sessionIds.reduce((sets, id) => removeSessionFromGrids(sets, id), prev));
+  }, [work]);
+
+  const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+
+  // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
+  // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
+  const handleBulkLanes = useCallback((laneIds: string[], intent: BulkLaneIntent) => {
+    if (!laneIds.length) return;
+    const params = new URLSearchParams({
+      action: intent === "open" ? "select" : "batch",
+      laneId: laneIds[0]!,
+      laneIds: laneIds.join(","),
+    });
+    if (intent === "archive" || intent === "delete") params.set("manageTab", intent);
+    work.selectLane(laneIds[0]!);
+    work.navigate(`/lanes?${params.toString()}`);
+  }, [work]);
 
   // Keep grid membership in sync with live sessions: drop members that no longer
   // exist (closed/deleted) and dissolve any set that falls below two tiles.
@@ -1927,6 +1988,35 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             },
           });
         }}
+      />
+
+      <SessionBulkContextMenu
+        menu={bulkMenu}
+        sessions={selectedSessionsInSidebarOrder}
+        lanes={work.lanes}
+        resolvePin={resolveSessionRuntimePin}
+        onClose={() => setBulkMenu(null)}
+        pinnedSessionIds={work.pinnedSessionIds}
+        onSetPinned={(sessionIds, pinned) => {
+          const current = new Set(work.pinnedSessionIds);
+          for (const id of sessionIds) {
+            if (current.has(id) !== pinned) work.togglePinnedSession(id);
+          }
+        }}
+        gridSessionIds={gridSessionIds}
+        gridableSessionIds={gridableSessionIds}
+        onOpenInGrid={handleOpenSessionsInGrid}
+        onRemoveFromGrid={handleRemoveSessionsFromGrid}
+        onStopRuntimes={() => { void handleBulkCloseSelected(); }}
+        onDelete={() => { void handleBulkDeleteSelected(); }}
+        onStopAndDelete={handleBulkStopAndDeleteSelected}
+        onCopySessionIds={(ids) => navigator.clipboard.writeText(ids.join("\n")).catch(() => {})}
+        onLanes={handleBulkLanes}
+        onClearSelection={() => {
+          setSelectedSessionIds(new Set());
+          setSelectionAnchorId(null);
+        }}
+        deleting={deletingSessionId === "bulk"}
       />
 
       <SessionInfoPopover
