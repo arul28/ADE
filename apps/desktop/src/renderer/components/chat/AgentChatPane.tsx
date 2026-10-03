@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
   inferAttachmentType,
@@ -153,11 +153,7 @@ import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
 import { resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
-  permissionLevelForClaude,
-  permissionLevelForCodex,
-  permissionLevelForDroid,
-  permissionLevelForCursorMode,
-  permissionLevelForOpenCode,
+  permissionLevelForFamily,
   resolvePermissionLevel,
   type PermissionLadderFamily,
 } from "../../../shared/permissionLadder";
@@ -4393,6 +4389,9 @@ export function AgentChatPane({
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
+  // The form covers the pane's error line, so a failed local handoff also
+  // shows its error in the form.
+  const [localHandoffError, setLocalHandoffError] = useState<string | null>(null);
   // `handoffTurnGate` is derived far below in the render; the handoff router is
   // declared above it, so it reads the gate through this latest-value ref.
   const handoffTurnGateRef = useRef(false);
@@ -5467,6 +5466,21 @@ export function AgentChatPane({
       window.removeEventListener("ade:chat:open-info", handler);
     };
   }, [localHandoffOpen, selectedSessionId, selectedSubagentSnapshots]);
+
+  // The form belongs to the chat it opened on. A handoff selects the new chat,
+  // and the user can switch chats with the form open; a form left open would
+  // then hand off the other chat.
+  const localHandoffSessionIdRef = useRef(selectedSessionId);
+  useEffect(() => {
+    if (localHandoffSessionIdRef.current === selectedSessionId) return;
+    localHandoffSessionIdRef.current = selectedSessionId;
+    setLocalHandoffOpen(false);
+  }, [selectedSessionId]);
+  // Each open starts clean: an error from an earlier attempt, or from one that
+  // failed after the form closed, belongs to that attempt.
+  useEffect(() => {
+    setLocalHandoffError(null);
+  }, [localHandoffOpen]);
 
   /**
    * Routes "where should this chat go" to the matching modal. A running turn
@@ -6801,9 +6815,6 @@ export function AgentChatPane({
   const handoffCodexSelectValue: "default" | "edit" | "plan" | "full-auto" | "config-toml" =
     handoffCodexPermissionPreset === "custom" ? "default" : handoffCodexPermissionPreset;
   const handoffBlocked = turnActive || selectedSessionAwaitingInput || handoffBusy;
-  const handoffButtonTitle = handoffBlocked
-    ? "Wait for the current output or approval to finish before handing off this chat."
-    : "Create a new work chat on another model and seed it with a summary of this chat.";
   // The cross-machine modal picks its own destination model, so derive its
   // provider independently of the local-handoff picker. Reasoning/permission
   // fields still inherit the source-session-derived handoff defaults.
@@ -8197,9 +8208,9 @@ export function AgentChatPane({
     clearAgentChatSessionViewCacheForSessions(departed);
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
-  // Stay true until this open has a model other than the source chat's. The
-  // catalog often shows up as only that model first; treating that seed as a
-  // user choice kept every brief on the same model.
+  // Stay true until this open has seeded the source chat's model. The catalog
+  // can arrive without it; treating that fallback as a user choice would keep
+  // the form on the wrong model.
   const handoffModelAutoseedRef = useRef(true);
   const chooseHandoffModel = useCallback((modelId: string) => {
     handoffModelAutoseedRef.current = false;
@@ -8211,16 +8222,19 @@ export function AgentChatPane({
       return;
     }
     const autoseed = handoffModelAutoseedRef.current;
-    const preferredTargetId = handoffAvailableModelIds.find((id) => id !== selectedSessionModelId) ?? handoffAvailableModelIds[0] ?? "";
-    const hasAlternative = Boolean(selectedSessionModelId)
-      && handoffAvailableModelIds.some((id) => id !== selectedSessionModelId);
+    // Fork and brief both start on the model this chat runs on now. The user
+    // picks another one on purpose.
+    const sourceModelId = selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)
+      ? selectedSessionModelId
+      : null;
+    const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
       if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
       return preferredTargetId;
     });
-    // The catalog often arrives as just the source model, then grows. Locking
-    // on that first id left every brief on the chat's own model.
-    if (hasAlternative) handoffModelAutoseedRef.current = false;
+    // Until the source model is in the catalog, a later catalog update may
+    // still replace the fallback with it.
+    if (sourceModelId) handoffModelAutoseedRef.current = false;
   }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
@@ -8236,6 +8250,29 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
+      // Only the source family's control is this chat's real choice; the others
+      // hold defaults or an older choice. Carry the source level to every other
+      // family, so a Full auto chat hands off as Full auto to any model.
+      if (activeLadderFamily) {
+        const resolved = resolvePermissionLevel(permissionLevelForFamily(activeLadderFamily, {
+          claudePermissionMode,
+          codexApprovalPolicy,
+          codexSandbox,
+          opencodePermissionMode,
+          droidPermissionMode,
+          cursorModeId,
+        }));
+        if (activeLadderFamily !== "claude") setHandoffClaudePermissionMode(resolved.claudePermissionMode);
+        if (activeLadderFamily !== "codex") {
+          setHandoffCodexApprovalPolicy(resolved.codexApprovalPolicy);
+          setHandoffCodexSandbox(resolved.codexSandbox);
+        }
+        if (activeLadderFamily !== "opencode" && activeLadderFamily !== "acp") {
+          setHandoffOpenCodePermissionMode(resolved.opencodePermissionMode);
+        }
+        if (activeLadderFamily !== "droid") setHandoffDroidPermissionMode(resolved.droidPermissionMode);
+        if (activeLadderFamily !== "cursor") setHandoffCursorModeId(resolved.cursorModeId);
+      }
       const prefill = pendingHandoffPrefillRef.current;
       pendingHandoffPrefillRef.current = null;
       setHandoffNote(prefill?.note ?? "");
@@ -9627,23 +9664,16 @@ export function AgentChatPane({
       return;
     }
 
-    const level = (() => {
-      switch (previous) {
-        case "claude": return permissionLevelForClaude(claudePermissionMode);
-        case "codex": return permissionLevelForCodex(codexSandbox, codexApprovalPolicy);
-        case "opencode": return permissionLevelForOpenCode(opencodePermissionMode);
-        case "droid": return permissionLevelForDroid(droidPermissionMode);
-        // Switching AWAY from Cursor or an ACP provider must carry a level too;
-        // without these the ladder was one-directional for those families.
-        case "cursor": return permissionLevelForCursorMode(cursorModeId);
-        // ACP has no separate control on this surface; it rides the in-process
-        // mode that the OpenCode picker owns, which is what the apply branch
-        // below writes back.
-        case "acp": return permissionLevelForOpenCode(opencodePermissionMode);
-        default: return null;
-      }
-    })();
-    if (!level) return;
+    // Switching AWAY from Cursor or an ACP provider carries a level too, so the
+    // ladder works in both directions for every family.
+    const level = permissionLevelForFamily(previous, {
+      claudePermissionMode,
+      codexApprovalPolicy,
+      codexSandbox,
+      opencodePermissionMode,
+      droidPermissionMode,
+      cursorModeId,
+    });
 
     // ACP takes its mode from the OpenCode table on this surface, so it must be
     // RESOLVED as that family too: resolving as "acp" reported an un-stepped
@@ -11986,6 +12016,7 @@ export function AgentChatPane({
       ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
     ]);
     setError(null);
+    setLocalHandoffError(null);
     setReplayForkDisclosure(null);
     setHandoffBusy(true);
     setChatActionsOpen(false);
@@ -12043,6 +12074,7 @@ export function AgentChatPane({
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
+      setLocalHandoffOpen(false);
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
@@ -12059,6 +12091,7 @@ export function AgentChatPane({
         ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
         : rawMessage;
       setError(message);
+      setLocalHandoffError(message);
       if (isTransportTimeout) {
         for (const delayMs of [20_000, 60_000, 120_000]) {
           window.setTimeout(() => {
@@ -14377,34 +14410,36 @@ export function AgentChatPane({
     </div>
   );
   const handoffForkTabDisabled = !handoffForkSupported;
+  // The body shows the brief form whenever fork is not available.
+  const handoffLocalModeEffective = handoffLocalMode === "fork" && !handoffForkTabDisabled ? "fork" : "brief";
   const handoffLocalView = (
     <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
-      <div className="flex items-start gap-2.5 border-b border-white/[0.06] px-4 py-3">
-        <button
-          type="button"
-          aria-label="Close local handoff"
-          onClick={() => setLocalHandoffOpen(false)}
-          className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
-        >
-          <ArrowLeft size={13} />
-        </button>
+      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
         <div className="min-w-0">
           <div className="font-sans text-[12.5px] font-semibold text-fg/88">Local handoff</div>
           <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">{handoffForkCopy.subtitle}</div>
         </div>
+        <button
+          type="button"
+          aria-label="Close local handoff"
+          onClick={() => setLocalHandoffOpen(false)}
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+        >
+          <X size={13} />
+        </button>
       </div>
-      {handoffTurnGate ? (
-        <Banner
-          model={{
-            id: "handoff-turn-running",
-            tone: "warning",
-            title: "A turn is running — wait for it to finish before handing off.",
-          }}
-          layout="inline"
-          style={{ margin: "0 16px" }}
-        />
-      ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
+        {handoffTurnGate ? (
+          <Banner
+            model={{
+              id: "handoff-turn-running",
+              tone: "warning",
+              title: "A turn is running — wait for it to finish before handing off.",
+            }}
+            layout="inline"
+            style={{ marginBottom: 12 }}
+          />
+        ) : null}
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
           {([
             { mode: "fork" as const, label: "Fork", disabled: handoffForkTabDisabled },
@@ -14459,18 +14494,6 @@ export function AgentChatPane({
             <div className="text-[10px] leading-4 text-fg/40">{handoffForkCopy.footnote}</div>
             {handoffPermissionControls}
             {handoffNoteField("Optional. Sent to the new chat so it knows what to do next.")}
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  void handoffSession("fork");
-                }}
-                disabled={!handoffModelId || handoffBusy || handoffBlocked}
-              >
-                {handoffBusy ? "Starting…" : "Fork chat"}
-              </button>
-            </div>
           </div>
         ) : (
           <div className="mt-3 space-y-3">
@@ -14505,23 +14528,37 @@ export function AgentChatPane({
               <div className="text-[10px] leading-4 text-fg/40">Where the new chat starts. Pick another lane or create a fresh one.</div>
             </div>
             {handoffNoteField("Optional. Added to the brief as extra instructions.")}
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={() => {
-                  void handoffSession("brief");
-                }}
-                disabled={!handoffModelId || handoffBusy || handoffBlocked}
-              >
-                {handoffBusy ? "Starting…" : "Start brief handoff"}
-              </button>
-            </div>
           </div>
         )}
-        {handoffBlocked ? (
-          <div className="mt-3 text-[10px] leading-4 text-fg/40">{handoffButtonTitle}</div>
+        {localHandoffError ? (
+          <Banner
+            model={{ id: "handoff-local-error", tone: "error", title: localHandoffError }}
+            layout="inline"
+            style={{ marginTop: 12 }}
+          />
         ) : null}
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/[0.06] px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setLocalHandoffOpen(false)}
+          className="rounded-md border border-white/[0.08] px-3 py-1.5 font-sans text-[11px] text-fg/65 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-3 py-1.5 font-sans text-[11px] font-semibold text-fg/88 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => {
+            void handoffSession(handoffLocalModeEffective);
+          }}
+          disabled={!handoffModelId || handoffBlocked}
+        >
+          {handoffBusy ? <CircleNotch size={11} className="animate-spin" aria-hidden /> : null}
+          {handoffBusy
+            ? (handoffLocalModeEffective === "fork" ? "Forking…" : "Summarizing…")
+            : (handoffLocalModeEffective === "fork" ? "Fork chat" : "Start brief handoff")}
+        </button>
       </div>
     </div>
   );
