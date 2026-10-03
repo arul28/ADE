@@ -183,6 +183,7 @@ describe("classifyAgentCliError", () => {
     ["opencode", "spawn /Users/me/bin/my-opencode-wrapper ENOENT"],
     ["opencode", "spawn C:\\Program Files\\OpenCode\\opencode.exe ENOENT"],
     ["opencode", "'opencode' is not recognized as an internal or external command"],
+    ["claude", "claude command not found"],
     ["grok", "Grok was not found on this machine."],
     ["codex", "codex executable not found"],
   ])("classifies %s's %j as a missing CLI", (agent, message) => {

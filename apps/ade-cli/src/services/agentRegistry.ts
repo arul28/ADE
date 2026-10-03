@@ -260,8 +260,9 @@ function missingBinaryPatterns(name: string): RegExp[] {
     new RegExp(String.raw`\bspawn\s+${q}${spawnDir}${bin}${q}\s+ENOENT\b`, "i"),
     // Node/Electron: `ENOENT: no such file or directory, posix_spawn '/x/opencode'`.
     new RegExp(String.raw`\bENOENT\b[^\n]*\bposix_spawnp?\s+${q}${spawnDir}${bin}${q}${end}`, "i"),
-    // bash/dash: `opencode: command not found`, `sh: 1: opencode: not found`.
-    new RegExp(String.raw`(?:^|[\s:'"\`])${dir}${bin}${q}:\s*(?:command\s+)?not found\b`, "im"),
+    // bash/dash: `opencode: command not found`, `sh: 1: opencode: not found`,
+    // `opencode command not found`.
+    new RegExp(String.raw`(?:^|[\s:'"\`])${dir}${bin}${q}(?::\s*(?:command\s+)?not found|\s+command\s+not found)\b`, "im"),
     // zsh/bash: `zsh: command not found: opencode`. The shell prefix is
     // required: a harness answers an unknown slash command with a bare
     // `Command not found: <name>`, which names the command, not a binary.
