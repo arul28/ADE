@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.87] - 2026-10-03
+
+### Desktop
+
+- In-app sign-in and smart load balancing for Claude Code and Codex accounts (#1435).
+- Fork a chat from any turn, subagent permission ceiling, machine launch defaults, batched wakes, and queue reorder (#1441).
+- Smoother long chat threads with background history loading (#1442).
+- Lane-aware Commits view with graph and history links (#1430, #1434, #1437).
+- Bulk right-click menu for multi-selected Work chats (#1439).
+- Fixes for slash-command expansion, the handoff dialog, lane ahead/behind, App Control, and Mac Desktop (#1431-#1433, #1436, #1440).
+
+### iOS
+
+- Work rows follow live turn state; compact Codex diagnostics, new-chat width fix, and Custom harnesses (#1438, #1443).
+
 ## [1.2.86] - 2026-10-02
 
 ### Desktop
@@ -2268,6 +2283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.87]: https://github.com/arul28/ADE/compare/v1.2.86...v1.2.87
 [1.2.86]: https://github.com/arul28/ADE/compare/v1.2.85...v1.2.86
 [1.2.85]: https://github.com/arul28/ADE/compare/v1.2.84...v1.2.85
 [1.2.84]: https://github.com/arul28/ADE/compare/v1.2.83...v1.2.84
