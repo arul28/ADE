@@ -6,9 +6,13 @@ import {
   permissionLevelForClaude,
   permissionLevelForCodex,
   permissionLevelForDroid,
+  permissionLevelForFamily,
   permissionLevelForOpenCode,
   permissionLevelRank,
   resolvePermissionLevel,
+  type PermissionLadderControls,
+  type PermissionLadderFamily,
+  type PermissionLevel,
 } from "./permissionLadder";
 
 describe("round trip", () => {
@@ -99,5 +103,35 @@ describe("codex axes are independent", () => {
 describe("droid agi", () => {
   it("reads as full autonomy so a switch away keeps the top level", () => {
     expect(permissionLevelForDroid("agi")).toBe("full-auto");
+  });
+});
+
+describe("permissionLevelForFamily reads the level a family's own controls hold", () => {
+  // The controls a chat surface carries when every family sits on the ask tier.
+  const askControls: PermissionLadderControls = {
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+  };
+  const cases: Array<[PermissionLadderFamily, Partial<PermissionLadderControls>, PermissionLevel]> = [
+    ["claude", { claudePermissionMode: "bypassPermissions" }, "full-auto"],
+    // A Full auto chat carries through to every family the surface can hand off
+    // to, which is what `AgentChatPane` resolves when the form opens.
+    ["codex", { codexSandbox: "danger-full-access", codexApprovalPolicy: "never" }, "full-auto"],
+    // Codex's two axes are independent: never-ask in a sandbox is not full autonomy.
+    ["codex", { codexSandbox: "workspace-write", codexApprovalPolicy: "never" }, "auto-edit"],
+    ["droid", { droidPermissionMode: "agi" }, "full-auto"],
+    ["cursor", { cursorModeId: "ask" }, "plan"],
+    ["cursor", { cursorModeId: "full-auto" }, "full-auto"],
+    ["opencode", { opencodePermissionMode: "full-auto" }, "full-auto"],
+    // ACP has no control of its own; it rides the OpenCode in-process mode.
+    ["acp", { opencodePermissionMode: "plan" }, "plan"],
+  ];
+
+  it.each(cases)("maps %s from its own controls to %s", (family, overrides, expected) => {
+    expect(permissionLevelForFamily(family, { ...askControls, ...overrides })).toBe(expected);
   });
 });
