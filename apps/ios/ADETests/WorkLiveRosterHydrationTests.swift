@@ -624,6 +624,32 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
     XCTAssertEqual(projection.sessions.map(\.id), ["local-chat", "roster-chat-1", "roster-chat-2"])
   }
 
+  /// A chat's replicated row says `status = "running"` between turns; only the
+  /// live roster knows whether a turn is streaming. The Work row must follow
+  /// it without a pull-to-refresh.
+  func testActiveProjectRosterOverlayTakesLiveTurnStateForKnownChats() {
+    let lane = makeLane(id: "lane-1", name: "Lane")
+    let cases: [(name: String, localRuntime: String, settledAt: String?, roster: RemoteRosterChatStatus, expected: CanonicalSessionPhase)] = [
+      ("done chat starts a turn", "idle", nil, .running, .running),
+      ("settled chat gets a message", "idle", "2026-07-22T01:00:00.000Z", .running, .running),
+      ("working chat finishes its turn", "running", nil, .idle, .ready),
+    ]
+    for testCase in cases {
+      var local = makeSession(id: "chat-1", laneId: lane.id, laneName: lane.name)
+      local.runtimeState = testCase.localRuntime
+      local.settledAt = testCase.settledAt
+      var rosterChat = makeRosterChat(id: local.id, laneId: lane.id)
+      rosterChat.status = testCase.roster
+      let roster = makeRoster(projectId: "project-1", name: "Project", lanes: [], chats: [rosterChat])
+
+      let projection = overlayActiveProjectRoster(localSessions: [local], localLanes: [lane], roster: roster)
+
+      XCTAssertEqual(projection.sessions.count, 1, testCase.name)
+      let phase = workCanonicalSessionState(session: projection.sessions[0], summary: nil).phase
+      XCTAssertEqual(phase, testCase.expected, testCase.name)
+    }
+  }
+
   func testActiveProjectRosterOverlayExcludesKnownIdentityRowsFromLocalState() {
     let lane = makeLane(id: "lane-cto", name: "CTO lane")
     let ctoSession = makeSession(id: "cto-chat", laneId: lane.id, laneName: lane.name)
