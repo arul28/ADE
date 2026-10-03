@@ -38674,6 +38674,11 @@ export function createAgentChatService(args: {
         promptText,
         userText: trimmed,
         displayText,
+        // A queued ACP steer of a native command must still route as one even
+        // though the composed prompt carries lane directives. The ACP route
+        // reads the raw user text and, when the agent advertised the command,
+        // sends it bare instead of the composed prompt.
+        providerSlashCommand: runtime.kind === "acp" && isProviderSlashCommandInput(trimmed),
         ...(acceptedRowSteerId ? { steerId: acceptedRowSteerId } : {}),
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
@@ -50459,6 +50464,13 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
       if (runtime.busy || runtime.activeTurn) {
+        // A busy steer can name an OpenCode command before any turn has listed
+        // them (`commandNames` is null until a leading-slash turn reads the
+        // server). Refresh first, or `prepareSendMessage` expands a same-named
+        // ADE skill over the native command.
+        if (isProviderSlashCommandInput(trimmed)) {
+          await listOpenCodeCommandNames(managed, runtime);
+        }
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
