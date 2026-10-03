@@ -800,6 +800,11 @@ struct WorkNewChatScreen: View {
     hostLaunchDefaultsChecked = true
     guard let defaults = await syncService.fetchChatLaunchDefaults() else { return }
     guard sessionMode == .chat, selectedMachineKey == nil, composerSelection == openingSelection else { return }
+    // A persisted Custom harness is the user's own last choice and outranks the
+    // machine's launch defaults. Hold the defaults until that preset has been
+    // resolved or proven gone (which clears `restoredPresetId`), so the two
+    // async loads cannot fight over the composer.
+    guard restoredPresetId == nil else { return }
     selectedModelOption = nil
     provider = workNormalizedChatProvider(defaults.provider)
     modelId = defaults.modelId
