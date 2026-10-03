@@ -484,6 +484,24 @@ func toolTypeForProvider(_ provider: String) -> String {
   }
 }
 
+/// The harness's display name on a Custom harness row, mirroring
+/// `HARNESS_PRESET_BODY_LABELS` in `shared/harnessPresets.ts`.
+func workHarnessPresetBodyLabel(_ harness: String) -> String {
+  switch harness.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude": return "Claude Code"
+  case "codex": return "Codex CLI"
+  case "opencode": return "OpenCode"
+  case "droid": return "Droid"
+  case "pi": return "Pi"
+  case "qwen": return "Qwen Code"
+  case "kimi": return "Kimi"
+  case "grok": return "Grok"
+  case "copilot": return "GitHub Copilot"
+  case "cursor": return "Cursor"
+  default: return harness.isEmpty ? "Custom" : harness
+  }
+}
+
 func providerLabel(_ provider: String) -> String {
   switch providerFamilyKey(provider) {
   case "codex": return "Codex"
@@ -499,6 +517,7 @@ func providerLabel(_ provider: String) -> String {
   case "lmstudio": return "LM Studio"
   case "qwen": return "Qwen"
   case "kimi": return "Kimi"
+  case "deepseek": return "DeepSeek"
   case "grok": return "Grok"
   case "copilot": return "GitHub Copilot"
   default: return provider.capitalized
@@ -598,6 +617,8 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderQwen"
   case "kimi":
     return "ProviderKimi"
+  case "deepseek":
+    return "ProviderDeepSeek"
   case "grok":
     return "ProviderXAI"
   case "copilot":
@@ -658,6 +679,43 @@ func workUpstreamBrand(modelId: String) -> String? {
   return nil
 }
 
+/// Upstream maker families a model row or composer chip can wear a mark for.
+/// A gateway provider (OpenCode Go, OpenCode Zen, a custom endpoint) fronts
+/// models from many makers, so the route key alone would brand every row with
+/// the gateway.
+let workKnownUpstreamBrandKeys: Set<String> = [
+  "claude", "codex", "google", "xai", "grok", "deepseek", "kimi", "moonshot",
+  "qwen", "mistral", "groq", "openrouter", "together", "meta", "minimax",
+  "zai", "perplexity", "nvidia", "cohere", "huggingface", "cerebras",
+  "baseten", "fireworks", "xiaomi", "cursor", "droid", "copilot",
+]
+
+/// The maker named by a model id, for a route whose provider key names the
+/// gateway rather than the maker (`opencode-go/deepseek-v4.1-flash`). The
+/// shared table answers first; the rest is ordered so a compound id
+/// (`gpt-5-codex`, `claude-opus`) lands on one brand.
+func workUpstreamBrandInModelId(_ raw: String) -> String? {
+  let id = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard !id.isEmpty else { return nil }
+  if let shared = workUpstreamBrand(modelId: id) { return shared }
+  let checks: [(needle: String, brand: String)] = [
+    ("deepseek", "deepseek"),
+    ("kimi", "kimi"),
+    ("moonshot", "kimi"),
+    ("qwen", "qwen"),
+    ("glm", "zai"),
+    ("minimax", "minimax"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+    ("llama", "meta"),
+    ("grok", "grok"),
+  ]
+  for check in checks where id.contains(check.needle) {
+    return check.brand
+  }
+  return nil
+}
+
 /// Per-model row logo key. Mirrors desktop `ModelRowLogo` so Cursor/Droid/OpenCode
 /// rows show the upstream brand (Claude, OpenAI, Gemini, etc.) instead of the
 /// runtime group logo.
@@ -699,6 +757,13 @@ func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: Strin
   }
 
   if group == "opencode" || modelId.hasPrefix("opencode/") {
+    // The catalog has already resolved the upstream maker for a gateway route
+    // (OpenCode Go's DeepSeek); prefer it over the route segment, which names
+    // the gateway rather than the model's maker.
+    let resolvedBrand = providerFamilyKey(model.provider)
+    if workKnownUpstreamBrandKeys.contains(resolvedBrand) {
+      return resolvedBrand
+    }
     if modelId.hasPrefix("opencode/") {
       let parts = modelId.split(separator: "/", omittingEmptySubsequences: true)
       if parts.count >= 3 {
@@ -783,6 +848,8 @@ func providerTint(_ provider: String?) -> Color {
     return .purple
   case "kimi":
     return .primary
+  case "deepseek":
+    return Color(red: 0.30, green: 0.42, blue: 1.0)
   case "grok":
     return .red
   case "copilot":

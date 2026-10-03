@@ -1405,6 +1405,114 @@ struct WorkProviderLogo: View {
   }
 }
 
+/// The mark for Custom — ADE's own saved agent-plus-model setups. A port of
+/// `CustomToolMark.tsx`: a gear with a wrench inside it, drawn rather than
+/// imported so it lands on the same baseline as the provider marks beside it.
+/// Used by the Custom rail entry and by a preset whose picture (`upload` /
+/// `generated`) lives only on its own machine.
+struct WorkCustomToolMark: View {
+  /// The desktop mark's violet, `#a78bfa`.
+  static let defaultColor = Color(red: 0.655, green: 0.545, blue: 0.980)
+
+  var size: CGFloat = 18
+  var color: Color = WorkCustomToolMark.defaultColor
+
+  var body: some View {
+    Canvas { context, canvasSize in
+      let scale = min(canvasSize.width, canvasSize.height) / 24
+      func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        CGPoint(x: x * scale, y: y * scale)
+      }
+
+      // Gear ring — eight teeth, with the centre cut out (even-odd).
+      var gear = Path()
+      let teeth: [(CGFloat, CGFloat)] = [
+        (21.09, 10.04), (23.30, 10.48), (23.30, 13.52), (21.09, 13.96),
+        (19.81, 17.04), (21.06, 18.92), (18.92, 21.06), (17.04, 19.81),
+        (13.96, 21.09), (13.52, 23.30), (10.48, 23.30), (10.04, 21.09),
+        (6.96, 19.81), (5.08, 21.06), (2.94, 18.92), (4.19, 17.04),
+        (2.91, 13.96), (0.70, 13.52), (0.70, 10.48), (2.91, 10.04),
+        (4.19, 6.96), (2.94, 5.08), (5.08, 2.94), (6.96, 4.19),
+        (10.04, 2.91), (10.48, 0.70), (13.52, 0.70), (13.96, 2.91),
+        (17.04, 4.19), (18.92, 2.94), (21.06, 5.08), (19.81, 6.96),
+      ]
+      gear.move(to: point(teeth[0].0, teeth[0].1))
+      for tooth in teeth.dropFirst() {
+        gear.addLine(to: point(tooth.0, tooth.1))
+      }
+      gear.closeSubpath()
+      gear.addEllipse(in: CGRect(x: 5.6 * scale, y: 5.6 * scale, width: 12.8 * scale, height: 12.8 * scale))
+      context.fill(gear, with: .color(color), style: FillStyle(eoFill: true))
+
+      // Wrench head — the long arc under the slot, then down into the slot and
+      // back, so the head is one outline instead of a disc minus a rectangle.
+      let headRadius: CGFloat = 3.2
+      let halfChord: CGFloat = 1.1
+      let headCenterY = 6.8 + sqrt(headRadius * headRadius - halfChord * halfChord)
+      let headCenter = point(12, headCenterY)
+      var head = Path()
+      head.addArc(
+        center: headCenter,
+        radius: headRadius * scale,
+        startAngle: Angle(radians: atan2(6.8 - headCenterY, 10.9 - 12)),
+        endAngle: Angle(radians: atan2(6.8 - headCenterY, 13.1 - 12)),
+        clockwise: true
+      )
+      head.addLine(to: point(13.1, 9.5))
+      head.addLine(to: point(10.9, 9.5))
+      head.closeSubpath()
+      context.fill(head, with: .color(color))
+
+      // Wrench handle — from the head down into the gear ring.
+      var handle = Path()
+      handle.addRoundedRect(
+        in: CGRect(x: 10.75 * scale, y: 11.6 * scale, width: 2.5 * scale, height: 9.2 * scale),
+        cornerSize: CGSize(width: 1.1 * scale, height: 1.1 * scale)
+      )
+      context.fill(handle, with: .color(color))
+    }
+    .frame(width: size, height: size)
+    .accessibilityHidden(true)
+  }
+}
+
+/// A preset's mark, mirroring `HarnessLogo.tsx`: a provider's brand mark, or
+/// the Custom mark in the preset's own accent. An `upload`/`generated` picture
+/// never leaves its machine, so a remote surface draws the Custom mark for it
+/// rather than a wrong company's logo.
+struct WorkHarnessPresetMark: View {
+  let logo: SyncMachineInventoryPresetLogo?
+  let accentColor: String?
+  var size: CGFloat = 22
+
+  private var resolvedAccent: Color? {
+    LaneColorPalette.color(forHex: accentColor)
+  }
+
+  var body: some View {
+    let providerId = logo?.providerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    Group {
+      if logo?.kind == "provider", !providerId.isEmpty {
+        WorkProviderBareLogo(
+          provider: providerId,
+          fallbackSymbol: providerIcon(providerId),
+          tint: providerTint(providerId),
+          size: size
+        )
+      } else {
+        WorkCustomToolMark(size: size, color: resolvedAccent ?? WorkCustomToolMark.defaultColor)
+      }
+    }
+    .frame(width: size, height: size)
+    .overlay {
+      if let resolvedAccent {
+        Circle().stroke(resolvedAccent, lineWidth: 1.5)
+      }
+    }
+  }
+}
+
+
 /// Borderless provider mark — same asset as WorkProviderLogo but without the
 /// surrounding tinted square. Used inside the provider-tinted session card so
 /// the logo reads as part of the card itself, not a separate badge.

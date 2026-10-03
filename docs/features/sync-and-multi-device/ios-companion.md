@@ -257,6 +257,46 @@ This is only about in-thread subagents. A `--type subagent` chat and a child
 lane are full chats with their own rows, their own composer and their own lane,
 and they open exactly as they always have.
 
+## Startup diagnostics collapse to one row
+
+Desktop folds routine turn receipts into its per-turn work summary. The phone
+has no such summary, so a Codex thread's first turns used to leave a wall of
+near-identical rows: a config warning, then one "Turn details · 2 optional
+integrations unavailable", then another. iOS now folds a contiguous run of two
+or more diagnostics cards — every `turnDetails` receipt plus routine warning
+notices (Codex config warnings, hook notices, rate-limit warnings) — into ONE
+small, chrome-free line in the thread, `1 warning · 2 optional integrations
+unavailable` with a chevron, which expands to the full sentence of every
+warning and each unavailable integration. Danger notices (auth, thread errors) and actionable
+notices (a reset credit, a host sleep, a spawn chip) keep their own rows, and a
+lone diagnostics card renders exactly as it did before. The fold lives in
+`foldingWorkDiagnosticCards` (`WorkTimelineHelpers.swift`) and changes nothing
+for the desktop or the web client.
+
+## The model pill names the model, and Custom harnesses are selectable
+
+The New Chat composer's model pill resolves its label from the live
+`chat.modelCatalog` the same way the desktop picker does, so a gateway-routed
+model reads "DeepSeek V4.1 Flash" rather than the raw
+`opencode/opencode-go/deepseek-v4.1-flash` route; the route's upstream maker
+also picks the mark (DeepSeek, Gemini, Kimi, …) instead of branding every
+OpenCode Go row with the gateway. Only when the catalog has never been seen
+does the label fall back to a prettified id.
+
+The picker's rail gains a **Custom** section, placed first exactly as the
+desktop rail places it — a saved setup is a whole launch configuration, so it
+is the first thing to reach for when you have one. It appears whenever the
+connected host advertises `account.getMachineInventory` and the surface can
+carry a preset id into its launch: the machine's saved Custom harnesses, each
+wearing the same mark the desktop list draws (a provider's brand mark, or the
+Custom gear-and-wrench mark in the preset's own accent) with the same
+`Harness · model` line and a "Set up on the machine" state for a preset whose
+source is missing. Choosing one starts the chat under that preset
+(`chat.create`/`chat.launch`/`work.startCliSession` carry `presetId`) and the
+composer pill shows the preset's name and mark. Presets stay machine-local: the
+phone receives ids, names, models, and the mark's *identity* (kind, provider
+id, accent) — never keys, and never uploaded logo artwork.
+
 ## Project layout
 
 > The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,

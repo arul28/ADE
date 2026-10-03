@@ -389,6 +389,14 @@ let workComposerControlsCollapseThreshold: CGFloat = 360
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
+  /// The upstream maker's key for the model mark. Nil falls back to `provider`,
+  /// which is the right answer for every direct (non-gateway) harness.
+  var modelBrandKey: String? = nil
+  /// When the composer runs on a saved Custom harness, its own mark and accent
+  /// replace the provider mark — the desktop composer shows the preset, not
+  /// the harness, for the same selection. One optional value so "a preset is
+  /// selected" cannot disagree with "the preset has a mark".
+  var preset: SyncMachineInventoryPreset? = nil
   let reasoningEffort: String
   let currentMode: String
   let modeOptions: [WorkRuntimeModeOption]
@@ -555,12 +563,16 @@ struct WorkComposerControlsRow: View {
       onOpenModelPicker?()
     } label: {
       HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: provider,
-          fallbackSymbol: providerIcon(provider),
-          tint: providerTint(provider),
-          size: 16
-        )
+        if let preset {
+          WorkHarnessPresetMark(logo: preset.logo, accentColor: preset.accentColor, size: 16)
+        } else {
+          WorkProviderLogo(
+            provider: modelBrandKey ?? provider,
+            fallbackSymbol: providerIcon(modelBrandKey ?? provider),
+            tint: providerTint(modelBrandKey ?? provider),
+            size: 16
+          )
+        }
         Text(modelDisplayName)
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -630,6 +642,7 @@ struct WorkComposerChipStrip: View {
           WorkComposerControlsRow(
             provider: chatSummary.provider,
             modelDisplayName: chatSummary.modelLabel,
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
             reasoningEffort: chatSummary.reasoningEffort,
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
@@ -655,40 +668,6 @@ struct WorkComposerChipStrip: View {
           }
       }
     )
-  }
-
-  private func prettyModelName(_ model: String) -> String {
-    // Match the desktop composer's model label: "Claude Sonnet 5" /
-    // "GPT-5.4" instead of a bare short id. Host-reported
-    // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
-    // Claude and the full long form for Codex, so we special-case the
-    // Claude short ids and otherwise beautify the raw string.
-    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "Model" }
-    if let known = workKnownModelDisplayName(trimmed) {
-      return known
-    }
-    let lower = trimmed.lowercased()
-    if lower.hasPrefix("claude-") {
-      let tail = trimmed.dropFirst("claude-".count)
-      return "Claude " + beautifyModelSegment(String(tail))
-    }
-    return beautifyModelSegment(trimmed)
-  }
-
-  private func beautifyModelSegment(_ raw: String) -> String {
-    raw
-      .split(separator: "-")
-      .map { part -> String in
-        let s = String(part)
-        if s.range(of: #"^\d+$"#, options: .regularExpression) != nil {
-          return s
-        }
-        if s.lowercased() == "gpt" { return "GPT" }
-        return s.prefix(1).uppercased() + s.dropFirst()
-      }
-      .joined(separator: " ")
-      .replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
   }
 
 }

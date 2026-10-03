@@ -685,6 +685,7 @@ struct HubInlineComposer: View {
           WorkComposerControlsRow(
             provider: provider,
             modelDisplayName: hubPrettyModelName(modelId),
+            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: modelId)?.brandKey,
             reasoningEffort: reasoningEffort,
             currentMode: runtimeMode,
             modeOptions: workRuntimeModeOptions(provider: provider),
@@ -1206,18 +1207,15 @@ private func hubCliInitialTitle(opener: String, provider: String) -> String {
 private func hubPrettyModelName(_ model: String) -> String {
   let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "Model" }
+  if let entry = WorkModelMentionDirectory.shared.entry(for: trimmed) {
+    let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !title.isEmpty { return title }
+  }
   if let known = workKnownModelDisplayName(trimmed) {
     return known
   }
-  let lower = trimmed.lowercased()
-  if lower.hasPrefix("claude-") {
-    let tail = trimmed.dropFirst("claude-".count)
-    let joined = tail.split(separator: "-").map { part -> String in
-      let s = String(part)
-      if s.range(of: #"^\d+$"#, options: .regularExpression) != nil { return s }
-      return s.prefix(1).uppercased() + s.dropFirst()
-    }.joined(separator: " ")
-    return "Claude " + joined.replacingOccurrences(of: #"(\d+) (\d+)"#, with: "$1.$2", options: .regularExpression)
+  if let pretty = workPrettyModelNameFromId(trimmed) {
+    return pretty
   }
   return trimmed
 }

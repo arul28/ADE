@@ -4602,6 +4602,37 @@ struct AgentChatModelCatalog: Codable, Equatable {
   var stale: Bool?
 }
 
+/// A preset's mark as an identity (never artwork): `provider` names a brand
+/// mark to draw, `ade` is the built-in Custom mark, and `upload`/`generated`
+/// are a picture that lives only on its own machine — drawn remotely as the
+/// Custom mark in the preset's accent.
+struct SyncMachineInventoryPresetLogo: Codable, Equatable {
+  var kind: String
+  var providerId: String?
+}
+
+/// One saved Custom harness preset from `account.getMachineInventory`
+/// (`MachineInventoryPreset` on the host). `bound` means the preset's source —
+/// the account, key, or OpenCode sign-in it names — exists on that machine
+/// right now, which is exactly the launch's own test.
+struct SyncMachineInventoryPreset: Codable, Equatable, Identifiable {
+  var id: String
+  var name: String
+  var harness: String
+  var model: String
+  /// Absent against an older host; the row then falls back to the Custom mark.
+  var logo: SyncMachineInventoryPresetLogo?
+  var accentColor: String?
+  var bound: Bool
+}
+
+/// The subset of the host's `MachineInventoryDetail` the phone needs. Unknown
+/// keys (providers, model counts) decode away.
+struct SyncMachineInventoryDetail: Codable, Equatable {
+  var machineKey: String
+  var presets: [SyncMachineInventoryPreset]
+}
+
 /// Response envelopes for the cross-surface ModelPicker favorites/recents
 /// RPC. Each method returns its own keyed wrapper (`{ favorites: [...] }` for
 /// favorites methods, `{ recents: [...] }` for recents methods, plus

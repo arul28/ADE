@@ -2030,6 +2030,10 @@ struct WorkTurnDiagnosticsDisclosureView: View {
 
   private var summary: String {
     var parts: [String] = []
+    if !card.diagnosticWarnings.isEmpty {
+      let count = card.diagnosticWarnings.count
+      parts.append("\(count) warning\(count == 1 ? "" : "s")")
+    }
     if card.diagnosticModerationChecks > 0 {
       parts.append("Safety checked")
     }
@@ -2054,6 +2058,21 @@ struct WorkTurnDiagnosticsDisclosureView: View {
       )
     ) {
       VStack(alignment: .leading, spacing: 8) {
+        // The full sentence the collapsed line has to truncate. `.fixedSize`
+        // lets it wrap to as many lines as it needs; this is the one place a
+        // startup warning is readable in full.
+        ForEach(Array(card.diagnosticWarnings.enumerated()), id: \.offset) { _, warning in
+          VStack(alignment: .leading, spacing: 2) {
+            Label(warning.title, systemImage: warning.icon)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.warning)
+            Text(warning.message)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+
         if card.diagnosticModerationChecks > 0 {
           Label(
             card.diagnosticModerationChecks == 1
@@ -2082,29 +2101,23 @@ struct WorkTurnDiagnosticsDisclosureView: View {
       .padding(.top, 4)
       .padding(.leading, 2)
     } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "info.circle")
-          .foregroundStyle(ADEColor.textMuted)
-        VStack(alignment: .leading, spacing: 1) {
-          Text("Turn details")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-          Text(summary)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
+      // Deliberately not a card: one small line in the thread, the way the
+      // desktop folds receipts into its work summary. The expanded body below
+      // carries the full text; this row is only the pointer to it.
+      HStack(spacing: 6) {
+        Image(systemName: card.icon)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(card.tint == .warning ? ADEColor.warning : ADEColor.textMuted)
+        Text(summary)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
       }
-      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
       .contentShape(Rectangle())
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 4)
-    .background(ADEColor.cardBackground.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.7)
-    )
+    .padding(.horizontal, 2)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Turn details. \(summary)")
     .accessibilityHint(isExpanded ? "Double tap to collapse details." : "Double tap to show safety and integration details.")

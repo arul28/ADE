@@ -56,10 +56,7 @@ enum WorkNewChatModelCheck: Equatable {
 /// machine's account inventory (`machineKey` is its fleet key).
 @MainActor
 func workNewChatModelCheck(machineKey: String?, provider: String, mode: WorkCursorAvailabilityMode) -> WorkNewChatModelCheck {
-  guard let identity = machineKey.flatMap(HiddenMachineStore.identity(fromFleetKey:)),
-        let machine = AccountService.shared.machines.first(where: {
-          $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
-        }),
+  guard let machine = AccountService.shared.machine(forFleetKey: machineKey),
         let available = workNewChatProvidersWithAccounts(machine.inventory),
         !available.contains(providerFamilyKey(provider))
   else { return .fits }

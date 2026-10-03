@@ -17,6 +17,11 @@ enum WorkComposerPreferences {
     var runtimeMode: String
     var reasoningEffort: String
     var codexFastMode: Bool
+    /// The saved Custom harness the last send ran under, when there was one.
+    /// Optional so a record written before presets existed still decodes; the
+    /// screen re-resolves it against the connected machine's list and drops it
+    /// when the preset is gone or unbound.
+    var presetId: String? = nil
   }
 
   /// Versioned so a future field change can migrate rather than mis-decode.
@@ -44,7 +49,13 @@ enum WorkComposerPreferences {
   }
 
   /// Convenience for call sites that have the fields loose rather than as a
-  /// `Selection` value.
+  /// `Selection` value — an in-session reasoning/fast/access tweak.
+  ///
+  /// An in-session change that leaves the model alone must not erase the Custom
+  /// harness the chat launched under: those call sites never knew the preset,
+  /// and dropping it would silently move the next New Chat send onto the
+  /// machine's default sign-in. A different provider or model is a different
+  /// brain, so the preset is dropped there.
   static func save(
     provider: String,
     modelId: String,
@@ -52,15 +63,19 @@ enum WorkComposerPreferences {
     reasoningEffort: String,
     codexFastMode: Bool
   ) {
-    save(
-      Selection(
-        provider: provider,
-        modelId: modelId,
-        runtimeMode: runtimeMode,
-        reasoningEffort: reasoningEffort,
-        codexFastMode: codexFastMode
-      )
+    var selection = Selection(
+      provider: provider,
+      modelId: modelId,
+      runtimeMode: runtimeMode,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode
     )
+    if let current = load(),
+       current.provider == selection.provider.trimmingCharacters(in: .whitespacesAndNewlines),
+       current.modelId == selection.modelId.trimmingCharacters(in: .whitespacesAndNewlines) {
+      selection.presetId = current.presetId
+    }
+    save(selection)
   }
 }
 
@@ -1839,6 +1854,15 @@ struct WorkChatTaskListSnapshot: Hashable {
   }
 }
 
+/// One routine warning absorbed by the mobile diagnostics fold — the notice's
+/// own title ("Warning", "Hook notice") plus the host's full sentence, which is
+/// what the expanded disclosure shows in place of the truncated collapsed line.
+struct WorkTurnDiagnosticWarning: Hashable {
+  let title: String
+  let message: String
+  let icon: String
+}
+
 struct WorkEventCardModel: Identifiable, Hashable {
   let id: String
   let kind: String
@@ -1882,6 +1906,14 @@ struct WorkEventCardModel: Identifiable, Hashable {
   /// of rendering each routine moderation or optional integration event.
   let diagnosticModerationChecks: Int
   let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
+  /// Routine warning notices (a Codex config warning, a hook notice, a
+  /// rate-limit warning) absorbed by the mobile diagnostics fold, in the order
+  /// they were seen. Empty for every other card.
+  let diagnosticWarnings: [WorkTurnDiagnosticWarning]
+  /// The host's `noticeKind` for a `notice` card ("warning", "config", "hook",
+  /// …). The fold reads it so a routine kind whose tint is not amber — a Codex
+  /// config notice — still folds with the diagnostics beside it.
+  let noticeKind: String?
   /// Child chat a `spawn_completed` peer notice reports on, resolved once at
   /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
   /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
@@ -1923,6 +1955,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
+    diagnosticWarnings: [WorkTurnDiagnosticWarning] = [],
+    noticeKind: String? = nil,
     spawnCompletionChildId: String? = nil,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
@@ -1950,6 +1984,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.recoveryReceipt = recoveryReceipt
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
+    self.diagnosticWarnings = diagnosticWarnings
+    self.noticeKind = noticeKind
     self.spawnCompletionChildId = spawnCompletionChildId
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
