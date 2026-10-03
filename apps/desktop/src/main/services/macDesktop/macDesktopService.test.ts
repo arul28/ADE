@@ -20,6 +20,8 @@ import {
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
 import { createMacDesktopService } from "./macDesktopService";
+import type { DesktopSeatAdapter } from "./macDesktopSeatProvider";
+import { createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
@@ -135,6 +137,8 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
 
 function makeService(options: {
   platform?: NodeJS.Platform;
+  seat?: DesktopSeatAdapter;
+  hostIsLocal?: () => boolean;
   driver?: ReturnType<typeof createFakeDriver>;
   projectRoot?: string;
   now?: () => number;
@@ -159,6 +163,8 @@ function makeService(options: {
     projectRoot: options.projectRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
     logger,
     platform: options.platform ?? "darwin",
+    ...(options.seat ? { seat: options.seat } : {}),
+    ...(options.hostIsLocal ? { hostIsLocal: options.hostIsLocal } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
@@ -168,6 +174,61 @@ function makeService(options: {
   });
   return { service, driver, events };
 }
+
+describe("Windows seat through the shared desktop service", () => {
+  const readyHost = { state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: false, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" };
+  function windowsService(status: Record<string, unknown>, hostIsLocal = true) {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => status,
+      [MAC_DESKTOP_DRIVER_OPS.health]: () => ({ version: "1.0.0", windowsDesktop: status }),
+    });
+    const seat = { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null };
+    return makeService({ platform: "win32", seat, driver, hostIsLocal: () => hostIsLocal });
+  }
+
+  it("starts and stops a Windows lane through the shared lifecycle and reports native host identity", async () => {
+    const { service } = windowsService(readyHost);
+    try {
+      const started = await service.start({ laneId: "windows-lane" });
+      expect(started.supported).toBe(true);
+      expect(started.display?.laneId).toBe("windows-lane");
+      expect(started.windowsDesktop).toMatchObject({ driverSessionId: 1, hostIsConsoleSession: true, edition: "Professional" });
+      await service.stop({ laneId: "windows-lane" });
+      expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+    } finally { service.dispose(); }
+  });
+
+  it.each([
+    ["locked", "WINDOWS_DESKTOP_LOCKED"],
+    ["setup_required", "WINDOWS_DESKTOP_SETUP_REQUIRED"],
+    ["not_console_session", "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION"],
+    ["held", "WINDOWS_DESKTOP_HELD"],
+  ])("refuses a private start on a %s host", async (state, code) => {
+    const { service } = windowsService({ ...readyHost, state, holderLaneId: state === "held" ? "other-lane" : null });
+    try {
+      await expect(service.start({ laneId: "windows-lane" })).rejects.toMatchObject({ code });
+      expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+    } finally { service.dispose(); }
+  });
+
+  it.each([
+    [true, false], [false, true], [false, false], [true, true],
+  ])("requires explicit consent from either client location (local=%s consent=%s)", async (local, consent) => {
+    const { service } = windowsService(readyHost, local);
+    try {
+      const start = service.start({ laneId: "windows-lane", seatMode: "shared", sharedDesktopConsent: consent });
+      if (consent) {
+        await expect(start).resolves.toMatchObject({ display: { laneId: "windows-lane" } });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display?.laneId).toBe("windows-lane");
+        await service.stop({ laneId: "windows-lane" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      } else {
+        await expect(start).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      }
+    } finally { service.dispose(); }
+  });
+});
 
 describe("macDesktopService capability gate", () => {
   it("getStatus answers on Windows with supported:false and an unsupported driver", async () => {

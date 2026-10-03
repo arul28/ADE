@@ -117,6 +117,12 @@ export type ChatMacDesktopPanelProps = {
   /** The chat the tab is attached to, for lease and proof attribution. */
   sessionId: string | null;
   runtimePin: OpenProjectBinding | null;
+  /**
+   * Which tool opened this pane. The pane names itself from the host's status,
+   * but the first read has not answered while it says "Checking", so without
+   * this a Windows host read "Checking Mac Desktop…".
+   */
+  desktopKind?: "mac" | "windows";
 };
 
 export function useMacDesktopPanelController({
@@ -124,6 +130,7 @@ export function useMacDesktopPanelController({
   laneName,
   sessionId,
   runtimePin,
+  desktopKind = "mac",
 }: ChatMacDesktopPanelProps) {
   // The machine on the other end of the pin, for the one failure that is about
   // it rather than about this screen: a brain with no `mac_desktop` domain.
@@ -987,6 +994,7 @@ export function useMacDesktopPanelController({
 
 
   return {
+    desktopKind,
     laneId, laneName, sessionId, runtimePin, machineFacts,
     status, setStatus, statusError, setStatusError, readError, unconfirmed, refreshStatus, stopDisplay, stopping,
     start, starting, gaveUp, cursor, notParked, dismissNotParked, appsLeftOpen, dismissAppLeftOpen,

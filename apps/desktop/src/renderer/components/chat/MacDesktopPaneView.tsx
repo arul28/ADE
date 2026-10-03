@@ -26,6 +26,7 @@ import {
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
+import { Banner } from "../ui/notice";
 import { H264StreamView } from "./H264StreamView";
 import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
@@ -55,6 +56,7 @@ import {
   type MacDesktopPanelController,
 } from "./useMacDesktopPanelController";
 import { MacDesktopFullscreenView } from "./MacDesktopFullscreenView";
+import { WindowsDesktopStateCard } from "./WindowsDesktopStateCard";
 
 const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
 
@@ -145,8 +147,11 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopKind,
   } = controller;
+  const desktopName = desktopKind === "windows" || status?.platform === "win32" || status?.windowsDesktop
+    ? "Windows Desktop"
+    : "Mac Desktop";
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
   // when the answer arrived.
@@ -178,7 +183,23 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   // listing the display until the stop lands, and showing it live meanwhile is
   // the flicker a reopened tab used to have.
   if (stopping) {
-    return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title="Stopping Mac Desktop…" />);
+    return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title={`Stopping ${desktopName}…`} />);
+  }
+
+  // Windows hosts have four states macOS does not — setup, held, locked, and a
+  // shared seat — and they all live on their own card. Only ever reached on a
+  // Windows host, because `status.windowsDesktop` is null elsewhere.
+  if (!display && status?.windowsDesktop) {
+    return idle(
+      <WindowsDesktopStateCard
+        laneId={laneId}
+        laneName={laneName}
+        windows={status.windowsDesktop}
+        runtimePin={runtimePin}
+        starting={starting}
+        onChanged={() => void readAgain()}
+      />,
+    );
   }
 
   if (!display) {
@@ -191,7 +212,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         Not answering  the newest read failed: Try again, or Reset
         Permissions    a grant is off: the permission card
         Failed    a Start that failed: the reason, and Start again
-        Off       "Mac Desktop is off" and Start
+        Off       Desktop is off and Start
 
       Watching never creates a display, and nothing on this list starts one
       except the person's Start. That is the fix for a pane that went from Off
@@ -214,20 +235,20 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         <MacDesktopStateCard
           testId="mac-desktop-starting"
           tone="busy"
-          title="Starting Mac Desktop…"
+          title={`Starting ${desktopName}…`}
           detail="Making a private screen for this lane."
         />
       );
     }
     if (status == null || (unconfirmed && readError)) {
       if (!readError) {
-        return idle(<MacDesktopStateCard testId="mac-desktop-checking" tone="busy" title="Checking Mac Desktop…" />);
+        return idle(<MacDesktopStateCard testId="mac-desktop-checking" tone="busy" title={`Checking ${desktopName}…`} />);
       }
       return idle(
         <MacDesktopStateCard
           testId="mac-desktop-unreachable"
           tone="error"
-          title="Can't reach Mac Desktop"
+          title={`Can't reach ${desktopName}`}
           detail={readError}
           actions={(
             <>
@@ -267,7 +288,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         <MacDesktopStateCard
           testId="mac-desktop-failed"
           tone="error"
-          title={gaveUp ? "Mac Desktop did not start" : "Something went wrong"}
+          title={gaveUp ? `${desktopName} did not start` : "Something went wrong"}
           detail={statusError}
           actions={(
             <button
@@ -287,7 +308,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <MacDesktopStateCard
         testId="mac-desktop-off"
         tone="idle"
-        title="Mac Desktop is off"
+        title={`${desktopName} is off`}
         detail="A private screen for this lane's apps."
         footer={appsLeftOpen.length > 0 ? (
           /* The apps the stop could not quit, in the driver's own sentence.
@@ -470,7 +491,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {/* Always here while a display exists: the way out that does not
               depend on the picture, the lease or the video working. */}
           <WorkToolChromeButton
-            label="Stop Mac Desktop"
+            label={`Stop ${desktopName}`}
             onClick={() => setConfirmStop(true)}
             disabled={stopping}
             active={confirmStop}
@@ -579,7 +600,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           >
             {/* Without a start in flight the display is already up and only the
                 video is connecting, as on the Apple pane. */}
-            {starting ? "Starting Mac Desktop…" : "Connecting video"}
+            {starting ? `Starting ${desktopName}…` : "Connecting video"}
           </p>
         ) : null}
 
@@ -663,7 +684,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       return {
         key: `unconfirmed:${readError ?? ""}`,
         tone: "error",
-        sentence: "Mac Desktop is not answering. This picture may be out of date.",
+        sentence: `${desktopName} is not answering. This picture may be out of date.`,
         detail: readError === MAC_DESKTOP_NOT_ANSWERING ? null : readError,
         actions: [
           { label: "Try again", onClick: () => void readAgain() },
@@ -746,7 +767,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           <p className="text-[12px] leading-5 text-muted-fg">
             {restartingCapture
               ? "Restarting the capture…"
-              : stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
+              : stopped ? `${desktopName} is still running.` : `${desktopName} is up, but no video has arrived yet.`}
           </p>
           {restartingCapture ? null : (
           <div className="flex items-center gap-3">
@@ -809,19 +830,19 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   ) : null);
 
   /**
-   * "Stop Mac Desktop?", asked in the pane like the Apple pane asks before it
+   * Stop confirmation, asked in the pane like the Apple pane asks before it
    * switches devices. Stop quits the apps the lane opened and sends the
    * windows it borrowed back to the main screen.
    */
   const renderStopConfirm = () => (confirmStop ? (
     <div
       role="alertdialog"
-      aria-label="Stop Mac Desktop?"
+      aria-label={`Stop ${desktopName}?`}
       data-testid="mac-desktop-stop-confirm"
       className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
     >
       <span className="min-w-0 flex-1">
-        <span className="font-medium">Stop Mac Desktop?</span>
+        <span className="font-medium">Stop {desktopName}?</span>
         <span className="text-muted-fg"> Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.</span>
       </span>
       <button
@@ -946,6 +967,22 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
       <div className={cn(WORK_TOOL_CHROME_ROW, "relative flex-nowrap gap-1")}>
         {renderChromeRow("pane")}
       </div>
+      {/* Windows Mode B: the seat is the user's own desktop, so the pane keeps a
+          reminder and a Stop for as long as it is live. A state, so a banner. */}
+      {status?.windowsDesktop && display?.mode === "offscreen-region" ? (
+        <Banner
+          layout="inline"
+          testId="windows-desktop-shared-reminder"
+          model={{
+            id: "windows-desktop-shared",
+            tone: "warning",
+            icon: <Monitor size={16} aria-hidden="true" />,
+            title: "Using your main Windows desktop",
+            detail: "ADE takes over the window you are using while it acts.",
+            actions: [{ label: "Stop", onClick: () => void stopDisplay() }],
+          }}
+        />
+      ) : null}
       {/* ── The one strip ─────────────────────────────────────────────
           A missing grant, a refused action, or a stopped video, one at a
           time and each with the button that fixes it. */}

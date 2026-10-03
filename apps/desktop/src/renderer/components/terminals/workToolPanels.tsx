@@ -569,6 +569,37 @@ function WorkMacDesktopTool({
   );
 }
 
+function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
+  const { laneId, activeLane, toolContext, panelSessionId, runtimePin } = props;
+  const mountScope = useWorkToolMountScope(runtimePin);
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(
+    laneId ? workSurfaceKey("windows-desktop", mountScope, laneId) : null,
+  );
+  if (isReadOnlyWorkTool("windows-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneEmptyLine />;
+  // Reuses the Mac Desktop pane: it reads the lane's seat from the runtime and
+  // renders the Windows cards when `status.windowsDesktop` is present. Only one
+  // of the two panes is ever available, because the host platform picks one.
+  return (
+    <NativePanelFrame padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-windows-desktop:${mountScope}`}
+        desktopKind="windows"
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkPrTool({
   laneId,
   activeLane,
@@ -599,5 +630,6 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
   "mac-desktop": WorkMacDesktopTool,
+  "windows-desktop": WorkWindowsDesktopTool,
   pr: WorkPrTool,
 };

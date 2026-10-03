@@ -34,6 +34,27 @@ type MacDesktopDisplayDestroyedReason = Extract<MacDesktopEventPayload, { type: 
 export type MacDesktopDriverLifecycleDeps = {
   logger: Logger;
   platform: NodeJS.Platform;
+  /**
+   * The platforms this host can seat. Defaults to `["darwin"]`, so every
+   * existing caller is unchanged; the Windows service passes `["win32"]`.
+   */
+  supportedPlatforms?: readonly NodeJS.Platform[];
+  /** The sentence a wrong-platform rejection carries. */
+  unsupportedMessage?: string;
+  /** The health card's title on a wrong-platform host. */
+  unsupportedTitle?: string;
+  /** The health card's name for the driver. */
+  driverLabel?: string;
+  /**
+   * False on Windows, which has no Screen Recording / Accessibility grants:
+   * permissions stay `granted`, the watch probe is never sent, and
+   * `assertPermission` never refuses.
+   */
+  permissionsSupported?: boolean;
+  /** Where this host's native helper lives. Defaults to the Mac resolver. */
+  resolveExecutablePath?: (() => string | null) | null;
+  /** Builds the seat provider. Defaults to the Mac virtual-display provider. */
+  createProvider?: ((client: MacDesktopDriverClient) => DesktopSeatProvider) | null;
   createDriverClient?: ((args: {
     logger: Logger;
     platform: NodeJS.Platform;
@@ -80,9 +101,13 @@ export type MacDesktopDriverLifecycle = {
 export function createMacDesktopDriverLifecycle(
   deps: MacDesktopDriverLifecycleDeps,
 ): MacDesktopDriverLifecycle {
-  const isDarwin = deps.platform === "darwin";
-  let permissions: MacDesktopPermissions = { screenRecording: "unknown", accessibility: "unknown" };
-  let displayMode: MacDesktopDisplayMode = isDarwin ? "virtual" : "unavailable";
+  const supportedPlatforms = deps.supportedPlatforms ?? (["darwin"] as const);
+  const onHost = supportedPlatforms.includes(deps.platform);
+  const permissionsSupported = deps.permissionsSupported !== false;
+  let permissions: MacDesktopPermissions = permissionsSupported
+    ? { screenRecording: "unknown", accessibility: "unknown" }
+    : { screenRecording: "granted", accessibility: "granted" };
+  let displayMode: MacDesktopDisplayMode = onHost ? "virtual" : "unavailable";
   let backend: DriverBackend | null = null;
   let driverEventUnsubscribe: (() => void) | null = null;
   /**
@@ -107,6 +132,7 @@ export function createMacDesktopDriverLifecycle(
   };
 
   const syncPermissionWatch = async (): Promise<void> => {
+    if (!permissionsSupported) return;
     const desired = permissionWatchers > 0;
     if (desired === permissionWatchSent) return;
     const client = backend?.client;
@@ -146,6 +172,7 @@ export function createMacDesktopDriverLifecycle(
   };
 
   const assertPermission = (which: "screenRecording" | "accessibility"): void => {
+    if (!permissionsSupported) return;
     if (permissions[which] !== "denied") return;
     throw deps.permissionError(which);
   };
@@ -169,7 +196,7 @@ export function createMacDesktopDriverLifecycle(
       const driverLaneIds = asDisplayLaneIds(reply.displays);
       if (driverLaneIds) reconcileWithDriver(driverLaneIds, before);
       target.client.setVersion(asNullableString(reply.version));
-      applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
+      if (permissionsSupported) applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
       const mode = asNullableString(reply.displayMode);
       if (mode === "virtual" || mode === "offscreen-region" || mode === "unavailable") displayMode = mode;
     } catch (error) {
@@ -184,16 +211,22 @@ export function createMacDesktopDriverLifecycle(
     if (disposed) throw deps.serviceError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The Mac Desktop service is disposed.");
     if (!backend) {
       const onHealthChanged = (health: MacDesktopDriverHealth) => deps.emit({ type: "driver-health", health });
+      const createProvider = deps.createProvider ?? createMacVirtualDisplayProvider;
       const client = deps.createDriverClient
         ? deps.createDriverClient({ logger: deps.logger, platform: deps.platform, onHealthChanged, onDriverLost })
         : createMacDesktopDriverClient({
           logger: deps.logger,
           platform: deps.platform,
-          resolveExecutablePath: () => resolveMacDesktopDriverBinary({ platform: deps.platform, logger: deps.logger }),
+          supportedPlatforms,
+          ...(deps.unsupportedMessage ? { unsupportedMessage: deps.unsupportedMessage } : {}),
+          ...(deps.unsupportedTitle ? { unsupportedTitle: deps.unsupportedTitle } : {}),
+          ...(deps.driverLabel ? { driverLabel: deps.driverLabel } : {}),
+          resolveExecutablePath: deps.resolveExecutablePath
+            ?? (() => resolveMacDesktopDriverBinary({ platform: deps.platform, logger: deps.logger })),
           onHealthChanged,
           onDriverLost,
         });
-      backend = { client, provider: createMacVirtualDisplayProvider(client) };
+      backend = { client, provider: createProvider(client) };
       driverEventUnsubscribe = client.onEvent(deps.handleDriverEvent);
     }
     await backend.client.ensureStarted();
@@ -220,6 +253,7 @@ export function createMacDesktopDriverLifecycle(
   const recheckPermissions = async (
     args: MacDesktopRecheckPermissionsArgs = {},
   ): Promise<MacDesktopPermissions> => {
+    if (!permissionsSupported) return permissions;
     deps.assertSupported();
     const { client } = await ensureDriver();
     if (args.restartDriver !== false) {
@@ -238,6 +272,7 @@ export function createMacDesktopDriverLifecycle(
   const requestPermission = async (
     args: MacDesktopRequestPermissionArgs,
   ): Promise<MacDesktopPermissions> => {
+    if (!permissionsSupported) return permissions;
     deps.assertSupported();
     // The one place `allowPrompt` is decided. It is true only when the ADE
     // window asking is on this Mac; an agent cannot reach this method (it is

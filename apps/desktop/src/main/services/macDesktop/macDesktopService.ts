@@ -22,6 +22,11 @@ import {
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   MAC_DESKTOP_RESOLUTION_PRESETS,
+  WINDOWS_DESKTOP_HELD_CODE,
+  WINDOWS_DESKTOP_LOCKED_CODE,
+  WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+  WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
+  WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
   macDesktopDisplayName,
   type MacDesktopInputResult,
   type MacDesktopMoveArgs,
@@ -70,6 +75,11 @@ import {
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
   type MacDesktopWindow,
+  type WindowsDesktopSeatMode,
+  type WindowsDesktopSetupArgs,
+  type WindowsDesktopSetupResult,
+  type WindowsDesktopStatus,
+  type WindowsDesktopTakeoverArgs,
 } from "../../../shared/types/macDesktop";
 import type {
   ComputerUseArtifactIngestionRequest,
@@ -97,6 +107,8 @@ import {
   asRecord,
   asStringList,
   asWindows,
+  createMacVirtualDisplayProvider,
+  type DesktopSeatAdapter,
 } from "./macDesktopSeatProvider";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
@@ -176,6 +188,18 @@ export type MacDesktopServiceDeps = {
   /** Published on the runtime event stream as a `mac_desktop_event`. */
   onEvent?: ((payload: MacDesktopEventPayload) => void) | null;
   platform?: NodeJS.Platform;
+  /**
+   * The host-specific adapter. Defaults to the Mac virtual display, so every
+   * existing caller and test is unchanged; a Windows host passes the Windows
+   * adapter and the service reuses all of its lifecycle, ownership, lease,
+   * proof, and streaming code with only the host facts swapped.
+   */
+  seat?: DesktopSeatAdapter | null;
+  /**
+   * The actual ADE home this brain runs against. Windows only, and used to
+   * launch the helper as `host --ade-home <dir>`; null elsewhere.
+   */
+  adeHome?: string | null;
   now?: () => number;
   resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
   resolveLaneName?: ((laneId: string) => Promise<string | null> | string | null) | null;
@@ -283,6 +307,11 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    */
   supportsLaneDisplaySync(): boolean;
   /**
+   * The host platform of the seat (`darwin` or `win32`), so the prompt directive
+   * names the right screen. Sync, like `supportsLaneDisplaySync`.
+   */
+  seatHostPlatform(): NodeJS.Platform;
+  /**
    * The sync live view's activity hook. A viewer that keeps receiving records
    * is watching, so the encoder must not treat the lane as idle between input
    * events; the fan-out calls this on subscribe and while frames flow.
@@ -296,7 +325,25 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
 export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktopRuntimeService {
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => Date.now());
-  const isDarwin = platform === "darwin";
+  /**
+   * The host adapter. When one is not injected this is the Mac virtual display,
+   * reproduced here so every existing caller and test runs the identical path
+   * it always did.
+   */
+  const seatAdapter: DesktopSeatAdapter = deps.seat ?? {
+    id: "mac-virtual-display",
+    platform: "darwin",
+    unsupportedMessage: MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+    unsupportedTitle: "Mac Desktop needs macOS",
+    driverLabel: "Mac Desktop",
+    resolveExecutablePath: () => resolveMacDesktopDriverBinary({ platform, logger: deps.logger }),
+    createProvider: createMacVirtualDisplayProvider,
+    createDriverClient: null,
+    permissionsSupported: true,
+    displayName: macDesktopDisplayName,
+  };
+  const seatSupported = platform === seatAdapter.platform;
+  const unsupportedMessage = seatAdapter.unsupportedMessage;
   const captureOutcome = (outcome: MacDesktopAnalyticsProperties["outcome"]): void => {
     deps.captureAnalytics?.({ action: "mac_desktop", outcome });
   };
@@ -374,6 +421,20 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   /** The last `clients/viewers` a lane's stream reported, so only a change is logged. */
   const streamAudience = new Map<string, string>();
   let lastLoggedHealthState: string | null = null;
+
+  /**
+   * The last Windows status read, and whether a long Windows op is pending.
+   *
+   * The Windows helper serializes requests, so a `windows.status` (or a health
+   * `ping`) sent while a private `display.create` is waiting on the interactive
+   * sign-in would sit behind it and trip the short status read timeout — a
+   * false failure for a host that is working exactly as designed. While a long
+   * op is in flight the service answers from this cache instead of sending a
+   * fresh request, so a pane polling `getStatus` sees the last real state and
+   * never a timeout.
+   */
+  let lastWindowsDesktopStatus: WindowsDesktopStatus | null = null;
+  let windowsLongOperationInFlight = 0;
 
   /**
    * The persistent record of what happened to each lane's display.
@@ -500,8 +561,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // -------------------------------------------------------------------------
 
   const assertSupported = (): void => {
-    if (!isDarwin) {
-      throw new MacDesktopError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", MAC_DESKTOP_MACOS_ONLY_MESSAGE);
+    if (!seatSupported) {
+      throw new MacDesktopError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", unsupportedMessage);
     }
   };
 
@@ -535,7 +596,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     onStreamNeverSent: () => driverLifecycle.sampleCaptureStall("stream_never_sent"),
     logger: deps.logger,
     now,
-    isDarwin,
+    isDarwin: seatSupported,
     emit,
     ensureProvider,
     activeProvider,
@@ -553,7 +614,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     logger: deps.logger,
     ...(deps.resolveLaneName ? { resolveLaneName: deps.resolveLaneName } : {}),
     now,
-    isDarwin,
+    isDarwin: seatSupported,
     emit,
     observations,
     ensureProvider,
@@ -594,7 +655,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const windowLifecycle = createMacDesktopWindows({
     logger: deps.logger,
-    isDarwin,
+    isDarwin: seatSupported,
     emit,
     ensureProvider,
     activeProvider,
@@ -608,7 +669,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const leaseFlow = createMacDesktopLeaseFlow({
     logger: deps.logger,
-    isDarwin,
+    isDarwin: seatSupported,
     leases,
     emit,
     requireDisplay: (laneId) => {
@@ -692,6 +753,23 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         );
         return;
       }
+      case "windows-state-changed": {
+        // Windows only. The native event carries only a hint (typically
+        // `{locked}`); the authoritative shape is `windows.status`, so this
+        // refreshes through the provider and republishes the normalized status.
+        if (seatAdapter.id === "mac-virtual-display") return;
+        const provider = driverLifecycle.activeProvider();
+        if (!provider?.windowsStatus) return;
+        void provider.windowsStatus().then((status) => {
+          lastWindowsDesktopStatus = status;
+          emit({ type: "windows-desktop-changed", status });
+        }).catch((error: unknown) => {
+          deps.logger.debug("mac_desktop.windows_state_refresh_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return;
+      }
       default:
         deps.logger.debug("mac_desktop.driver_event", { event: event.event, laneId });
     }
@@ -756,7 +834,16 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   driverLifecycle = createMacDesktopDriverLifecycle({
     logger: deps.logger,
     platform,
-    createDriverClient: deps.createDriverClient,
+    supportedPlatforms: [seatAdapter.platform],
+    unsupportedMessage: seatAdapter.unsupportedMessage,
+    unsupportedTitle: seatAdapter.unsupportedTitle,
+    driverLabel: seatAdapter.driverLabel,
+    permissionsSupported: seatAdapter.permissionsSupported,
+    resolveExecutablePath: seatAdapter.resolveExecutablePath,
+    createProvider: seatAdapter.createProvider,
+    // The Windows adapter builds its client with the host-mode launch args;
+    // for the Mac adapter this stays the test seam (or null → Mac default).
+    createDriverClient: seatAdapter.createDriverClient ?? deps.createDriverClient,
     assertSupported,
     serviceError: (code, message) => new MacDesktopError(code, message),
     permissionError: (which) => new MacDesktopError(
@@ -782,13 +869,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const buildStatus = async (args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> => {
     const laneId = args.laneId?.trim() || null;
     const driverHealth = driverLifecycle.driverHealth() ?? {
-      state: isDarwin ? "starting" as const : "unsupported" as const,
-      title: isDarwin ? "Mac Desktop is starting" : "Mac Desktop needs macOS",
-      message: isDarwin ? "ADE is preparing the native desktop driver." : MAC_DESKTOP_MACOS_ONLY_MESSAGE,
-      recovery: isDarwin ? "retry" as const : null,
+      state: seatSupported ? "starting" as const : "unsupported" as const,
+      title: seatSupported ? `${seatAdapter.driverLabel} is starting` : seatAdapter.unsupportedTitle,
+      message: seatSupported ? "ADE is preparing the native desktop driver." : unsupportedMessage,
+      recovery: seatSupported ? "retry" as const : null,
       version: null,
     };
-    const supported = isDarwin && driverHealth.state !== "missing" && driverHealth.state !== "unsupported";
+    const supported = seatSupported && driverHealth.state !== "missing" && driverHealth.state !== "unsupported";
     const windows = laneId
       ? await withDeadline(windowLifecycle.listInternal(laneId), STATUS_DRIVER_READ_TIMEOUT_MS, [])
       : [];
@@ -801,10 +888,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       supported,
       unsupportedReason: supported
         ? null
-        : (isDarwin ? driverHealth.message : MAC_DESKTOP_MACOS_ONLY_MESSAGE),
+        : (seatSupported ? driverHealth.message : unsupportedMessage),
       driver: driverHealth,
       permissions: driverLifecycle.permissions,
-      displayMode: isDarwin ? driverLifecycle.displayMode : "unavailable",
+      displayMode: seatSupported ? driverLifecycle.displayMode : "unavailable",
       display,
       windows,
       lease: laneId ? leases.get(laneId) : null,
@@ -822,7 +909,29 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       hostIsLocal: deps.hostIsLocal ? deps.hostIsLocal() : true,
       responsibleAppName: responsibleAppName(),
       signing: signingState(),
+      windowsDesktop: await readWindowsDesktopStatus(),
     };
+  };
+
+  /**
+   * The Windows-only status, or null on any other host.
+   *
+   * A read, never a probe that can throw: an older helper that answers no
+   * `windows.status` degrades to null instead of failing the whole status.
+   */
+  const readWindowsDesktopStatus = async (): Promise<WindowsDesktopStatus | null> => {
+    if (seatAdapter.id === "mac-virtual-display") return null;
+    // Never queue a read behind a long create: answer from the last real one.
+    if (windowsLongOperationInFlight > 0) return lastWindowsDesktopStatus;
+    const provider = driverLifecycle.activeProvider();
+    if (!provider?.windowsStatus) return lastWindowsDesktopStatus;
+    const next = await withDeadline(
+      provider.windowsStatus(),
+      STATUS_DRIVER_READ_TIMEOUT_MS,
+      lastWindowsDesktopStatus,
+    );
+    if (next) lastWindowsDesktopStatus = next;
+    return next;
   };
 
   // -------------------------------------------------------------------------
@@ -870,29 +979,93 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     const seat = await driverLifecycle.ensureProvider();
     await driverLifecycle.reconcileDisplays(seat);
     assertPermission("screenRecording");
+    // Windows: decide the seat and refuse the impossible states here, at the
+    // policy boundary, rather than letting an agent's ask reach the driver.
+    // The helper also enforces all of this; a pre-check keeps a held or locked
+    // host from spending the private sign-in timeout before failing.
+    const windows = seatAdapter.id === "mac-virtual-display" ? null : await readWindowsDesktopStatus();
+    let seatMode: WindowsDesktopSeatMode | undefined;
+    if (seatAdapter.id !== "mac-virtual-display") {
+      seatMode = args.seatMode ?? "private";
+      if (seatMode === "private") {
+        // The derived reason is the one place the state becomes a refusal, so
+        // the code and the message cannot disagree.
+        switch (windows?.privateUnavailableReason) {
+          case "not_console_session":
+            throw new MacDesktopError(
+              WINDOWS_DESKTOP_NOT_CONSOLE_SESSION_CODE,
+              "ADE is not running on this PC's desktop, so it cannot start a private screen.",
+            );
+          case "setup_required":
+            throw new MacDesktopError(
+              WINDOWS_DESKTOP_SETUP_REQUIRED_CODE,
+              "Private Windows screens are not set up on this PC yet.",
+            );
+          case "locked":
+            throw new MacDesktopError(
+              WINDOWS_DESKTOP_LOCKED_CODE,
+              "This PC is locked, so the private screen cannot start. Unlock it to continue.",
+            );
+          case "held":
+            if (windows?.heldByLaneId && windows.heldByLaneId !== laneId) {
+              throw new MacDesktopError(
+                WINDOWS_DESKTOP_HELD_CODE,
+                windows.heldByLaneName
+                  ? `Lane ${windows.heldByLaneName} is using the private Windows screen.`
+                  : "Another lane is using the private Windows screen.",
+              );
+            }
+            break;
+          default:
+            break;
+        }
+      } else {
+        // Trusted CTO clients may approve from any device. The dedicated
+        // action supplies consent; session-bound agents cannot call it.
+        if (args.sharedDesktopConsent !== true) {
+          throw new MacDesktopError(
+            WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
+            "Using your main Windows desktop needs the user's consent first.",
+          );
+        }
+      }
+    }
     const laneName = args.laneName?.trim()
       || (await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))
       || null;
     const preset = readResolution(args.resolution);
     const size = MAC_DESKTOP_RESOLUTION_PRESETS[preset];
-    const reply = await seat.create({
+    const createArgs = {
       laneId,
-      name: macDesktopDisplayName(laneName),
+      name: seatAdapter.displayName(laneName),
       width: size.width,
       height: size.height,
-      scale: 2,
-    }) as DriverDisplayReply;
+      scale: seatAdapter.platform === "win32" ? 1 : 2,
+      ...(seatMode ? { seatMode } : {}),
+      ...(args.sharedDesktopConsent === true ? { sharedDesktopConsent: true } : {}),
+    };
+    // The private sign-in wait serializes the helper's requests; status reads
+    // fall back to the cache for its duration.
+    const longWindowsCreate = seatAdapter.id !== "mac-virtual-display" && seatMode === "private";
+    if (longWindowsCreate) windowsLongOperationInFlight += 1;
+    let reply: DriverDisplayReply;
+    try {
+      reply = await seat.create(createArgs) as DriverDisplayReply;
+    } finally {
+      if (longWindowsCreate) windowsLongOperationInFlight -= 1;
+    }
     const display: MacDesktopDisplay = {
       laneId,
       // `offscreen-region` has no CoreGraphics display, and the driver says so
       // with a missing or zero id. Both become null here so no reader has to
-      // treat 0 as "none" — 0 is a valid display id on macOS.
+      // treat 0 as "none" — 0 is a valid display id on macOS. On Windows the
+      // private child session reports its session id here.
       displayId: asNullableDisplayId(reply.displayId),
-      name: asNullableString(reply.name) ?? macDesktopDisplayName(laneName),
+      name: asNullableString(reply.name) ?? seatAdapter.displayName(laneName),
       mode: (reply.mode as MacDesktopDisplayMode) ?? driverLifecycle.displayMode,
       width: asNumber(reply.width, size.width),
       height: asNumber(reply.height, size.height),
-      scale: asNumber(reply.scale, 2),
+      scale: asNumber(reply.scale, seatAdapter.platform === "win32" ? 1 : 2),
       origin: {
         x: asNumber(asRecord(reply.origin).x, 0),
         y: asNumber(asRecord(reply.origin).y, 0),
@@ -947,7 +1120,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // screen, and is named so the person knows to look for it.
       let quitApps: string[] = [];
       let appsLeftOpen: MacDesktopAppLeftOpen[] = [];
-      const seat = isDarwin ? activeProvider() : null;
+      const seat = seatSupported ? activeProvider() : null;
       if (seat) {
         try {
           const reply = await seat.destroy({ laneId });
@@ -1051,7 +1224,10 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // The one method that answers on every platform. It must never spawn,
       // probe, or throw: a Windows desktop reads this to learn the tab is not
       // available here, and a read that throws cannot say so.
-      if (!isDarwin) return await buildStatus(args);
+      if (!seatSupported) return await buildStatus(args);
+      // A long Windows op serializes the helper; do not queue a bring-up or a
+      // health ping behind it. Answer from the state we already have.
+      if (windowsLongOperationInFlight > 0) return await buildStatus(args);
       if (!driverLifecycle.hasDriver()) {
         // Bring the helper up on the first read so the health card is real
         // rather than a permanent "starting". A failure to start is health,
@@ -1073,6 +1249,76 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions> {
       return await driverLifecycle.requestPermission(args);
+    },
+
+    /**
+     * Windows only: the wizard's first step.
+     *
+     * Trusted CTO clients may approve from any device. The action is CTO-only,
+     * so session-bound agents cannot self-authorize a prompt. UAC and password
+     * entry still happen in native dialogs on the Windows host.
+     */
+    async setupWindowsDesktop(args: WindowsDesktopSetupArgs): Promise<WindowsDesktopSetupResult> {
+      assertSupported();
+      if (seatAdapter.id === "mac-virtual-display") {
+        throw new MacDesktopError(
+          "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+          "Windows Desktop setup is only available on a Windows runtime host.",
+        );
+      }
+      const allowPrompt = args.allowPrompt === true;
+      const provider = await driverLifecycle.ensureProvider();
+      if (!provider.setupWindows) {
+        throw new MacDesktopError(
+          "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+          "This Windows Desktop driver build does not answer setup.",
+        );
+      }
+      windowsLongOperationInFlight += 1;
+      try {
+        const result = await provider.setupWindows({ allowPrompt, savePassword: args.savePassword === true, forgetPassword: args.forgetPassword === true });
+        await driverLifecycle.refreshDriverHealth();
+        return result;
+      } finally {
+        windowsLongOperationInFlight -= 1;
+      }
+    },
+
+    /**
+     * Windows only: the user approved taking the private screen from whichever
+     * lane holds it. Signs the old holder out (a clean slate) and starts a
+     * fresh private seat for this lane.
+     *
+     * The CTO-only action accepts approval from a trusted client on any device;
+     * session-bound agents cannot take another lane's screen.
+     */
+    async takeoverWindowsDesktop(args: WindowsDesktopTakeoverArgs): Promise<MacDesktopStatus> {
+      assertSupported();
+      if (seatAdapter.id === "mac-virtual-display") {
+        throw new MacDesktopError(
+          "MAC_DESKTOP_UNSUPPORTED_PLATFORM",
+          "Windows Desktop takeover is only available on a Windows runtime host.",
+        );
+      }
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new MacDesktopError("MAC_DESKTOP_NO_DISPLAY", "takeover needs a laneId.");
+      const windows = await readWindowsDesktopStatus();
+      const holder = windows?.heldByLaneId ?? null;
+      if (holder && holder !== laneId) {
+        // Clean slate: the old holder's display is destroyed before the new one
+        // is created, so nothing of the previous lane carries over.
+        await runLifecycle(holder, "stop", () => destroyDisplay(holder, "stopped"));
+        if (lastWindowsDesktopStatus?.heldByLaneId === holder) {
+          lastWindowsDesktopStatus = {
+            ...lastWindowsDesktopStatus,
+            heldByLaneId: null, heldByLaneName: null, childSessionId: null,
+            state: lastWindowsDesktopStatus.locked ? "locked" : "ready",
+            privateAvailable: !lastWindowsDesktopStatus.locked,
+            privateUnavailableReason: lastWindowsDesktopStatus.locked ? "locked" : null,
+          };
+        }
+      }
+      return await api.start({ laneId, seatMode: "private", chatSessionId: args.chatSessionId ?? null });
     },
 
     async start(args: MacDesktopStartArgs): Promise<MacDesktopStatus> {
@@ -1319,7 +1565,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async destroyForLane(laneId: string): Promise<{ destroyed: boolean }> {
       const trimmed = laneId?.trim();
       if (!trimmed) return { destroyed: false };
-      if (!isDarwin) return { destroyed: false };
+      if (!seatSupported) return { destroyed: false };
       const result = await runLifecycle(trimmed, "stop", () => destroyDisplay(trimmed, "lane_removed")).catch((error: unknown) => {
         deps.logger.debug("mac_desktop.destroy_for_lane_failed", {
           laneId: trimmed,
@@ -1372,35 +1618,46 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     /** The sync half of `getDisplay`, for the prompt gate and the turn clip. */
     hasDisplaySync(laneId: string | null | undefined): boolean {
       const trimmed = laneId?.trim();
-      if (!trimmed || !isDarwin) return false;
+      if (!trimmed || !seatSupported) return false;
       return ownership.hasDisplay(trimmed);
     },
     supportsLaneDisplaySync(): boolean {
-      if (!isDarwin) return false;
+      if (!seatSupported) return false;
       const now = Date.now();
       if (laneDisplaySupportCache && (laneDisplaySupportCache.supported || now - laneDisplaySupportCache.checkedAt < 60_000)) {
         return laneDisplaySupportCache.supported;
       }
-      const driverPath = resolveMacDesktopDriverBinary({ platform, logger: deps.logger });
+      const driverPath = seatAdapter.resolveExecutablePath();
       let supported = false;
       try {
         supported = Boolean(driverPath) && fs.statSync(driverPath as string).isFile();
-        if (supported) fs.accessSync(driverPath as string, fs.constants.X_OK);
+        // The +x bit is a macOS/Linux concept; on Windows a real file is enough.
+        if (supported && seatAdapter.platform !== "win32") {
+          fs.accessSync(driverPath as string, fs.constants.X_OK);
+        }
       } catch {
         supported = false;
       }
       laneDisplaySupportCache = { supported, checkedAt: now };
       return supported;
     },
+    /**
+     * The host platform of this seat, so the one-line prompt directive knows
+     * whether to name the Mac or the Windows screen. Not on the shared contract:
+     * it is only the prompt's sync decision, like `supportsLaneDisplaySync`.
+     */
+    seatHostPlatform(): NodeJS.Platform {
+      return seatAdapter.platform;
+    },
     /** A delivered sync record keeps the lane's encoder at full rate. */
     noteStreamActivity(laneId: string): void {
       const trimmed = laneId?.trim();
-      if (!trimmed || !isDarwin) return;
+      if (!trimmed || !seatSupported) return;
       streamServer.noteActivity(trimmed);
     },
     /** Opens the turn clip. Called by the chat runtime on the turn's first act. */
     beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void> {
-      if (!isDarwin) return Promise.resolve();
+      if (!seatSupported) return Promise.resolve();
       return recording.startTurnClip(args.laneId.trim(), args.chatSessionId.trim(), args.turnId);
     },
     async startStreamForSubscription(args: {

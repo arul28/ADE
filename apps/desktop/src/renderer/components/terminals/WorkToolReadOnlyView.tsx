@@ -61,7 +61,7 @@ export const WORK_TOOL_READ_ONLY_POLL_MS = 4_000;
 export const WORK_TOOL_READ_ONLY_LIVE_POLL_MS = 15_000;
 
 export type WorkToolReadOnlyViewProps = {
-  tool: "browser" | "app-control" | "mac-desktop";
+  tool: "browser" | "app-control" | "mac-desktop" | "windows-desktop";
   laneId: string | null;
 };
 
@@ -127,7 +127,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   // the host: when it advertises takeover, "Control from the desktop" would
   // contradict the button right above it. `supportsMacDesktopControl` is a
   // synchronous hello read, so this costs no state.
-  const macDesktopControlAvailable = tool === "mac-desktop"
+  const macDesktopControlAvailable = (tool === "mac-desktop" || tool === "windows-desktop")
     && macDesktopWebApi()?.supportsMacDesktopControl?.() === true;
 
   useEffect(() => {
@@ -173,7 +173,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto px-3 py-3">
       {tool === "browser" ? <BrowserSummary state={state} /> : null}
       {tool === "app-control" ? <AppControlSummary state={state} /> : null}
-      {tool === "mac-desktop" ? (
+      {tool === "mac-desktop" || tool === "windows-desktop" ? (
         <MacDesktopPanel
           laneId={laneId}
           macDesktop={state.macDesktop}
@@ -764,6 +764,9 @@ function MacDesktopPanel({
     setActionError(null);
     try {
       if (action === "start") await api.start?.({ laneId });
+      // A Windows private screen has a viewer-allowed stop, so a watch-only
+      // phone or browser tab stops it too; macOS keeps the controller stop.
+      else if (macDesktop.windowsDesktop && display?.mode === "virtual" && api.stopPrivate) await api.stopPrivate({ laneId });
       else await api.stop?.({ laneId });
       onRefresh();
     } catch (error) {

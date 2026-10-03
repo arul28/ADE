@@ -216,7 +216,9 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
           if (ownership.releaseWindow(id) || id === windowId) released += 1;
         }
         // The user owns that instance now: stop never quits it.
-        if (reply.handedOverPid != null) ownership.unwatchLaunch(reply.handedOverPid);
+        for (const pid of reply.handedOverPids ?? (reply.handedOverPid != null ? [reply.handedOverPid] : [])) {
+          ownership.unwatchLaunch(pid);
+        }
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         deps.logger.debug("mac_desktop.release_window_failed", { laneId, windowId, error: lastError });

@@ -120,6 +120,8 @@ export const MAC_DESKTOP_VALUE_FLAGS: readonly string[] = [
   "--resolution",
   "--session",
   "--session-id",
+  "--seat",
+  "--seat-mode",
   "--set",
   "--set-json",
   "--target",
@@ -243,7 +245,10 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
   ];
   const sub =
     firstStandalonePositional(args, MAC_DESKTOP_VALUE_CARRIER_FLAGS) ?? tail.shift() ?? "status";
-  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["mac-desktop"]! };
+  // One host-neutral help for the `ade screen` family (the plan builder is
+  // reached by `screen`, `mac-desktop` and `windows-desktop` alike, and the
+  // primary has already been spliced out of `args`).
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["screen"]! };
   if (sub === "actions")
     return {
       kind: "execute",
@@ -310,11 +315,37 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const floating = readFlag(args, ["--floating", "--float"]);
     return workToolShowPlan(claimArgs, floating ? "floating-mac-desktop" : "mac-desktop");
   }
-  if (sub === "start" || sub === "create")
+  if (sub === "start" || sub === "create") {
+    const seatMode = readValue(args, ["--seat-mode", "--seat"]);
+    if (seatMode != null && seatMode !== "private" && seatMode !== "shared") {
+      throw new CliUsageError("mac-desktop start: --seat-mode must be private or shared.");
+    }
+    if (seatMode === "shared") {
+      if (!readFlag(args, ["--consent", "--shared-consent"])) throw new CliUsageError("Using the main desktop requires --consent from the user.");
+      return desktopAction("mac-desktop start", "useSharedDesktop", laneClaim(), "mac-desktop-status");
+    }
     return desktopAction("mac-desktop start", "start", {
       ...laneClaim(),
       resolution: readValue(args, ["--resolution", "--size"]),
+      ...(seatMode ? { seatMode } : {}),
+      // The Mode B consent is explicit: `--consent` is the user's yes, and the
+      // service refuses a shared seat without it.
+      ...(readFlag(args, ["--consent", "--shared-consent"]) ? { sharedDesktopConsent: true } : {}),
     }, "mac-desktop-status");
+  }
+  if (sub === "setup") {
+    // Windows only. `--allow-prompt` is the local user's click on the wizard's
+    // first step; without it the helper refuses to raise the admin prompt.
+    return desktopAction("mac-desktop setup", "setupWindows", {
+      allowPrompt: readFlag(args, ["--allow-prompt", "--prompt"]),
+      savePassword: readFlag(args, ["--save-password"]),
+      forgetPassword: readFlag(args, ["--forget-password"]),
+    });
+  }
+  if (sub === "takeover" || sub === "take-over") {
+    // Windows only, and never an agent's own move: it signs the holder out.
+    return desktopAction("mac-desktop takeover", "takeoverWindows", laneClaim(), "mac-desktop-status");
+  }
   if (sub === "stop" || sub === "destroy" || sub === "release-display")
     return desktopAction("mac-desktop stop", "stop", laneClaim(), "mac-desktop-stop");
   if (sub === "windows" || sub === "list" || sub === "ls")

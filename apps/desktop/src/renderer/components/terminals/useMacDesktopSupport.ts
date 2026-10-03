@@ -23,7 +23,16 @@ import type { OpenProjectBinding } from "../../../shared/types";
  * own reason. A driver missing from the install and a Linux host are both
  * "no", and the pane must say which — "isn't a Mac" on a Mac is a lie.
  */
-export type MacDesktopSupport = { supported: boolean; reason: string | null };
+export type MacDesktopSupport = {
+  supported: boolean;
+  reason: string | null;
+  /**
+   * The runtime host's platform, from the same `getStatus` read. The Work tool
+   * picker uses it to show Windows Desktop in place of Mac Desktop on a
+   * Windows host, so it is carried here rather than fetched twice.
+   */
+  platform: NodeJS.Platform;
+};
 
 const cache = new Map<string, MacDesktopSupport>();
 
@@ -61,6 +70,7 @@ export function useMacDesktopSupport(args: {
         const answer: MacDesktopSupport = {
           supported: status.supported,
           reason: status.supported ? null : (status.unsupportedReason ?? null),
+          platform: status.platform,
         };
         cache.set(key, answer);
         if (!cancelled) setSupported(answer);

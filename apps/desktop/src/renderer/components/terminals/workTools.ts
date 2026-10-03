@@ -1,6 +1,7 @@
 import {
   Desktop,
   FolderOpen,
+  WindowsLogo,
   GitBranch,
   GithubLogo,
   Globe,
@@ -136,6 +137,16 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     // resolves to, so the card does not change its mind a beat later.
     hint: "Mac Desktop is off",
   },
+  {
+    id: "windows-desktop",
+    label: "Windows Desktop",
+    icon: WindowsLogo,
+    color: "#38bdf8",
+    // Only ever seen while the host's capability answer is in flight or
+    // unreachable: on a Windows host the card's line is the lane's own screen
+    // state. Phrased as the line it usually resolves to.
+    hint: "Windows Desktop is off",
+  },
 ];
 
 const WORK_TOOL_DEFINITIONS_BY_ID = new Map<WorkSidebarTab, WorkToolDefinition>(
@@ -194,6 +205,14 @@ export type WorkToolContext = {
    */
   supportsMacDesktop?: boolean | null;
   /**
+   * The lane's RUNTIME HOST can host a Windows Desktop screen: it is a Windows
+   * host. Same tri-state and the same "show while unanswered" rule as
+   * `supportsMacDesktop`, and the two are mutually exclusive by host platform.
+   */
+  supportsWindowsDesktop?: boolean | null;
+  /** The host's own words for a `false` Windows answer. */
+  windowsDesktopUnsupportedReason?: string | null;
+  /**
    * The host's own words for a `false` above, e.g. the driver is missing from
    * this install. Shown in place of the generic "isn't a Mac" line, which is
    * wrong on a Mac whose driver did not ship.
@@ -232,7 +251,7 @@ const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
  * fails the capability check) still renders this read-only pane, and
  * `WORK_TOOLS_CONTROL_HINT` says control stays on the desktop exactly then.
  */
-const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
+const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop", "windows-desktop"]);
 
 /*
  * There is deliberately no "local only" set any more.
@@ -257,7 +276,7 @@ export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext)
   return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
 }
 
-const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "mac-desktop", "app-control"]);
+const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "mac-desktop", "windows-desktop", "app-control"]);
 
 export function workToolAvailability(
   id: WorkSidebarTab,
@@ -270,17 +289,47 @@ export function workToolAvailability(
       reason: `This lane lives on ${cloud}. This tool drives a real machine, and the lane's machine is ${cloud}'s VM.`,
     };
   }
+  // Windows Desktop follows the host platform strictly, before the read-only
+  // short-circuit: a Mac-hosted lane must not offer a Windows screen even to a
+  // web client that could watch one. The Mac rule below keeps its existing
+  // behavior, including the web client's watch-only case.
+  if (id === "windows-desktop" && context.supportsWindowsDesktop === false) {
+    const reason = context.windowsDesktopUnsupportedReason?.trim();
+    return { available: false, reason: reason || "This lane's host isn't Windows" };
+  }
+  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
+    const reason = context.macDesktopUnsupportedReason?.trim();
+    return { available: false, reason: reason || "This lane's host isn't a Mac" };
+  }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
   }
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
-  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
-    const reason = context.macDesktopUnsupportedReason?.trim();
-    return { available: false, reason: reason || "This lane's host isn't a Mac" };
-  }
+
   return AVAILABLE;
+}
+
+/**
+ * True when the lane's host can never run this tool: Mac Desktop and Apple
+ * Development on a Windows host, Windows Desktop on a Mac. Such a card is not
+ * shown at all, because a disabled card for something this machine can never
+ * do is noise. Only an answered `false` hides a tool; an unanswered
+ * capability keeps it, so nothing disappears and comes back a beat later.
+ * Cloud lanes are not host mismatches: their card stays and says why.
+ */
+export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
+  if (context.cloudLane) return false;
+  if (id === "windows-desktop") return context.supportsWindowsDesktop === false;
+  if (id === "mac-desktop") return context.supportsMacDesktop === false;
+  if (id === "ios") return !context.isWebClient && context.supportsIosSimulator === false;
+  return false;
+}
+
+/** The tool cards this host can show, in catalogue order. */
+export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WORK_TOOL_DEFINITIONS {
+  return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context));
 }
 
 export function isAvailableWorkSidebarTab(

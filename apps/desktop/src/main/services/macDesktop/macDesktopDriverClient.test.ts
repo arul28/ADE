@@ -42,6 +42,7 @@ function createChild(pid: number, options: { ignoresTerm?: boolean } = {}) {
     once: emitter.once.bind(emitter),
     off: emitter.off.bind(emitter),
     emitSpawn: () => emitter.emit("spawn"),
+    exit: () => { child.exitCode = 0; emitter.emit("close", 0, null); },
   };
   // After the synchronous `start()` has attached its listeners.
   process.nextTick(() => child.emitSpawn());
@@ -152,6 +153,35 @@ describe("macDesktopDriverClient when the helper stops answering", () => {
     expect(client.isRunning()).toBe(true);
     expect(lines.some((line) => line.event === "mac_desktop.driver_restart_kill" && line.level === "warn")).toBe(true);
     client.dispose();
+  });
+
+  it.each(["restart", "dispose"] as const)("%s asks a Windows host to quit and cancels force termination when it exits", async (operation) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const child = createChild(401);
+    let replacement: ReturnType<typeof createChild> | undefined;
+    const spawnProcess = vi.fn(() => {
+      replacement = createChild(402);
+      return replacement;
+    }).mockReturnValueOnce(child);
+    const client = createMacDesktopDriverClient({
+      logger, platform: "win32", supportedPlatforms: ["win32"], gracefulQuit: true,
+      resolveExecutablePath: binaryPath,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+    await client.ensureStarted();
+    const shutdown = operation === "restart" ? client.restart() : Promise.resolve(client.dispose());
+    expect(child.stdin.read()?.toString()).toBe('{"type":"quit"}\n');
+    expect(child.kill).not.toHaveBeenCalled();
+    child.exit();
+    if (operation === "restart") {
+      await shutdown;
+      expect(client.isRunning()).toBe(true);
+      expect(spawnProcess).toHaveBeenCalledTimes(2);
+      client.dispose();
+      replacement!.exit();
+    }
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it("logs each stderr line, and a request the helper never answered", async () => {

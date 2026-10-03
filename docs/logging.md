@@ -560,7 +560,7 @@ third backend id is dropped rather than widening the allowlist. A per-backend
 this to at most two accepted events per installation per UTC day, inside the
 same limits, and no ceiling was raised.
 
-Whether an installation uses its lane's Mac Desktop records the same
+Whether an installation uses its lane's Mac or Windows Desktop records the same
 `ade_feature_used` event at the brain-side service
 (`createMacDesktopService`, through an injected emitter — the service never
 reaches the analytics service or an id itself) with `feature: "work"`,
@@ -571,6 +571,11 @@ agent-shaped caller, and a takeover always carries one), or `recorded` (a
 recording was filed as proof). A display that was already up, a refused
 action, a person's pointer, and a scratch recording that was not filed emit
 nothing.
+
+Windows shares this frozen `mac_desktop` taxonomy and the same service emitter.
+The closed Work-tool outcome list also includes `tool_windows_desktop`, so
+opening the Windows pane is retained through sanitization. Password entry,
+credential contents, and native-dialog interactions are never product events.
 
 The product question is only whether the lane screen is used at all, and
 whether agents drive it or file it. Nothing finer crosses the boundary: no

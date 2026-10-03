@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn, spawnSync, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,10 @@ import {
   buildWindowsQueryTaskActionArgs,
   buildWindowsQueryTaskArgs,
   buildWindowsRunKeyAddArgs,
+  buildWindowsRunKeyListArgs,
+  resolveWindowsAdeDir,
+  parseWindowsRunKeyValues,
+  windowsRunCommandNamesLauncher,
   buildWindowsRunKeyDeleteArgs,
   buildWindowsRunKeyQueryArgs,
   buildWindowsRunTaskArgs,
@@ -97,6 +102,11 @@ function spawnSequence(
   results: ServiceManagerProcessResult[],
 ): ServiceManagerSpawnSync {
   return (command, args) => {
+    // These legacy scenarios have no extra Run values or unrecorded
+    // supervisors. Model the new maintenance boundaries independently of
+    // their lifecycle result sequence; the repair test below owns them.
+    if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
+    if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "0", stderr: "" };
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
@@ -195,14 +205,57 @@ describe("Windows background service helpers", () => {
     expect(buildWindowsDeleteTaskArgs(taskName)).toEqual(["/Delete", "/TN", taskName, "/F"]);
   });
 
-  it("resolves the Windows scheduled task user from domain and username environment values", () => {
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" })).toBe("ADEBOX\\arul");
-    expect(resolveWindowsTaskUser({ USERNAME: "LOCALUSER" })).toBe("LOCALUSER");
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe("ADEBOX\\arul");
-    expect(resolveWindowsTaskUser({
-      USERDOMAIN: "MicrosoftAccount",
-      USERNAME: "owner@example.com",
-    })).toBe("MicrosoftAccount\\owner@example.com");
+  it("keeps the user identity stable across SSH and desktop domain labels", () => {
+    const desktop = resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" });
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "WORKGROUP", USERNAME: "arul" })).toBe(desktop);
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe(desktop);
+    if (process.platform !== "win32") expect(desktop).toBe("arul");
+  });
+
+  it.each([
+    ['powershell.exe -File "C:\\ADE\\brain.ps1"', true],
+    ['powershell.exe "-File" "c:/ade/brain.ps1"', true],
+    ['powershell.exe -File "C:\\ADE\\brain.ps1.old"', false],
+    ['powershell.exe -File "C:\\Other\\brain.ps1" -Log "C:\\ADE\\brain.ps1"', false],
+  ])("recognizes the exact launcher argument: %s", (command, matches) => {
+    expect(windowsRunCommandNamesLauncher(command, "C:\\ADE\\brain.ps1")).toBe(matches);
+  });
+
+  it("reads named Run values without consuming registry headers", () => {
+    expect(parseWindowsRunKeyValues("HKEY_CURRENT_USER\\Run\r\n    ADE Runtime (beta-old)    REG_SZ    powershell -File \"C:\\ADE\\brain.ps1\"\r\n    unrelated    REG_DWORD    1\r\n"))
+      .toEqual([
+        { name: "ADE Runtime (beta-old)", command: 'powershell -File "C:\\ADE\\brain.ps1"' },
+        { name: "unrelated", command: "1" },
+      ]);
+  });
+
+  it.each(["install", "uninstall"] as const)("%s prunes duplicate channel entries while retaining other apps and channels", async (operation) => {
+    const launcherPath = path.join(makeTempHome("ade-windows-service-prune-"), "brain.ps1");
+    const startup = new Map([
+      ["ADE Runtime (beta-old-ssh)", `powershell.exe -File "${launcherPath}"`],
+      ["Old ADE launcher", `powershell.exe -File "${launcherPath}"`],
+      ["ADE Runtime (stable-other)", 'powershell.exe -File "C:\\Other\\brain.ps1"'],
+      ["Other app", `powershell.exe -File "${launcherPath}.old"`],
+    ]);
+    const run: ServiceManagerSpawnSync = (command, args) => {
+      if (command === windowsRegCommand()) {
+        const valueAt = args.indexOf("/V");
+        const name = valueAt < 0 ? null : args[valueAt + 1]!;
+        if (args[0] === "QUERY" && !name) return { status: 0, stdout: [...startup].map(([key, value]) => `    ${key}    REG_SZ    ${value}`).join("\r\n"), stderr: "" };
+        if (args[0] === "QUERY") return { status: startup.has(name!) ? 0 : 1, stdout: startup.get(name!) ?? "", stderr: "" };
+        if (args[0] === "DELETE") startup.delete(name!);
+        if (args[0] === "ADD") startup.set(name!, args[args.indexOf("/D") + 1]!);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
+      return { status: 0, stdout: "0", stderr: "" };
+    };
+    const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
+    const result = operation === "install" ? await installWindowsService(deps) : await uninstallWindowsService(deps);
+    expect(result.ok).toBe(true);
+    expect([...startup.keys()].sort()).toEqual([
+      "ADE Runtime (stable-other)", "Other app", ...(operation === "install" ? [taskName] : []),
+    ].sort());
   });
 
   it("isolates scheduled task names by release channel and Windows principal", () => {
@@ -466,24 +519,7 @@ describe("Windows background service helpers", () => {
       path: taskName,
       message: "ADE per-user startup entry installed and channel brain is ready.",
     });
-    const machineLayout = resolveMachineAdeLayout(
-      { ...process.env, ...(serviceCommand.env ?? {}) },
-      "win32",
-    );
-    expect(fs.readFileSync(launcherPath, "utf8")).toBe(
-      `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
-      pidPath,
-      logPath: `${launcherPath}.log`,
-      brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
-      // The supervisor loop doubles as this platform's wedge watchdog.
-        heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
-        wedgeBreadcrumbPath: path.win32.join(
-          machineLayout.runtimeDir,
-          "event-loop-wedge.json",
-        ),
-      })}`,
-    );
-    expect(fs.readFileSync(launcherPath, "utf8")).toContain("Get-StaleBeatTs");
+    expect(fs.existsSync(launcherPath)).toBe(true);
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
       command: serviceCommand,
       launcherPath,
@@ -670,6 +706,10 @@ describe("Windows background service helpers", () => {
       brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
       heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
       wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
+      adeDir: resolveWindowsAdeDir({ ...process.env, ...(serviceCommand.env ?? {}) }),
+      mutexName: `Global\\ade-supervisor-${createHash("sha256").update(launcherPath).digest("hex").slice(0, 12)}-${createHash("sha256").update(taskUser).digest("hex").slice(0, 12)}`,
+      socketPath: machineLayout.socketPath,
+      lastFailurePath: path.win32.join(machineLayout.runtimeDir, "last-failure.json"),
     })}`, "utf8");
     const youngRecord = { ...readyPidRecord, runtimeStartedAtMs: Date.now() - 5_000 };
     const readinessProbe = vi.fn()

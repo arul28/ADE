@@ -100,6 +100,48 @@ every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
+# Windows Desktop
+
+On a Windows runtime host the same verbs drive a Windows screen, under the
+neutral spelling `ade screen` (`ade windows-desktop` and `ade mac-desktop` still
+work). The Work tools pane shows **Windows Desktop** instead of Mac Desktop;
+Browser and App Control stay on both. A Windows-hosted chat hides Mac Desktop
+and Apple; a Mac-hosted chat hides Windows Desktop.
+
+Two seats exist and the user picks one:
+
+- **Private screen** (default): a second Windows desktop of the user's own
+  account, its own pointer and foreground. `ade screen start --text` asks for it.
+  It needs a one-time setup the user runs (an admin prompt then the Windows
+  sign-in), so an agent asks with an ask card rather than doing it.
+- **Shared desktop** (Mode B): the user's own desktop, with windows parked
+  off-screen. It **takes over the window the user is using while you act**, so it
+  needs the user's explicit consent first. Ask; do not pass a consent flag
+  yourself — the agent API refuses a shared start.
+
+Agents may start the private screen after setup. These are the user's, not
+yours, and fail with a `WINDOWS_DESKTOP_*` code if you try: `setup`, `takeover`
+(only the pane does it, after a confirm), and any shared create.
+
+Windows failures you will see and what they mean:
+
+| Code | Meaning |
+|---|---|
+| `WINDOWS_DESKTOP_SETUP_REQUIRED` | The user has not run the one-time setup yet. Ask them to. |
+| `WINDOWS_DESKTOP_HELD` | Another lane holds the private screen. Ask the user to take it over or use the shared desktop. |
+| `WINDOWS_DESKTOP_LOCKED` | The PC is locked. Wait; unlock resumes it. |
+| `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` | ADE is not running on this PC's desktop (e.g. over SSH), so the private seat is unavailable. |
+
+The user can approve setup, takeover, and shared-desktop use from a trusted ADE
+client on any device. They can choose **Save Windows password** after setup. The
+native Windows dialog verifies sign-in and stores it in Windows Credential
+Manager on that PC. Never ask for the password in chat or put it in a command.
+A rejected saved password is forgotten; ask the user to save the new one.
+
+In the private screen, ignore the user's own startup apps (v1 leaves them
+alone): open only the apps and files you name. Never rely on a restored tab or a
+file association.
+
 ## Check each step before you report it
 
 A click, type or press that returns `ok` only means ADE sent the input. It

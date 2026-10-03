@@ -393,6 +393,7 @@ import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
@@ -4927,10 +4928,21 @@ app.whenReady().then(async () => {
      * service's own `subscribe` is for in-process readers constructed after it
      * (the Work tools mirror), while this is what reaches a window.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMachineMainLogger());
     const macDesktopService = createMacDesktopService({
       projectRoot,
       // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
-      logger: createMacDesktopLogger(logger, getMachineMainLogger()),
+      logger: macDesktopLogger,
+      // Windows hosts reuse the whole seat service; only the helper, the
+      // provider, and the permission story differ. Every other host keeps the
+      // Mac adapter (and its unchanged macOS behavior).
+      seat: process.platform === "win32"
+        ? createWindowsDesktopSeatAdapter({
+          logger: macDesktopLogger,
+          adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+        })
+        : null,
+      adeHome: process.env.ADE_HOME?.trim() || null,
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {

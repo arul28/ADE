@@ -646,6 +646,7 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   "app-control": "App Control",
   browser: "Browser",
   "mac-desktop": "Mac Desktop",
+  "windows-desktop": "Windows Desktop",
   pr: "PR",
 };
 

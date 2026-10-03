@@ -65,6 +65,13 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   stopStream: "stream.stop",
   startRecording: "record.start",
   stopRecording: "record.stop",
+  /**
+   * Windows only: the host's setup/held/locked/edition facts, and the wizard's
+   * one admin step. The Mac helper answers neither; the Windows provider is the
+   * only caller, and only when the host is Windows.
+   */
+  windowsStatus: "windows.status",
+  setupWindows: "windows.setup",
 } as const;
 
 /**
@@ -123,6 +130,29 @@ export type MacDesktopDriverClientDeps = {
   resolveExecutablePath: () => string | null;
   logger: Logger;
   platform?: NodeJS.Platform;
+  /**
+   * The platforms this helper runs on. Defaults to `["darwin"]`, so every
+   * existing caller is unchanged; the Windows client passes `["win32"]`.
+   * More than one entry would let one binary serve both, which no build does
+   * today, but the shape stays general rather than a second boolean.
+   */
+  supportedPlatforms?: readonly NodeJS.Platform[];
+  /** The sentence a wrong-platform rejection carries. */
+  unsupportedMessage?: string;
+  /** The health card's title for a wrong-platform host. */
+  unsupportedTitle?: string;
+  /** The health card's name for this driver: "Mac Desktop" or "Windows Desktop". */
+  driverLabel?: string;
+  /** Arguments the helper is spawned with. Windows: `host --ade-home <dir>`. */
+  driverArgs?: readonly string[];
+  /**
+   * Ask the helper to shut down over stdin (`{"type":"quit"}`) and wait a grace
+   * before killing it. Windows only: `SIGTERM`/`kill` is `TerminateProcess`
+   * there, which would skip the native child sign-out the driver must do.
+   */
+  gracefulQuit?: boolean;
+  /** How long a graceful quit waits for the helper to exit before killing it. */
+  quitGraceMs?: number;
   requestTimeoutMs?: number;
   /** Test seam. Defaults to `child_process.spawn`. */
   spawnProcess?: typeof spawn;
@@ -144,6 +174,13 @@ type PendingRequest = {
 
 export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const platform = deps.platform ?? process.platform;
+  const supportedPlatforms = deps.supportedPlatforms ?? (["darwin"] as const);
+  const unsupportedMessage = deps.unsupportedMessage ?? MAC_DESKTOP_MACOS_ONLY_MESSAGE;
+  const unsupportedTitle = deps.unsupportedTitle ?? "Mac Desktop needs macOS";
+  const driverLabel = deps.driverLabel ?? "Mac Desktop";
+  const driverArgs = deps.driverArgs ?? [];
+  const gracefulQuit = deps.gracefulQuit === true;
+  const quitGraceMs = deps.quitGraceMs ?? 5_000;
   const spawnProcess = deps.spawnProcess ?? spawn;
   const requestTimeoutMs = deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
@@ -173,11 +210,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   const buildHealth = (): MacDesktopDriverHealth => {
-    if (platform !== "darwin") {
+    if (!supportedPlatforms.includes(platform)) {
       return {
         state: "unsupported",
-        title: "Mac Desktop needs macOS",
-        message: MAC_DESKTOP_MACOS_ONLY_MESSAGE,
+        title: unsupportedTitle,
+        message: unsupportedMessage,
         recovery: null,
         version: null,
       };
@@ -186,7 +223,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (!binary || !fs.existsSync(binary)) {
       return {
         state: "missing",
-        title: "Mac Desktop needs reinstalling",
+        title: `${driverLabel} needs reinstalling`,
         message: "The native desktop driver is missing from this ADE installation. Reinstall or update ADE, then restart it.",
         recovery: "reinstall_or_update",
         version: null,
@@ -195,7 +232,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (lastProtocolError) {
       return {
         state: "protocol_error",
-        title: "Mac Desktop needs an update",
+        title: `${driverLabel} needs an update`,
         message: "The native desktop driver is incompatible with this ADE build. Update ADE, then restart it.",
         recovery: "reinstall_or_update",
         version,
@@ -204,7 +241,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (child && childReady) {
       return {
         state: "running",
-        title: "Mac Desktop is ready",
+        title: `${driverLabel} is ready`,
         message: "The native desktop driver is running.",
         recovery: null,
         version,
@@ -213,7 +250,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     if (!child && restartAttempts >= MAX_RESTART_ATTEMPTS && !restartTimer) {
       return {
         state: "crash_loop",
-        title: "Mac Desktop stopped",
+        title: `${driverLabel} stopped`,
         message: "The native desktop driver repeatedly exited. Restart ADE; if it happens again, reinstall or update the app.",
         recovery: "reinstall_or_update",
         version,
@@ -221,7 +258,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
     return {
       state: "starting",
-      title: "Mac Desktop is starting",
+      title: `${driverLabel} is starting`,
       message: "ADE is preparing the native desktop driver.",
       recovery: "retry",
       version,
@@ -244,6 +281,20 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       pending.delete(id);
       if (entry.timer) clearTimeout(entry.timer);
       entry.reject(error);
+    }
+  };
+
+  /**
+   * The graceful shutdown ask. Windows only: writing `{"type":"quit"}` lets the
+   * host run its own child sign-out before it exits; `kill` there is
+   * `TerminateProcess` and skips it entirely.
+   */
+  const sendQuit = (target: ChildProcessWithoutNullStreams | null): void => {
+    if (!gracefulQuit || !target) return;
+    try {
+      target.stdin.write('{"type":"quit"}\n');
+    } catch {
+      // Already gone; the handle was the only thing left of it.
     }
   };
 
@@ -423,8 +474,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
 
     const attempt = new Promise<void>((resolve, reject) => {
-      if (platform !== "darwin") {
-        reject(new MacDesktopDriverError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", MAC_DESKTOP_MACOS_ONLY_MESSAGE));
+      if (!supportedPlatforms.includes(platform)) {
+        reject(new MacDesktopDriverError("MAC_DESKTOP_UNSUPPORTED_PLATFORM", unsupportedMessage));
         return;
       }
       const binary = executablePath();
@@ -438,7 +489,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       }
       let spawned: ChildProcessWithoutNullStreams;
       try {
-        spawned = spawnProcess(binary, [], {
+        spawned = spawnProcess(binary, [...driverArgs], {
           env: { ...process.env, LC_ALL: "en_US.UTF-8" },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
@@ -656,7 +707,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           };
           running.once("close", done);
           try {
-            running.kill("SIGTERM");
+            // Windows: a graceful stdin quit lets the host sign its child
+            // session out; SIGTERM there is TerminateProcess and skips it.
+            if (gracefulQuit) sendQuit(running);
+            else running.kill("SIGTERM");
           } catch {
             // Already gone; the handle was the only thing left of it.
             done();
@@ -675,7 +729,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
             }
             const fallback = setTimeout(done, RESTART_KILL_GRACE_MS);
             fallback.unref?.();
-          }, RESTART_TERM_GRACE_MS);
+          }, gracefulQuit ? quitGraceMs : RESTART_TERM_GRACE_MS);
           escalate.unref?.();
         });
       }
@@ -768,7 +822,25 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       const running = child;
       child = null;
       childReady = false;
-      running?.kill();
+      if (running) {
+        if (gracefulQuit) {
+          // Ask the host to sign its child session out, then kill only if it
+          // has not exited by the grace. `kill` on Windows is
+          // `TerminateProcess`, which would skip that sign-out.
+          sendQuit(running);
+          const killTimer = setTimeout(() => {
+            try {
+              running.kill();
+            } catch {
+              // Already gone.
+            }
+          }, quitGraceMs);
+          killTimer.unref?.();
+          running.once("close", () => clearTimeout(killTimer));
+        } else {
+          running.kill();
+        }
+      }
     },
   };
 }

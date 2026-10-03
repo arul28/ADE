@@ -52,6 +52,12 @@ export type MacDesktopWebApi = {
   start: (args: MacDesktopStartArgs) => Promise<MacDesktopStatus | null>;
   stop: (args: MacDesktopStopArgs) => Promise<MacDesktopStopResult | null>;
   /**
+   * The watch-only Stop. Signs the private screen out through the
+   * viewer-allowed `macDesktop.stopPrivate` command, so a phone or a
+   * non-controller browser tab can stop the lane's Windows screen.
+   */
+  stopPrivate: (args: { laneId: string }) => Promise<MacDesktopStopResult | null>;
+  /**
    * Both halves of the host contract — the `macDesktopStream` feature bit and
    * the `macDesktop.streamSubscribe` command — because either one missing
    * means the live view would mount and then fail its first RPC.
@@ -106,6 +112,12 @@ export function createMacDesktopNamespace(infra: AdapterInfra): MacDesktopWebApi
     stop: (args) =>
       commands.call(
         "macDesktop.stop",
+        { laneId: args.laneId },
+        { fallback: null as MacDesktopStopResult | null, idempotent: false },
+      ),
+    stopPrivate: (args) =>
+      commands.call(
+        "macDesktop.stopPrivate",
         { laneId: args.laneId },
         { fallback: null as MacDesktopStopResult | null, idempotent: false },
       ),

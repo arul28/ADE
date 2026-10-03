@@ -25,6 +25,8 @@ struct MacDesktopCard: View {
   @State private var isFetchingMacDesktopFrame = false
   @State private var macDesktopStarting = false
   @State private var macDesktopStartError: String?
+  @State private var stopping = false
+  @State private var stopError: String?
 
   var body: some View {
     card
@@ -56,7 +58,7 @@ struct MacDesktopCard: View {
   @ViewBuilder
   private var card: some View {
     if let macDesktop = macDesktop, macDesktop.supported {
-      ADEGlassSection(title: "macOS", subtitle: macDesktopSubtitle(macDesktop)) {
+      ADEGlassSection(title: macDesktop.windowsDesktop == nil ? "macOS" : "Windows", subtitle: macDesktopSubtitle(macDesktop)) {
         if let display = macDesktop.display {
           VStack(alignment: .leading, spacing: 10) {
             macDesktopChips(macDesktop, display: display)
@@ -100,7 +102,24 @@ struct MacDesktopCard: View {
               .foregroundStyle(ADEColor.warning)
               .frame(maxWidth: .infinity, alignment: .leading)
             }
-            macDesktopWatchButton
+            HStack {
+              macDesktopWatchButton
+              if macDesktop.windowsDesktop != nil && display.mode == "virtual" && syncService.supportsWindowsDesktopStop {
+                Button(stopping ? "Stopping…" : "Stop", role: .destructive) {
+                  Task {
+                    stopping = true
+                    stopError = nil
+                    defer { stopping = false }
+                    do {
+                      try await syncService.windowsDesktopStop(laneId: laneId)
+                      await refreshLane()
+                    } catch { stopError = macDesktopVisibleMessage(for: error) }
+                  }
+                }
+                .disabled(stopping)
+              }
+            }
+            macDesktopErrorLine(stopError)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -118,7 +137,7 @@ struct MacDesktopCard: View {
       if macDesktopStarting {
         ProgressView()
       }
-      Text(macDesktopOffCardMessage(starting: macDesktopStarting, error: macDesktopStartError, canStart: canStart))
+      Text(macDesktopOffCardMessage(starting: macDesktopStarting, error: macDesktopStartError, canStart: canStart, hostIsWindows: macDesktop?.windowsDesktop != nil))
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -146,6 +165,7 @@ struct MacDesktopCard: View {
     macDesktopStartDisplay(
       using: syncService,
       laneId: laneId,
+      hostIsWindows: macDesktop?.windowsDesktop != nil,
       starting: $macDesktopStarting,
       errorText: $macDesktopStartError,
       refresh: { await refreshLane() }
