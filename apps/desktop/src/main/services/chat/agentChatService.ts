@@ -864,6 +864,10 @@ import {
   UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
   updateResumeScheduleId,
   usageLimitParkedUntilMirror,
+  buildRestartNote,
+  collectRestartCancelledWork,
+  RESTART_RESUME_PROMPT,
+  RESTART_RESUME_REASON,
 } from "../../../shared/chatAutoResume";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
@@ -1894,6 +1898,8 @@ type PersistedChatState = {
   spawnKind?: AgentChatSession["spawnKind"];
   subagentTakeoverPromptShownAt?: string | null;
   pendingTranscriptReplay?: string | null;
+  /** See ManagedChatSession.pendingRestartNote. */
+  pendingRestartNote?: string | null;
   /**
    * Durable record that this chat was born from a replay-fork handoff. It
    * outlives the replay text itself, because the failure it repairs — the
@@ -4241,6 +4247,13 @@ type ManagedChatSession = {
    */
   ctoStaticContext: StagedSection;
   pendingTranscriptReplay: string | null;
+  /**
+   * What a restart did to this chat — its turn ended early, its background
+   * work was cancelled — told to the model once, ahead of the next turn's
+   * prompt, never as a user message. Persisted so a second restart before the
+   * next turn does not lose it.
+   */
+  pendingRestartNote: string | null;
   /** See PersistedChatState.transcriptReplayOrigin. */
   transcriptReplayOrigin: TranscriptReplayOrigin | null;
   /** See PersistedChatState.lastTurnFailure. */
@@ -14425,6 +14438,7 @@ export function createAgentChatService(args: {
     composed: string;
     replay: string;
     reconstruction: string;
+    restartNote: string;
   };
 
   const consumePendingTurnContextPrefix = (
@@ -14435,13 +14449,17 @@ export function createAgentChatService(args: {
     if (skip) return null;
     let replay = managed.pendingTranscriptReplay?.trim() ?? "";
     let reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
-    if (!replay && !reconstruction) return null;
+    const restartNote = managed.pendingRestartNote?.trim() ?? "";
+    if (!replay && !reconstruction && !restartNote) return null;
     const hadReplay = replay.length > 0;
     const hadReconstruction = reconstruction.length > 0;
 
     if (maxComposedChars !== undefined) {
+      // The restart note is a few short lines and is never cut; the replay and
+      // continuity sections share whatever room is left.
+      const restartNoteChars = restartNote ? restartNote.length + 64 : 0;
       const budget = Number.isFinite(maxComposedChars)
-        ? Math.max(0, Math.floor(maxComposedChars))
+        ? Math.max(0, Math.floor(maxComposedChars) - restartNoteChars)
         : 0;
       replay = fitTranscriptReplayTextToBudget(replay, budget);
       const reconstructionPrefix = "System context (ADE continuity, do not echo verbatim):\n";
@@ -14472,6 +14490,7 @@ export function createAgentChatService(args: {
       }
     }
     if (hadReplay) managed.pendingTranscriptReplay = null;
+    if (restartNote) managed.pendingRestartNote = null;
     if (hadReconstruction) {
       managed.pendingReconstructionContext = null;
       managed.pendingReconstructionSections = null;
@@ -14483,6 +14502,7 @@ export function createAgentChatService(args: {
     // transcript a second time after a restart.
     persistChatState(managed);
     const parts: string[] = [];
+    if (restartNote) parts.push(`System notice from ADE (not from the user):\n${restartNote}`);
     if (replay) parts.push(replay);
     if (reconstruction) {
       parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
@@ -14491,6 +14511,7 @@ export function createAgentChatService(args: {
       composed: parts.join("\n\n"),
       replay,
       reconstruction,
+      restartNote,
     };
   };
 
@@ -17111,6 +17132,7 @@ export function createAgentChatService(args: {
       pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
         ? managed.pendingTranscriptReplay
         : null,
+      pendingRestartNote: managed.pendingRestartNote?.trim() ? managed.pendingRestartNote : null,
       ...(managed.transcriptReplayOrigin
         ? { transcriptReplayOrigin: managed.transcriptReplayOrigin }
         : {}),
@@ -18206,15 +18228,74 @@ export function createAgentChatService(args: {
     if (turnStartedAt) notifySimRecordingTurnEnded(managed.session.id);
   };
 
+  /**
+   * "Continue chats after restarts" (Settings → Chat, on unless turned off).
+   * A chat whose turn the restart cut short gets one durable "continue" row —
+   * the same row, id and tag an update restart arms, so a chat that already
+   * has one is not armed twice and the user typing into it cancels it.
+   * Settled and archived chats stay asleep.
+   */
+  const armRestartResume = (managed: ManagedChatSession): void => {
+    if (projectConfigService.get().effective.ai?.chat?.continueAfterRestart === false) return;
+    const sessionId = managed.session.id;
+    void (async () => {
+      await scheduledWorkReady;
+      if (!scheduledWorkScheduler) return;
+      const row = sessionService.get(sessionId);
+      if (!row || !isSchedulableAgentSession(row) || row.settledAt || row.archivedAt) return;
+      if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
+      const createdAt = Date.now();
+      try {
+        await scheduledWorkScheduler.upsert({
+          id: updateResumeScheduleId(sessionId),
+          sessionId,
+          kind: "wakeup",
+          prompt: RESTART_RESUME_PROMPT,
+          reason: RESTART_RESUME_REASON,
+          fireAt: createdAt,
+          createdAt,
+          status: "scheduled",
+          lateFlag: false,
+          durable: true,
+          source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+        });
+        logger.info("agent_chat.restart_resume_armed", { sessionId, provider: managed.session.provider });
+      } catch (error) {
+        logger.warn("agent_chat.restart_resume_arm_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  };
+
   const recoverDetachedChatAfterRestart = (
     managed: ManagedChatSession,
     unsettled: UnsettledParentTurn | null,
+    transcriptEvents: AgentChatEventEnvelope[],
   ): void => {
+    // Read before the orphan sweep closes those rows: what the transcript
+    // still shows running is exactly what the dead process took with it.
+    const cancelled = collectRestartCancelledWork(mergeEnvelopeStreams(
+      transcriptEvents,
+      eventHistoryBySession.get(managed.session.id) ?? [],
+    ));
+    const note = buildRestartNote({ interruptedTurn: unsettled !== null, cancelled });
+    if (note) managed.pendingRestartNote = note;
     if (unsettled) {
+      const row = sessionService.get(managed.session.id);
+      const willContinue = projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false
+        && !row?.settledAt
+        && !row?.archivedAt;
+      const cancelledLine = cancelled.length
+        ? ` ${cancelled.length === 1 ? "1 background job was" : `${cancelled.length} background jobs were`} stopped; the agent is told which.`
+        : "";
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: "ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.",
+        message: willContinue
+          ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
+          : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
         turnId: unsettled.turnId,
       });
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
@@ -18234,6 +18315,7 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
+    if (unsettled) armRestartResume(managed);
   };
 
   /**
@@ -23736,6 +23818,7 @@ export function createAgentChatService(args: {
       conversationTail: newStagedSection(),
       ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
       contextHealth: null,
@@ -23821,6 +23904,9 @@ export function createAgentChatService(args: {
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
     }
+    if (typeof persisted?.pendingRestartNote === "string" && persisted.pendingRestartNote.trim()) {
+      managed.pendingRestartNote = persisted.pendingRestartNote;
+    }
     for (const entry of persisted?.asyncQuestions ?? []) {
       managed.asyncQuestions.set(entry.itemId, {
         request: entry.request,
@@ -23855,6 +23941,7 @@ export function createAgentChatService(args: {
         recoverDetachedChatAfterRestart(
           managed,
           findUnsettledParentTurn(managed, transcriptHydration.transcriptEvents),
+          transcriptHydration.transcriptEvents,
         );
       } catch (error) {
         logger.warn("agent_chat.restart_recovery_failed", {
@@ -39466,6 +39553,7 @@ export function createAgentChatService(args: {
       conversationTail: newStagedSection(),
       ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
       contextHealth: null,
@@ -41123,6 +41211,7 @@ export function createAgentChatService(args: {
       conversationTail: newStagedSection(),
       ctoStaticContext: newStagedSection(),
       pendingTranscriptReplay: null,
+      pendingRestartNote: null,
       transcriptReplayOrigin: null,
       lastTurnFailure: null,
       contextHealth: null,
@@ -47546,6 +47635,9 @@ export function createAgentChatService(args: {
       }
       if (first.consumedTurnContext.reconstruction && !managed.pendingReconstructionContext) {
         managed.pendingReconstructionContext = first.consumedTurnContext.reconstruction;
+      }
+      if (first.consumedTurnContext.restartNote && !managed.pendingRestartNote) {
+        managed.pendingRestartNote = first.consumedTurnContext.restartNote;
       }
       persistChatState(managed);
     }
@@ -57683,6 +57775,7 @@ export function createAgentChatService(args: {
     runtimeBudget.unregister(runtimeBudgetParticipant);
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     staleRunSweep.dispose();
     // Before the host tears its PTYs down: a brain shutting down must not read
     // its own terminal disposal as every CLI child stopping.
@@ -57857,6 +57950,55 @@ export function createAgentChatService(args: {
   // through an unrelated suite would inject reconciliation events into that
   // test's stream. Tests drive `reconcileStaleRuns()` directly instead.
   if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") staleRunSweep.start();
+
+  /**
+   * Restart recovery is lazy: a detached chat is repaired when it is first
+   * loaded. A chat nobody opens would then never continue, so once at startup
+   * this loads the chats a restart cut off recently, which runs
+   * `recoverDetachedChatAfterRestart` (and its resume) for each. Bounded:
+   * recent rows only, a handful at a time, and only chats this brain may adopt.
+   */
+  const RESTART_RECOVERY_SWEEP_MAX_AGE_MS = 6 * 60 * 60_000;
+  const RESTART_RECOVERY_SWEEP_LIMIT = 25;
+  let restartRecoverySweepTimer: ReturnType<typeof setTimeout> | null = null;
+  const runRestartRecoverySweep = async (): Promise<void> => {
+    await scheduledWorkReady;
+    if (projectConfigService.get().effective.ai?.chat?.continueAfterRestart === false) return;
+    const cutoff = Date.now() - RESTART_RECOVERY_SWEEP_MAX_AGE_MS;
+    const rows = sessionService
+      .list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES })
+      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt && !row.settledAt)
+      .filter((row) => {
+        const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
+        return Number.isFinite(endedMs) && endedMs >= cutoff;
+      })
+      .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
+    for (const row of rows) {
+      if (managedSessions.has(row.id)) continue;
+      try {
+        // Loading is what recovers it; the loader checks runtime ownership.
+        ensureManagedSession(row.id);
+      } catch (error) {
+        logger.warn("agent_chat.restart_recovery_sweep_failed", {
+          sessionId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Each load reads a transcript; let the event loop breathe between them.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+    restartRecoverySweepTimer = setTimeout(() => {
+      restartRecoverySweepTimer = null;
+      void runRestartRecoverySweep().catch((error) => {
+        logger.warn("agent_chat.restart_recovery_sweep_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 3_000);
+    restartRecoverySweepTimer.unref?.();
+  }
 
   // A tracked CLI child's end closes its parent's card. Every PTY exit path
   // (natural exit, close, orphan dispose) reaches this listener after the row

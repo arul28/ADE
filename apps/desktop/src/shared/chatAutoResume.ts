@@ -13,6 +13,9 @@
  */
 
 import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
+import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
+import { subagentSnapshotsFromEvents } from "./chatSubagents";
+import type { AgentChatEventEnvelope } from "./types/chat";
 
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
 export const AUTO_RESUME_SCHEDULED_WORK_SOURCE = "auto_resume_limit";
@@ -298,4 +301,92 @@ export function stripHostOnlyChatMetadata<T extends Record<string, unknown>>(
     kept += 1;
   }
   return kept > 0 ? stripped as Partial<T> : undefined;
+}
+
+/**
+ * Resume after ADE restarted for any other reason — a crash, a force quit, a
+ * reboot — while a turn was running.
+ *
+ * Same durable row and the same `update_restart` tag as an update resume (one
+ * deterministic id per chat), so the user typing into the chat cancels it the
+ * same way and an update that also armed a row is not doubled. Only the prompt
+ * and reason differ: the agent is told the truth about why it stopped.
+ */
+export const RESTART_RESUME_PROMPT =
+  "ADE restarted while your last turn was running, so it ended early. Continue the task from where it stopped; do not restart work that already completed.";
+
+export const RESTART_RESUME_REASON = "Resume after ADE restarted";
+
+/** One piece of background work a restart cancelled. */
+export type RestartCancelledWork = {
+  kind: "command" | "monitor" | "subagent" | "workflow" | "task";
+  label: string;
+};
+
+/** The note names at most this many; the rest are counted. */
+export const RESTART_CANCELLED_WORK_LIMIT = 10;
+const RESTART_CANCELLED_LABEL_CHARS = 120;
+
+function clampLabel(label: string): string {
+  const flat = label.replace(/\s+/g, " ").trim();
+  return flat.length <= RESTART_CANCELLED_LABEL_CHARS
+    ? flat
+    : `${flat.slice(0, RESTART_CANCELLED_LABEL_CHARS - 1).trimEnd()}…`;
+}
+
+/**
+ * The background work a transcript still shows as running — exactly what the
+ * dead process took with it. Spawned ADE chats (`chat:` task ids) are not in
+ * the list: they are chats of their own and survive the restart.
+ */
+export function collectRestartCancelledWork(events: AgentChatEventEnvelope[]): RestartCancelledWork[] {
+  const out: RestartCancelledWork[] = [];
+  const seen = new Set<string>();
+  for (const item of deriveBackgroundItems(events)) {
+    if (item.status !== "running" && item.status !== "scheduled") continue;
+    const label = clampLabel(backgroundCommandLabel(item.title) || item.title || item.summary || "background command");
+    const key = `command:${item.sourceTaskId ?? item.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind: /monitor/i.test(item.title) ? "monitor" : "command", label });
+  }
+  for (const snapshot of subagentSnapshotsFromEvents(events)) {
+    if (snapshot.status !== "running") continue;
+    if (snapshot.id.startsWith("chat:")) continue;
+    const key = `subagent:${snapshot.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const kind: RestartCancelledWork["kind"] = snapshot.taskType === "local_workflow"
+      ? "workflow"
+      : snapshot.taskType === "subagent" || snapshot.kind === "teammate" ? "subagent" : "task";
+    out.push({ kind, label: clampLabel(snapshot.label || snapshot.name || snapshot.workflowName || "subagent") });
+  }
+  return out;
+}
+
+/**
+ * The one-time note the next turn carries after a restart. It goes to the
+ * model only — never a user bubble — and is cleared once delivered.
+ */
+export function buildRestartNote(args: {
+  interruptedTurn: boolean;
+  cancelled: readonly RestartCancelledWork[];
+}): string | null {
+  if (!args.interruptedTurn && args.cancelled.length === 0) return null;
+  const lines = [
+    args.interruptedTurn
+      ? "ADE restarted while your previous turn was running, so that turn ended early."
+      : "ADE restarted since your previous turn.",
+  ];
+  if (args.cancelled.length > 0) {
+    lines.push("This background work was cancelled by the restart and is no longer running:");
+    for (const work of args.cancelled.slice(0, RESTART_CANCELLED_WORK_LIMIT)) {
+      lines.push(`- ${work.kind}: ${work.label}`);
+    }
+    if (args.cancelled.length > RESTART_CANCELLED_WORK_LIMIT) {
+      lines.push(`- and ${args.cancelled.length - RESTART_CANCELLED_WORK_LIMIT} more`);
+    }
+    lines.push("Start again whatever of it you still need.");
+  }
+  return lines.join("\n");
 }

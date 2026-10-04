@@ -1008,6 +1008,37 @@ Three rules are specific to the schedule itself:
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
 
+### Continue chats after restarts
+
+When ADE restarts while a chat's turn is running — a crash, a force quit, a
+reboot — the turn cannot be saved, but the chat can continue. With **Continue
+chats after restarts** on (Settings → Chat, the default; config
+`ai.chat.continueAfterRestart`):
+
+- On load, `recoverDetachedChatAfterRestart` closes the orphaned turn as
+  before, then `armRestartResume` arms one durable "continue" row
+  (`RESTART_RESUME_PROMPT`). It uses the same deterministic id and
+  `update_restart` tag as an update resume, so a chat an update already armed
+  is not armed twice, and the user typing into the chat cancels it.
+- Settled and archived chats stay asleep. A chat whose turn had already ended,
+  or that the user stopped, has no unsettled turn and is not resumed.
+- Recovery is lazy (a detached chat is repaired when it is first loaded), so a
+  startup sweep loads the chats a restart cut off in the last 6 hours (at most
+  25, only chats this brain may adopt) and each recovers and resumes on its own.
+- The chat's notice says what happens: "The agent picks up where it stopped"
+  with the setting on, "retry or continue when ready" with it off.
+
+Whether or not the chat resumes, the model is told what the restart did. The
+background work the transcript still showed running — background commands,
+monitors, native subagents and workflows, not spawned ADE chats, which survive
+— is collected (`collectRestartCancelledWork`) into a one-time note
+(`buildRestartNote`, at most 10 items named). It is stored on the chat
+(`pendingRestartNote`, persisted) and prefixed to the next turn's provider
+prompt by `consumePendingTurnContextPrefix`, the same hook every provider's send
+path already uses for replay and continuity context. It is delivered once, to
+the model only, never as a user message; a provider slash command does not
+consume it, and a Cursor turn that is recycled before it lands re-stages it.
+
 ### Codex reset credits
 
 A Codex reset credit is a single-use token that clears an account's rate-limit
