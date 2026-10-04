@@ -1228,12 +1228,28 @@ chat pane mount, which happens either way.
   something the backend never honors. The filter is a fallback-safe narrowing —
   if a queue-only provider ever reached this path it would keep its real menu
   rather than render nothing. `ACTIVE_TURN_DISPATCH_MODES` itself is untouched.
-- **Queue-aware Stop button.** In an active Claude chat, Stop becomes a compact
-  split control whose menu is the four-mode matrix in
-  `apps/desktop/src/shared/chatStopModes.ts`: **Turn only** (`stop_only`),
-  **Turn + queue** (`stop_and_clear`, the backward-compatible default, trash
-  icon), **Turn + background (N jobs)** (`stop_and_background`), and
-  **Turn + queue + background (N jobs)** (`stop_and_clear_and_background`).
+- **Stop choices.** In an active chat, Stop is a compact split control whose
+  menu is the matrix in `apps/desktop/src/shared/chatStopModes.ts`, on every
+  provider: **Turn only** (`stop_only`), **Turn + queue** (`stop_and_clear`,
+  the default everywhere, trash icon), **Turn + background (N jobs)**
+  (`stop_and_background`), **Turn + queue + background (N jobs)**
+  (`stop_and_clear_and_background`), and — only while this chat has spawned
+  chats that are working — **Turn + queue + child chats (N)**
+  (`stop_and_clear_and_children`) and **Everything + child chats (N)**
+  (`stop_everything_and_children`). Child chats are stopped by ADE,
+  depth-first, each with the same mode; the result reports
+  `stoppedChildChatCount`.
+  `providerStopModeSupport` decides each row from the provider's real
+  interrupt semantics and a row it cannot honour is shown disabled with the
+  reason: Cursor, Droid, Pi, and ACP agents cannot stop background work their
+  agent started; Pi and ACP agents drop queued messages when stopped, so the
+  choices that keep the queue are off there. Codex stops background work by
+  ending the terminals its agent left running (`thread/backgroundTerminals/terminate`,
+  never terminals the user opened with a shell command), and a queue-clearing
+  Stop the user picks deletes Codex's app-server queue (`thread/queue/delete`
+  per submission); ADE's own internal stops of a Codex turn (recovery, a
+  headless turn limit) leave that queue alone. A remembered choice the chat
+  cannot honour right now falls back to the default.
   The live job count is the same `activeBackgroundTaskCount` the session
   summary already exposes. Default Stop does **not** tear down the Claude
   query or its background jobs once `perTaskStopAffordance` is declared;
@@ -1242,12 +1258,12 @@ chat pane mount, which happens either way.
   and `Cmd+.`, and the custom portal menu dismisses as soon as an option is
   selected. A successful clear that cancelled ADE-attributed messages
   produces one transcript Undo card for eight seconds; Undo calls
-  `restoreCancelledQueue` and restores the original queued payloads. With no
-  queue, or on providers without this contract, Stop remains the
-  single-action interrupt button. The TUI `/stop` command accepts the same
-  four modes (hyphen aliases `keep-queue`, `clear-queue`, `background`,
-  `clear-and-background`); it has no per-task `stopTask` control — use
-  `ade chat stop-task <session> <taskId>`.
+  `restoreCancelledQueue` and restores the original queued payloads. The TUI
+  `/stop` command accepts the same modes (hyphen aliases `keep-queue`,
+  `clear-queue`, `background`, `clear-and-background`, `children`,
+  `everything`), and `ade chat interrupt --stop-children [--stop-background]`
+  picks the child-chat modes; there is no per-task `stopTask` control there —
+  use `ade chat stop-task <session> <taskId>`.
 - **Context meter lifecycle.** `ContextUsageDial` shows a percentage only for
   `state: "measured"`. During compaction it shows an ellipsis and explains that
   the last exact reading is hidden; after a boundary without an exact post

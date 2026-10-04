@@ -876,7 +876,9 @@ import {
   parseAgentChatStopMode,
   shouldDeclarePerTaskStopAffordance,
   stopModeClearsQueue,
+  stopModeProviderMode,
   stopModeStopsBackground,
+  stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
 import {
   buildClassifierContext,
@@ -52633,9 +52635,50 @@ export function createAgentChatService(args: {
     return { cancelled: true };
   };
 
+  /**
+   * Stop a chat. The provider runtime acts on the queue × background half of
+   * the mode; the child-chat half is ADE's own: every chat this one spawned is
+   * stopped too, depth-first, with the same mode.
+   */
   const interrupt = async (
-    { sessionId, mode: rawMode = "stop_and_clear" }: AgentChatInterruptArgs,
+    args: AgentChatInterruptArgs,
     internalOptions: { requireClaudeProviderInterrupt?: boolean } = {},
+    visited: Set<string> = new Set(),
+  ): Promise<AgentChatInterruptResult> => {
+    const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
+    visited.add(args.sessionId);
+    const result = await interruptProviderTurn(
+      { sessionId: args.sessionId, mode: stopModeProviderMode(mode) },
+      { ...internalOptions, explicitMode: args.mode !== undefined },
+    );
+    if (!stopModeStopsChildren(mode)) return { ...result, mode };
+    let stoppedChildChatCount = 0;
+    const children = [...managedSessions.values()].filter((child) =>
+      !child.deleted
+      && child.session.orchestrationParentSessionId === args.sessionId
+      && !visited.has(child.session.id));
+    for (const child of children) {
+      const busy = runtimeMidTurn(child)
+        || child.session.status === "active"
+        || totalBackgroundWork(runtimeBackgroundWork(child.runtime ?? null)) > 0;
+      try {
+        const childResult = await interrupt({ sessionId: child.session.id, mode }, {}, visited);
+        if (busy) stoppedChildChatCount += 1;
+        stoppedChildChatCount += childResult.stoppedChildChatCount ?? 0;
+      } catch (error) {
+        logger.warn("agent_chat.child_chat_stop_failed", {
+          parentSessionId: args.sessionId,
+          childSessionId: child.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { ...result, mode, stoppedChildChatCount };
+  };
+
+  const interruptProviderTurn = async (
+    { sessionId, mode: rawMode = "stop_and_clear" }: AgentChatInterruptArgs,
+    internalOptions: { requireClaudeProviderInterrupt?: boolean; explicitMode?: boolean } = {},
   ): Promise<AgentChatInterruptResult> => {
     const mode = parseAgentChatStopMode(rawMode);
     const managed = ensureManagedSession(sessionId);
@@ -52855,6 +52898,41 @@ export function createAgentChatService(args: {
         if (!stopModeClearsQueue(mode)) return;
         settleCodexPendingInputs(managed, runtime);
       };
+      // Codex's queue lives on the app-server and runs on its own after a stop.
+      // A person who picked a clearing Stop asked for it gone; ADE's internal
+      // stops (turn recovery, a headless turn limit) leave it alone.
+      const clearCodexQueueIfAsked = async (): Promise<void> => {
+        if (!internalOptions.explicitMode || !stopModeClearsQueue(mode)) return;
+        for (const steerId of [...runtime.queuedSubmissionBySteerId.keys()]) {
+          try {
+            if (await cancelSteerWithoutReview({ sessionId, steerId })) result.cancelledQueuedCount += 1;
+          } catch (error) {
+            logger.warn("agent_chat.codex_stop_queue_clear_failed", {
+              sessionId,
+              steerId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      };
+      // The background half: end the terminals the agent left running. Only the
+      // agent's own — terminals the user opened with a shell command are kept.
+      const stopCodexBackgroundIfAsked = async (): Promise<void> => {
+        if (!stopModeStopsBackground(mode)) return;
+        if (!codexServerSupportsBackgroundTerminals(runtime.serverVersion)) return;
+        await refreshCodexBackgroundTerminals(managed, runtime);
+        for (const processId of [...runtime.backgroundTerminalsByProcessId.keys()]) {
+          try {
+            await terminateCodexBackgroundTerminal({ sessionId, processId });
+          } catch (error) {
+            logger.warn("agent_chat.codex_stop_background_failed", {
+              sessionId,
+              processId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      };
       if (!managed.session.threadId) {
         settleCardsIfClearing();
         persistChatState(managed);
@@ -52862,7 +52940,9 @@ export function createAgentChatService(args: {
       }
       if (!runtime.activeTurnId) {
         settleCardsIfClearing();
+        await clearCodexQueueIfAsked();
         await interruptActiveCodexSubagentTurns(managed, runtime);
+        await stopCodexBackgroundIfAsked();
         failOpenCodexCompactions(managed, runtime, "interrupted");
         persistChatState(managed);
         void startCodexQueuedFollowUp(managed, runtime);
@@ -52926,7 +53006,9 @@ export function createAgentChatService(args: {
       // interrupt without ever sending `turn/aborted`; when the abort does
       // land first, it has already emptied the map.
       settleCardsIfClearing();
+      await clearCodexQueueIfAsked();
       await interruptActiveCodexSubagentTurns(managed, runtime);
+      await stopCodexBackgroundIfAsked();
       failOpenCodexCompactions(managed, runtime, "interrupted");
       persistChatState(managed);
       void startCodexQueuedFollowUp(managed, runtime);

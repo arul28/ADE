@@ -2078,7 +2078,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat interrupt <session> --stop-background
                                                     Also stop background jobs; combine with --keep-queue
+    $ ade chat interrupt <session> --stop-children  Also stop the chats this chat spawned (depth-first); add --stop-background for everything
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+                                                    | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
@@ -3775,7 +3777,10 @@ function readLaneId(args: string[]): string | null {
 
 function normalizeChatStopMode(value: unknown): AgentChatStopMode {
   if (isAgentChatStopMode(value)) return value;
-  throw new CliUsageError("chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, or stop_and_clear_and_background.");
+  throw new CliUsageError(
+    "chat interrupt --mode must be stop_and_clear, stop_only, stop_and_background, stop_and_clear_and_background, "
+    + "stop_and_clear_and_children, or stop_everything_and_children.",
+  );
 }
 
 function readChatStopMode(args: string[]): AgentChatStopMode {
@@ -3783,13 +3788,20 @@ function readChatStopMode(args: string[]): AgentChatStopMode {
   const keepQueue = readFlag(args, ["--keep-queue", "--stop-only"]);
   const clearQueue = readFlag(args, ["--clear-queue", "--stop-and-clear"]);
   const stopBackground = readFlag(args, ["--stop-background"]);
-  if (explicitMode && (keepQueue || clearQueue || stopBackground)) {
-    throw new CliUsageError("Use --mode or the queue/background flags, not both.");
+  const stopChildren = readFlag(args, ["--stop-children", "--children"]);
+  if (explicitMode && (keepQueue || clearQueue || stopBackground || stopChildren)) {
+    throw new CliUsageError("Use --mode or the queue/background/children flags, not both.");
   }
   if (keepQueue && clearQueue) {
     throw new CliUsageError("Use only one of --keep-queue or --clear-queue.");
   }
   if (explicitMode) return normalizeChatStopMode(explicitMode);
+  if (stopChildren) {
+    // Child chats stop with their queue cleared; keeping the queue is not a
+    // combination the Stop menu offers.
+    if (keepQueue) throw new CliUsageError("--stop-children always clears the queue; drop --keep-queue.");
+    return stopBackground ? "stop_everything_and_children" : "stop_and_clear_and_children";
+  }
   if (keepQueue && stopBackground) return "stop_and_background";
   if (clearQueue && stopBackground) return "stop_and_clear_and_background";
   if (stopBackground) return "stop_and_background";

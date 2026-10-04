@@ -34,9 +34,12 @@ import {
 import {
   AGENT_CHAT_STOP_MODES,
   chatStopModeCopy,
+  DEFAULT_AGENT_CHAT_STOP_MODE,
   parseAgentChatStopMode,
+  providerStopModeSupport,
   providerSupportsStopModeChoice,
   stopModeClearsQueue,
+  stopModeStopsChildren,
 } from "../../../shared/chatStopModes";
 import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
 import {
@@ -1750,17 +1753,24 @@ function ActiveTurnStopButton({
   mode,
   allowQueueChoice,
   backgroundJobCount,
+  childChatCount = 0,
+  provider = null,
   onModeChange,
   onStop,
 }: {
   mode: AgentChatStopMode;
   allowQueueChoice: boolean;
   backgroundJobCount: number;
+  /** Spawned chats of this chat that are working right now. */
+  childChatCount?: number;
+  provider?: string | null;
   onModeChange: (mode: AgentChatStopMode) => void;
   onStop: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-stop-menu]");
-  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount);
+  const selectedCopy = chatStopModeCopy(mode, backgroundJobCount, childChatCount);
+  // The child-chat choices only appear while there is a child chat to stop.
+  const visibleModes = ACTIVE_TURN_STOP_MODES.filter((option) => childChatCount > 0 || !stopModeStopsChildren(option));
 
   if (!allowQueueChoice) {
     return (
@@ -1790,7 +1800,7 @@ function ActiveTurnStopButton({
             {stopModeClearsQueue(mode) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
           </button>
         </SmartTooltip>
-        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose whether queued messages and background jobs should be kept." }}>
+        <SmartTooltip forceEnabled content={{ label: "More stop options", description: "Choose what else stops with the turn: queued messages, background jobs, child chats." }}>
           <button
             ref={caretRef}
             type="button"
@@ -1814,21 +1824,27 @@ function ActiveTurnStopButton({
               className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
-              {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                const copy = chatStopModeCopy(option, backgroundJobCount);
+              {visibleModes.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount, childChatCount);
                 const selected = option === mode;
+                const support = providerStopModeSupport(provider, option);
                 return (
                   <button
                     key={option}
                     type="button"
                     role="menuitemradio"
                     aria-checked={selected}
+                    aria-disabled={!support.supported}
+                    disabled={!support.supported}
+                    title={support.supported ? undefined : support.reason}
                     onClick={() => {
+                      if (!support.supported) return;
                       onModeChange(option);
                       setMenuOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
+                      support.supported ? "hover:bg-red-500/[0.08]" : "cursor-not-allowed opacity-45",
                       index > 0 && "border-t border-white/[0.05]",
                     )}
                   >
@@ -1837,7 +1853,9 @@ function ActiveTurnStopButton({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {support.supported ? copy.description : support.reason}
+                      </span>
                     </span>
                     <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
                       {selected ? <Check size={11} weight="bold" /> : null}
@@ -1939,6 +1957,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel = "Background",
   onInterrupt,
   backgroundJobCount = 0,
+  childChatCount = 0,
   onApproval,
   onAddAttachment,
   onRegisterDropTarget,
@@ -2159,6 +2178,8 @@ export function AgentChatComposer({
   onInterrupt: (mode?: AgentChatStopMode) => void;
   /** Live background job count for stop-menu labels. */
   backgroundJobCount?: number;
+  /** This chat's spawned chats that are working now, for the Stop menu's child-chat choices. */
+  childChatCount?: number;
   /**
    * Resolves `false` when the response could not be delivered. The answer card
    * stays open in that case, so a caller that cleared a draft to send it has to
@@ -2444,6 +2465,12 @@ export function AgentChatComposer({
     const stored = window.localStorage.getItem(`ade.chat.stopMode.${sessionId}`);
     setActiveTurnStopMode(parseAgentChatStopMode(stored));
   }, [sessionId]);
+  // A remembered choice this chat cannot honour right now (a provider without
+  // background stop, a child-chat stop with no child chats) stops the default way.
+  const effectiveStopMode: AgentChatStopMode = providerStopModeSupport(sessionProvider, activeTurnStopMode).supported
+    && (childChatCount > 0 || !stopModeStopsChildren(activeTurnStopMode))
+    ? activeTurnStopMode
+    : DEFAULT_AGENT_CHAT_STOP_MODE;
 
   const updateActiveTurnStopMode = useCallback((mode: AgentChatStopMode) => {
     setActiveTurnStopMode(mode);
@@ -5281,7 +5308,7 @@ export function AgentChatComposer({
       return;
     }
 
-    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(activeTurnStopMode); return; }
+    if (event.key === "." && commandModified && turnActive) { event.preventDefault(); onInterrupt(effectiveStopMode); return; }
 
     /* Tab to accept prompt suggestion */
     if (event.key === "Tab" && !event.shiftKey && !commandModified && promptSuggestion && !draft.length && !turnActive) {
@@ -6630,11 +6657,13 @@ export function AgentChatComposer({
         turnActive ? (
           <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
             <ActiveTurnStopButton
-              mode={activeTurnStopMode}
+              mode={effectiveStopMode}
               allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
               backgroundJobCount={backgroundJobCount}
+              childChatCount={childChatCount}
+              provider={sessionProvider}
               onModeChange={updateActiveTurnStopMode}
-              onStop={() => onInterrupt(activeTurnStopMode)}
+              onStop={() => onInterrupt(effectiveStopMode)}
             />
           </div>
         ) : undefined
@@ -7107,11 +7136,13 @@ export function AgentChatComposer({
                   ),
                 ) : null}
                 <ActiveTurnStopButton
-                  mode={activeTurnStopMode}
+                  mode={effectiveStopMode}
                   allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
                   backgroundJobCount={backgroundJobCount}
+                  childChatCount={childChatCount}
+                  provider={sessionProvider}
                   onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(activeTurnStopMode)}
+                  onStop={() => onInterrupt(effectiveStopMode)}
                 />
               </>
             ) : (

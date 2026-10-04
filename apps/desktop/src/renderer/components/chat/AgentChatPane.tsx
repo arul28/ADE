@@ -6567,6 +6567,14 @@ export function AgentChatPane({
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
   }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
 
+  // Spawned chats of this chat that are working now: the Stop menu offers to
+  // stop them too.
+  const activeChildChatCount = useMemo(() => {
+    const parentId = selectedSession?.sessionId;
+    if (!parentId) return 0;
+    return sessions.filter((s) => s.orchestrationParentSessionId === parentId && s.status === "active").length;
+  }, [selectedSession?.sessionId, sessions]);
+
   // Resolve a spawned child chat's live title so the Subagents pane's spawned-chat
   // rows read as the chat they open, not the bare runtime name.
   const resolveSpawnedChatTitle = useCallback(
@@ -15655,6 +15663,7 @@ export function AgentChatPane({
               void interrupt(mode);
             }}
             backgroundJobCount={selectedSession?.activeBackgroundTaskCount ?? 0}
+            childChatCount={activeChildChatCount}
             onApproval={(decision, responseText, answers) => approve(decision, responseText, answers)}
             onAddAttachment={addAttachment}
             onRegisterDropTarget={registerChatPaneDropTarget}

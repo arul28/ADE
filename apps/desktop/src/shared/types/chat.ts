@@ -4834,6 +4834,8 @@ export type AgentChatInterruptArgs = {
 export type AgentChatInterruptResult = {
   mode: AgentChatStopMode;
   cancelledQueuedCount: number;
+  /** Spawned chats (and their own children) a "+ child chats" stop interrupted mid-work. */
+  stoppedChildChatCount?: number;
   recoveryId?: string;
   recoveryExpiresAt?: string;
 };
