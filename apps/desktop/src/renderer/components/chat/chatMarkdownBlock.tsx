@@ -354,9 +354,10 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           />
         );
       }
-      // Only assistant markdown reaches here; tool calls render elsewhere and
-      // are untouched.
-      if (isBlock && language === "mermaid" && !mermaidStreaming) {
+      // Replies draw their diagrams; a fence in the user's own message stays the
+      // source they wrote (and a diagram has no background that suits the
+      // accent bubble). Tool calls render elsewhere and are untouched.
+      if (isBlock && language === "mermaid" && !mermaidStreaming && !bubble) {
         return (
           <MermaidDiagram
             source={text}
@@ -437,7 +438,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, mermaidStreaming, thought]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, mermaidStreaming, bubble, thought]);
 
   return (
     <div

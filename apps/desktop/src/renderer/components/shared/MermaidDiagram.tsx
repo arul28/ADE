@@ -55,6 +55,13 @@ function trimCache(): void {
   }
 }
 
+function appBackgroundColor(theme: "dark" | "light"): string {
+  const value = typeof document === "undefined"
+    ? ""
+    : getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim();
+  return /^#[0-9a-f]{3,8}$/i.test(value) || /^rgba?\(/i.test(value) ? value : theme === "light" ? "#ffffff" : "#0c0b10";
+}
+
 /**
  * Mermaid's config is global, so renders run one at a time: each sets its own
  * theme and renders before the next one can change it.
@@ -75,6 +82,10 @@ function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderR
         startOnLoad: false,
         securityLevel: "strict",
         theme: theme === "light" ? "default" : "dark",
+        // Edge labels sit on a box that hides the line behind the text.
+        // Mermaid's dark theme paints it mid-grey, a patch on ADE's canvas;
+        // the app's own background keeps the mask and loses the patch.
+        themeVariables: { edgeLabelBackground: appBackgroundColor(theme) },
         htmlLabels: false,
         flowchart: { htmlLabels: false },
         fontFamily: "inherit",
