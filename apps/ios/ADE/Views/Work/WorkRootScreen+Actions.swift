@@ -112,7 +112,7 @@ extension WorkRootListScreen {
     let pinnedLaneIdsSnapshot = workPinnedLaneIds
     let foldBusyLanesSnapshot = foldBusyLanes
     let seenAtSnapshot = WorkSeenStore.load()
-    let laneReturnStateSnapshot = sessionPresentation.laneReturnState
+    let laneReturnStateSnapshot = bookkeeping.laneReturnState
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
       try? await Task.sleep(for: .milliseconds(40))
@@ -139,12 +139,9 @@ extension WorkRootListScreen {
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
+        bookkeeping.laneReturnState = nextPresentation.laneReturnState
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
-        } else if sessionPresentation.laneReturnState != nextPresentation.laneReturnState {
-          // Bookkeeping only: carry the return baseline forward without a
-          // render, since the groups on screen did not change.
-          sessionPresentation.laneReturnState = nextPresentation.laneReturnState
         }
         pruneSelection(toVisible: nextPresentation.mergedSessions)
         prefetchChatThreads(for: nextPresentation.displaySessions)
@@ -768,7 +765,6 @@ extension WorkRootListScreen {
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
-    WorkSeenStore.stamp([session.id])
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
     selectedSessionTransitionId = session.id
     // A row from another machine opens through that machine; it is not

@@ -24,7 +24,7 @@ import type { WorkBoardColumn } from "../../../shared/types/chat";
 /** The board's columns, used as a lane's rolled-up status. */
 export type WorkLaneFocusStatus = WorkBoardColumn;
 
-export type WorkRowFocus = {
+type WorkRowFocus = {
   status: WorkLaneFocusStatus;
   /** True when this row alone keeps its lane out of the Working shelf. */
   holdsOut: boolean;
@@ -53,18 +53,15 @@ function finishedAtMs(session: TerminalSessionSummary): number {
 }
 
 /**
- * Has the user looked at this row since it last finished? The open row always
- * counts as seen: the user is looking at it right now.
+ * Has the user left this row since it last finished? Seen comes only from the
+ * leave stamp (`useWorkSessions`), never from the row being open: a finished
+ * row clicked in the inbox must not fold its lane out from under the cursor.
+ * Its lane folds once the user moves on.
  */
-export function isWorkRowSeen(args: {
-  session: TerminalSessionSummary;
-  seenAt: string | null | undefined;
-  selected: boolean;
-}): boolean {
-  if (args.selected) return true;
-  if (!args.seenAt) return false;
-  const seenMs = Date.parse(args.seenAt);
-  return Number.isFinite(seenMs) && seenMs >= finishedAtMs(args.session);
+function isWorkRowSeen(session: TerminalSessionSummary, seenAt: string | null | undefined): boolean {
+  if (!seenAt) return false;
+  const seenMs = Date.parse(seenAt);
+  return Number.isFinite(seenMs) && seenMs >= finishedAtMs(session);
 }
 
 /**
@@ -73,7 +70,7 @@ export function isWorkRowSeen(args: {
  * `laneWaiting` is the lane's PR wait (CI running or a review requested). It
  * parks a running row in Waiting exactly as the board does.
  */
-export function workRowFocus(args: {
+function workRowFocus(args: {
   session: TerminalSessionSummary;
   filingBucket: SessionFilingBucket | null | undefined;
   laneWaiting: boolean;
@@ -100,38 +97,52 @@ export function workRowFocus(args: {
   }
 }
 
-/** Highest-priority status among a lane's live rows, or null when it has none. */
-export function rollUpLaneFocusStatus(
-  rows: readonly (WorkRowFocus | null)[],
-  extraWorking = 0,
-): WorkLaneFocusStatus | null {
-  let best: WorkLaneFocusStatus | null = extraWorking > 0 ? "working" : null;
-  for (const row of rows) {
-    if (!row) continue;
-    if (best === null || STATUS_RANK[row.status] < STATUS_RANK[best]) best = row.status;
-  }
-  return best;
-}
+export type WorkLaneFocus = {
+  /** Highest-priority status among the lane's live rows; null when it has none. */
+  status: WorkLaneFocusStatus | null;
+  /** Whether the lane belongs in the Working shelf (pins and primary aside). */
+  folds: boolean;
+};
+
+export const EMPTY_WORK_SEEN_AT: Readonly<Record<string, string>> = {};
 
 /**
- * Should this lane fold into the Working shelf?
+ * One lane's focus from its full roster.
  *
- * Every live row must be busy (Working/Waiting) or already-seen Done, and at
- * least one must actually be busy: a lane holding only finished rows is not
- * working, it is waiting to be settled. `extraWorking` counts launches that
- * have no session row yet.
+ * It folds when every live row is busy (Working/Waiting) or already-seen Done,
+ * and at least one is actually busy: a lane holding only finished rows is not
+ * working, it is waiting to be settled. `launching` counts launches with no
+ * session row yet, which are busy by definition.
+ *
+ * Nested rows (attached shells, subagents) can raise a hand and so hold their
+ * lane out, but a finished nested row cannot: nobody opens a helper to mark it
+ * seen, so it would pin the lane open forever.
  */
-export function laneFoldsIntoWorking(
-  rows: readonly (WorkRowFocus | null)[],
-  extraWorking = 0,
-): boolean {
-  let busy = extraWorking;
-  for (const row of rows) {
-    if (!row) continue;
-    if (row.holdsOut) return false;
-    if (row.status === "working" || row.status === "waiting") busy += 1;
+export function summarizeLaneFocus(args: {
+  sessions: readonly TerminalSessionSummary[];
+  filingBuckets: ReadonlyMap<string, SessionFilingBucket>;
+  laneWaiting: boolean;
+  seenAtBySessionId: Readonly<Record<string, string>>;
+  nestedSessionIds: ReadonlySet<string>;
+  launching?: number;
+}): WorkLaneFocus {
+  const launching = args.launching ?? 0;
+  let status: WorkLaneFocusStatus | null = launching > 0 ? "working" : null;
+  let busy = launching;
+  let heldOut = false;
+  for (const session of args.sessions) {
+    const row = workRowFocus({
+      session,
+      filingBucket: args.filingBuckets.get(session.id),
+      laneWaiting: args.laneWaiting,
+      seen: isWorkRowSeen(session, args.seenAtBySessionId[session.id]),
+    });
+    if (!row || (row.status === "done" && args.nestedSessionIds.has(session.id))) continue;
+    if (status === null || STATUS_RANK[row.status] < STATUS_RANK[status]) status = row.status;
+    if (row.holdsOut) heldOut = true;
+    else if (row.status === "working" || row.status === "waiting") busy += 1;
   }
-  return busy > 0;
+  return { status, folds: !heldOut && busy > 0 };
 }
 
 /**

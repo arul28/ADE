@@ -41,6 +41,9 @@ final class WorkRootBookkeeping {
   /// `workChatSummaryFullSweepInterval`.
   var summaryLaneSignatures: [String: Int] = [:]
   var lastFullChatSummarySweep = Date.distantPast
+  /// Which lanes came back out of the Working shelf, handed from one
+  /// presentation build to the next so returned lanes keep floating.
+  var laneReturnState = WorkLaneReturnState.empty
 }
 
 /// Mirrors `terminalBufferRevision` into the list only while a search is
@@ -614,7 +617,7 @@ struct WorkRootListScreen: View, Equatable {
     )
   }
 
-    var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
+  var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
     Binding(
       get: { selectedStatus },
       set: {
@@ -967,11 +970,13 @@ struct WorkRootListScreen: View, Equatable {
       }
       .onChange(of: path.count) { _, newCount in
         if newCount == 0, let leftSessionId = selectedSessionTransitionId {
-          // Leaving a chat counts as having seen it: output that landed while
-          // the user was reading must not hold its lane out of the Working
-          // shelf. The open was stamped too, in `openSession`.
+          // Leaving a chat is what marks it seen (desktop stamps the same
+          // moment): everything it showed, including output that landed while
+          // the user was reading, no longer holds its lane out of the shelf.
           WorkSeenStore.stamp([leftSessionId])
           selectedSessionTransitionId = nil
+          // The stamp lives outside the rebuild key, so re-derive the folds now.
+          scheduleSessionPresentationRebuild()
         }
         if newCount == 0 {
           syncService.clearOpenWorkSessionRoute()

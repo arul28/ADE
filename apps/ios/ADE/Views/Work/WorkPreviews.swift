@@ -1926,7 +1926,7 @@ enum WorkListPreviewData {
         preview: "Parked until the CI runner is upgraded."),
   ]
 
-  /// Rows the fixture marks as already opened since they finished, so a lane
+  /// Rows the fixture marks as left since they finished, so a lane
   /// whose only finished row was read still folds (`workIsRowSeen`).
   static let seenSessionIds = ["wl-sim-2"]
 
