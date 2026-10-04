@@ -3932,8 +3932,8 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
 
       const entries = await scanClaudeLogs([projectDir]);
       const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
-      expect(byId.get("msg-fast")?.fast).toBe(true);
-      expect(byId.get("msg-std")?.fast).toBeUndefined();
+      expect(byId.get("msg-fast")?.speed).toBe("fast");
+      expect(byId.get("msg-std")?.speed).toBeUndefined();
 
       // Fast mode is a 2× multiple on the model's standard rate.
       const standardCost = aggregateCosts([byId.get("msg-std")!], "claude").last30dCostUsd;

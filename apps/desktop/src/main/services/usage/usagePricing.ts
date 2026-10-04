@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getModelListPrice, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost } from "../ai/modelsDevCatalog";
+import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost, type ModelsDevEntry } from "../ai/modelsDevCatalog";
 import { getErrorMessage, isRecord } from "../shared/utils";
+import type { UsageSpeed } from "../../../shared/types/usage";
 
 export type TokenRates = {
   input: number;
@@ -24,7 +25,29 @@ export type TokenRates = {
  */
 export type TokenPrice = TokenRates & {
   tiers?: Array<{ aboveContextTokens: number } & TokenRates>;
+  /**
+   * Published rates for a faster service tier, from models.dev
+   * `experimental.modes`: Claude fast mode (`speed: "fast"`), OpenAI
+   * `service_tier: "priority"` (Codex Fast) and `"ultrafast"`. Absent when the
+   * vendor publishes none for the model.
+   */
+  modes?: Partial<Record<Exclude<UsageSpeed, "standard">, TokenRates>>;
 };
+
+export type { UsageSpeed };
+
+/**
+ * A Codex `service_tier` as the speed it bills at. `priority` is what Codex's
+ * Fast sends (`fast` is accepted too); `ultrafast` is Ultrafast. `flex` is a
+ * cheaper batch tier no Codex surface offers, so it, `default`, `standard`
+ * and anything unrecognised price at standard rather than guessing a premium.
+ */
+export function codexServiceTierSpeed(serviceTier: unknown): UsageSpeed {
+  const tier = typeof serviceTier === "string" ? serviceTier.trim().toLowerCase() : "";
+  if (tier === "priority" || tier === "fast") return "fast";
+  if (tier === "ultrafast") return "ultrafast";
+  return "standard";
+}
 
 type PricingLogger = {
   debug?: (event: string, data?: Record<string, unknown>) => void;
@@ -44,21 +67,21 @@ const PRICING_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const ADE_PRICING_CACHE_PATH = path.join(os.homedir(), ".ade", "models-dev-pricing.json");
 /**
  * The on-disk cache format. Version 1 had no version field, no long-context
- * tiers, and the old cache-write fill. A cache with any other version is
+ * tiers, and the old cache-write fill. Version 2 had no service-tier modes. A cache with any other version is
  * ignored, so the next refresh fetches the rates again.
  */
-const PRICING_CACHE_FORMAT_VERSION = 2;
+const PRICING_CACHE_FORMAT_VERSION = 3;
 
 export const WEB_SEARCH_COST_USD = 0.01;
 export const ONE_HOUR_CACHE_WRITE_MULTIPLIER = 1.6;
 /**
- * What Claude Code's fast mode bills relative to the model's standard rate.
+ * What Claude Code's fast mode bills relative to the model's standard rate,
+ * when models.dev publishes no fast rate for the model.
  *
  * Fast mode is a 2× multiple on Opus 5.5, Opus 5, and Opus 4.8 — Opus 5.5's
- * $4/$20 per MTok becomes $8/$40. Claude Code records the request as
- * `usage.speed: "fast"`, and models.dev (ADE's one price list) carries no fast
- * rate, so the multiple is a constant rather than a table lookup. It is the
- * same number t3code reads from LiteLLM's `provider_specific_entry.fast`.
+ * $4/$20 per MTok becomes $8/$40. models.dev lists those under
+ * `experimental.modes.fast`, which wins; this constant covers a Claude model
+ * whose row omits it.
  */
 export const FAST_MODE_PRICE_MULTIPLIER = 2;
 
@@ -312,13 +335,38 @@ function parseModelsDevTiers(cost: ModelsDevCost, modelKey?: string): TokenPrice
   return tiers.sort((a, b) => a.aboveContextTokens - b.aboveContextTokens);
 }
 
+/**
+ * models.dev `experimental.modes`: `{ fast: { cost, provider: { body } } }`.
+ * A mode counts by the request it sends — `service_tier: "priority"` and
+ * Anthropic's `speed: "fast"` are Fast, `service_tier: "ultrafast"` is
+ * Ultrafast — falling back to the mode's name. `flex` and `pro` are not speeds.
+ */
+function parseModelsDevModes(entry: ModelsDevEntry | undefined, modelKey?: string): TokenPrice["modes"] {
+  const experimental = isRecord(entry?.experimental) ? entry.experimental : null;
+  const modes = experimental && isRecord(experimental.modes) ? experimental.modes : null;
+  if (!modes) return undefined;
+  const out: NonNullable<TokenPrice["modes"]> = {};
+  for (const [name, raw] of Object.entries(modes)) {
+    if (!isRecord(raw)) continue;
+    const body = isRecord(raw.provider) && isRecord(raw.provider.body) ? raw.provider.body : {};
+    const tier = typeof body.service_tier === "string" ? body.service_tier : typeof body.speed === "string" ? body.speed : name;
+    const speed = tier === "priority" || tier === "fast" ? "fast" : tier === "ultrafast" ? "ultrafast" : null;
+    if (!speed || out[speed]) continue;
+    const rates = parseRateBlock(raw.cost, modelKey);
+    if (rates) out[speed] = rates;
+  }
+  return out.fast || out.ultrafast ? out : undefined;
+}
+
 /** A models.dev `cost` block (USD per million tokens) as per-token rates. */
-function parseModelsDevCost(cost: ModelsDevCost | undefined, modelKey?: string): TokenPrice | null {
+function parseModelsDevCost(entry: ModelsDevEntry | undefined, modelKey?: string): TokenPrice | null {
+  const cost = entry?.cost;
   if (!cost) return null;
   const base = parseRateBlock(cost, modelKey);
   if (!base) return null;
   const tiers = parseModelsDevTiers(cost, modelKey);
-  return tiers ? { ...base, tiers } : base;
+  const modes = parseModelsDevModes(entry, modelKey);
+  return { ...base, ...(tiers ? { tiers } : {}), ...(modes ? { modes } : {}) };
 }
 
 /**
@@ -330,11 +378,11 @@ function parseModelsDevCost(cost: ModelsDevCost | undefined, modelKey?: string):
 function parseModelsDevPricing(data: unknown): Map<string, TokenPrice> | null {
   const pricing = new Map<string, TokenPrice>();
   forEachModelsDevEntry(data, (providerId, modelKey, entry) => {
-    const price = parseModelsDevCost(entry.cost, modelKey);
+    const price = parseModelsDevCost(entry, modelKey);
     if (price) pricing.set(`${providerId}/${modelKey}`.toLowerCase(), price);
   });
   for (const [bareId, { entry }] of pickModelsDevEntries(data)) {
-    const price = parseModelsDevCost(entry.cost, bareId);
+    const price = parseModelsDevCost(entry, bareId);
     if (price) pricing.set(bareId, price);
   }
   return pricing.size > 0 ? pricing : null;
@@ -355,16 +403,27 @@ function parseCachedTokenRates(entry: unknown): TokenRates | null {
 
 function parseCachedTokenPrice(entry: unknown): TokenPrice | null {
   const base = parseCachedTokenRates(entry);
-  if (!base || !isRecord(entry) || !Array.isArray(entry.tiers)) return base;
+  if (!base || !isRecord(entry)) return base;
   const tiers: NonNullable<TokenPrice["tiers"]> = [];
-  for (const raw of entry.tiers) {
+  for (const raw of Array.isArray(entry.tiers) ? entry.tiers : []) {
     if (!isRecord(raw)) continue;
     const above = raw.aboveContextTokens;
     if (typeof above !== "number" || !Number.isFinite(above) || above <= 0) continue;
     const rates = parseCachedTokenRates(raw);
     if (rates) tiers.push({ aboveContextTokens: above, ...rates });
   }
-  return tiers.length > 0 ? { ...base, tiers: tiers.sort((a, b) => a.aboveContextTokens - b.aboveContextTokens) } : base;
+  const modes: NonNullable<TokenPrice["modes"]> = {};
+  if (isRecord(entry.modes)) {
+    for (const speed of ["fast", "ultrafast"] as const) {
+      const rates = parseCachedTokenRates(entry.modes[speed]);
+      if (rates) modes[speed] = rates;
+    }
+  }
+  return {
+    ...base,
+    ...(tiers.length > 0 ? { tiers: tiers.sort((a, b) => a.aboveContextTokens - b.aboveContextTokens) } : {}),
+    ...(modes.fast || modes.ultrafast ? { modes } : {}),
+  };
 }
 
 function parseCachedPricingMap(data: unknown): Map<string, TokenPrice> | null {
@@ -638,15 +697,23 @@ function scaleRates(rates: TokenRates, factor: number): TokenRates {
  * The rates that bill ONE model request: the long-context tier its context
  * lands in (only when the caller knows the request's own context size — a
  * turn or session total must not be passed here, or it would be billed at the
- * long rate), then DeepSeek's peak-hour doubling when a timestamp is given,
- * then Claude Code's fast-mode multiple when the request says it was fast.
+ * long rate), then the service tier it ran at, then DeepSeek's peak-hour
+ * doubling when a timestamp is given.
+ *
+ * A faster tier takes the vendor's published rates for it. Those are list
+ * rates at the base context size, so a long-context request scales each one by
+ * the same factor its tier applies to the standard rate. A Claude model with
+ * no published fast rate bills at `FAST_MODE_PRICE_MULTIPLIER`; any other
+ * tier without published rates bills at standard, because there is nothing
+ * to price the premium from.
  */
 export function ratesForRequest(
   model: string,
   price: TokenPrice,
-  request: { contextTokens?: number | null; timestampMs?: number | null; fast?: boolean } = {},
+  request: { contextTokens?: number | null; timestampMs?: number | null; speed?: UsageSpeed | null } = {},
 ): TokenRates {
-  let rates: TokenRates = { input: price.input, output: price.output, cacheWrite: price.cacheWrite, cacheRead: price.cacheRead };
+  const base: TokenRates = { input: price.input, output: price.output, cacheWrite: price.cacheWrite, cacheRead: price.cacheRead };
+  let rates: TokenRates = base;
   const context = request.contextTokens;
   if (price.tiers?.length && typeof context === "number" && Number.isFinite(context) && context > 0) {
     for (const tier of price.tiers) {
@@ -655,14 +722,60 @@ export function ratesForRequest(
       }
     }
   }
+  const speed = request.speed ?? "standard";
+  if (speed !== "standard") {
+    const published = price.modes?.[speed];
+    if (published) {
+      const scaled = (field: keyof TokenRates): number => (base[field] > 0 ? published[field] * (rates[field] / base[field]) : published[field]);
+      rates = { input: scaled("input"), output: scaled("output"), cacheWrite: scaled("cacheWrite"), cacheRead: scaled("cacheRead") };
+    } else if (speed === "fast" && isClaudeModel(model)) {
+      rates = scaleRates(rates, FAST_MODE_PRICE_MULTIPLIER);
+    }
+  }
   const at = request.timestampMs;
   if (typeof at === "number" && Number.isFinite(at) && at > 0 && isFirstPartyDeepSeekModel(model) && isDeepSeekPeak(at)) {
     rates = scaleRates(rates, 2);
   }
-  if (request.fast) {
-    rates = scaleRates(rates, FAST_MODE_PRICE_MULTIPLIER);
-  }
   return rates;
+}
+
+function isClaudeModel(model: string): boolean {
+  return /(?:^|[/.])claude-/.test(canonicalPricingName(model)) || /(?:^|[/.])claude-/.test(withProviderPricingName(model));
+}
+
+/** The four token types a cost splits into. */
+export type TokenCostByType = { input: number; cacheRead: number; cacheWrite: number; output: number };
+
+/**
+ * Dollars for one request split by token type, and how much of that its speed
+ * tier added over the standard rate. The four types sum to `priceTokenSplit`.
+ */
+export function priceTokenSplitDetailed(
+  model: string,
+  price: TokenPrice,
+  split: PricedTokenSplit,
+  request: { contextTokens?: number | null; timestampMs?: number | null; speed?: UsageSpeed | null } = {},
+): { byType: TokenCostByType; totalUsd: number; speedPremiumUsd: number } {
+  const rates = ratesForRequest(model, price, request);
+  const byType = costByTokenType(rates, split);
+  const totalUsd = byType.input + byType.cacheRead + byType.cacheWrite + byType.output;
+  let speedPremiumUsd = 0;
+  if ((request.speed ?? "standard") !== "standard") {
+    const standard = costByTokenType(ratesForRequest(model, price, { ...request, speed: "standard" }), split);
+    speedPremiumUsd = Math.max(0, totalUsd - (standard.input + standard.cacheRead + standard.cacheWrite + standard.output));
+  }
+  return { byType, totalUsd, speedPremiumUsd };
+}
+
+function costByTokenType(rates: TokenRates, split: PricedTokenSplit): TokenCostByType {
+  const cacheWrite = Math.max(0, split.cacheWrite);
+  const oneHour = Math.min(Math.max(0, split.cacheWrite1h ?? 0), cacheWrite);
+  return {
+    input: Math.max(0, split.input) * rates.input,
+    output: Math.max(0, split.output) * rates.output,
+    cacheWrite: (cacheWrite - oneHour) * rates.cacheWrite + oneHour * rates.cacheWrite * ONE_HOUR_CACHE_WRITE_MULTIPLIER,
+    cacheRead: Math.max(0, split.cacheRead) * rates.cacheRead,
+  };
 }
 
 /** Token counts for one priced request or turn; `cacheWrite1h` is a subset of `cacheWrite`. */
@@ -680,15 +793,8 @@ export type PricedTokenSplit = {
  * `ONE_HOUR_CACHE_WRITE_MULTIPLIER` times a five-minute one.
  */
 export function priceTokenSplit(rates: TokenRates, split: PricedTokenSplit): number {
-  const cacheWrite = Math.max(0, split.cacheWrite);
-  const oneHour = Math.min(Math.max(0, split.cacheWrite1h ?? 0), cacheWrite);
-  return (
-    Math.max(0, split.input) * rates.input
-    + Math.max(0, split.output) * rates.output
-    + (cacheWrite - oneHour) * rates.cacheWrite
-    + oneHour * rates.cacheWrite * ONE_HOUR_CACHE_WRITE_MULTIPLIER
-    + Math.max(0, split.cacheRead) * rates.cacheRead
-  );
+  const byType = costByTokenType(rates, split);
+  return byType.input + byType.output + byType.cacheWrite + byType.cacheRead;
 }
 
 export function isZeroTokenPrice(price: TokenPrice): boolean {

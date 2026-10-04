@@ -126,6 +126,12 @@ export type GetAdeUsageStatsArgs = {
  */
 export type AdeUsagePricingSource = "list" | "fallback" | "mixed";
 
+/**
+ * The billing speed of one request. Codex writes it as `service_tier`
+ * (`priority` is Fast); Claude Code as `usage.speed`.
+ */
+export type UsageSpeed = "standard" | "fast" | "ultrafast";
+
 export type AdeUsageProviderSummary = {
   provider: string;
   inputTokens: number;

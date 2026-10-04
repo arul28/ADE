@@ -30,8 +30,11 @@ import { evictOldestEntries, evictOldestSetEntries, finiteNumberOrNull, getError
 import { localDayKey, localDayStart } from "./localDay";
 import { DEFAULT_BURN_LOOKBACK_MS, estimateQuotaBurnRates, quotaSampleKey, sameResetInstance } from "./quotaBurnRate";
 import { reasoningBilledSeparately, uncachedInputTokens } from "./tokenSplit";
+import { modelSupportsFastMode, resolveModelDescriptor } from "../../../shared/modelRegistry";
+import type { UsageSpeed } from "../../../shared/types/usage";
 import { usageAccountId } from "./usageAccountId";
 import {
+  codexServiceTierSpeed,
   isZeroTokenPrice,
   priceTokenSplit,
   ratesForRequest,
@@ -84,6 +87,10 @@ export type TurnUsageObservation = {
 };
 
 export type TurnUsageSessionFacts = Pick<AgentChatSession, "id" | "laneId" | "provider" | "model"> & {
+  /** Claude fast mode as the user set it; counts only on a model that has a fast tier. */
+  fastMode?: boolean | null;
+  /** The service tier the Codex thread reports it runs at (`priority` is Fast). */
+  codexServiceTier?: string | null;
   modelId?: string | null;
   reasoningEffort?: string | null;
   surface?: string | null;
@@ -339,12 +346,13 @@ export function apiEquivalentTurnUsd(
     cacheWrite1hTokens?: number | null;
     timestampMs: number;
     provider?: string | null;
+    speed?: UsageSpeed | null;
   },
 ): number | null {
   if (!model || !split) return null;
   const price = resolveTokenPrice(model);
   if (isZeroTokenPrice(price)) return null;
-  const rates = ratesForRequest(model, price, { contextTokens: request.contextTokens, timestampMs: request.timestampMs });
+  const rates = ratesForRequest(model, price, { contextTokens: request.contextTokens, timestampMs: request.timestampMs, speed: request.speed });
   const reasoning = reasoningBilledSeparately(request.provider) ? (split.reasoningTokens ?? 0) : 0;
   return round6(priceTokenSplit(rates, {
     input: split.inputTokens ?? 0,
@@ -353,6 +361,21 @@ export function apiEquivalentTurnUsd(
     cacheWrite: split.cacheWriteTokens ?? 0,
     cacheWrite1h: nonNegative(request.cacheWrite1hTokens) ?? 0,
   }));
+}
+
+/**
+ * The service tier a turn billed at. Codex says which tier its thread runs
+ * at; Claude fast mode counts only on a model that offers it, because the
+ * toggle is a no-op elsewhere and must not price the turn at a premium.
+ * Other providers report their own cost or have no tier: standard.
+ */
+export function turnUsageSpeed(session: TurnUsageSessionFacts, model: string | null): UsageSpeed {
+  if (session.provider === "codex") return codexServiceTierSpeed(session.codexServiceTier);
+  if (session.provider === "claude" && session.fastMode === true) {
+    const descriptor = resolveModelDescriptor(model ?? session.modelId ?? session.model ?? "");
+    return modelSupportsFastMode(descriptor) ? "fast" : "standard";
+  }
+  return "standard";
 }
 
 /** Tokens the helper agents that a provider's ledger reported with `done` used. */
@@ -389,6 +412,7 @@ export function buildTurnUsageRecord(input: {
   const costUsd = nonNegative(event.costUsd);
   const confidence = event.usageConfidence ?? (derived ? "derived" : split ? "measured" : null);
   const startedAtMs = observation?.firstSeenAtMs ?? null;
+  const speed = turnUsageSpeed(session, requestedModel);
   return {
     v: 1,
     key: `${session.id}:${event.turnId}`,
@@ -425,7 +449,8 @@ export function buildTurnUsageRecord(input: {
     // Claude's `total_cost_usd` arrives with no source, and it is the SDK's
     // list-price math, not a bill. Only a source that says so is a bill.
     costSource: costUsd != null ? (event.costSource ?? "list_price") : null,
-    apiEquivalentUsd: apiEquivalentTurnUsd(priceModel, split, { contextTokens, cacheWrite1hTokens, timestampMs: nowMs, provider }),
+    speed,
+    apiEquivalentUsd: apiEquivalentTurnUsd(priceModel, split, { contextTokens, cacheWrite1hTokens, timestampMs: nowMs, provider, speed }),
     planUsage: planUsage.length ? planUsage : null,
     // Only a Factory amendment knows the session's credits.
     factoryCreditsSessionTotal: null,

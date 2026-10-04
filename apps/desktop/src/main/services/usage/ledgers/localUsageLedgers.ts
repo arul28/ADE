@@ -19,6 +19,8 @@ import {
   qwenUsageDir,
 } from "../../shared/providerConfigHomes";
 import { finiteNumberOrNull, isRecord, safeJsonParse } from "../../shared/utils";
+import type { UsageSpeed } from "../../../../shared/types/usage";
+import { codexServiceTierSpeed } from "../usagePricing";
 import { copilotEventsNotInStore, scanCopilotCliRows } from "./acpProviderLedgers";
 import {
   LOCAL_COST_SCAN_ALL_DAYS,
@@ -296,7 +298,7 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
           // Claude Code marks a fast-mode request `usage.speed: "fast"`; it
           // bills at a multiple of the standard rate, so the flag has to reach
           // the pricer or every fast request is under-reported by half.
-          ...(usage.speed === "fast" ? { fast: true } : {}),
+          ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
           // One Claude JSONL record is one API request, so its input side is
           // that request's context (Anthropic is flat-priced today; the field
           // keeps tier pricing correct if that changes).
@@ -410,6 +412,10 @@ async function scanCodexLogsOnce(
       let sessionOriginator = "";
       let sessionProjectPath = "";
       let forkedFromId = "";
+      // Codex announces the service tier in `thread_settings_applied` and it
+      // holds for every response until the next one. No field (no tier asked
+      // for), `default`, and `standard` all bill at standard.
+      let sessionSpeed: UsageSpeed = "standard";
       let previousTotals: { input: number; cached: number; output: number; reasoning: number } | null = null;
       // Tracked separately from `previousTotals` because it must advance even on
       // events that carry no `total_token_usage` at all (compact boundaries).
@@ -422,6 +428,7 @@ async function scanCodexLogsOnce(
           trimmed.includes("\"token_count\"") ||
           trimmed.includes("\"session_meta\"") ||
           trimmed.includes("\"turn_context\"") ||
+          trimmed.includes("\"thread_settings_applied\"") ||
           trimmed.includes("\"input_tokens\"") ||
           trimmed.includes("\"prompt_tokens\"") ||
           trimmed.includes("\"token_count\"");
@@ -450,6 +457,12 @@ async function scanCodexLogsOnce(
 
         if (record.type === "turn_context" && payload) {
           if (typeof payload.model === "string" && payload.model.trim()) sessionModel = payload.model;
+          continue;
+        }
+
+        if (payload?.type === "thread_settings_applied") {
+          const settings = isRecord(payload.thread_settings) ? payload.thread_settings : undefined;
+          if (settings && "service_tier" in settings) sessionSpeed = codexServiceTierSpeed(settings.service_tier);
           continue;
         }
 
@@ -566,6 +579,7 @@ async function scanCodexLogsOnce(
             cachedTokens,
             billableCachedTokens: cachedTokens,
             cacheWriteTokens: 0,
+            ...(sessionSpeed !== "standard" ? { speed: sessionSpeed } : {}),
             timestamp,
           });
           if (entries.length >= maxJsonlEntries) {

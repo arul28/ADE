@@ -170,7 +170,7 @@ describe("Claude fast mode", () => {
 
   it("doubles every rate for a fast request and leaves a standard one alone", () => {
     const standard = ratesForRequest("claude-opus-5-5", opus55, {});
-    const fast = ratesForRequest("claude-opus-5-5", opus55, { fast: true });
+    const fast = ratesForRequest("claude-opus-5-5", opus55, { speed: "fast" });
     expect(standard.input).toBeCloseTo(4 * PER_M);
     expect(fast.input).toBeCloseTo(8 * PER_M);
     expect(fast.output).toBeCloseTo(40 * PER_M);
@@ -183,7 +183,7 @@ describe("Claude fast mode", () => {
       input: 4 * PER_M, output: 20 * PER_M, cacheWrite: 5 * PER_M, cacheRead: 0.2 * PER_M,
       tiers: [{ aboveContextTokens: 200_000, input: 8 * PER_M, output: 40 * PER_M, cacheWrite: 10 * PER_M, cacheRead: 0.4 * PER_M }],
     };
-    expect(ratesForRequest("claude-opus-5-5", tiered, { contextTokens: 250_000, fast: true }).output)
+    expect(ratesForRequest("claude-opus-5-5", tiered, { contextTokens: 250_000, speed: "fast" }).output)
       .toBeCloseTo(80 * PER_M);
   });
 });

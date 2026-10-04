@@ -240,8 +240,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v5: Claude fast-mode requests now price at the fast multiple, which the
  * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
  * without the flag, so they must be re-derived once.
+ *
+ * v6: Codex Fast/Ultrafast requests price at their published tier rates (the
+ * scan reads `service_tier`), Claude fast mode at models.dev's fast rate, and
+ * costs carry their split by token type and speed.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 5;
+const USAGE_SNAPSHOT_CACHE_VERSION = 6;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -2157,7 +2161,7 @@ function calculateTokenEntryCost(entry: TokenEntry): number {
   const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
     contextTokens: entry.requestContextTokens,
     timestampMs: entry.timestamp,
-    fast: entry.fast === true,
+    speed: entry.speed ?? "standard",
   });
   const tokensUsd = priceTokenSplit(rates, {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
