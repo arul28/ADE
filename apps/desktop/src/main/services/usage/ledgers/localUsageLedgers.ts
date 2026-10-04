@@ -133,6 +133,17 @@ function dedupeResolvedPaths(paths: string[]): string[] {
   return out;
 }
 
+/**
+ * The config homes the usage service found beyond a provider's default: the
+ * ones ADE creates for each account (`provider-homes/claude/<id>`), preset,
+ * and route. Every chat ADE runs under a second account writes its
+ * transcripts there, so a scan of the default home alone missed all of them.
+ */
+function extraProviderHomes(provider: "claude" | "codex"): string[] {
+  const raw = process.env[`ADE_USAGE_EXTRA_${provider.toUpperCase()}_HOMES`];
+  return raw ? raw.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean) : [];
+}
+
 function getClaudeConfigDirs(): string[] {
   const multi = process.env.CLAUDE_CONFIG_DIRS;
   if (multi?.trim()) {
@@ -140,13 +151,13 @@ function getClaudeConfigDirs(): string[] {
       .split(path.delimiter)
       .map((entry) => entry.trim())
       .filter(Boolean);
-    if (dirs.length > 0) return dedupeResolvedPaths(dirs);
+    if (dirs.length > 0) return dedupeResolvedPaths([...dirs, ...extraProviderHomes("claude")]);
   }
 
   const single = process.env.CLAUDE_CONFIG_DIR;
-  if (single?.trim()) return dedupeResolvedPaths([single]);
+  if (single?.trim()) return dedupeResolvedPaths([single, ...extraProviderHomes("claude")]);
 
-  return [path.join(os.homedir(), ".claude")];
+  return dedupeResolvedPaths([path.join(os.homedir(), ".claude"), ...extraProviderHomes("claude")]);
 }
 
 function getClaudeDesktopSessionsDir(): string {
@@ -370,9 +381,11 @@ async function scanCodexLogsOnce(
     : CODEX_COST_SCAN_MAX_ENTRIES;
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const maxJsonlEntries = maxEntries;
-  const sessionsDir = path.join(codexHome, "sessions");
-  const archivedSessionsDir = path.join(codexHome, "archived_sessions");
-  const sessionRoots = [sessionsDir, archivedSessionsDir].filter((root) => fs.existsSync(root));
+  // The default home first, so its live sessions take the byte budget before
+  // the account homes ADE created; each home's live then archived sessions.
+  const sessionRoots = dedupeResolvedPaths([codexHome, ...extraProviderHomes("codex")])
+    .flatMap((home) => [path.join(home, "sessions"), path.join(home, "archived_sessions")])
+    .filter((root) => fs.existsSync(root));
   // One shared budget consumed in root order rather than an even split. The two
   // roots are wildly asymmetric — live `sessions/` typically holds tens of GB
   // while `archived_sessions/` holds a fraction of that — so an even split
