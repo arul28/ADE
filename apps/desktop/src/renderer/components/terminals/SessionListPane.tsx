@@ -1821,8 +1821,33 @@ export const SessionListPane = React.memo(function SessionListPane({
     return { row, compositeLaneId, quiet, fullQuiet, nesting, shelf, focusStatus: focus.status };
   });
 
-  const presentLaneIds = useMemo(() => lanes.map((lane) => lane.id), [lanes]);
-  const laneReturnState = useWorkLaneReturnState(foldBusyLanesActive, foldedLaneIds, presentLaneIds);
+  // Foreign composite ids fold and return exactly like local lane ids: a
+  // cross-machine lane parked on the Working shelf must come back to the front
+  // of the inbox when it needs the user, not stay buried below unrelated work.
+  const foldedForeignLaneSignature = foreignLaneShelving
+    .filter((entry) => entry.shelf === "working")
+    .map((entry) => entry.compositeLaneId)
+    .sort()
+    .join("\n");
+  const allFoldedLaneIds = useMemo(() => {
+    const set = new Set(foldedLaneIds);
+    for (const id of foldedForeignLaneSignature ? foldedForeignLaneSignature.split("\n") : []) {
+      set.add(id);
+    }
+    return set;
+  }, [foldedForeignLaneSignature, foldedLaneIds]);
+  const presentForeignLaneSignature = foreignLaneShelving
+    .map((entry) => entry.compositeLaneId)
+    .sort()
+    .join("\n");
+  const presentLaneIds = useMemo(
+    () => [
+      ...lanes.map((lane) => lane.id),
+      ...(presentForeignLaneSignature ? presentForeignLaneSignature.split("\n") : []),
+    ],
+    [lanes, presentForeignLaneSignature],
+  );
+  const laneReturnState = useWorkLaneReturnState(foldBusyLanesActive, allFoldedLaneIds, presentLaneIds);
 
   /**
    * Render order for the by-lane list: primary first, then pinned → active →
@@ -3446,27 +3471,29 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
-  const clusterLaneItems = (
+  const buildLaneItems = (
     localLanes: LaneSummary[],
     foreignEntries: ForeignLaneEntry[],
-  ) => applySharedBranchAdjacency(
-    [
-      // `StickyGroupHeader` returns null when its count is zero, but the JSX
-      // element itself is still truthy until React evaluates that component.
-      // Filter at the source so an empty/deleted local lane cannot qualify a
-      // foreign sibling for a dashed cluster.
-      ...localLanes
-        .filter((lane) => (
-          (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
-          + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0
-        ))
-        .map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
-      ...foreignEntries.map((entry): ClusterableLaneItem => ({
-        id: entry.compositeLaneId,
-        kind: "foreign",
-        entry,
-      })),
-    ],
+  ): ClusterableLaneItem[] => [
+    // `StickyGroupHeader` returns null when its count is zero, but the JSX
+    // element itself is still truthy until React evaluates that component.
+    // Filter at the source so an empty/deleted local lane cannot qualify a
+    // foreign sibling for a dashed cluster.
+    ...localLanes
+      .filter((lane) => (
+        (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
+        + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0
+      ))
+      .map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
+    ...foreignEntries.map((entry): ClusterableLaneItem => ({
+      id: entry.compositeLaneId,
+      kind: "foreign",
+      entry,
+    })),
+  ];
+
+  const renderClusterItems = (items: ClusterableLaneItem[]) => applySharedBranchAdjacency(
+    items,
     clusterKeyForLaneItem,
   ).map((entry) => {
     switch (entry.item.kind) {
@@ -3488,6 +3515,11 @@ export const SessionListPane = React.memo(function SessionListPane({
       }
     }
   });
+
+  const clusterLaneItems = (
+    localLanes: LaneSummary[],
+    foreignEntries: ForeignLaneEntry[],
+  ) => renderClusterItems(buildLaneItems(localLanes, foreignEntries));
 
   const clusteredShelfItems = (
     localLanes: LaneSummary[],
@@ -3524,7 +3556,24 @@ export const SessionListPane = React.memo(function SessionListPane({
           {renderLaneSessionLists(laneId, list)}
         </StickyGroupHeader>
       ))}
-      {renderSharedBranchClusters(clusterLaneItems(mainLanes, mainForeignRows), GROUP_STACK_CLASS)}
+      {renderSharedBranchClusters(
+        renderClusterItems(floatReturnedLanes(
+          buildLaneItems(mainLanes, mainForeignRows),
+          laneReturnState.returnedAtMs,
+          // A returned lane leads the active tier. Pins, the primary lane, and
+          // quiet rows stay put, exactly as they do for the local-only order in
+          // `orderedLanes`; foreign entries use the same rule keyed by their
+          // composite id.
+          (item) => (item.kind === "local"
+            ? item.lane.laneType !== "primary"
+              && !workPinnedLaneIdSet.has(item.lane.id)
+              && !isLaneQuiet(item.lane.id)
+            : item.entry.row.lane.laneType !== "primary"
+              && !workPinnedLaneIdSet.has(item.id)
+              && !workPinnedLaneIdSet.has(item.entry.row.lane.id)),
+        )),
+        GROUP_STACK_CLASS,
+      )}
       {orphanLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
