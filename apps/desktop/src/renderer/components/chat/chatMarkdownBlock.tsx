@@ -4,7 +4,8 @@ import remarkGfm from "remark-gfm";
 import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
-import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
+import { hasOpenSceneFence, openFenceLanguage, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
+import { MermaidDiagram } from "../shared/MermaidDiagram";
 import {
   parseProofCitationUrl,
   parseProofCompareBlock,
@@ -230,6 +231,10 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   // document that is still arriving.
   const sceneStreaming = Boolean(sceneLive)
     && hasOpenSceneFence(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown);
+  // A mermaid fence still arriving is shown as its source: half a diagram
+  // either fails to parse or draws the wrong graph. Closed fences draw.
+  const mermaidStreaming = Boolean(sceneLive)
+    && openFenceLanguage(tailMarkdown ? `${markdown}${tailMarkdown}` : markdown) === "mermaid";
   const chromeTint = useChatChromeTint();
   const neu = bubble || chromeTint === "neutral";
   const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
@@ -349,6 +354,17 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           />
         );
       }
+      // Only assistant markdown reaches here; tool calls render elsewhere and
+      // are untouched.
+      if (isBlock && language === "mermaid" && !mermaidStreaming) {
+        return (
+          <MermaidDiagram
+            source={text}
+            variant="chat"
+            renderCode={(code) => <HighlightedCode code={code} language="mermaid" />}
+          />
+        );
+      }
       return isBlock ? (
         <HighlightedCode code={text} language={language} />
       ) : pathIsClickable ? (
@@ -421,7 +437,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, thought]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, mermaidStreaming, thought]);
 
   return (
     <div

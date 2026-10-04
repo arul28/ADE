@@ -235,6 +235,16 @@ function unwrapDocument(source: string): string {
  * not open a scene.
  */
 export function hasOpenSceneFence(markdown: string): boolean {
+  return openFenceLanguage(markdown) === SCENE_FENCE_LANGUAGE;
+}
+
+/**
+ * The language of the fence a still-arriving document leaves open, or null
+ * when every fence is closed. A block that renders its fence as something
+ * other than code (a scene, a mermaid diagram) holds while its own language
+ * is open, so it never draws half a source.
+ */
+export function openFenceLanguage(markdown: string): string | null {
   let openLanguage: string | null = null;
   for (const line of String(markdown ?? "").split("\n")) {
     const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(line);
@@ -242,7 +252,7 @@ export function hasOpenSceneFence(markdown: string): boolean {
     if (openLanguage === null) openLanguage = (fence[1] ?? "").trim().toLowerCase();
     else if (!(fence[1] ?? "").trim().length) openLanguage = null;
   }
-  return openLanguage === SCENE_FENCE_LANGUAGE;
+  return openLanguage;
 }
 
 /** One fence, as the scanner below located it. */
