@@ -11,6 +11,7 @@ import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/dem
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { pathKey } from "../../desktop/src/main/services/shared/pathCompare";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
@@ -113,7 +114,8 @@ import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/
 import {
   ctoCallerInitializeParams,
   DESKTOP_CLIENT_NAMES,
-  isCtoRemoteClientName,
+  isRemoteBrainCallerClientName,
+  parseForeignCallerSessionId,
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -261,7 +263,7 @@ function withoutIncludeThreadComments(args: Record<string, unknown>): Record<str
  * request, or pass any other user-client gate.
  */
 function isUserClientSession(session: SessionState): boolean {
-  return !callerIdentityIsAgent(session.identity) && !isCtoRemoteClientName(session.clientName);
+  return !callerIdentityIsAgent(session.identity) && !isRemoteBrainCallerClientName(session.clientName);
 }
 
 /**
@@ -1893,8 +1895,14 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
  * unbound caller filed that caller's proof in the wrong chat and disabled its
  * lane inference.
  */
+/**
+ * A synthetic caller (a process, not a chat) and a caller from another machine
+ * (`remote:<device>:<chat>`) never inherit this brain's own environment
+ * identity: a brain started from an agent's shell would otherwise attribute
+ * every such call to that agent's chat.
+ */
 function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
-  return isSyntheticCallerId(callerId)
+  return isSyntheticCallerId(callerId) || parseForeignCallerSessionId(callerId) !== null
     ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
     : envContext;
 }
@@ -2695,17 +2703,45 @@ export async function resolveIngestProvenance(
   };
 }
 
+/**
+ * Captures a capture action wrote for a caller on ANOTHER machine, by path.
+ * That caller files its proof in its own machine's drawer, so it reads the
+ * bytes back (`read_remote_caller_capture`) — only its own, and only while
+ * they are fresh.
+ */
+const REMOTE_CALLER_CAPTURE_TTL_MS = 15 * 60_000;
+const remoteCallerCaptures = new WeakMap<AdeRuntime, Map<string, { owner: string; expiresAt: number }>>();
+/** One chunk of a remote caller's capture; the transport caps a reply at 25 MiB. */
+const REMOTE_CALLER_CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
+
+function remoteCallerCaptureMap(runtime: AdeRuntime): Map<string, { owner: string; expiresAt: number }> {
+  let map = remoteCallerCaptures.get(runtime);
+  if (!map) {
+    map = new Map();
+    remoteCallerCaptures.set(runtime, map);
+  }
+  return map;
+}
+
 /** Remember the file a capture action just wrote. Never fails the action. */
 async function rememberCaptureActionResult(
   runtime: AdeRuntime,
   domain: string,
   action: string,
   result: unknown,
+  session?: SessionState,
 ): Promise<void> {
   const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
   if (!capture || !isRecord(result)) return;
   const filePath = asOptionalTrimmedString(result[capture.field]);
   if (!filePath) return;
+  const foreignOwner = asOptionalTrimmedString(session?.identity.chatSessionId);
+  if (foreignOwner && parseForeignCallerSessionId(foreignOwner) && path.isAbsolute(filePath)) {
+    const map = remoteCallerCaptureMap(runtime);
+    const at = Date.now();
+    for (const [key, entry] of map) if (entry.expiresAt <= at) map.delete(key);
+    map.set(pathKey(filePath), { owner: foreignOwner, expiresAt: at + REMOTE_CALLER_CAPTURE_TTL_MS });
+  }
   try {
     await captureRegistryFor(runtime).remember(filePath, capture.source);
   } catch {
@@ -5188,7 +5224,7 @@ async function runTool(args: {
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
-    const ctoActionCaller = isCtoRemoteClientName(session.clientName);
+    const remoteBrainCaller = isRemoteBrainCallerClientName(session.clientName);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
@@ -5196,7 +5232,7 @@ async function runTool(args: {
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
-        .filter((action) => !ctoActionCaller || !isSecretBearingAdeAction(entry, action))
+        .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
           return {
@@ -5246,12 +5282,13 @@ async function runTool(args: {
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
-    if (isCtoRemoteClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
-      // The CTO's result lands in a model transcript. Its own tool refuses
-      // these first; this holds for a CTO on any ADE version.
+    if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
+      // A caller from another machine's brain is a model whose result lands in
+      // a transcript. The CTO's own tool refuses these first; this holds for
+      // any caller version.
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${domain}.${action} returns secrets, so the CTO can't run it. Ask the user to read it in Settings.`,
+        `${domain}.${action} returns secrets, so it can't run from another machine. Ask the user to read it in Settings.`,
       );
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
@@ -5746,7 +5783,7 @@ async function runTool(args: {
     if (domain === "built_in_browser" && (action === "startRecording" || action === "stopRecording")) {
       noteBrowserRecording(session, action === "startRecording");
     }
-    await rememberCaptureActionResult(runtime, domain, action, result);
+    await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
@@ -6622,6 +6659,36 @@ async function runTool(args: {
       toolArgs,
       proof,
     });
+  }
+
+  if (name === "read_remote_caller_capture") {
+    // A caller on another machine reading back a still or video one of ADE's
+    // capture actions just wrote here for it, to file it in its own drawer.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const requested = asOptionalTrimmedString(toolArgs.path);
+    const entry = requested && path.isAbsolute(requested)
+      ? remoteCallerCaptureMap(runtime).get(pathKey(requested))
+      : undefined;
+    if (!requested || !entry || entry.owner !== owner || entry.expiresAt <= Date.now()) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "That file is not a capture this machine made for you in the last 15 minutes.",
+      );
+    }
+    const size = fs.statSync(requested).size;
+    const offset = Math.max(0, Math.floor(asNumber(toolArgs.offset, 0)));
+    const length = Math.min(REMOTE_CALLER_CAPTURE_CHUNK_BYTES, Math.max(0, size - offset));
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(requested, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, offset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return { size, offset, length, dataBase64: buffer.toString("base64"), done: offset + length >= size };
   }
 
   if (name === "ingest_computer_use_artifacts") {

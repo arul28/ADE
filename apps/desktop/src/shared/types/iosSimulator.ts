@@ -70,6 +70,11 @@ export type IosSimulatorShutdownResult = {
 };
 
 export type IosSimulatorStatus = {
+  /**
+   * Set when the active session belongs to an agent on another machine
+   * (`ade apple … --machine`), so this machine's panel can say who is driving.
+   */
+  remoteHolder?: { machineName: string | null } | null;
   platform: NodeJS.Platform;
   supported: boolean;
   tools: IosSimulatorToolStatus[];

@@ -654,6 +654,19 @@ export class PersonalChatScope {
     runtime?.dispose();
   }
 
+  /**
+   * The personal runtime, booting it when needed. For the brain's wake router,
+   * which delivers a child's completion into a personal chat that asked for it.
+   */
+  async runtimeForDelivery(): Promise<AdeRuntime> {
+    return await this.getRuntime();
+  }
+
+  /** The personal runtime only if it is already up; never boots it. */
+  peekRuntime(): Promise<AdeRuntime> | null {
+    return this.runtimePromise;
+  }
+
   private async getRuntime(): Promise<AdeRuntime> {
     if (this.runtimePromise) return await this.runtimePromise;
     this.runtimePromise = this.createRuntime();

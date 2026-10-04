@@ -3210,6 +3210,16 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
   var childTurnId: String?
   var status: AgentChatSubagentStatus
   var summary: String?
+  /// Set when the child ran on another machine than the parent.
+  var childMachineName: String?
+
+  /// The child's title, plus where it ran when that is another machine.
+  var displayLabel: String {
+    guard let machine = childMachineName?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else {
+      return childTitle
+    }
+    return "\(childTitle) · on \(machine)"
+  }
 
   func event(fallbackTurnId: String?) -> AgentChatEvent {
     let resolvedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3229,7 +3239,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
       status: status,
       summary: resolvedSummary.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackSummary,
       usage: nil,
-      label: childTitle,
+      label: displayLabel,
       model: nil,
       reasoningEffort: nil,
       turnId: childTurnId ?? fallbackTurnId,

@@ -454,6 +454,34 @@ ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             #
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
 
+## Other machines on the account
+
+Chats, lanes and devices on the user's other machines are reachable with
+`--machine <name>` (a machine key or an unambiguous name). You act there as an
+agent, under that machine's own policy.
+
+```bash
+ade machines list --projects --text              # who is online, what projects each has
+ade chat list --all-machines --text              # every machine in one table
+ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"
+ade chat launch "…" --machine "Mac mini"          # in a new lane there
+ade chat read <id> --machine "Mac mini" --text
+ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
+```
+
+- The project there defaults to this repository's checkout; pick another with
+  `--project <name|path|id>`, add `--clone` to set a missing GitHub repo up,
+  or use `--personal` for projectless chats. Your own lane is never sent: get a
+  lane id with `ade lanes list --machine …`.
+- A `--type subagent` child there wakes you when it finishes, like a local one,
+  with "· on <machine>" and the `ade chat read … --machine` command.
+- `--machine "a,b"` on `chat create` starts one child per machine.
+- An offline machine fails at once and nothing is queued; retry later.
+- Build where the code runs: to build or test an iOS app from a Linux or
+  Windows machine, start a subagent on the Mac rather than driving its
+  simulator from here.
+
 ## Archived lanes, chats, and shells
 
 Archiving hides an item; ADE never deletes anything on its own. Archived chats

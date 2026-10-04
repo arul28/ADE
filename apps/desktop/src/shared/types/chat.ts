@@ -422,6 +422,11 @@ export type AgentChatSpawnCompletion = {
    * follows up. Omitted when the count is zero.
    */
   humanMessageCount?: number;
+  /**
+   * The machine the child ran on, when it is not the parent's. Shown on the
+   * parent's completion row ("· on Mac mini") with a read hint.
+   */
+  childMachineName?: string;
 };
 
 /**

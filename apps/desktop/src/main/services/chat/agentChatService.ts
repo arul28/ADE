@@ -258,6 +258,11 @@ import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
 import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
+  externalChatContext,
+  getExternalParentRouter,
+  type ExternalParentWake,
+} from "./externalChats";
+import {
   lowerPermissionCeiling,
   permissionCeilingClamp,
   permissionLevelLabel,
@@ -10518,13 +10523,22 @@ export function createAgentChatService(args: {
             ADE_PROJECT_ROOT: projectRoot,
             ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
           }),
-      ...(managed.session.orchestrationParentSessionId?.trim()
-        && parentChatStillExists(managed.session.orchestrationParentSessionId.trim())
-        ? {
-            ADE_PARENT_CHAT_SESSION_ID: managed.session.orchestrationParentSessionId,
-            ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
-          }
-        : {}),
+      ...(() => {
+        const parentId = managed.session.orchestrationParentSessionId?.trim();
+        if (!parentId) return {};
+        if (parentChatStillExists(parentId)) {
+          return { ADE_PARENT_CHAT_SESSION_ID: parentId, ADE_SPAWN_KIND: managed.session.spawnKind ?? "" };
+        }
+        // A parent in another project or on another machine still hears back
+        // (through the brain), so the child is told who it reports to.
+        const external = externalChatContext(parentId);
+        if (!external) return {};
+        return {
+          ADE_PARENT_CHAT_SESSION_ID: parentId,
+          ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
+          ...(external.machineName ? { ADE_PARENT_MACHINE: external.machineName } : {}),
+        };
+      })(),
     };
     // The daemon may itself run inside an agent shell that exported a token for
     // a different chat. Never let an inherited one stand in for this chat's.
@@ -16338,7 +16352,9 @@ export function createAgentChatService(args: {
       try {
         return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
       } catch {
-        return "ask";
+        // A chat in another project, the personal scope, or on another
+        // machine: the brain recorded its level when it asked for this child.
+        return externalChatContext(sessionId)?.permissionLevel ?? "ask";
       }
     };
     const parentId = args.parentSessionId?.trim();
@@ -39738,12 +39754,16 @@ export function createAgentChatService(args: {
     return Boolean(row && isChatToolType(row.toolType));
   };
 
+  /** A parent outside this service that the brain's router knows how to reach. */
+  const externalParentReachable = (parentSessionId: string): boolean =>
+    getExternalParentRouter() !== null && externalChatContext(parentSessionId) !== null;
+
   const spawnSelfReportOpts = (
     session: Pick<AgentChatSession, "orchestrationParentSessionId">,
   ): SpawnSelfReportGuidanceOpts => {
     const parentId = session.orchestrationParentSessionId?.trim();
     return {
-      parentReachable: !parentId || parentChatStillExists(parentId),
+      parentReachable: !parentId || parentChatStillExists(parentId) || externalParentReachable(parentId),
     };
   };
 
@@ -39873,6 +39893,9 @@ export function createAgentChatService(args: {
     if (!parentSessionId || parentSessionId === managed.session.id) return;
     if (managed.session.spawnKind !== "subagent") return;
     if (parentChatStillExists(parentSessionId)) return;
+    // A parent in another project or on another machine is not an orphan's
+    // parent: the brain's router still reaches it (`externalChats`).
+    if (externalParentReachable(parentSessionId)) return;
     applySpawnKindChange({
       sessionId: managed.session.id,
       spawnKind: "peer",
@@ -39931,6 +39954,8 @@ export function createAgentChatService(args: {
     routeQuietly?: boolean;
     onParentGone: (reason: string) => void;
     onDeliveryFailed: (lastError: unknown) => void;
+    /** The parent has the completion (now, or already from an earlier try). */
+    onDelivered?: () => void;
   };
 
   const parentWakes = createParentWakeBatcher({
@@ -40018,7 +40043,10 @@ export function createAgentChatService(args: {
         try {
           const parent = ensureManagedSession(parentSessionId);
           if (parent.deleted) throw new Error("Parent session was deleted.");
-          if (parentAlreadyHasCompletion(parent)) return;
+          if (parentAlreadyHasCompletion(parent)) {
+            delivery.onDelivered?.();
+            return;
+          }
           // The CTO thread takes one line per child turn and nothing else. The
           // subagent_result card and the wake divider each restate the child's
           // closing summary, which is the transcript dump a coordinator thread
@@ -40099,6 +40127,7 @@ export function createAgentChatService(args: {
             status: resultStatus,
             routedTo: parentShouldWake ? "wake" : "quiet_notice",
           });
+          delivery.onDelivered?.();
           return;
         } catch (error) {
           lastError = error;
@@ -40140,7 +40169,11 @@ export function createAgentChatService(args: {
     // readable but cannot create new silent completion behavior.
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
 
-    if (!parentChatStillExists(parentSessionId)) {
+    // A parent outside this chat service (another project, the personal
+    // scope, another machine) is the brain's router's to reach, when one is
+    // installed. Without one it is gone, as before.
+    const parentIsExternal = !parentChatStillExists(parentSessionId);
+    if (parentIsExternal && !getExternalParentRouter()) {
       noteUnreachableParent(child, parentSessionId, "parent_missing");
       return;
     }
@@ -40210,6 +40243,23 @@ export function createAgentChatService(args: {
       ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
+    const wakeText = `Your subagent "${childTitle}" finished a turn — ${summary}`;
+    if (parentIsExternal) {
+      const routed = getExternalParentRouter()?.route({
+        parentSessionId,
+        childSessionId,
+        childTitle,
+        childProvider: child.session.provider,
+        spawnKind,
+        resultStatus,
+        summary,
+        spawnCompletion,
+        wakeText,
+        childProjectRoot: projectRoot,
+      }) ?? false;
+      if (!routed) noteUnreachableParent(child, parentSessionId, "parent_missing");
+      return;
+    }
     deliverChildCompletionToParent({
       parentSessionId,
       childSessionId,
@@ -40220,7 +40270,7 @@ export function createAgentChatService(args: {
       summary,
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(child.session.completion, summary),
-      wakeText: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+      wakeText,
       onParentGone: (reason) => noteUnreachableParent(child, parentSessionId, reason),
       onDeliveryFailed: (lastError) => {
         if (child.deleted || childHasDeliveryFailureNotice(child, resolvedTurnId)) return;
@@ -40238,6 +40288,40 @@ export function createAgentChatService(args: {
           },
         });
       },
+    });
+  };
+
+  /**
+   * Deliver a child completion whose child lives elsewhere (another project,
+   * or another machine) into a parent in THIS service. The brain's router calls
+   * it after locating the parent. Resolves with what happened so the router's
+   * outbox can retry or give up; the parent transcript dedupes a repeat by
+   * `spawnCompletion.childTurnId`.
+   */
+  const deliverExternalChildCompletion = (
+    wake: Omit<ExternalParentWake, "childProjectRoot">,
+  ): Promise<"delivered" | "parent_gone" | "failed"> => {
+    if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // The same turn already being delivered answers nothing; let the outbox
+    // try again rather than wait on a callback that never comes.
+    const inFlightKey = `${wake.parentSessionId}:${wake.childSessionId}:${wake.spawnCompletion.childTurnId ?? ""}`;
+    if (spawnCompletionDeliveriesInFlight.has(inFlightKey)) return Promise.resolve("failed");
+    return new Promise((resolve) => {
+      deliverChildCompletionToParent({
+        parentSessionId: wake.parentSessionId,
+        childSessionId: wake.childSessionId,
+        childTitle: wake.childTitle,
+        childProvider: wake.childProvider,
+        spawnKind: wake.spawnKind,
+        resultStatus: wake.resultStatus,
+        summary: wake.summary,
+        spawnCompletion: wake.spawnCompletion,
+        ctoPrNumber: null,
+        wakeText: wake.wakeText,
+        onParentGone: () => resolve("parent_gone"),
+        onDeliveryFailed: () => resolve("failed"),
+        onDelivered: () => resolve("delivered"),
+      });
     });
   };
 
@@ -61933,6 +62017,55 @@ export function createAgentChatService(args: {
     isTranscriptPathActive,
     warmupModel,
     listSubagents,
+    deliverExternalChildCompletion,
+    /**
+     * The brain's wake router could not reach this child's parent elsewhere:
+     * it is gone, or every retry for a day failed. Leaves the same notice the
+     * child gets when a local parent is deleted, or the delivery-failed one.
+     */
+    noteExternalParentUnreachable: (input: {
+      childSessionId: string;
+      parentSessionId: string;
+      childTurnId: string | null;
+      reason: "parent_gone" | "gave_up";
+    }): void => {
+      const child = managedSessions.get(input.childSessionId) ?? (() => {
+        try { return ensureManagedSession(input.childSessionId); } catch { return null; }
+      })();
+      if (!child || child.deleted) return;
+      if (input.reason === "parent_gone") {
+        noteUnreachableParent(child, input.parentSessionId, "parent_missing");
+        return;
+      }
+      const turnId = input.childTurnId ?? "";
+      if (turnId && childHasDeliveryFailureNotice(child, turnId)) return;
+      emitChatEvent(child, {
+        type: "system_notice",
+        noticeKind: "warning",
+        status: "spawn_completion_delivery_failed",
+        message: spawnCompletionDeliveryFailedNoticeMessage(),
+        detail: {
+          spawnCompletionDeliveryFailure: {
+            childTurnId: turnId,
+            parentSessionId: input.parentSessionId,
+            error: "The chat that started this one could not be reached for a day.",
+          },
+        },
+      });
+    },
+    /**
+     * The permission level a chat in this service runs at, or null when it is
+     * not one of this service's chats. The brain records it for a child it
+     * starts elsewhere (`rememberExternalChat`).
+     */
+    permissionLevelOf: (sessionId: string): PermissionLevel | null => {
+      if (!parentChatStillExists(sessionId)) return null;
+      try {
+        return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
+      } catch {
+        return null;
+      }
+    },
     getSessionCapabilities,
     resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({
       url,

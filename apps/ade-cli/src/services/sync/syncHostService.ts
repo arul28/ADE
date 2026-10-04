@@ -8009,6 +8009,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
+        isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null,
       );
       return;
     }

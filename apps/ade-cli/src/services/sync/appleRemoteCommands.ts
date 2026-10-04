@@ -1,6 +1,8 @@
 import type { SyncRemoteCommandAction, SyncRemoteCommandPolicy } from "../../../../desktop/src/shared/types/sync";
 import { isAppleLaneDeviceOrigin, type AppleLaneDeviceOrigin } from "../../../../desktop/src/shared/types/iosSimulator";
 import { isAllowedAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
+import { externalChatContext } from "../../../../desktop/src/main/services/chat/externalChats";
+import { parseForeignCallerSessionId } from "../../../../desktop/src/shared/runtimeClientNames";
 
 /**
  * `apple.*` remote commands — the Apple device environment, as a phone or a
@@ -323,7 +325,14 @@ export function createAppleRemoteCommandHandlers(deps: {
    */
   const withOwnerTitle = async (status: AppleStatusPayload): Promise<AppleStatusPayload> => {
     const chatSessionId = status.owner?.chatSessionId;
-    if (!chatSessionId || !deps.resolveChatTitle) return status;
+    if (!chatSessionId) return status;
+    // An agent on another machine holds it (`ade apple … --machine`): there is
+    // no chat here to name, so name the machine it is driving from.
+    if (parseForeignCallerSessionId(chatSessionId)) {
+      const machineName = externalChatContext(chatSessionId)?.machineName ?? "another machine";
+      return { ...status, owner: { chatSessionId, chatTitle: `an agent on ${machineName}` } };
+    }
+    if (!deps.resolveChatTitle) return status;
     try {
       const chatTitle = asString(await deps.resolveChatTitle(chatSessionId));
       return { ...status, owner: { chatSessionId, chatTitle } };

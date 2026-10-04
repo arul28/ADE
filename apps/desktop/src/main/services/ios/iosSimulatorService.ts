@@ -1,3 +1,5 @@
+import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
+import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -2122,6 +2124,12 @@ const AGENT_DEVICE_CHECKED_ACTIONS = [
   "deviceStop", "closeDevice", "stopStream", "stopEventLog", "getEventLog", "listLaunchTargets",
 ] as const;
 
+/** Who holds the session, when it is an agent on another machine. */
+function remoteHolderOf(chatSessionId: string | null): IosSimulatorStatus["remoteHolder"] {
+  if (!chatSessionId || !parseForeignCallerSessionId(chatSessionId)) return null;
+  return { machineName: externalChatContext(chatSessionId)?.machineName ?? null };
+}
+
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let lastSelectedItem: IosElementContextItem | null = null;
   let controlQueue: Promise<void> = Promise.resolve();
@@ -3506,6 +3514,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (nowMs - runtime.cachedStatus.computedAt < STATUS_THROTTLE_MS && runtime.cachedStatus.computedAt !== 0) {
       return {
         ...runtime.cachedStatus.value,
+        remoteHolder: remoteHolderOf(runtime.activeSession?.chatSessionId ?? null),
         activeSession: runtime.activeSession,
         // Both of these are in-memory reads, so the throttle exists to spare
         // the `simctl` device list, not these. Serving them from the cache

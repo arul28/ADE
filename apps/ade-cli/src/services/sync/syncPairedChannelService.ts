@@ -47,7 +47,19 @@ export type SyncRuntimeRpcHandler = JsonRpcHandler & {
   ) => void;
 };
 
-export type SyncRuntimeRpcHandlerFactory = () => SyncRuntimeRpcHandler;
+/**
+ * What the host knows about the peer that opened a runtime channel. Only facts
+ * the host itself authenticated belong here — a field the peer could assert in
+ * its own `ade/initialize` would be no better than that claim.
+ */
+export type SyncRuntimeRpcHandlerContext = {
+  /** The device id of the paired record this peer authenticated with. */
+  peerDeviceId: string | null;
+};
+
+export type SyncRuntimeRpcHandlerFactory = (
+  context?: SyncRuntimeRpcHandlerContext,
+) => SyncRuntimeRpcHandler;
 
 type SyncRuntimeRpcHandlerMembers = Omit<SyncRuntimeRpcHandler, keyof JsonRpcHandler>;
 
@@ -460,7 +472,11 @@ export function createSyncPairedChannelService<TPeer extends object>(
     }
   };
 
-  const openRpc = (peer: TPeer, payload: PairedRuntimeRpcOpenPayload): void => {
+  const openRpc = (
+    peer: TPeer,
+    payload: PairedRuntimeRpcOpenPayload,
+    context: SyncRuntimeRpcHandlerContext,
+  ): void => {
     const channelId = normalizeChannelId(payload.channelId);
     if (!channelId) return;
     const existingRpc = peers.get(peer)?.rpc;
@@ -578,7 +594,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
     let handler: SyncRuntimeRpcHandler;
     try {
-      handler = trackRpcRequestLabels(factory(), pendingRequestLabels);
+      handler = trackRpcRequestLabels(factory(context), pendingRequestLabels);
     } catch (error) {
       sendRpcClose(
         peer,
@@ -744,6 +760,9 @@ export function createSyncPairedChannelService<TPeer extends object>(
       // clients even after successful pairing. Defaults to false so callers
       // must opt in explicitly.
       authorizedForRuntimeHost = false,
+      // The paired record's device id, as the host authenticated it. Runtime
+      // handlers use it to attribute calls from another machine's brain.
+      peerDeviceId: string | null = null,
     ): Promise<boolean> {
       const value = payload && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -770,7 +789,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
       switch (type) {
         case "rpc_open":
-          openRpc(peer, { channelId: id });
+          openRpc(peer, { channelId: id }, { peerDeviceId: peerDeviceId?.trim() || null });
           break;
         case "rpc_data": {
           const bytes = decodeStrictBase64(value.data);
