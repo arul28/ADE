@@ -1873,8 +1873,10 @@ Mechanics and guardrails:
 ## Mermaid diagrams
 
 A ` ```mermaid ` fence in an assistant reply draws as a diagram
-(`MarkdownBlock`'s code-fence handler, `chatMarkdownBlock.tsx`). Tool calls
-render elsewhere and are not affected. While the turn streams and a mermaid
+(`MarkdownBlock`'s code-fence handler, `chatMarkdownBlock.tsx`). A fence in the
+user's own message stays the code they wrote. Tool calls render elsewhere and
+are not affected. Edge labels sit on the app's background colour
+(`edgeLabelBackground`) rather than mermaid's mid-grey dark-theme box. While the turn streams and a mermaid
 fence is still open (`openFenceLanguage` in `shared/chatScene.ts`, the same
 line scanner the scene guard uses), mermaid fences stay as highlighted code,
 because half a source either fails to parse or draws the wrong graph; closed
