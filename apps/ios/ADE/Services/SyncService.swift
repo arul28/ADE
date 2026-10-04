@@ -13555,6 +13555,15 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "git.getChanges", args: ["laneId": laneId], as: DiffChanges.self)
   }
 
+  /// Whether the host understands `mode: "branch"`. An older host reads an
+  /// unknown mode as "unstaged" without complaint, so the Branch section and
+  /// its diffs are offered only when this is advertised.
+  var supportsBranchDiff: Bool { supportsRemoteAction("git.getBranchChanges") }
+
+  func fetchBranchChanges(laneId: String) async throws -> BranchDiffChanges {
+    try await sendDecodableCommand(action: "git.getBranchChanges", args: ["laneId": laneId], as: BranchDiffChanges.self)
+  }
+
   func fetchFileDiff(workspaceId: String? = nil, laneId: String, path: String, mode: String, compareRef: String? = nil, compareTo: String? = nil) async throws -> FileDiff {
     var args: [String: Any] = [
       "laneId": laneId,

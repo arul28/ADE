@@ -859,6 +859,25 @@ struct DiffChanges: Codable, Equatable {
   var staged: [FileChange]
 }
 
+/// One file of a branch diff (`git.getBranchChanges`), with its line counts.
+struct BranchFileChange: Codable, Identifiable, Equatable {
+  var id: String { path }
+  var path: String
+  var oldPath: String?
+  var kind: String
+  var additions: Int?
+  var deletions: Int?
+}
+
+/// Everything a lane changed since its base: commits, uncommitted and untracked.
+struct BranchDiffChanges: Codable, Equatable {
+  var baseRef: String
+  var mergeBase: String
+  var files: [BranchFileChange]
+  var additions: Int
+  var deletions: Int
+}
+
 struct DiffSide: Codable, Equatable {
   var exists: Bool
   var text: String

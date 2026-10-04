@@ -42,6 +42,9 @@ struct LaneDetailGitActionsPane: View {
   let onForcePush: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
   let onCreateLaneFromChanges: () -> Void
+  /// Reads the lane's branch changes; nil when the host predates branch diffs.
+  var loadBranchChanges: (() async throws -> BranchDiffChanges)? = nil
+  var onOpenBranchDiff: ((BranchFileChange) -> Void)? = nil
 
   @State private var pullMode: String = "rebase"
   @State private var showMoreActions = false
@@ -49,6 +52,9 @@ struct LaneDetailGitActionsPane: View {
   @State private var filesDisclosure = LaneSectionDisclosure()
   @State private var stashesDisclosure = LaneSectionDisclosure()
   @State private var historyDisclosure = LaneSectionDisclosure()
+  @State private var branchDisclosure = LaneSectionDisclosure()
+  @State private var branchChanges: BranchDiffChanges?
+  @State private var branchError: String?
   @FocusState private var commitFieldFocused: Bool
 
   private var stagedFiles: [FileChange] { detail.diffChanges?.staged ?? [] }
@@ -71,6 +77,9 @@ struct LaneDetailGitActionsPane: View {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 14) {
           filesSection
+          if loadBranchChanges != nil {
+            branchSection
+          }
           stashesSection
           historySection
         }
@@ -442,6 +451,73 @@ struct LaneDetailGitActionsPane: View {
           )
         }
       }
+    }
+  }
+
+  // MARK: - Branch
+
+  /// Everything the lane changed since its base, read-only: the files a
+  /// committed lane's PR is made of, which "Files" cannot show once the work
+  /// is committed.
+  private var branchSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      disclosureHeader(
+        title: branchChanges.map { "Branch vs \($0.baseRef)" } ?? "Branch",
+        badge: branchChanges?.files.count ?? 0,
+        expanded: branchDisclosure.expanded,
+        onToggle: { withAnimation(.smooth(duration: 0.2)) { branchDisclosure.toggle() } }
+      )
+      if branchDisclosure.expanded {
+        VStack(alignment: .leading, spacing: 6) {
+          if let branchError {
+            Text(branchError).font(.caption).foregroundStyle(ADEColor.textSecondary)
+          } else if let branchChanges {
+            Text("+\(branchChanges.additions) −\(branchChanges.deletions) · \(branchChanges.files.count) file\(branchChanges.files.count == 1 ? "" : "s")")
+              .font(.caption.monospacedDigit())
+              .foregroundStyle(ADEColor.textSecondary)
+            if branchChanges.files.isEmpty {
+              Text("No changes since \(branchChanges.baseRef).").font(.caption).foregroundStyle(ADEColor.textSecondary)
+            }
+            ForEach(branchChanges.files) { file in
+              Button {
+                onOpenBranchDiff?(file)
+              } label: {
+                HStack(spacing: 8) {
+                  Text(file.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(ADEColor.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                  Spacer(minLength: 6)
+                  if let additions = file.additions, additions > 0 {
+                    Text("+\(additions)").font(.caption2.monospacedDigit()).foregroundStyle(ADEColor.success)
+                  }
+                  if let deletions = file.deletions, deletions > 0 {
+                    Text("−\(deletions)").font(.caption2.monospacedDigit()).foregroundStyle(ADEColor.danger)
+                  }
+                }
+                .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            }
+          } else {
+            ProgressView().frame(maxWidth: .infinity)
+          }
+        }
+        .task(id: "\(detail.recentCommits.first?.sha ?? ""):\(stagedFiles.count):\(unstagedFiles.count)") {
+          await reloadBranchChanges()
+        }
+      }
+    }
+  }
+
+  private func reloadBranchChanges() async {
+    guard let loadBranchChanges else { return }
+    do {
+      branchChanges = try await loadBranchChanges()
+      branchError = nil
+    } catch {
+      branchError = error.localizedDescription
     }
   }
 

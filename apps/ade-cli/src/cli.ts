@@ -25944,16 +25944,24 @@ function formatFilesSearch(value: unknown): string {
 
 function formatDiffSummary(value: unknown): string {
   const files = firstArray(value, ["files", "changes", "items"]);
-  return renderTable(
+  const table = renderTable(
     ["status", "file", "+", "-"],
     files.map((file) => [
-      file.status ?? file.changeType ?? file.type,
+      file.status ?? file.changeType ?? file.type ?? file.kind,
       file.path ?? file.filePath ?? file.newPath ?? file.oldPath,
       file.additions ?? file.added ?? "",
       file.deletions ?? file.deleted ?? "",
     ]),
     "ADE diff\n(no changed files)",
+    // Paths are what the next command takes; a shortened one is a wrong one.
+    { fullColumns: ["file"] },
   );
+  // A branch diff names what it compared with.
+  const record = isRecord(value) ? value : {};
+  const baseRef = asString(record.baseRef);
+  if (!baseRef) return table;
+  const mergeBase = asString(record.mergeBase) ?? "";
+  return `vs ${baseRef} (from ${mergeBase.slice(0, 9)}) · +${String(record.additions ?? 0)} -${String(record.deletions ?? 0)} · ${files.length} file${files.length === 1 ? "" : "s"}\n\n${table}`;
 }
 
 function formatSearchResults(value: unknown): string {
