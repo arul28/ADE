@@ -1663,6 +1663,14 @@ describe("SessionListPane", () => {
         "target-studio:lane-fold",
         "target-studio:lane-active",
       ]);
+
+      // Manual sort is the user's own order: the returned lane does not float,
+      // or every drag of it would be undone.
+      rerender(paneElement({ ...props, workLaneSortMode: "manual" }));
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-active",
+        "target-studio:lane-fold",
+      ]);
     });
 
     it("nests a foreign parent and child shell as one headerless unit", () => {

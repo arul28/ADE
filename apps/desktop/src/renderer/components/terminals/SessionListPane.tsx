@@ -3521,6 +3521,26 @@ export const SessionListPane = React.memo(function SessionListPane({
     foreignEntries: ForeignLaneEntry[],
   ) => renderClusterItems(buildLaneItems(localLanes, foreignEntries));
 
+  // A returned lane leads the active tier. Pins, the primary lane, and quiet
+  // rows stay put, exactly as they do for the local-only order in
+  // `orderedLanes`; foreign entries use the same rule keyed by their composite
+  // id. Not in Manual: there the user's own order is the point, and a float
+  // would undo every drag of a returned lane (the same exemption
+  // `orderedLanes` makes).
+  const mainLaneItems = workLaneSortMode === "manual"
+    ? buildLaneItems(mainLanes, mainForeignRows)
+    : floatReturnedLanes(
+      buildLaneItems(mainLanes, mainForeignRows),
+      laneReturnState.returnedAtMs,
+      (item) => (item.kind === "local"
+        ? item.lane.laneType !== "primary"
+          && !workPinnedLaneIdSet.has(item.lane.id)
+          && !isLaneQuiet(item.lane.id)
+        : item.entry.row.lane.laneType !== "primary"
+          && !workPinnedLaneIdSet.has(item.id)
+          && !workPinnedLaneIdSet.has(item.entry.row.lane.id)),
+    );
+
   const clusteredShelfItems = (
     localLanes: LaneSummary[],
     foreignEntries: ForeignLaneEntry[],
@@ -3557,21 +3577,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         </StickyGroupHeader>
       ))}
       {renderSharedBranchClusters(
-        renderClusterItems(floatReturnedLanes(
-          buildLaneItems(mainLanes, mainForeignRows),
-          laneReturnState.returnedAtMs,
-          // A returned lane leads the active tier. Pins, the primary lane, and
-          // quiet rows stay put, exactly as they do for the local-only order in
-          // `orderedLanes`; foreign entries use the same rule keyed by their
-          // composite id.
-          (item) => (item.kind === "local"
-            ? item.lane.laneType !== "primary"
-              && !workPinnedLaneIdSet.has(item.lane.id)
-              && !isLaneQuiet(item.lane.id)
-            : item.entry.row.lane.laneType !== "primary"
-              && !workPinnedLaneIdSet.has(item.id)
-              && !workPinnedLaneIdSet.has(item.entry.row.lane.id)),
-        )),
+        renderClusterItems(mainLaneItems),
         GROUP_STACK_CLASS,
       )}
       {orphanLaneGroups.map(([laneId, list]) => {
