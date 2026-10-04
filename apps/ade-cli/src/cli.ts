@@ -2082,6 +2082,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
                                                     | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
+    $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
@@ -9485,6 +9486,23 @@ function buildChatPlan(args: string[]): CliPlan {
           "chat",
           "interrupt",
           interruptArgs,
+        ),
+      ],
+    };
+  }
+  if (sub === "restart" || sub === "restart-session") {
+    return {
+      kind: "execute",
+      label: "chat restart session",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "restartSession",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            ...(readFlag(args, ["--stop", "--stop-first"]) ? { stopFirst: true } : {}),
+          }),
         ),
       ],
     };

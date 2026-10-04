@@ -5311,6 +5311,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
     return { ...result, ok: true };
   });
+  register("chat.restartSession", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .restartSession({
+        sessionId: requireString(payload.sessionId, "chat.restartSession requires sessionId."),
+        ...(payload.stopFirst === true ? { stopFirst: true } : {}),
+      });
+    return { ...result, ok: true };
+  });
   register("chat.stopTask", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.")
       .stopTask(parseAgentChatStopTaskArgs(payload));

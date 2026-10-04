@@ -1008,6 +1008,25 @@ Three rules are specific to the schedule itself:
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
 
+### Restart agent session
+
+**Restart agent session** stops the chat's provider process and keeps the
+conversation, so the next message starts a fresh process that resumes the same
+provider thread and picks up skills, plugins, MCP servers, and project
+instructions added since the chat started. Entry points: the session
+right-click menu, the command palette (for the chat in front of you),
+`ade chat restart <session> [--stop]`, the `chat.restartSession` action, and
+the sync remote command of the same name.
+
+`restartSession` tears the runtime down with the `restart` reason, which keeps
+the provider resume pointer the way an idle eviction does (Claude session id,
+Codex thread id, OpenCode/ACP session id, Cursor agent id, Pi session). A turn
+in progress is not stopped silently: the action refuses unless `stopFirst`,
+and the desktop asks "Stop the turn and restart?" first. Background work the
+process owned ends with it; the result and the toast say how many jobs
+stopped, and the chat records a notice. No runtime running is fine — the next
+message starts one either way.
+
 ### Continue chats after restarts
 
 When ADE restarts while a chat's turn is running — a crash, a force quit, a

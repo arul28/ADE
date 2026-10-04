@@ -6,6 +6,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
+import { confirmDialog } from "../ui/dialog";
 import {
   canonicalInputFromSummary,
   sessionNeedsYou,
@@ -422,5 +423,48 @@ export async function setChatSpawnKind(
       : window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }));
   } catch (error) {
     reportFailure(action, session.id, error);
+  }
+}
+
+/**
+ * "Restart agent session": stop the chat's provider process and keep the
+ * conversation, so the next message starts a fresh process that picks up new
+ * skills, plugins, and MCP servers. A running turn is not stopped silently —
+ * the user confirms first.
+ */
+export async function restartAgentSession(
+  session: Pick<TerminalSessionSummary, "id">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const call = (stopFirst: boolean) => {
+    const args = { sessionId: session.id, ...(stopFirst ? { stopFirst: true } : {}) };
+    return pin ? window.ade.agentChat.restartSession(args, pin) : window.ade.agentChat.restartSession(args);
+  };
+  try {
+    let result;
+    try {
+      result = await call(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/turn is running/i.test(message)) throw error;
+      const confirmed = await confirmDialog({
+        title: "Stop the turn and restart?",
+        message: "The agent is mid-turn. Restarting stops this turn and any background jobs it started. The conversation is kept.",
+        confirmLabel: "Stop and restart",
+        tone: "warning",
+      });
+      if (!confirmed) return;
+      result = await call(true);
+    }
+    const stopped = result.backgroundJobsStopped > 0
+      ? ` ${result.backgroundJobsStopped === 1 ? "1 background job" : `${result.backgroundJobsStopped} background jobs`} stopped.`
+      : "";
+    showToast({
+      id: `restart-agent-session:${session.id}`,
+      title: "Agent session restarted",
+      message: `Your next message starts a fresh process with the current skills, plugins, and MCP servers.${stopped}`,
+    });
+  } catch (error) {
+    reportFailure("Restart agent session", session.id, error);
   }
 }

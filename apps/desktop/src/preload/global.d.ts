@@ -251,6 +251,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -2210,6 +2212,11 @@ declare global {
           args: AgentChatStopTaskArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatStopTaskResult>;
+        /** Stop the provider process, keep the conversation; the next message starts fresh. */
+        restartSession: (
+          args: AgentChatRestartSessionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatRestartSessionResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
           pin?: OpenProjectBinding | null,

@@ -886,6 +886,7 @@ import type {
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
+import type { AgentChatRestartSessionResult } from "../../../shared/types/chat";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
@@ -8790,6 +8791,18 @@ export function registerIpc({
       ...(rawMode ? { mode: rawMode } : {}),
     };
     return await ctx.agentChatService.interrupt(request);
+  });
+
+  ipcMain.handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
+    if (!record || typeof record.sessionId !== "string" || !record.sessionId.trim()) {
+      throw new Error("A chat session id is required.");
+    }
+    return await ctx.agentChatService.restartSession({
+      sessionId: record.sessionId,
+      ...(record.stopFirst === true ? { stopFirst: true } : {}),
+    });
   });
 
   ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {

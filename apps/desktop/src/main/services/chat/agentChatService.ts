@@ -469,6 +469,8 @@ import type {
   AgentChatInterruptArgs,
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatStopTaskResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
@@ -23237,7 +23239,7 @@ export function createAgentChatService(args: {
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (
     managed: ManagedChatSession,
-    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
+    openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" | "restart" = "handle_close",
     options?: {
       /** Overrides the copy shown when pending Cursor tool approvals are cancelled. */
       cursorPermissionWaiterReason?: string;
@@ -23253,7 +23255,10 @@ export function createAgentChatService(args: {
       || openCodeReason === "pool_compaction"
       || openCodeReason === "paused_run"
       || openCodeReason === "project_close"
-      || openCodeReason === "shutdown";
+      || openCodeReason === "shutdown"
+      // "Restart agent session" keeps the conversation: the next message
+      // resumes the same provider thread in a fresh process.
+      || openCodeReason === "restart";
 
     // If a prior teardown (e.g., idle_ttl) already released the runtime:
     //  - Non-terminal reasons keep the prior teardown's preserved resume
@@ -31199,6 +31204,7 @@ export function createAgentChatService(args: {
       case "paused_run": return "when the run paused";
       case "shutdown": return "when ADE or its OpenCode server stopped";
       case "pool_compaction": return "when ADE freed this chat's connection to OpenCode";
+      case "restart": return "when the agent session restarted";
       default: return "when ADE closed this chat's connection to OpenCode";
     }
   };
@@ -52636,6 +52642,45 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Restart the agent session: stop the provider process, keep the
+   * conversation. The next message starts a fresh process that resumes the
+   * same provider thread, so skills, plugins, MCP servers, and project
+   * instructions added since the chat started are picked up. Refused while a
+   * turn runs unless `stopFirst`; background work the process owned ends with
+   * it, and the result says how much.
+   */
+  const restartSession = async ({
+    sessionId,
+    stopFirst = false,
+  }: AgentChatRestartSessionArgs): Promise<AgentChatRestartSessionResult> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.deleted) throw new Error("This chat was deleted.");
+    const midTurn = runtimeMidTurn(managed) || managed.session.status === "active";
+    if (midTurn && !stopFirst) {
+      throw new Error("A turn is running. Stop it first, or restart with stopFirst to stop it now.");
+    }
+    if (midTurn) await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+    const backgroundJobsStopped = totalBackgroundWork(runtimeBackgroundWork(managed.runtime ?? null));
+    const hadRuntime = Boolean(managed.runtime);
+    teardownRuntime(managed, "restart");
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: hadRuntime
+        ? "Agent session restarted. Your next message starts a fresh process that picks up new skills, plugins, and MCP servers; the conversation is kept."
+        : "Agent session reset. Your next message starts a fresh process that picks up new skills, plugins, and MCP servers.",
+    });
+    persistChatState(managed);
+    logger.info("agent_chat.session_restarted", {
+      sessionId,
+      provider: managed.session.provider,
+      stoppedTurn: midTurn,
+      backgroundJobsStopped,
+    });
+    return { sessionId, restarted: hadRuntime, stoppedTurn: midTurn, backgroundJobsStopped };
+  };
+
+  /**
    * Stop a chat. The provider runtime acts on the queue × background half of
    * the mode; the child-chat half is ADE's own: every chat this one spawned is
    * stopped too, depth-first, with the same mode.
@@ -62094,6 +62139,7 @@ export function createAgentChatService(args: {
     interrupt,
     interruptWithQueueMode: interrupt,
     stopTask,
+    restartSession,
     /**
      * Is a persisted Claude `--bg` job actually still running?
      *

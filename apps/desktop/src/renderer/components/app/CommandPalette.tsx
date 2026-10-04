@@ -38,6 +38,7 @@ import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isChatToolType } from "../../lib/sessions";
+import { restartAgentSession } from "../terminals/sessionLifecycleActions";
 import {
   appendWorkSearchFilter,
   parseWorkSearchQuery,
@@ -791,6 +792,21 @@ export function CommandPalette({
       },
     ];
 
+    // The chat in front of the user can be restarted from here: a fresh
+    // provider process with the same conversation.
+    const activeChat = activeSessionId
+      ? threadSessions.find((session) => session.id === activeSessionId && isChatToolType(session.toolType))
+      : null;
+    if (activeChat) {
+      next.push({
+        id: "action-restart-agent-session",
+        title: "Restart agent session",
+        hint: "Fresh process, same conversation — picks up new skills, plugins, and MCP servers",
+        group: "Actions",
+        run: () => { void restartAgentSession(activeChat); },
+      });
+    }
+
     if (!hasActiveProject) {
       return next.filter(
         (command) =>
@@ -805,9 +821,11 @@ export function CommandPalette({
 
     return next;
   }, [
+    activeSessionId,
     hasActiveProject,
     lanes,
     navigate,
+    threadSessions,
     project?.rootPath,
     selectLane,
     selectedLaneId,

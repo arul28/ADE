@@ -293,6 +293,8 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "chat.send",
   "chat.interrupt",
   "chat.stopTask",
+  // Restart agent session. Optional: an older host simply lacks it.
+  "chat.restartSession",
   "chat.steer",
   "chat.cancelSteer",
   "chat.editSteer",

@@ -360,6 +360,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         false,
       );
     },
+    restartSession: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restartSession", pin);
+      return await call(
+        "chat.restartSession",
+        args,
+        { sessionId: "", restarted: false, stoppedTurn: false, backgroundJobsStopped: 0 },
+        false,
+      );
+    },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);
       return await call(

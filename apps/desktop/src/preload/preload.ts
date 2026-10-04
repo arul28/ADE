@@ -529,6 +529,8 @@ import type {
   AgentChatInterruptResult,
   AgentChatStopTaskArgs,
   AgentChatStopTaskResult,
+  AgentChatRestartSessionArgs,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueArgs,
   AgentChatRestoreCancelledQueueResult,
   AgentChatRecoverTurnArgs,
@@ -1865,6 +1867,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "approveToolUse",
   "interrupt",
   "stopTask",
+  "restartSession",
   "restoreCancelledQueue",
   "recoverTurn",
   "recoverCodexTurn",
@@ -7539,6 +7542,21 @@ const adeBridge = {
         "interrupt",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatInterrupt, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    restartSession: async (
+      args: AgentChatRestartSessionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRestartSessionResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRestartSessionResult>(
+        pin,
+        "chat",
+        "restartSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRestartSession, args),
       );
       agentChatSummaryCache.clear();
       return result;

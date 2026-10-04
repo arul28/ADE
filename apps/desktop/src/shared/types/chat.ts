@@ -4840,6 +4840,20 @@ export type AgentChatInterruptResult = {
   recoveryExpiresAt?: string;
 };
 
+export type AgentChatRestartSessionArgs = {
+  sessionId: string;
+  /** Stop a running turn first instead of refusing. */
+  stopFirst?: boolean;
+};
+
+export type AgentChatRestartSessionResult = {
+  sessionId: string;
+  /** False when no provider process was running; the next message starts one either way. */
+  restarted: boolean;
+  stoppedTurn: boolean;
+  backgroundJobsStopped: number;
+};
+
 export type AgentChatStopTaskArgs = {
   sessionId: string;
   taskId: string;
