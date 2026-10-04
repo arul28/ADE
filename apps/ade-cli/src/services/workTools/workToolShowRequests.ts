@@ -41,6 +41,13 @@ export const WORK_TOOL_SHOW_ACK_TIMEOUT_MS = 8_000;
 export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
 
 /**
+ * A request first goes only to the desktop that sent the chat's last message.
+ * If that desktop has not answered by now (its lid is closed, it disconnected),
+ * the same request goes to every desktop instead.
+ */
+export const WORK_TOOL_SHOW_RETARGET_MS = 2_500;
+
+/**
  * One automatic float offer per chat and device in this window. An agent taps
  * many times a second; the renderer only needs to hear "an agent is driving the
  * device" again after it had a chance to change its mind.
@@ -83,6 +90,7 @@ type PendingShow = {
   request: WorkToolShowRequest;
   held: HeldAnswer | null;
   heldTimer: ReturnType<typeof setTimeout> | null;
+  retargetTimer: ReturnType<typeof setTimeout> | null;
   timer: ReturnType<typeof setTimeout>;
   resolve: (result: WorkToolShowResult) => void;
 };
@@ -118,13 +126,17 @@ function trimmedOrNull(value: unknown): string | null {
 export function createWorkToolShowRequests(args: {
   emitEvent: (payload: Record<string, unknown>) => void;
   logger?: Logger | null;
+  /** The desktop that sent a chat its last message, when one is known. */
+  resolveTargetClientId?: (chatSessionId: string) => string | null;
   ackTimeoutMs?: number;
   heldGraceMs?: number;
+  retargetMs?: number;
   activityThrottleMs?: number;
   now?: () => number;
 }): WorkToolShowRequests {
   const ackTimeoutMs = args.ackTimeoutMs ?? WORK_TOOL_SHOW_ACK_TIMEOUT_MS;
   const heldGraceMs = args.heldGraceMs ?? WORK_TOOL_SHOW_HELD_GRACE_MS;
+  const retargetMs = args.retargetMs ?? WORK_TOOL_SHOW_RETARGET_MS;
   const activityThrottleMs = args.activityThrottleMs ?? WORK_TOOL_AGENT_ACTIVITY_THROTTLE_MS;
   const now = args.now ?? Date.now;
   const pending = new Map<string, PendingShow>();
@@ -143,6 +155,7 @@ export function createWorkToolShowRequests(args: {
     laneId,
     auto,
     requestedAt: new Date(now()).toISOString(),
+    targetClientId: args.resolveTargetClientId?.(chatSessionId) ?? null,
   });
 
   const publish = (request: WorkToolShowRequest): boolean => {
@@ -169,6 +182,7 @@ export function createWorkToolShowRequests(args: {
     pending.delete(requestId);
     clearTimeout(entry.timer);
     if (entry.heldTimer) clearTimeout(entry.heldTimer);
+    if (entry.retargetTimer) clearTimeout(entry.retargetTimer);
     const { request } = entry;
     args.logger?.info("work_tools.show_settled", {
       requestId,
@@ -232,7 +246,18 @@ export function createWorkToolShowRequests(args: {
           else finish(request.requestId, "no_desktop", null);
         }, ackTimeoutMs);
         timer.unref?.();
-        pending.set(request.requestId, { request, held: null, heldTimer: null, timer, resolve });
+        // Nobody answered the desktop it was meant for: ask every desktop.
+        // Same request id, so the target, if it was only slow, ignores the repeat.
+        const retargetTimer = request.targetClientId
+          ? setTimeout(() => {
+            const entry = pending.get(request.requestId);
+            if (!entry || entry.held) return;
+            entry.retargetTimer = null;
+            publish({ ...request, targetClientId: null });
+          }, retargetMs)
+          : null;
+        retargetTimer?.unref?.();
+        pending.set(request.requestId, { request, held: null, heldTimer: null, retargetTimer, timer, resolve });
         if (!publish(request)) finish(request.requestId, "no_desktop", null);
       });
     },

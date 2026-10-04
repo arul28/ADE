@@ -212,6 +212,15 @@ import {
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
 import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
+import { devServerRegistry } from "../../desktop/src/main/services/devServers/devServerRegistry";
+import { createDevServerWatcher } from "../../desktop/src/main/services/devServers/devServerWatcher";
+import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { probeLocalhostPort } from "../../desktop/src/main/services/probeLocalhostPort";
+import {
+  DEV_SERVER_EVENT,
+  type DevServerEvent,
+  type DevServerRecord,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -1586,7 +1595,13 @@ export async function createAdeRuntime(args: {
           // video was a colour that appears nowhere in the product.
           accentColor: () => ADE_ACCENT_COLOR,
         },
-        onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        onEvent: (event) => pushEvent("runtime", {
+          type: "ios_simulator_event",
+          // An agent revealing the device opens it where the user is talking from.
+          event: event.type === "drawer-open-requested" && event.chatSessionId
+            ? { ...event, targetClientId: getSessionInputOrigin(event.chatSessionId)?.clientId ?? null }
+            : event,
+        }),
         // Lane-device cleanup and idle power-off for this project.
         backgroundMaintenance: true,
       });
@@ -1785,6 +1800,7 @@ export async function createAdeRuntime(args: {
       : createRemoteBrowserForwarder({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
       });
     if (remoteBrowserForwarder) teardown.push(() => remoteBrowserForwarder.dispose());
     const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = remoteBrowserForwarder
@@ -1819,6 +1835,37 @@ export async function createAdeRuntime(args: {
       builtInBrowserBridge?.dispose();
     });
 
+    // Dev servers this project's lanes run: what terminals and agent shells
+    // printed, plus what the listener scan finds. Published on the runtime
+    // stream so a desktop on another machine lights up its Browser the same
+    // way one on this machine does.
+    const devServerProjectRoot = path.resolve(projectRoot);
+    const isThisProjectsDevServer = (record: DevServerRecord): boolean =>
+      record.source.projectRoot != null && path.resolve(record.source.projectRoot) === devServerProjectRoot;
+    const devServerWatcher = chatOnlyRuntime
+      ? null
+      : createDevServerWatcher({
+        registry: devServerRegistry,
+        projectRoot,
+        listLaneRoots: async () =>
+          (await laneService.list({ includeArchived: false, includeStatus: false }))
+            .map((lane) => ({ laneId: lane.id, root: lane.worktreePath })),
+        logger,
+      });
+    if (devServerWatcher) {
+      const publishDevServer = (kind: DevServerEvent["kind"]) => (record: DevServerRecord) => {
+        if (!isThisProjectsDevServer(record)) return;
+        pushEvent("runtime", { type: DEV_SERVER_EVENT, event: { kind, server: record } satisfies DevServerEvent });
+      };
+      const stopDetected = devServerRegistry.onDetected(publishDevServer("detected"));
+      const stopRemoved = devServerRegistry.onRemoved(publishDevServer("removed"));
+      teardown.push(() => {
+        stopDetected();
+        stopRemoved();
+        devServerWatcher.dispose();
+      });
+    }
+
     // Read-only view of the Work tools pane for iOS and the hosted web client.
     // Built here because it is the first point where BOTH of its sources exist:
     // the in-process App Control service and the desktop browser bridge.
@@ -1846,7 +1893,19 @@ export async function createAdeRuntime(args: {
       showRequests: createWorkToolShowRequests({
         emitEvent: (payload) => pushEvent("runtime", payload),
         logger,
+        // Show it on the screen of whoever is talking to the chat.
+        resolveTargetClientId: (chatSessionId) => getSessionInputOrigin(chatSessionId)?.clientId ?? null,
       }),
+      devServers: devServerWatcher
+        ? {
+          list: async (args) => {
+            // Someone is looking at a Browser: make the answer current first.
+            await devServerWatcher.refresh();
+            return devServerRegistry.list(args).filter(isThisProjectsDevServer);
+          },
+          probePort: (port) => probeLocalhostPort(port),
+        }
+        : null,
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());

@@ -110,6 +110,17 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
   const maxEntries = Math.max(1, options.maxEntries ?? 64);
   const records = new Map<string, DevServerRecord>();
   const listeners = new Set<(record: DevServerRecord) => void>();
+  const removedListeners = new Set<(record: DevServerRecord) => void>();
+
+  const notifyRemoved = (record: DevServerRecord): void => {
+    for (const listener of [...removedListeners]) {
+      try {
+        listener(record);
+      } catch {
+        // A bad subscriber must not break the caller that removed the record.
+      }
+    }
+  };
 
   return {
     /**
@@ -170,12 +181,27 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
     /** Forgets everything a terminal session discovered (session closed). */
     forgetSession(sessionId: string): void {
       for (const [key, record] of [...records.entries()]) {
-        if (record.source.sessionId === sessionId) records.delete(key);
+        if (record.source.sessionId !== sessionId) continue;
+        records.delete(key);
+        notifyRemoved(record);
       }
+    },
+    /** A port that stopped listening. Returns whether anything was forgotten. */
+    forget(laneId: string | null, port: number): boolean {
+      const key = registryKey(laneId?.trim() || null, port);
+      const record = records.get(key);
+      if (!record) return false;
+      records.delete(key);
+      notifyRemoved(record);
+      return true;
     },
     onDetected(listener: (record: DevServerRecord) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onRemoved(listener: (record: DevServerRecord) => void): () => void {
+      removedListeners.add(listener);
+      return () => removedListeners.delete(listener);
     },
     clear(): void {
       records.clear();
@@ -189,3 +215,59 @@ export function createDevServerRegistry(options: { maxEntries?: number } = {}) {
  * be constructed in a particular order during main-process boot.
  */
 export const devServerRegistry = createDevServerRegistry();
+
+/** An agent's own shell ran a command (a Bash tool call, a Codex command). */
+export type AgentShellActivity = {
+  sessionId: string;
+  laneId: string | null;
+  projectRoot: string | null;
+  /** The command finished; a server it started in the background may be binding now. */
+  finished: boolean;
+};
+
+const agentShellListeners = new Set<(activity: AgentShellActivity) => void>();
+
+/**
+ * Output from an agent's own shell, which is not an ADE terminal.
+ *
+ * An agent that runs `npx vite --port 4180` through its Bash tool prints the
+ * same ready line a terminal would, but that output never passes through the
+ * PTY pipeline, so the registry never heard about it. The same matcher runs
+ * here. A server started in the background prints nothing the agent captures,
+ * so the activity itself is also passed on: the listener scan uses it as its
+ * cue to look.
+ */
+export function noteAgentShellOutput(input: AgentShellActivity & { output: string }): void {
+  const sessionId = input.sessionId.trim();
+  if (!sessionId) return;
+  if (input.output) {
+    const { detections } = detectDevServersInChunk(`${input.output}\n`);
+    for (const detection of detections) {
+      devServerRegistry.record({
+        port: detection.port,
+        url: detection.url,
+        sessionId,
+        laneId: input.laneId,
+        projectRoot: input.projectRoot,
+      });
+    }
+  }
+  const activity: AgentShellActivity = {
+    sessionId,
+    laneId: input.laneId,
+    projectRoot: input.projectRoot,
+    finished: input.finished,
+  };
+  for (const listener of [...agentShellListeners]) {
+    try {
+      listener(activity);
+    } catch {
+      // A bad subscriber must not break chat event processing.
+    }
+  }
+}
+
+export function onAgentShellActivity(listener: (activity: AgentShellActivity) => void): () => void {
+  agentShellListeners.add(listener);
+  return () => agentShellListeners.delete(listener);
+}

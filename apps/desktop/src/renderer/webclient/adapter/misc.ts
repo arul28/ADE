@@ -844,6 +844,9 @@ function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
     // show`; a desktop that has the chat open does.
     onShowRequest: () => () => {},
     acknowledgeShow: async () => ({ ok: false }),
+    // The web client has no browser to light up.
+    listDevServers: async () => ({ servers: [] }),
+    onDevServer: () => () => {},
   } as AdeNamespace<"workTools">;
 }
 

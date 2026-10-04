@@ -902,6 +902,7 @@ import type {
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserExportHarResult,
   BuiltInBrowserFindInPageArgs,
+  DevServerEvent,
   DevServersArgs,
   DevServersResult,
   BuiltInBrowserFindInPageResult,
@@ -1048,6 +1049,8 @@ declare global {
          * and first-render decisions.
          */
         runtimeTarget: { platform: string; arch: string };
+        /** This desktop install's id; absent on the web client. See `shared/sessionInputOrigin.ts`. */
+        desktopClientId?: string;
         /**
          * Release channel of this build, captured in preload from the argv the
          * main process injects. Synchronous for the same reason as
@@ -3327,7 +3330,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserZoomResult>;
         /** Dev servers sniffed from terminal output; feature-detect before use. */
-        getDevServers: (args?: DevServersArgs) => Promise<DevServersResult>;
+        getDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
         findInPage: (
           args: BuiltInBrowserFindInPageArgs,
           pin?: OpenProjectBinding | null,
@@ -3425,7 +3428,7 @@ declare global {
         ) => Promise<ChatTerminalReattachResult>;
       };
       localhost: {
-        probePort: (port: number) => Promise<boolean>;
+        probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
       };
       search: {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;
@@ -4277,6 +4280,13 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** Dev servers on the lane's machine, for the Browser on any machine. */
+        listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
+        /** A dev server started or stopped on the lane's machine. */
+        onDevServer: (
+          cb: (event: DevServerEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
         onShowRequest: (
           cb: (request: WorkToolShowRequest) => void,

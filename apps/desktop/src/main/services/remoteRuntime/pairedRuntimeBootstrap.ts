@@ -364,7 +364,9 @@ export async function bootstrapPairedRuntime(args: {
           { replaceConnectionMetadata: true },
         );
       }
-      const portForwardClient = createSyncPortForwardClient(transport.connection);
+      const portForwardClient = createSyncPortForwardClient(transport.connection, {
+        machineLabel: updated.name?.trim() || updated.hostname?.trim() || null,
+      });
       return {
         client,
         transport,

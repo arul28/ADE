@@ -60,6 +60,7 @@ import {
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
+import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -7589,9 +7590,11 @@ export function createPtyService({
       }
     },
 
-    write({ ptyId, data }: { ptyId: string; data: string }): void {
+    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
+      // Enter in a CLI chat is a message sent: remember which desktop sent it.
+      if (inputOrigin && /[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
       try {
         markPtyUserInput(entry, data);
         claimAgentShellForUser(entry, data);

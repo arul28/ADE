@@ -1304,6 +1304,7 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { noteAgentShellOutput } from "../devServers/devServerRegistry";
 import {
   createStaleRunSweep,
   type StaleRunSweepChatRow,
@@ -1324,6 +1325,28 @@ import {
   type AgentChatCliChildSessionSummary,
   type CliSessionFacts,
 } from "../../../shared/cliChildSession";
+
+/** Tool names whose result is a shell command's output. */
+const SHELL_TOOL_NAME_PATTERN = /^(bash|shell|exec|exec_command|run_terminal_cmd|run_shell_command|terminal|command)$/i;
+/** A running command streams; its output is matched at most this often. */
+const AGENT_SHELL_SCAN_INTERVAL_MS = 750;
+
+/** The text of a shell tool's result, whatever shape the provider gave it. */
+function shellToolResultText(result: unknown): string {
+  const partsText = (parts: unknown[]): string => parts
+    .map((part) => (typeof part === "string" ? part : typeof (part as { text?: unknown })?.text === "string" ? (part as { text: string }).text : ""))
+    .join("\n");
+  if (typeof result === "string") return result;
+  if (Array.isArray(result)) return partsText(result);
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  for (const key of ["stdout", "output", "content", "text"]) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) return partsText(value);
+  }
+  return "";
+}
 
 export function restartRecoveryStopAttribution(args: {
   ownerSocketPath?: string | null;
@@ -19730,6 +19753,55 @@ export function createAgentChatService(args: {
     managedSessions.get(sessionId)?.activityDetector?.reset();
   };
 
+  /** Item id → last time its streaming output was matched, for running commands. */
+  const agentShellScanAt = new Map<string, number>();
+
+  /**
+   * Hand an agent's shell output to dev-server discovery. The agent's own shell
+   * is not an ADE terminal, so without this a server it starts is invisible to
+   * the Browser's launchpad on every machine.
+   */
+  const observeAgentShellOutput = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    let output = "";
+    let finished = true;
+    let itemId: string | null = null;
+    if (event.type === "command") {
+      output = event.output;
+      finished = event.status !== "running";
+      itemId = event.itemId;
+    } else if (event.type === "tool_result" && SHELL_TOOL_NAME_PATTERN.test(event.tool)) {
+      output = shellToolResultText(event.result);
+      itemId = event.itemId;
+    } else {
+      return;
+    }
+    if (itemId) {
+      if (!finished) {
+        const now = Date.now();
+        const last = agentShellScanAt.get(itemId);
+        if (last != null && now - last < AGENT_SHELL_SCAN_INTERVAL_MS) return;
+        agentShellScanAt.set(itemId, now);
+        if (agentShellScanAt.size > 256) {
+          const oldest = agentShellScanAt.keys().next().value;
+          if (oldest) agentShellScanAt.delete(oldest);
+        }
+      } else {
+        agentShellScanAt.delete(itemId);
+      }
+    }
+    try {
+      noteAgentShellOutput({
+        sessionId: managed.session.id,
+        laneId: managed.session.laneId ?? null,
+        projectRoot,
+        output,
+        finished,
+      });
+    } catch {
+      // Discovery is best-effort; it must never break the chat stream.
+    }
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -19754,6 +19826,7 @@ export function createAgentChatService(args: {
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
+    observeAgentShellOutput(managed, normalizedEvent);
     codexVoice.observeChatEvent(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {

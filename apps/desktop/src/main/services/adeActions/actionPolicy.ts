@@ -979,7 +979,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // so phones and the hosted web client can mirror it. `show` is an agent
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
+  // `listDevServers` and `probePort` let a Browser on another machine see this
+  // machine's dev servers; both only read.
+  work_tools: [
+    "getLaneState",
+    "setActiveTool",
+    "readObservationPreview",
+    "show",
+    "acknowledgeShow",
+    "listDevServers",
+    "probePort",
+  ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.

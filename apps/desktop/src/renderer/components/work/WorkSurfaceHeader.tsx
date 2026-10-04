@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
+import { WorkHeaderDevServerButton } from "./WorkHeaderDevServerButton";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
 import { SessionSnoozeChip } from "./SessionLifecycleChips";
@@ -200,8 +201,12 @@ function useWorkSurfaceHeaderParts({
       linkedPrOnly={prBadgeOnly}
     />
   ) : null;
+  // Beside the Tools toggle on Work surfaces: lit while the lane serves a page.
   const toolsToggle = onToggleToolsPane ? (
-    <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
+    <>
+      {laneId ? <WorkHeaderDevServerButton laneId={laneId} runtimePin={runtimePin} /> : null}
+      <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
+    </>
   ) : null;
   const titleDragProps = {
     ...(tileDragProps ?? {}),

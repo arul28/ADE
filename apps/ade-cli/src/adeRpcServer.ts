@@ -3381,7 +3381,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   // Headless machines cannot mint an actor capability: the issuer asks the
   // desktop bridge for one, and on a box running only `ade serve` that socket
   // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // call before it ever reaches the forwarder's `route`, so the whole remote
   // forwarding path (publish `built_in_browser_remote_request`, wait for a
   // pinned desktop to ack) is unreachable. Only the three "put this URL on a
   // screen" methods are exempt — they are exactly the forwardable set. This is
@@ -3500,6 +3500,11 @@ function scopeWorkToolsAdeActionArgs(
       scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
     }
     return workToolsArgs;
+  }
+  if (action === "listDevServers") {
+    // A bound agent sees its own lane's servers, the same rule as getLaneState.
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    return sessionLaneId && !isUserClient ? { ...workToolsArgs, laneId: sessionLaneId } : workToolsArgs;
   }
   if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);

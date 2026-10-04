@@ -1,6 +1,6 @@
 import { app } from "electron";
 import net from "node:net";
-import type { Client } from "ssh2";
+import type { Client, ClientChannel } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -44,6 +44,7 @@ import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
+import { buildForwardFailureResponse, looksLikeHttpRequest } from "./forwardFailurePage";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
 import {
   resolveRemoteAttachmentUploadRoute,
@@ -238,6 +239,11 @@ function remoteRuntimeActionCallOptions(
 function normalizeForwardRemoteHost(value: string | null | undefined): string {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed || "127.0.0.1";
+}
+
+function isIpv4LoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost";
 }
 
 function normalizeForwardPort(value: unknown): number {
@@ -743,31 +749,57 @@ export class RemoteConnectionPool {
           destroyAcceptedSocket(socket, new Error("The active SSH transport is unavailable."));
           return;
         }
-        activeEntry.ssh.forwardOut(
-          LOCAL_FORWARD_HOST,
-          0,
-          remoteHost,
-          remotePort,
-          (error, stream) => {
-            if (error) {
-              destroyAcceptedSocket(socket, error);
+        const ssh = activeEntry.ssh;
+        // A dev server bound only to `[::1]` (Node resolves `localhost` to
+        // IPv6 first on macOS) refuses the IPv4 dial. Try the other loopback
+        // before giving up, the same way the paired transport does.
+        const fallbackHost = isIpv4LoopbackHost(remoteHost) ? "::1" : null;
+        const dial = (
+          host: string,
+          onDone: (error: Error | undefined, stream: ClientChannel) => void,
+        ) => ssh.forwardOut(LOCAL_FORWARD_HOST, 0, host, remotePort, onDone);
+        const onDialed = (
+          error: Error | undefined,
+          stream: ClientChannel,
+          triedFallback: boolean,
+        ): void => {
+          if (error && fallbackHost && !triedFallback) {
+            dial(fallbackHost, (nextError, nextStream) => onDialed(nextError, nextStream, true));
+            return;
+          }
+          if (error) {
+            // The browser's request is already buffered on this paused
+            // socket; when it is HTTP, answer with a readable page rather
+            // than an empty response.
+            const firstBytes = socket.read() as Buffer | null;
+            if (looksLikeHttpRequest(firstBytes)) {
+              socket.end(buildForwardFailureResponse({
+                remotePort,
+                machineLabel: activeEntry.result.target.name?.trim() || null,
+                reason: fallbackHost
+                  ? `Nothing is listening on port ${remotePort} (tried 127.0.0.1 and ::1).`
+                  : error.message,
+              }));
               return;
             }
-            const closeBoth = () => {
-              try {
-                socket.destroy();
-              } catch {}
-              try {
-                stream.destroy();
-              } catch {}
-            };
-            socket.once("error", closeBoth);
-            stream.once("error", closeBoth);
-            socket.once("close", closeBoth);
-            stream.once("close", closeBoth);
-            socket.pipe(stream).pipe(socket);
-          },
-        );
+            destroyAcceptedSocket(socket, error);
+            return;
+          }
+          const closeBoth = () => {
+            try {
+              socket.destroy();
+            } catch {}
+            try {
+              stream.destroy();
+            } catch {}
+          };
+          socket.once("error", closeBoth);
+          stream.once("error", closeBoth);
+          socket.once("close", closeBoth);
+          stream.once("close", closeBoth);
+          socket.pipe(stream).pipe(socket);
+        };
+        dial(remoteHost, (error, stream) => onDialed(error, stream, false));
       });
 
       return await new Promise<LocalPortForwardEntry>((resolve, reject) => {
