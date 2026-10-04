@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AdeUsageCostBreakdown,
+  AdeUsageCostBreakdownBy,
+  AdeUsageCostSplit,
   AdeUsageDailyPoint,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
+  SetAdeUsageModelPriceArgs,
   AdeUsageEstimationKind,
   AdeUsagePricingSource,
   AdeUsageModelSummary,
@@ -46,6 +54,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import {
+  ADE_USAGE_COST_BREAKDOWN_BY,
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
@@ -96,10 +105,16 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  priceTokenSplit,
+  applyUsageModelAlias,
+  isZeroTokenPrice,
+  priceTokenSplitDetailed,
+  usagePriceOverrideKey,
+  readUsagePriceOverrides,
   refreshDynamicTokenPricing,
+  reloadUsagePriceOverrides,
+  updateUsagePriceOverrides,
+  type UsagePriceOverride,
   resetDynamicTokenPricingForTest,
-  ratesForRequest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
@@ -140,6 +155,8 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "./usageCostSplit";
+import { buildCostBreakdown } from "./usageCostBreakdown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
   resetCreditOutcomeKey,
@@ -2129,16 +2146,18 @@ type TokenBreakdown = Record<string, CostTokenBreakdown & { cacheWrite: number; 
 type DailyTokenBreakdown = Record<string, number>;
 type DailyModelTokenBreakdown = Record<string, TokenBreakdown>;
 
-function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry): void {
+function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry, cost: EntryCost = calculateTokenEntryCost(entry)): void {
   const modelKey = entry.model || "unknown";
   if (!breakdown[modelKey]) {
-    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0 };
+    breakdown[modelKey] = { input: 0, output: 0, cached: 0, cacheWrite: 0, costUsd: 0, costSplit: emptyCostSplit() };
   }
-  breakdown[modelKey].input += entry.inputTokens;
-  breakdown[modelKey].output += entry.outputTokens;
-  breakdown[modelKey].cached += entry.cachedTokens;
-  breakdown[modelKey].cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
-  breakdown[modelKey].costUsd += calculateTokenEntryCost(entry);
+  const row = breakdown[modelKey];
+  row.input += entry.inputTokens;
+  row.output += entry.outputTokens;
+  row.cached += entry.cachedTokens;
+  row.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
+  row.costUsd += cost.costUsd;
+  addCostSplit(row.costSplit ??= emptyCostSplit(), cost.split);
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
@@ -2148,30 +2167,56 @@ function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): 
   breakdown[date] = (breakdown[date] ?? 0) + tokens;
 }
 
-function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry): void {
+function addDailyModelTokenEntry(breakdown: DailyModelTokenBreakdown, entry: TokenEntry, cost: EntryCost): void {
   const date = localDayKey(entry.timestamp);
   if (!date) return;
   if (!breakdown[date]) breakdown[date] = {};
-  addTokenBreakdownEntry(breakdown[date]!, entry);
+  addTokenBreakdownEntry(breakdown[date]!, entry, cost);
 }
 
-function calculateTokenEntryCost(entry: TokenEntry): number {
-  const override = finiteNumberOrNull(entry.costOverrideUsd);
-  if (override != null && override >= 0) return override;
-  const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
-    contextTokens: entry.requestContextTokens,
-    timestampMs: entry.timestamp,
-    speed: entry.speed ?? "standard",
-  });
-  const tokensUsd = priceTokenSplit(rates, {
+type EntryCost = { costUsd: number; split: AdeUsageCostSplit };
+
+/**
+ * One ledger entry's dollars and where they went. A provider-reported cost
+ * (`costOverrideUsd`) is the figure; it is split in proportion to what the
+ * list rates would have charged each token type, and lands in `other` when no
+ * list rate prices the model. Web search is a per-request fee: `other`.
+ */
+function calculateTokenEntryCost(entry: TokenEntry): EntryCost {
+  const listed = priceTokenSplitDetailed(entry.model, resolveTokenPrice(entry.model), {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
     output: toNonNegativeInt(entry.billableOutputTokens ?? entry.outputTokens),
     cacheRead: toNonNegativeInt(entry.billableCachedTokens ?? entry.cachedTokens),
     cacheWrite: toNonNegativeInt(entry.cacheWriteTokens),
     cacheWrite1h: toNonNegativeInt(entry.oneHourCacheWriteTokens),
+  }, {
+    contextTokens: entry.requestContextTokens,
+    timestampMs: entry.timestamp,
+    speed: entry.speed ?? "standard",
   });
-  // Web search is a per-request fee, not a token rate, so it stays out of the shared split price.
-  return tokensUsd + toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  const split = emptyCostSplit();
+  const override = finiteNumberOrNull(entry.costOverrideUsd);
+  if (override != null && override >= 0) {
+    if (listed.totalUsd > 0) {
+      const scale = override / listed.totalUsd;
+      addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
+      addSpeedPremium(split, entry.speed, listed.speedPremiumUsd * scale);
+    } else {
+      split.other = override;
+    }
+    return { costUsd: override, split };
+  }
+  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 });
+  addSpeedPremium(split, entry.speed, listed.speedPremiumUsd);
+  const webSearchUsd = toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
+  split.other += webSearchUsd;
+  return { costUsd: listed.totalUsd + webSearchUsd, split };
+}
+
+function addSpeedPremium(split: AdeUsageCostSplit, speed: TokenEntry["speed"], premiumUsd: number): void {
+  if (!(premiumUsd > 0)) return;
+  if (speed === "ultrafast") split.ultrafastPremium += premiumUsd;
+  else if (speed === "fast") split.fastPremium += premiumUsd;
 }
 
 function aggregateCosts(
@@ -2218,16 +2263,19 @@ function aggregateCosts(
     adeOriginatedDailyTokens: DailyTokenBreakdown;
   }>;
 
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    // "Map to": a mapped model's usage is bucketed and priced as its target.
+    const mappedModel = applyUsageModelAlias(rawEntry.model);
+    const entry = mappedModel === rawEntry.model ? rawEntry : { ...rawEntry, model: mappedModel };
     const cost = calculateTokenEntryCost(entry);
     for (const preset of ADE_USAGE_RANGE_PRESETS) {
       const startMs = starts[preset];
       if (startMs != null && entry.timestamp < startMs) continue;
       const accumulator = accumulators[preset];
-      accumulator.costUsd += cost;
-      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry);
+      accumulator.costUsd += cost.costUsd;
+      addTokenBreakdownEntry(accumulator.tokenBreakdown, entry, cost);
       addDailyTokenEntry(accumulator.dailyTokens, entry);
-      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry);
+      addDailyModelTokenEntry(accumulator.dailyModelTokens, entry, cost);
       if (entry.adeOriginated || entry.originator?.trim().toLowerCase().startsWith("ade")) {
         const adeOriginatedTokens = entry.inputTokens
           + entry.outputTokens
@@ -2422,6 +2470,15 @@ type ResolvedAdeUsageRange = {
   until: string;
 };
 
+/** One row from the project database, or null when the read fails (a table missing on an old schema). */
+function safeUsageRow<T extends Record<string, unknown>>(db: AdeDb, sql: string, params: (string | number | null)[]): T | null {
+  try {
+    return db.get<T>(sql, params) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function toFiniteNumber(value: unknown): number {
   const numberValue = Number(value ?? 0);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -2544,11 +2601,13 @@ function addProviderModelUsage(
     inputTokens?: number;
     outputTokens?: number;
     cachedTokens?: number;
+    cacheWriteTokens?: number;
     calls?: number;
     costUsd?: number;
     rangeCostUsd?: number;
     todayCostUsd?: number;
     last30dCostUsd?: number;
+    costSplit?: AdeUsageCostSplit | null;
   },
 ): void {
   const provider = normalizeUsageLabel(args.provider, "unknown");
@@ -2590,6 +2649,7 @@ function addProviderModelUsage(
   providerSummary.rangeCostUsd += rangeCostUsd;
   providerSummary.todayCostUsd += todayCostUsd;
   providerSummary.last30dCostUsd += last30dCostUsd + costUsd;
+  if (args.costSplit) addCostSplit(providerSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 
   const model = normalizeUsageLabel(args.model, "");
   if (!model) return;
@@ -2615,6 +2675,9 @@ function addProviderModelUsage(
   modelSummary.cachedTokens += cachedTokens;
   modelSummary.totalTokens += totalTokens;
   modelSummary.costUsd += rangeCostUsd;
+  const cacheWriteTokens = toNonNegativeInt(args.cacheWriteTokens);
+  if (cacheWriteTokens > 0) modelSummary.cacheWriteTokens = toNonNegativeInt(modelSummary.cacheWriteTokens) + cacheWriteTokens;
+  if (args.costSplit) addCostSplit(modelSummary.costSplit ??= emptyCostSplit(), args.costSplit);
 }
 
 function roundUsd(value: number): number {
@@ -2633,8 +2696,16 @@ function sortedProviderModelSummaries(aggregation: ProviderModelAggregation): {
     provider.rangeCostUsd = roundUsd(provider.rangeCostUsd);
     provider.todayCostUsd = roundUsd(provider.todayCostUsd);
     provider.last30dCostUsd = roundUsd(provider.last30dCostUsd);
+    const providerSplit = finalizeCostSplit(provider.costSplit);
+    if (providerSplit) provider.costSplit = providerSplit;
+    else delete provider.costSplit;
   }
-  for (const model of models) model.costUsd = roundUsd(model.costUsd);
+  for (const model of models) {
+    model.costUsd = roundUsd(model.costUsd);
+    const modelSplit = finalizeCostSplit(model.costSplit);
+    if (modelSplit) model.costSplit = modelSplit;
+    else delete model.costSplit;
+  }
   return { providers, models };
 }
 
@@ -2710,6 +2781,10 @@ function addCostSnapshotsProviderUsage(
         inputTokens: modelInput,
         outputTokens: modelOutput,
         cachedTokens: modelCached,
+        cacheWriteTokens: toNonNegativeInt(tokens.cacheWrite),
+        // Only a breakdown that carries its own dollars carries a split of
+        // them; a share-of-provider estimate has nothing to split.
+        costSplit: tokens.costUsd != null ? parseCostSplit(tokens.costSplit) : null,
         rangeCostUsd: modelCostUsd,
         todayCostUsd: cost.todayCostUsd * share,
         last30dCostUsd: cost.last30dCostUsd * share,
@@ -2739,6 +2814,8 @@ function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsage
       selected[model].cached += toNonNegativeInt(entry.cached);
       selected[model].cacheWrite += toNonNegativeInt(entry.cacheWrite);
       selected[model].costUsd += Math.max(0, toFiniteNumber(entry.costUsd));
+      const daySplit = parseCostSplit(entry.costSplit);
+      if (daySplit) addCostSplit(selected[model].costSplit ??= emptyCostSplit(), daySplit);
     }
   }
   return selected;
@@ -4698,6 +4775,63 @@ export function createUsageTrackingService({
     });
   }
 
+  /**
+   * Spend by chat, lane, or account, from the per-turn ledger. Chats and lanes
+   * are the calling project's (their names live in its database); accounts
+   * are the machine's, like the quota they draw on. The ledger keeps three
+   * months, so a longer range reports what it still holds.
+   */
+  async function getCostBreakdown(
+    args: GetAdeUsageCostBreakdownArgs,
+    forScope: AttachedScope = defaultScope,
+  ): Promise<AdeUsageCostBreakdown> {
+    const by: AdeUsageCostBreakdownBy = (ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(args?.by)
+      ? args.by
+      : "chat";
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const rangeOut = { since: range.since, until: range.until };
+    const ledger = dependencies?.turnUsageLedger ?? null;
+    if (!ledger) {
+      return { by, range: rangeOut, available: false, rows: [], other: null, totals: { turns: 0, totalTokens: 0, costUsd: 0, billedUsd: 0, planValueUsd: 0 } };
+    }
+    const sinceMs = range.since ? Date.parse(range.since) : 0;
+    const untilMs = Date.parse(range.until);
+    const scopeRoot = forScope.projectRoot ? pathKey(path.resolve(forScope.projectRoot)) : null;
+    const rows = (await ledger.store.readTurns({ sinceMs })).filter((row) => {
+      const atMs = Date.parse(row.at);
+      if (!(atMs >= sinceMs && atMs <= untilMs)) return false;
+      if (by === "account" || !scopeRoot) return true;
+      return Boolean(row.projectRoot) && pathKey(path.resolve(row.projectRoot!)) === scopeRoot;
+    });
+    const db = forScope.db;
+    const chatCache = new Map<string, { title: string | null; laneId: string | null } | null>();
+    const laneCache = new Map<string, string | null>();
+    return buildCostBreakdown({
+      rows,
+      by,
+      range: rangeOut,
+      laneId: args.laneId ?? null,
+      limit: args.limit,
+      labels: {
+        chat: (sessionId) => {
+          if (!chatCache.has(sessionId)) {
+            const row = db ? safeUsageRow<{ title: string | null; lane_id: string | null }>(db, "select title, lane_id from terminal_sessions where id = ?", [sessionId]) : null;
+            chatCache.set(sessionId, row ? { title: row.title ?? null, laneId: row.lane_id ?? null } : null);
+          }
+          return chatCache.get(sessionId) ?? null;
+        },
+        lane: (laneId) => {
+          if (!laneCache.has(laneId)) {
+            const row = db ? safeUsageRow<{ name: string | null }>(db, "select name from lanes where id = ?", [laneId]) : null;
+            laneCache.set(laneId, row?.name?.trim() || null);
+          }
+          return laneCache.get(laneId) ?? null;
+        },
+      },
+    });
+  }
+
   const requireModelRouter = (): ModelRouterService => {
     const router = dependencies?.modelRouter;
     if (!router) throw new Error("The model router is not available in this host.");
@@ -5528,6 +5662,114 @@ export function createUsageTrackingService({
     }
   }
 
+  /**
+   * One model's cost, tokens, cache hit rate, daily trend, split, and the
+   * price ADE bills it at, read from the same cached history as the stats.
+   * Account scope reads this machine's history: other machines publish only
+   * day totals, not a model's split.
+   */
+  function getModelDetail(args: GetAdeUsageModelDetailArgs, forScope: AttachedScope = defaultScope): AdeUsageModelDetail {
+    const nowMs = Date.now();
+    const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
+    const costs = normalizeScope(args.scope) === "project"
+      ? cachedProjectCostsByRoot.get(scopeRootKey(forScope.projectRoot)) ?? []
+      : lastSnapshot.costs;
+    const provider = String(args.provider ?? "");
+    const model = String(args.model ?? "");
+    const byDate = new Map<string, { costUsd: number; totalTokens: number }>();
+    const modelIds = new Set<string>();
+    const totals = { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const split = emptyCostSplit();
+    for (const cost of costs) {
+      if (cost.provider !== provider) continue;
+      for (const [date, models] of Object.entries(cost.dailyTokenBreakdownByPreset?.all ?? {})) {
+        if (!dateIntersectsRange(date, range)) continue;
+        for (const [modelId, row] of Object.entries(models)) {
+          if (displayModelName(modelId) !== model) continue;
+          modelIds.add(modelId);
+          const input = toNonNegativeInt(row.input);
+          const output = toNonNegativeInt(row.output);
+          const cacheRead = toNonNegativeInt(row.cached);
+          const cacheWrite = toNonNegativeInt(row.cacheWrite);
+          const costUsd = Math.max(0, toFiniteNumber(row.costUsd));
+          totals.costUsd += costUsd;
+          totals.input += input;
+          totals.output += output;
+          totals.cacheRead += cacheRead;
+          totals.cacheWrite += cacheWrite;
+          addCostSplit(split, parseCostSplit(row.costSplit));
+          const day = byDate.get(date) ?? { costUsd: 0, totalTokens: 0 };
+          day.costUsd += costUsd;
+          day.totalTokens += input + output + cacheRead + cacheWrite;
+          byDate.set(date, day);
+        }
+      }
+    }
+    const totalTokens = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
+    const inputSide = totals.input + totals.cacheRead + totals.cacheWrite;
+    const priceId = [...modelIds][0] ?? model;
+    const overrides = readUsagePriceOverrides();
+    const custom = overrides.prices[usagePriceOverrideKey(priceId)] ?? overrides.prices[usagePriceOverrideKey(model)] ?? null;
+    const resolved = resolveTokenPrice(priceId);
+    const perMillion = (value: number) => Math.round(value * 1_000_000 * 1_000_000) / 1_000_000;
+    const mapSource = Object.entries(overrides.aliases).find(([from]) => from === usagePriceOverrideKey(model) || modelIds.has(from));
+    return {
+      provider,
+      model,
+      range: { since: range.since, until: range.until },
+      costUsd: roundUsd(totals.costUsd),
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cachedTokens: totals.cacheRead + totals.cacheWrite,
+      cacheReadTokens: totals.cacheRead,
+      totalTokens,
+      costPerMillionUsd: totalTokens > 0 ? Math.round((totals.costUsd / totalTokens) * 1_000_000 * 100) / 100 : null,
+      cacheHitRate: inputSide > 0 ? totals.cacheRead / inputSide : null,
+      ...(finalizeCostSplit(split) ? { costSplit: finalizeCostSplit(split)! } : {}),
+      daily: [...byDate.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, day]) => ({ date, costUsd: Math.round(day.costUsd * 10_000) / 10_000, totalTokens: day.totalTokens })),
+      price: custom
+        ? { ...custom, source: "custom", unpriced: false }
+        : {
+            input: perMillion(resolved.input),
+            output: perMillion(resolved.output),
+            cacheRead: perMillion(resolved.cacheRead),
+            cacheWrite: perMillion(resolved.cacheWrite),
+            source: tokenPriceSource(priceId),
+            unpriced: isZeroTokenPrice(resolved),
+          },
+      modelIds: [...modelIds].sort(),
+      mapTo: mapSource?.[1] ?? null,
+    };
+  }
+
+  function getModelPriceOverrides(): AdeUsagePriceOverrides {
+    const file = readUsagePriceOverrides();
+    return { prices: { ...file.prices }, aliases: { ...file.aliases } };
+  }
+
+  /**
+   * Saves one price or mapping and re-prices history in the background: the
+   * history scan is what applies it, and it can take a minute on a large
+   * machine, so the caller gets the saved overrides now and the page updates
+   * when the scan's snapshot lands.
+   */
+  function setModelPriceOverride(args: SetAdeUsageModelPriceArgs): AdeUsagePriceOverrides {
+    const model = typeof args?.model === "string" ? args.model.trim() : "";
+    if (!model) throw new Error("usage.setModelPrice needs a model id.");
+    updateUsagePriceOverrides({
+      model,
+      ...(args.price !== undefined ? { price: args.price as UsagePriceOverride | null } : {}),
+      ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
+    });
+    reloadUsagePriceOverrides();
+    void refreshHistory({ reason: "user" }).catch((error) => {
+      logger.warn("usage.price_override.reprice_failed", { error: getErrorMessage(error) });
+    });
+    return getModelPriceOverrides();
+  }
+
   async function getAdeUsageStats(
     args: GetAdeUsageStatsArgs = {},
     forScope: AttachedScope = defaultScope,
@@ -5800,6 +6042,10 @@ export function createUsageTrackingService({
       refreshHistory,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
+      getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
+      getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args, scope),
+      getModelPriceOverrides,
+      setModelPriceOverride,
       getModelRoutes,
       previewModelRoute,
       getRouterShadowSummary,
@@ -5839,6 +6085,10 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
+    getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),
+    getModelDetail: (args: GetAdeUsageModelDetailArgs) => getModelDetail(args),
+    getModelPriceOverrides,
+    setModelPriceOverride,
     getModelRoutes,
     previewModelRoute,
     getRouterShadowSummary,

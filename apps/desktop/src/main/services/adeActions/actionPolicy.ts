@@ -100,7 +100,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
-  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
+  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   // Restoring brings a lane's worktree and services back up — the CTO's call,
@@ -929,6 +929,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getCostBreakdown",
+    "getModelDetail",
+    "getModelPriceOverrides",
     "getModelRoutes",
     "getRouterEfficiency",
     "getRouterShadowSummary",
@@ -939,6 +942,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "poll",
     "previewModelRoute",
     "refreshModelRegistry",
+    "setModelPriceOverride",
     "start",
     "stop",
   ],

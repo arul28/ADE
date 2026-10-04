@@ -244,7 +244,8 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import { ADE_USAGE_COST_BREAKDOWN_BY, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePricing";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -7391,6 +7392,72 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     return await service.consumeResetCredit({
       accountId: requireString(payload.accountId, "usage.consumeResetCredit requires accountId."),
+    });
+  }, "runtime");
+
+  // Spend by chat / lane / account comes from this machine's per-turn ledger;
+  // chat titles and lane names come from the project, so it is project-scoped
+  // like `usage.getAdeStats`.
+  register("usage.getCostBreakdown", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const by = asTrimmedString(payload.by);
+    if (!by || !(ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(by)) {
+      throw new Error("usage.getCostBreakdown by must be chat, lane, or account.");
+    }
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getCostBreakdown preset must be today, 7d, 30d, year, or all.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    const laneId = asTrimmedString(payload.laneId);
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    return await args.usageTrackingService.getCostBreakdown({
+      by: by as AdeUsageCostBreakdownBy,
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(since && !Number.isNaN(Date.parse(since)) ? { since } : {}),
+      ...(until && !Number.isNaN(Date.parse(until)) ? { until } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(limit != null ? { limit } : {}),
+    });
+  });
+
+  register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    const scope = asTrimmedString(payload.scope);
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    return args.usageTrackingService.getModelDetail({
+      provider: requireString(payload.provider, "usage.getModelDetail requires provider."),
+      model: requireString(payload.model, "usage.getModelDetail requires model."),
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(isAdeUsageScope(scope) ? { scope } : {}),
+      ...(since && !Number.isNaN(Date.parse(since)) ? { since } : {}),
+      ...(until && !Number.isNaN(Date.parse(until)) ? { until } : {}),
+    });
+  });
+
+  register("usage.getModelPriceOverrides", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    return args.usageTrackingService.getModelPriceOverrides();
+  }, "runtime");
+
+  // Writes this machine's price list, so it is a controller action like
+  // spending a reset credit, never a viewer's.
+  register("usage.setModelPriceOverride", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
+    const service = args.usageTrackingService;
+    if (!service) throw new Error("Model prices are not available in this runtime.");
+    const price = payload.price === null
+      ? null
+      : payload.price !== undefined
+        ? normalizePriceOverride(payload.price) ?? (() => { throw new Error("usage.setModelPriceOverride price needs input and output rates."); })()
+        : undefined;
+    const mapTo = payload.mapTo === null ? null : asTrimmedString(payload.mapTo);
+    return service.setModelPriceOverride({
+      model: requireString(payload.model, "usage.setModelPriceOverride requires model."),
+      ...(price !== undefined ? { price } : {}),
+      ...(payload.mapTo !== undefined ? { mapTo: mapTo || null } : {}),
     });
   }, "runtime");
 

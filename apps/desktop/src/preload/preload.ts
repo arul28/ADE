@@ -808,6 +808,12 @@ import type {
   WriteTextAtomicArgs,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
+  GetAdeUsageCostBreakdownArgs,
+  GetAdeUsageModelDetailArgs,
+  SetAdeUsageModelPriceArgs,
+  AdeUsageCostBreakdown,
+  AdeUsageModelDetail,
+  AdeUsagePriceOverrides,
   UsageResetCreditResult,
   UsageSnapshot,
   BudgetCheckResult,
@@ -6094,6 +6100,22 @@ const adeBridge = {
     }): Promise<UsageResetCreditResult> =>
       callProjectRuntimeActionOr("usage", "consumeResetCredit", { args }, () =>
         ipcRenderer.invoke(IPC.usageConsumeResetCredit, args),
+      ),
+    getCostBreakdown: async (args: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> =>
+      callProjectRuntimeActionOr("usage", "getCostBreakdown", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetCostBreakdown, args),
+      ),
+    getModelDetail: async (args: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> =>
+      callProjectRuntimeActionOr("usage", "getModelDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetModelDetail, args),
+      ),
+    getModelPriceOverrides: async (): Promise<AdeUsagePriceOverrides | null> =>
+      callProjectRuntimeActionOr("usage", "getModelPriceOverrides", {}, () =>
+        ipcRenderer.invoke(IPC.usageGetModelPriceOverrides),
+      ),
+    setModelPriceOverride: async (args: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> =>
+      callProjectRuntimeActionOr("usage", "setModelPriceOverride", { args }, () =>
+        ipcRenderer.invoke(IPC.usageSetModelPriceOverride, args),
       ),
     checkBudget: async (args: BudgetCheckArgs): Promise<BudgetCheckResult> =>
       callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
