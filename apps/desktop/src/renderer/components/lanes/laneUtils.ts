@@ -65,7 +65,7 @@ export function laneMatchesFilter(lane: LaneSummary, query: string): boolean {
 
 export type LanePaneDetailSelection = {
   selectedFilePath: string | null;
-  selectedFileMode: "staged" | "unstaged" | null;
+  selectedFileMode: "staged" | "unstaged" | "branch" | null;
   selectedCommit: import("../../../shared/types").GitCommitSummary | null;
 };
 

@@ -332,6 +332,7 @@ import type {
   DeleteLaneArgs,
   DevToolsCheckResult,
   DiffChanges,
+  BranchDiffChanges,
   DockLayout,
   FileChangeEvent,
   FileContent,
@@ -10323,6 +10324,17 @@ const adeBridge = {
       );
       if (runtime.handled) return runtime.result;
       return diffChangesCache.get(boundReadCacheKey(args));
+    },
+    getBranchChanges: async (
+      args: GetDiffChangesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<BranchDiffChanges | null> => {
+      if (pin) {
+        return callPinnedRuntimeAction<BranchDiffChanges>(pin, "diff", "getBranchChanges", { arg: args.laneId });
+      }
+      const runtime = await callProjectRuntimeActionIfBound<BranchDiffChanges>("diff", "getBranchChanges", { arg: args.laneId });
+      if (runtime.handled) return runtime.result;
+      return await ipcRenderer.invoke(IPC.diffGetBranchChanges, args);
     },
     getFile: async (
       args: GetFileDiffArgs,

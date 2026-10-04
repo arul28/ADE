@@ -145,7 +145,7 @@ export function WorkSidebar({
   onMaximizedChange?: (next: boolean) => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
+  const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | "branch" | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const keybindings = useAppStore((state) => state.keybindings);
   const reduceMotion = useReducedMotion() ?? false;
@@ -326,7 +326,7 @@ export function WorkSidebar({
       .finally(() => setResumingSession(false));
   }, [activeSession, resumingSession, runtimePin]);
 
-  const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
+  const selectFile = useCallback((path: string, mode: "staged" | "unstaged" | "branch") => {
     setSelectedPath(path);
     setSelectedMode(mode);
     setSelectedCommit(null);

@@ -7022,10 +7022,13 @@ function buildDiffPlan(args: string[]): CliPlan {
       laneId ?? readValue(args, ["--lane", "--lane-id"]),
       "laneId",
     );
+    // `--mode branch`: everything the lane changed since its base, not only
+    // what is uncommitted.
+    const branch = readValue(args, ["--mode"]) === "branch" || readFlag(args, ["--branch"]);
     return {
       kind: "execute",
       label: "diff changes",
-      steps: [actionArgsListStep("result", "diff", "getChanges", [id])],
+      steps: [actionArgsListStep("result", "diff", branch ? "getBranchChanges" : "getChanges", [id])],
     };
   }
   if (sub === "file") {

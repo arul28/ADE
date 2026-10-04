@@ -189,7 +189,12 @@ export type GitStashSummary = {
   createdAt: string | null;
 };
 
-export type DiffMode = "unstaged" | "staged" | "commit";
+/**
+ * `branch` is everything the lane changed since its base: the merge-base of the
+ * base and HEAD against the working tree, so commits, uncommitted edits and
+ * untracked files read as one diff per file.
+ */
+export type DiffMode = "unstaged" | "staged" | "commit" | "branch";
 
 export type FileChange = {
   path: string;
@@ -203,6 +208,17 @@ export type FileChange = {
 export type DiffChanges = {
   unstaged: FileChange[];
   staged: FileChange[];
+};
+
+/** `git.getBranchChanges`: every file the lane changed since its base. */
+export type BranchDiffChanges = {
+  /** The ref the lane is compared with, as shown ("main", "origin/main"). */
+  baseRef: string;
+  /** The commit the diff starts from: merge-base(base, HEAD). */
+  mergeBase: string;
+  files: FileChange[];
+  additions: number;
+  deletions: number;
 };
 
 export type DiffLineStats = {

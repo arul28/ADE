@@ -680,6 +680,7 @@ export const IPC = {
   providerInstancesLoginCommand: "ade.providerInstances.loginCommand",
   providerInstancesRefresh: "ade.providerInstances.refresh",
   diffGetChanges: "ade.diff.getChanges",
+  diffGetBranchChanges: "ade.diff.getBranchChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",
   filesWriteTextAtomic: "ade.files.writeTextAtomic",

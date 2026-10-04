@@ -2635,6 +2635,7 @@ export type SyncRemoteCommandAction =
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
   | "git.getChanges"
+  | "git.getBranchChanges"
   | "git.getFile"
   | "git.getFilePatch"
   | "git.getUserIdentity"

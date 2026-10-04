@@ -6372,6 +6372,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
 function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
+  // Advertising this is how a client learns the host understands `mode:
+  // "branch"`: an older host reads an unknown mode as "unstaged" without
+  // complaint, so clients send it only after this command exists.
+  register("git.getBranchChanges", { viewerAllowed: true }, async (payload) =>
+    requireService(args.diffService, "Diff service not available.").getBranchChanges(parseGetDiffChangesArgs(payload).laneId));
   register("git.getFile", { viewerAllowed: true }, async (payload) => {
     const diffService = requireService(args.diffService, "Diff service not available.");
     const parsed = parseGetFileDiffArgs(payload);

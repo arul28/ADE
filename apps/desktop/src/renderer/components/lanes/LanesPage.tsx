@@ -1662,7 +1662,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Git pane selection ---- */
 
-  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
+  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged" | "branch") => {
     setLanePaneDetails((prev) => ({
       ...prev,
       [laneId]: { selectedFilePath: path, selectedFileMode: mode, selectedCommit: null }

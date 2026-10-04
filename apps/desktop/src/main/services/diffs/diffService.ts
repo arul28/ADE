@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
 import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
-import type { DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
+import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
 export const MAX_DIFF_PATCH_BYTES = 512 * 1024;
@@ -289,6 +291,94 @@ function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: 
   return { absPath, gitPath };
 }
 
+/**
+ * The ref a branch diff compares with, and the commit it starts from.
+ *
+ * A lane compares with its base branch. A lane that IS its base (the primary
+ * lane on `main`) compares with that branch's remote copy, so unpushed work
+ * shows; with no remote copy there is nothing to compare and it says so. A
+ * base that does not resolve, or a lane with no history in common with it, is
+ * an error — an empty diff would read as "nothing changed".
+ */
+async function resolveBranchCompareBase(
+  worktreePath: string,
+  baseRef: string,
+  branchRef: string,
+): Promise<{ label: string; mergeBase: string }> {
+  const base = baseRef.trim();
+  if (!base || base.startsWith("-")) throw new Error("This lane has no base branch to compare with.");
+  const resolves = async (ref: string) =>
+    (await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: worktreePath, timeoutMs: 8_000 })).exitCode === 0;
+  let compare: string | null = null;
+  if (branchRef.trim() === base) {
+    const upstream = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${base}@{upstream}`], { cwd: worktreePath, timeoutMs: 8_000 });
+    const upstreamRef = upstream.exitCode === 0 ? upstream.stdout.trim() : "";
+    if (upstreamRef && !upstreamRef.startsWith("-")) compare = upstreamRef;
+    else if (await resolves(`origin/${base}`)) compare = `origin/${base}`;
+    else throw new Error(`${base} has no remote copy, so this lane has no branch changes to compare.`);
+  } else if (await resolves(base)) {
+    compare = base;
+  } else if (await resolves(`origin/${base}`)) {
+    // A base that exists only as a remote-tracking branch (a clone that never
+    // checked it out) does not resolve by its short name.
+    compare = `origin/${base}`;
+  } else {
+    throw new Error(`The base branch "${base}" was not found.`);
+  }
+  const mergeBase = await runGit(["merge-base", compare, "HEAD"], { cwd: worktreePath, timeoutMs: 12_000 });
+  const sha = mergeBase.exitCode === 0 ? mergeBase.stdout.trim() : "";
+  if (!sha) throw new Error(`This lane shares no history with ${compare}.`);
+  return { label: compare, mergeBase: sha };
+}
+
+/**
+ * Runs `fn` against a throwaway index holding the whole working tree:
+ * HEAD's tree plus every tracked edit and every untracked file .gitignore
+ * keeps. Diffing that index with `--cached` is what lets one diff carry
+ * commits, uncommitted edits and new files together, without touching the
+ * user's real index. The file lives in the OS temp directory and is removed
+ * whatever happens.
+ */
+async function withWorkingTreeIndex<T>(worktreePath: string, fn: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+  const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    const read = await runGit(["read-tree", "HEAD"], { cwd: worktreePath, env, timeoutMs: 20_000 });
+    if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
+    const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
+    if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "git add failed");
+    return await fn(env);
+  } finally {
+    try {
+      fs.rmSync(indexPath, { force: true });
+    } catch {
+      // The OS cleans its temp directory; a leftover index holds no secrets.
+    }
+  }
+}
+
+function parseNameStatusZ(stdout: string): FileChange[] {
+  const tokens = stdout.split("\0");
+  const files: FileChange[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const status = tokens[i] ?? "";
+    if (!status) continue;
+    const letter = status.charAt(0);
+    if (letter === "R" || letter === "C") {
+      const oldPath = tokens[i + 1] ?? "";
+      const newPath = tokens[i + 2] ?? "";
+      i += 2;
+      if (newPath) files.push({ path: newPath, oldPath, kind: letter === "R" ? "renamed" : "added" });
+      continue;
+    }
+    const filePath = tokens[i + 1] ?? "";
+    i += 1;
+    if (!filePath) continue;
+    files.push({ path: filePath, kind: letter === "A" ? "added" : letter === "D" ? "deleted" : letter === "M" || letter === "T" ? "modified" : "unknown" });
+  }
+  return files;
+}
+
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
   const getLaneDiffStats = async (laneIdArg: string | { laneId?: string } | null | undefined): Promise<DiffLineStats> => {
     const laneId = readLaneIdArg(laneIdArg);
@@ -324,6 +414,27 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       return Object.fromEntries(entries);
     },
 
+    async getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
+      const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+      const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+      return await withWorkingTreeIndex(worktreePath, async (env) => {
+        const [names, numstat] = await Promise.all([
+          runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+          runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+        ]);
+        if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
+        const files = parseNameStatusZ(names.stdout);
+        if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
+        return {
+          baseRef: label,
+          mergeBase,
+          files,
+          additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+          deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+        };
+      });
+    },
+
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const res = await runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 });
@@ -355,8 +466,23 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       compareRef?: string;
       compareTo?: "worktree" | "parent";
     }): Promise<FileDiff> {
-      const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+      const { worktreePath, baseRef, branchRef } = laneService.getLaneBaseAndBranch(laneId);
       const { absPath, gitPath } = resolveGitFilePath(worktreePath, filePath);
+
+      if (mode === "branch") {
+        // The file at the lane's starting point against the file on disk now.
+        const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+        const original = await gitShowText(worktreePath, `${mergeBase}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const wt = readTextFileSafe(absPath, MAX_DIFF_SIDE_TEXT_BYTES);
+        const isBinary = Boolean(original.isBinary || wt.isBinary);
+        return {
+          path: gitPath,
+          mode,
+          original: { exists: original.exists, text: original.text, size: original.size, isTruncated: original.isTruncated },
+          modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
+          ...(isBinary ? { isBinary: true } : {})
+        };
+      }
 
       if (mode === "staged") {
         const head = await gitShowText(worktreePath, `HEAD:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
@@ -427,9 +553,27 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       compareRef?: string;
       compareTo?: "worktree" | "parent";
     }): Promise<FilePatch> {
-      const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+      const { worktreePath, baseRef, branchRef } = laneService.getLaneBaseAndBranch(laneId);
       const { gitPath } = resolveGitFilePath(worktreePath, filePath);
       let args: string[];
+
+      if (mode === "branch") {
+        // One file of the branch diff, built the same way as the list, so an
+        // untracked file reads as added rather than missing.
+        const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
+        const res = await withWorkingTreeIndex(worktreePath, (env) => runGit(
+          ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", gitPath],
+          { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
+        ));
+        if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "git diff failed");
+        return {
+          mode,
+          patch: res.stdout,
+          size: Buffer.byteLength(res.stdout, "utf8"),
+          isTruncated: res.stdoutTruncated || undefined,
+          ...parsePatchSummary(res.stdout, gitPath)
+        };
+      }
 
       if (mode === "staged") {
         args = ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];

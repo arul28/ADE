@@ -10638,6 +10638,13 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
+    const ctx = ensureDiffContext();
+    return await withIpcTiming(ctx, "diff.getBranchChanges", async () => await ctx.diffService.getBranchChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
+  });
+
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(

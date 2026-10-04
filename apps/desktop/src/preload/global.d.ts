@@ -3558,6 +3558,15 @@ declare global {
           args: GetDiffChangesArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<DiffChanges>;
+        /**
+         * Every file the lane changed since its base (commits, uncommitted and
+         * untracked). Rejects when the base cannot be resolved; null, or a
+         * rejection naming an unknown action, from a host that predates it.
+         */
+        getBranchChanges?: (
+          args: GetDiffChangesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").BranchDiffChanges | null>;
         getFile: (
           args: GetFileDiffArgs,
           pin?: OpenProjectBinding | null,

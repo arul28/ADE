@@ -69,9 +69,9 @@ export type WorkToolPanelProps = {
   shouldPersistPanelAttachment: boolean;
   resumingSession: boolean;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | null;
+  selectedMode: "staged" | "unstaged" | "branch" | null;
   selectedCommit: GitCommitSummary | null;
-  onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
+  onSelectFile: (path: string, mode: "staged" | "unstaged" | "branch") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   onClearDiffSelection: () => void;
   onAddAttachment: ((attachment: AgentChatFileRef) => void) | undefined;

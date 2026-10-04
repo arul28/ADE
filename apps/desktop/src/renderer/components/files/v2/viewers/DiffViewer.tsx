@@ -3,7 +3,31 @@ import type { FileDiff, FilePatch, GitCommitSummary } from "../../../../../share
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../../shared/AdeDiffViewer";
 
-type DiffMode = "unstaged" | "staged" | "commit";
+type DiffMode = "branch" | "unstaged" | "staged" | "commit";
+
+/**
+ * Whether the host behind a lane understands `mode: "branch"`, asked once per
+ * lane. An older host reads an unknown mode as "unstaged" without complaint,
+ * so the Branch tab appears only after `getBranchChanges` answered.
+ */
+const branchSupportByLane = new Map<string, Promise<boolean>>();
+
+function hostSupportsBranchDiff(laneId: string): Promise<boolean> {
+  let pending = branchSupportByLane.get(laneId);
+  if (!pending) {
+    const getBranchChanges = window.ade.diff.getBranchChanges;
+    pending = getBranchChanges
+      ? getBranchChanges({ laneId }).then((result) => result != null, (error: unknown) => {
+          // A lane whose base cannot be resolved still supports the mode; the
+          // diff then shows that error, which is the useful thing to see.
+          const message = error instanceof Error ? error.message : String(error);
+          return !/unknown (?:action|method|command)|unsupported|not supported/i.test(message);
+        })
+      : Promise.resolve(false);
+    branchSupportByLane.set(laneId, pending);
+  }
+  return pending;
+}
 
 function diffHasChanges(diff: FileDiff | null): boolean {
   if (!diff) return false;
@@ -33,6 +57,21 @@ export function DiffViewer({
   theme: "light" | "dark";
 }) {
   const [mode, setMode] = useState<DiffMode>("unstaged");
+  const [branchSupported, setBranchSupported] = useState(false);
+
+  // Branch is the default where the host has it: a committed lane's file
+  // otherwise opens on "no changes".
+  useEffect(() => {
+    let cancelled = false;
+    void hostSupportsBranchDiff(laneId).then((supported) => {
+      if (cancelled) return;
+      setBranchSupported(supported);
+      if (supported) setMode((current) => (current === "unstaged" ? "branch" : current));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId]);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [patch, setPatch] = useState<FilePatch | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
@@ -96,8 +135,8 @@ export function DiffViewer({
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5" style={{ borderColor: COLORS.border }}>
         <div className="inline-flex items-center overflow-hidden rounded-md" style={{ border: `1px solid ${COLORS.outlineBorder}` }}>
-          {(["unstaged", "staged", "commit"] as const).map((m) => {
-            const label = m === "unstaged" ? "Working tree" : m === "staged" ? "Staged" : "Commit";
+          {(branchSupported ? (["branch", "unstaged", "staged", "commit"] as const) : (["unstaged", "staged", "commit"] as const)).map((m) => {
+            const label = m === "branch" ? "Branch" : m === "unstaged" ? "Uncommitted" : m === "staged" ? "Staged" : "Commit";
             const isActive = mode === m;
             return (
               <button
