@@ -13,6 +13,7 @@ import type {
  */
 
 export const COST_BREAKDOWN_DEFAULT_LIMIT = 50;
+const DELETED_KEY = "deleted";
 export const COST_BREAKDOWN_MAX_LIMIT = 200;
 
 export type CostBreakdownLabels = {
@@ -106,6 +107,10 @@ export function buildCostBreakdown(input: {
   const laneFilter = input.laneId?.trim() || null;
   const groups = new Map<string, AdeUsageCostBreakdownRow>();
   const totals = emptyTotals();
+  // Deleted chats and lanes leave no name behind (a lane's tombstone keeps
+  // counters only), so they fold into one row each rather than a column of
+  // identical "Deleted lane" rows. The count says how many went into it.
+  const deletedKeys = new Map<string, Set<string>>();
 
   for (const row of input.rows) {
     const chat = by === "account" ? null : labels.chat(row.sessionId);
@@ -118,25 +123,38 @@ export function buildCostBreakdown(input: {
     let key: string;
     let seed: Omit<AdeUsageCostBreakdownRow, keyof AdeUsageCostBreakdownTotals>;
     if (by === "chat") {
-      key = row.sessionId;
       const laneName = laneId ? labels.lane(laneId) : null;
-      seed = {
-        key,
-        label: chat?.title?.trim() || (chat ? "Untitled chat" : "Deleted chat"),
-        detail: laneName ?? (laneId ? "Deleted lane" : null),
-        laneId,
-        sessionId: row.sessionId,
-        provider: row.provider,
-      };
+      if (!chat) {
+        key = DELETED_KEY;
+        (deletedKeys.get(key) ?? deletedKeys.set(key, new Set()).get(key)!).add(row.sessionId);
+        seed = { key, label: "Deleted chats", laneId: laneFilter };
+      } else {
+        key = row.sessionId;
+        seed = {
+          key,
+          label: chat.title?.trim() || "Untitled chat",
+          detail: laneName ?? (laneId ? "Deleted lane" : null),
+          laneId,
+          sessionId: row.sessionId,
+          provider: row.provider,
+        };
+      }
     } else if (by === "lane") {
-      key = laneId ?? "";
-      seed = {
-        key,
-        label: laneId ? labels.lane(laneId) ?? "Deleted lane" : "No lane",
-        laneId,
-      };
+      const laneName = laneId ? labels.lane(laneId) : null;
+      if (laneId && !laneName) {
+        key = DELETED_KEY;
+        (deletedKeys.get(key) ?? deletedKeys.set(key, new Set()).get(key)!).add(laneId);
+        seed = { key, label: "Deleted lanes", laneId: null };
+      } else {
+        key = laneId ?? "";
+        seed = { key, label: laneName ?? "No lane", laneId };
+      }
     } else {
-      key = row.accountKey;
+      // One login is one row, as on the live limits: the same email reached
+      // through two provider instances (or before and after ADE learned the
+      // instance) is the same account.
+      const email = row.account?.email?.trim().toLowerCase();
+      key = email ? `${row.account?.provider ?? row.provider}:${email}` : row.accountKey;
       const { label, detail } = accountLabel(row);
       seed = { key, label, detail, provider: row.account?.provider ?? row.provider, accountKind: row.account?.kind ?? "unknown" };
     }
@@ -148,6 +166,10 @@ export function buildCostBreakdown(input: {
     addRow(group, row);
   }
 
+  for (const [key, members] of deletedKeys) {
+    const group = groups.get(key);
+    if (group) group.label = `${group.label} (${members.size})`;
+  }
   const ranked = [...groups.values()].sort((a, b) => (b.costUsd - a.costUsd) || (b.totalTokens - a.totalTokens) || a.label.localeCompare(b.label));
   const shown = ranked.slice(0, limit).map(roundTotals);
   const tail = ranked.slice(limit);
