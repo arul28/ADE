@@ -85,7 +85,7 @@ import {
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
-import { asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -213,7 +213,7 @@ function terminateExternalResolverProcessTree(
   if (child.exitCode !== null || child.signalCode !== null) return false;
   if (process.platform !== "win32" && typeof child.pid === "number") {
     try {
-      process.kill(-child.pid, signal);
+      signalProcessGroup(child.pid, signal);
       return true;
     } catch {
       // Fall through to the direct child kill path.

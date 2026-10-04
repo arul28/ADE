@@ -10,6 +10,7 @@ import {
 } from "../../../shared/opencodeDataHome";
 import { killWindowsProcessTree, windowsPowerShellCommand } from "../shared/processExecution";
 import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
+import { signalProcessGroup } from "../shared/utils";
 
 /**
  * The OS side of ADE's OpenCode servers: finding their processes, stopping
@@ -281,7 +282,7 @@ const openCodeProcesses: OpenCodeProcessController = {
     // descendants with pkill -TERM -P as a fallback. Finally SIGTERM the pid
     // itself so at minimum the root process terminates.
     try {
-      process.kill(-pid, "SIGTERM");
+      signalProcessGroup(pid, "SIGTERM");
     } catch {
       // Not a group leader (or no permission); fall through to child-walk.
     }

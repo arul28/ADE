@@ -11,6 +11,7 @@ import {
 import type {
   AgentChatGetTurnFileDiffArgs,
   AgentChatRewindFilesResult,
+  AgentChatRewindSkippedFile,
   FileDiff,
   TurnDiffFile,
 } from "../../../shared/types";
@@ -71,6 +72,12 @@ function statusLabel(status: TurnDiffFile["status"]): string {
   if (status === "R") return "renamed";
   if (status === "C") return "copied";
   return "modified";
+}
+
+function skippedReasonLabel(reason: AgentChatRewindSkippedFile["reason"]): string {
+  if (reason === "dirty_before_turn") return "Had uncommitted changes before this turn";
+  if (reason === "other_chat") return "Another chat in this worktree changed it since";
+  return "Changed before ADE recorded what it looked like at the start of this turn";
 }
 
 function getDiffCacheKey(args: AgentChatGetTurnFileDiffArgs): string {
@@ -320,6 +327,31 @@ export function RewindFilesConfirmDialog({
               )}
             </div>
           </div>
+
+          {preview.skippedFiles?.length ? (
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="text-[12px] font-medium text-fg/70">Left as they are</div>
+                <div className="font-mono text-[11px] text-fg/42">
+                  {preview.skippedFiles.length} file{preview.skippedFiles.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-md border border-white/[0.07] bg-white/[0.018]">
+                {preview.skippedFiles.map((file) => (
+                  <div
+                    key={file.path}
+                    className="grid grid-cols-[18px_minmax(0,1fr)] items-center gap-2 border-b border-white/[0.045] px-3 py-2.5 last:border-b-0"
+                  >
+                    <WarningCircle size={13} className="text-amber-200/55" />
+                    <div className="min-w-0">
+                      <div className="truncate text-[12px] text-fg/78" title={file.path}>{file.path}</div>
+                      <div className="mt-0.5 text-[11px] text-fg/42">{skippedReasonLabel(file.reason)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 rounded-md border border-white/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
             {contextRollback

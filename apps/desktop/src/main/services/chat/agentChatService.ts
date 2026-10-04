@@ -363,6 +363,7 @@ import {
   readFileWithinRootSecure,
   redactSecrets,
   resolvePathWithinRoot,
+  signalProcessGroup,
   stableStringify,
 } from "../shared/utils";
 import {
@@ -494,6 +495,7 @@ import type {
   AgentChatResolveUnprocessedMessageResult,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
+  AgentChatRewindSkippedFile,
   AgentChatRerunLastTurnArgs,
   AgentChatRerunLastTurnResult,
   AgentChatSession,
@@ -3791,7 +3793,7 @@ function isProcessGroupAlive(pid: number | null): boolean {
   if (process.platform === "win32") return false;
   if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
   try {
-    process.kill(-pid, 0);
+    signalProcessGroup(pid, 0);
     return true;
   } catch (error) {
     return isSignalPermissionError(error);
@@ -3809,7 +3811,7 @@ function signalChildProcessTree(
   const pid = child.pid ?? null;
   if (pid != null && Number.isInteger(pid) && pid > 0) {
     try {
-      process.kill(-pid, signal);
+      signalProcessGroup(pid, signal);
       return true;
     } catch {
       // Fall through to direct child signaling if the process group is gone.
@@ -16443,6 +16445,11 @@ export function createAgentChatService(args: {
         files: summary.files,
         totalAdditions: summary.totalAdditions,
         totalDeletions: summary.totalDeletions,
+        // What a later file rewind must leave alone. No snapshot means the
+        // start state is unknown, which the rewind treats as unsafe.
+        ...(beforeTree
+          ? { dirtyAtStart: summary.files.map((file) => file.path).filter((filePath) => beforeTree.has(filePath)) }
+          : {}),
       });
     } catch {
       // Silently ignore diff computation failures
@@ -60147,6 +60154,28 @@ export function createAgentChatService(args: {
       && !normalized.split("/").some((part) => part === "..");
   };
 
+  /**
+   * The other chats that write into this chat's worktree: the lane's other
+   * chats, minus a personal chat that a loaded runtime shows working elsewhere.
+   */
+  const listWorktreePeerChats = (managed: ManagedChatSession): Array<{ id: string; title: string | null; active: boolean }> => {
+    const laneId = managed.session.laneId?.trim();
+    if (!laneId) return [];
+    return sessionService.list({ laneId, limit: 200 })
+      .filter((row) => row.id !== managed.session.id && isChatToolType(row.toolType))
+      .flatMap((row) => {
+        const peer = managedSessions.get(row.id);
+        if (peer && !pathsEqual(peer.laneWorktreePath, managed.laneWorktreePath)) return [];
+        return [{ id: row.id, title: row.title ?? null, active: peer?.session.status === "active" }];
+      });
+  };
+
+  /**
+   * What a Codex file rewind may restore. Restoring writes the file as it was
+   * at the turn's starting commit, so it is safe only for a file that was clean
+   * when the turn began and that no other chat in the worktree has changed
+   * since; anything else is reported in `skippedFiles` and left as it is.
+   */
   const buildCodexRewindPlan = (
     managed: ManagedChatSession,
     messageId: string,
@@ -60158,12 +60187,16 @@ export function createAgentChatService(args: {
     insertions: number;
     deletions: number;
     restoreFiles: CodexRewindFileRestore[];
+    skippedFiles: AgentChatRewindSkippedFile[];
+    busyPeerTitle: string | null;
   } => {
     const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
     let sawTargetMessage = false;
     let targetTurnId: string | null = null;
+    let targetAtMs: number | null = null;
     let hasLaterUserMessage = false;
     const restoreByPath = new Map<string, CodexRewindFileRestore>();
+    const skippedByPath = new Map<string, AgentChatRewindSkippedFile["reason"]>();
     let insertions = 0;
     let deletions = 0;
 
@@ -60172,6 +60205,8 @@ export function createAgentChatService(args: {
       if (event.type === "user_message" && event.messageId === messageId) {
         sawTargetMessage = true;
         targetTurnId = event.turnId?.trim() || null;
+        const at = Date.parse(envelope.timestamp);
+        targetAtMs = Number.isFinite(at) ? at : null;
         continue;
       }
 
@@ -60187,13 +60222,42 @@ export function createAgentChatService(args: {
       if (event.type !== "turn_diff_summary") continue;
       insertions += Math.max(0, event.totalAdditions);
       deletions += Math.max(0, event.totalDeletions);
+      const dirtyAtStart = event.dirtyAtStart ? new Set(event.dirtyAtStart) : null;
       for (const file of event.files) {
         const filePath = file.path.trim();
-        if (!filePath || restoreByPath.has(filePath)) continue;
-        restoreByPath.set(filePath, {
-          path: filePath,
-          beforeSha: event.beforeSha,
-        });
+        if (!filePath || restoreByPath.has(filePath) || skippedByPath.has(filePath)) continue;
+        if (!dirtyAtStart) {
+          skippedByPath.set(filePath, "unknown_start_state");
+        } else if (dirtyAtStart.has(filePath)) {
+          skippedByPath.set(filePath, "dirty_before_turn");
+        } else {
+          restoreByPath.set(filePath, {
+            path: filePath,
+            beforeSha: event.beforeSha,
+          });
+        }
+      }
+    }
+
+    // Another chat sharing the worktree since this message: a running turn has
+    // not reported what it touched yet, so nothing can be shown safe; a
+    // finished one names its files in its own diff summaries.
+    let busyPeerTitle: string | null = null;
+    if (sawTargetMessage && restoreByPath.size) {
+      for (const peer of listWorktreePeerChats(managed)) {
+        if (peer.active) {
+          busyPeerTitle = peer.title?.trim() || "Another chat";
+          break;
+        }
+        for (const envelope of readFullTranscriptEnvelopesForSessionId(peer.id)) {
+          if (envelope.event.type !== "turn_diff_summary") continue;
+          const at = Date.parse(envelope.timestamp);
+          if (targetAtMs != null && Number.isFinite(at) && at < targetAtMs) continue;
+          for (const file of envelope.event.files) {
+            const filePath = file.path.trim();
+            if (restoreByPath.delete(filePath)) skippedByPath.set(filePath, "other_chat");
+          }
+        }
       }
     }
 
@@ -60205,6 +60269,8 @@ export function createAgentChatService(args: {
       insertions,
       deletions,
       restoreFiles: [...restoreByPath.values()],
+      skippedFiles: [...skippedByPath].map(([filePath, reason]) => ({ path: filePath, reason })),
+      busyPeerTitle,
     };
   };
 
@@ -60225,8 +60291,10 @@ export function createAgentChatService(args: {
       const objectSpec = `${file.beforeSha}:${file.path}`;
       const existsAtBefore = await runGit(["cat-file", "-e", objectSpec], { cwd, timeoutMs: 10_000 });
       if (existsAtBefore.exitCode === 0) {
-        const checkout = await runGit(["checkout", file.beforeSha, "--", file.path], { cwd, timeoutMs: 15_000 });
-        if (checkout.exitCode === 0) restored.push(file.path);
+        // `--worktree` only: the user's staging is theirs, and `git checkout
+        // <sha> -- <path>` would have staged the old content as well.
+        const restore = await runGit(["restore", `--source=${file.beforeSha}`, "--worktree", "--", file.path], { cwd, timeoutMs: 15_000 });
+        if (restore.exitCode === 0) restored.push(file.path);
         continue;
       }
 
@@ -60609,6 +60677,18 @@ export function createAgentChatService(args: {
           conversationRollback: true,
         };
       }
+      if (plan.busyPeerTitle) {
+        return {
+          canRewind: false,
+          error: `"${plan.busyPeerTitle}" is working in this worktree. Wait for it to finish before rewinding files.`,
+          filesChanged: [],
+          insertions: 0,
+          deletions: 0,
+          dryRun,
+          conversationRollback: true,
+        };
+      }
+      const skipped = plan.skippedFiles.length ? { skippedFiles: plan.skippedFiles } : {};
       if (dryRun) {
         return {
           canRewind: true,
@@ -60617,6 +60697,7 @@ export function createAgentChatService(args: {
           deletions: plan.deletions,
           dryRun,
           conversationRollback: true,
+          ...skipped,
         };
       }
 
@@ -60631,6 +60712,14 @@ export function createAgentChatService(args: {
           : "Codex context rolled back.",
         detail: restoredFiles.length ? restoredFiles.join("\n") : undefined,
       });
+      if (plan.skippedFiles.length) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `${plan.skippedFiles.length} file${plan.skippedFiles.length === 1 ? " was" : "s were"} left as ${plan.skippedFiles.length === 1 ? "it was" : "they were"}: restoring could have erased work this turn did not make.`,
+          detail: plan.skippedFiles.map((file) => file.path).join("\n"),
+        });
+      }
       void refreshHeadShaStartForManagedExecutionLane(managed).catch(() => undefined);
       return {
         canRewind: true,
@@ -60639,6 +60728,7 @@ export function createAgentChatService(args: {
         deletions: plan.deletions,
         dryRun,
         conversationRollback: true,
+        ...skipped,
       };
     }
     if (managed.runtime?.kind === "claude" && managed.runtime.busy && !dryRun) {

@@ -571,6 +571,14 @@ enum LaneIcon: String, Codable, Equatable {
   case bolt
   case shield
   case tag
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LaneIcon(rawValue: raw) ?? .unknown
+  }
 }
 
 struct LaneSummary: Codable, Identifiable, Equatable {
@@ -2182,6 +2190,14 @@ enum AgentChatFileChangeKind: String, Codable, Equatable {
   case create
   case modify
   case delete
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatFileChangeKind(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTurnStatus: String, Codable, Equatable {
@@ -2189,6 +2205,14 @@ enum AgentChatTurnStatus: String, Codable, Equatable {
   case completed
   case interrupted
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTurnStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatActivityKind: String, Codable, Equatable {
@@ -2283,6 +2307,14 @@ enum AgentChatApprovalRequestKind: String, Codable, Equatable {
   case command
   case fileChange = "file_change"
   case toolCall = "tool_call"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatApprovalRequestKind(rawValue: raw) ?? .unknown
+  }
 }
 
 /// Resolve what an `approval_request` is actually asking for, and write the
@@ -2375,6 +2407,14 @@ enum AgentChatSubagentStatus: String, Codable, Equatable {
   case completed
   case failed
   case stopped
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatSubagentStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTodoStatus: String, Codable, Equatable {
@@ -2382,17 +2422,41 @@ enum AgentChatTodoStatus: String, Codable, Equatable {
   case inProgress = "in_progress"
   case completed
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTodoStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatAutoApprovalReviewStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case manual
   case auto
   case adeFallback = "ade_fallback"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactTrigger(rawValue: raw) ?? .unknown
+  }
 }
 
 struct AgentChatClaudeGoal: Codable, Equatable {
@@ -2411,6 +2475,14 @@ struct AgentChatClaudeGoal: Codable, Equatable {
 enum AgentChatContextCompactState: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactState(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatInputAnswerValue: Equatable {
@@ -3132,6 +3204,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     case .completed: fallbackSummary = "Subagent turn finished."
     case .failed: fallbackSummary = "Turn failed."
     case .stopped: fallbackSummary = "Stopped before finishing."
+    case .unknown: fallbackSummary = "Subagent turn ended."
     }
     return .subagentResult(
       taskId: "chat:\(childSessionId)",
@@ -5341,6 +5414,14 @@ enum PrReviewDecisionValue: String, Codable, Equatable {
   case approved
   case changesRequested = "changes_requested"
   case reviewRequired = "review_required"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PrReviewDecisionValue(rawValue: raw) ?? .unknown
+  }
 }
 
 struct PrStatus: Codable, Equatable {
