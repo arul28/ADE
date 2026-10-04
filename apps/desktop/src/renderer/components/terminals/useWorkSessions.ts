@@ -33,6 +33,7 @@ import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalStat
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
+import { stampWorkSeenAt } from "./workLaneFocus";
 import {
   EMPTY_WORK_SESSION_FILTERS,
   isWorkSessionFilterEmpty,
@@ -78,6 +79,7 @@ const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
+const EMPTY_SEEN_AT: Record<string, string> = {};
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 
 type WorkTabGroupKind = "lane" | "status" | "time";
@@ -930,6 +932,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
+  const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,
   // refresh cadence, and optimistic writes must never target a foreign slice.
   const localSessionsById = useMemo(() => {
@@ -1126,6 +1130,38 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     },
     [clearDeeplinkViewOverride, setProjectViewState],
   );
+
+  const setWorkFoldBusyLanes = useCallback(
+    (enabled: boolean) => {
+      clearDeeplinkViewOverride();
+      setProjectViewState({ workFoldBusyLanes: enabled });
+    },
+    [clearDeeplinkViewOverride, setProjectViewState],
+  );
+
+  // A finished row counts as seen once the user has looked at it since it
+  // finished. Stamp the row being opened and the row being left: output that
+  // landed while the user watched is seen too, not just what was there on open.
+  const lastSeenStampRef = useRef<{ projectStateKey: string | null; sessionId: string | null }>({
+    projectStateKey: null,
+    sessionId: null,
+  });
+  useEffect(() => {
+    const previous = lastSeenStampRef.current;
+    lastSeenStampRef.current = { projectStateKey, sessionId: selectedSessionId };
+    if (!projectStateKey) return;
+    const ids: string[] = [];
+    if (previous.projectStateKey === projectStateKey && previous.sessionId && previous.sessionId !== selectedSessionId) {
+      ids.push(previous.sessionId);
+    }
+    if (selectedSessionId && previous.sessionId !== selectedSessionId) ids.push(selectedSessionId);
+    if (ids.length === 0) return;
+    const at = new Date().toISOString();
+    setProjectViewState((prev) => ({
+      ...prev,
+      workSeenAtBySessionId: stampWorkSeenAt(prev.workSeenAtBySessionId ?? {}, ids, at),
+    }));
+  }, [projectStateKey, selectedSessionId, setProjectViewState]);
 
   const setWorkLaneSortMode = useCallback(
     (mode: WorkLaneSortMode) => {
@@ -2576,6 +2612,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     toggleWorkLanePinned,
     workLaneSortMode,
     setWorkLaneSortMode,
+    workFoldBusyLanes,
+    setWorkFoldBusyLanes,
+    workSeenAtBySessionId,
     workLaneOrder,
     reorderWorkLanes,
     q,

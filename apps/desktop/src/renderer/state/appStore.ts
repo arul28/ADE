@@ -330,6 +330,18 @@ export type WorkProjectViewState = {
   /** Funnel-panel chip selections. OR within an axis, AND across axes. */
   workSessionFilters: WorkSessionFilters;
   /**
+   * By-lane "Fold busy lanes": lanes whose live work is all running or waiting
+   * on a PR collapse into a Working shelf until something needs the user.
+   * Optional and off by default, so an older blob keeps today's list.
+   */
+  workFoldBusyLanes?: boolean;
+  /**
+   * When the user last looked at each session, keyed by session id. A finished
+   * row seen after it finished no longer keeps its lane out of the Working
+   * shelf. Bounded by `stampWorkSeenAt`.
+   */
+  workSeenAtBySessionId?: Record<string, string>;
+  /**
    * Lanes-tab view state. The Lanes route is unmounted whenever it isn't active
    * (unlike Work, which is kept warm), so component state there cannot survive a
    * tab switch by construction — it has to live here to be preserved at all.
@@ -419,6 +431,8 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneSortMode: "created",
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
+    workFoldBusyLanes: false,
+    workSeenAtBySessionId: {},
     lanesFilter: "",
     lanesGroupBy: "state",
     lanesCollapsedGroupIds: [],
@@ -535,6 +549,10 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneSortMode: normalizeWorkLaneSortMode(candidate.workLaneSortMode),
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
+    // Additive, no version bump: an older blob has neither key and lands on the
+    // unfolded list with nothing seen, which is the behaviour it already had.
+    workFoldBusyLanes: candidate.workFoldBusyLanes === true,
+    workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
@@ -572,6 +590,16 @@ function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
     if (sessionIds.length < 2) continue;
     seenSetIds.add(id);
     out.push({ id, layoutId, sessionIds });
+  }
+  return out;
+}
+
+function normalizeWorkSeenAt(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [sessionId, at] of Object.entries(value as Record<string, unknown>)) {
+    if (!sessionId.trim() || typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
+    out[sessionId] = at;
   }
   return out;
 }

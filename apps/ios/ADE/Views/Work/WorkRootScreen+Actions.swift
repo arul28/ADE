@@ -110,6 +110,9 @@ extension WorkRootListScreen {
     // the top tier and keeps its header, singleton or not. Same store the Lanes
     // tab writes, so one pin means one thing across both surfaces.
     let pinnedLaneIdsSnapshot = workPinnedLaneIds
+    let foldBusyLanesSnapshot = foldBusyLanes
+    let seenAtSnapshot = WorkSeenStore.load()
+    let laneReturnStateSnapshot = sessionPresentation.laneReturnState
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
       try? await Task.sleep(for: .milliseconds(40))
@@ -129,12 +132,19 @@ extension WorkRootListScreen {
         pullRequests: pullRequestsSnapshot,
         githubPrs: githubPrsSnapshot,
         deletingLaneIds: deletingLaneIds,
-        pinnedLaneIds: pinnedLaneIdsSnapshot
+        pinnedLaneIds: pinnedLaneIdsSnapshot,
+        foldBusyLanes: foldBusyLanesSnapshot,
+        seenAtBySessionId: seenAtSnapshot,
+        laneReturnState: laneReturnStateSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
+        } else if sessionPresentation.laneReturnState != nextPresentation.laneReturnState {
+          // Bookkeeping only: carry the return baseline forward without a
+          // render, since the groups on screen did not change.
+          sessionPresentation.laneReturnState = nextPresentation.laneReturnState
         }
         pruneSelection(toVisible: nextPresentation.mergedSessions)
         prefetchChatThreads(for: nextPresentation.displaySessions)
@@ -758,6 +768,7 @@ extension WorkRootListScreen {
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
+    WorkSeenStore.stamp([session.id])
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
     selectedSessionTransitionId = session.id
     // A row from another machine opens through that machine; it is not

@@ -14,6 +14,8 @@ struct WorkFiltersSection: View {
   @Binding var selectedLaneId: String
   @Binding var selectedStatus: WorkSessionStatusFilter
   @Binding var organization: WorkSessionOrganization
+  /// By-lane only: fold lanes with nothing waiting on you into a Working shelf.
+  var foldBusyLanes: Binding<Bool>? = nil
   @Binding var filterOpen: Bool
   /// Serialized machine ids (`workSerializeMachineFilter`). Empty = all.
   var machineFilter: Binding<String> = .constant("")
@@ -68,6 +70,22 @@ struct WorkFiltersSection: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+          }
+
+          if organization == .byLane, let foldBusyLanes {
+            filterRow("Focus") {
+              WorkFilterChip(
+                title: "Fold busy lanes",
+                selected: foldBusyLanes.wrappedValue,
+                tint: ADEColor.info,
+                systemImage: "rectangle.compress.vertical"
+              ) {
+                withAnimation(.snappy(duration: 0.18)) {
+                  foldBusyLanes.wrappedValue.toggle()
+                }
+              }
+              .accessibilityHint("Lanes with nothing waiting on you fold into a Working section until something needs you or finishes.")
+            }
           }
 
           Rectangle()
@@ -351,12 +369,30 @@ struct WorkSidebarSectionHeader: View {
   /// headers and orphaned sections.
   var lane: LaneSummary? = nil
   var laneMenu: WorkSessionLaneMenuActions? = nil
+  /// The first Snoozed/Settled shelf draws one heavier rule above itself, so the
+  /// quiet zone reads as its own region rather than one more lane. Same fence the
+  /// desktop sidebar draws (`renderQuietZone` in `SessionListPane.tsx`).
+  var startsQuietZone = false
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
   private var isQuietRow: Bool { group.isQuiet && collapsed }
 
   var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if startsQuietZone {
+        Rectangle()
+          .fill(ADEColor.textMuted.opacity(0.32))
+          .frame(height: 1)
+          .padding(.top, 14)
+          .padding(.bottom, 6)
+          .accessibilityHidden(true)
+      }
+      headerRow
+    }
+  }
+
+  private var headerRow: some View {
     HStack(spacing: isQuietRow ? 6 : 8) {
       Button(action: onToggle) {
         HStack(spacing: isQuietRow ? 6 : 8) {
@@ -371,6 +407,12 @@ struct WorkSidebarSectionHeader: View {
             .font(isQuietRow ? .caption2.weight(.medium) : .caption.weight(.semibold))
             .foregroundStyle(quietAwareLabelColor)
             .lineLimit(1)
+
+          // Beside the name, not in the trailing cluster: there it sat next to
+          // the amber "uncommitted changes" dot and read as the same fact.
+          if let laneFocus = group.laneStatus, group.laneId != nil, !isQuietRow {
+            WorkLaneFocusDot(status: laneFocus)
+          }
 
           Spacer(minLength: 0)
         }
@@ -407,20 +449,35 @@ struct WorkSidebarSectionHeader: View {
         .accessibilityHint("Opens in the PRs tab")
       }
 
-      if isQuietRow {
+      if isQuietRow, group.isShelf {
+        // A shelf names itself with its icon; the trailing slot says when the
+        // first row comes back (Snoozed) and how many rows it holds.
+        HStack(spacing: 6) {
+          if let detail = group.shelfDetail {
+            Text(detail)
+              .font(.caption2)
+              .lineLimit(1)
+          }
+          Text("\(group.displayCount)")
+            .font(.caption2.monospacedDigit().weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted.opacity(0.75))
+        .accessibilityHidden(true)
+      } else if isQuietRow {
         // Hollow ring + count: the settled tier's own language, matching the
-        // desktop sidebar's inline quiet counts.
+        // desktop sidebar's inline quiet counts. Only a settled-only LANE uses
+        // it; the Snoozed shelf used to borrow it and read as settled.
         HStack(spacing: 3) {
           Circle()
             .strokeBorder(ADEColor.textMuted.opacity(0.45), lineWidth: 1)
             .frame(width: 6, height: 6)
-          Text("\(group.sessions.count)")
+          Text("\(group.displayCount)")
             .font(.caption2.monospacedDigit().weight(.medium))
         }
         .foregroundStyle(ADEColor.textMuted.opacity(0.6))
         .accessibilityHidden(true)
       } else {
-        Text("\(group.sessions.count)")
+        Text("\(group.displayCount)")
           .font(.caption2.monospacedDigit().weight(.semibold))
           .foregroundStyle(ADEColor.textMuted)
           .padding(.horizontal, 7)
@@ -490,11 +547,22 @@ struct WorkSidebarSectionHeader: View {
   }
 
   private var accessibilityLabelText: String {
-    let count = group.sessions.count
+    let count = group.displayCount
     let noun = "session\(count == 1 ? "" : "s")"
     let action = collapsed ? "expand" : "collapse"
+    if group.id == workWorkingSectionId {
+      return "Working, \(count) lane\(count == 1 ? "" : "s") with nothing waiting on you. Tap to \(action)."
+    }
+    if group.id == workSnoozedSectionId {
+      let detail = group.shelfDetail.map { ", next \($0)" } ?? ""
+      return "Snoozed, \(count) snoozed \(noun)\(detail). Tap to \(action)."
+    }
     if isQuietRow {
       return "\(group.label), \(count) settled \(noun). Tap to \(action)."
+    }
+    if let laneFocus = group.laneStatus, group.laneId != nil {
+      let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
+      return "\(label), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
     }
     let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
     return "\(label), \(count) \(noun). Tap to \(action)."
@@ -514,6 +582,16 @@ struct WorkSidebarSectionHeader: View {
       Image(systemName: "exclamationmark.triangle")
         .font(.caption)
         .foregroundStyle(ADEColor.warning)
+        .frame(width: 12, height: 12)
+    case .snoozed:
+      Image(systemName: "moon.zzz.fill")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(group.tint)
+        .frame(width: 12, height: 12)
+    case .settled:
+      Image(systemName: "checkmark.circle")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(group.tint)
         .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
@@ -1851,5 +1929,27 @@ private struct WorkHeaderOverflowMenu: View {
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
     .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
+  }
+}
+
+/// A lane's rolled-up status as one dot in the board column's accent — the same
+/// accents as the status chips (`statusFilterTint`) and the desktop board.
+struct WorkLaneFocusDot: View {
+  let status: WorkLaneFocusStatus
+
+  var body: some View {
+    Circle()
+      .fill(color)
+      .frame(width: 6, height: 6)
+      .accessibilityHidden(true)
+  }
+
+  private var color: Color {
+    switch status {
+    case .needsYou: return ADEColor.warning
+    case .working: return ADEColor.info
+    case .waiting: return ADEColor.textMuted
+    case .done: return ADEColor.success
+    }
   }
 }

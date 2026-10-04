@@ -155,6 +155,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   /// unrelated change happens to rebuild the presentation.
   let snoozeEpoch: Int
   let pinnedLaneIdsStorage: String
+  let foldBusyLanes: Bool
 }
 
 /// The slice of `SyncService` the Work list renders from, read once per
@@ -407,6 +408,8 @@ struct WorkRootListScreen: View, Equatable {
   /// writes here, so pinning stays a Lanes-tab gesture with one owner.
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+  /// By-lane "Fold busy lanes", scoped per project+host like the grouping.
+  @State var foldBusyLanes = false
   @State var collapsedSectionIdsStorage = ""
   @State var machineFilterStorage = ""
   /// The project+host scope the five view-state properties above currently hold.
@@ -449,7 +452,8 @@ struct WorkRootListScreen: View, Equatable {
       statusFilter: selectedStatusRawValue,
       organization: sessionOrganizationRaw,
       collapsedSectionIds: collapsedSectionIdsStorage,
-      machineFilter: machineFilterStorage
+      machineFilter: machineFilterStorage,
+      foldBusyLanes: foldBusyLanes
     )
   }
 
@@ -469,6 +473,7 @@ struct WorkRootListScreen: View, Equatable {
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
     machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
   }
 
   func persistWorkViewState() {
@@ -480,7 +485,8 @@ struct WorkRootListScreen: View, Equatable {
         statusFilter: selectedStatusRawValue,
         organization: sessionOrganizationRaw,
         collapsedSectionIds: collapsedSectionIdsStorage,
-        machineFilter: machineFilterStorage
+        machineFilter: machineFilterStorage,
+        foldBusyLanes: foldBusyLanes
       ),
       scope: scope
     )
@@ -500,6 +506,7 @@ struct WorkRootListScreen: View, Equatable {
     sessionOrganizationRaw = restored.organization
     collapsedSectionIdsStorage = restored.collapsedSectionIds
     machineFilterStorage = restored.machineFilter
+    foldBusyLanes = restored.foldBusyLanes
     workViewStateDeeplinkActive = false
     workViewStateBeforeDeeplink = nil
   }
@@ -597,7 +604,17 @@ struct WorkRootListScreen: View, Equatable {
     )
   }
 
-  var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
+  var foldBusyLanesBinding: Binding<Bool> {
+    Binding(
+      get: { foldBusyLanes },
+      set: {
+        restoreWorkViewStateAfterDeeplink()
+        foldBusyLanes = $0
+      }
+    )
+  }
+
+    var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
     Binding(
       get: { selectedStatus },
       set: {
@@ -708,6 +725,20 @@ struct WorkRootListScreen: View, Equatable {
     sessionPresentation.sessionGroups
   }
 
+  /// The groups on screen: lanes filed under the Working shelf render only
+  /// while that shelf is expanded.
+  var visibleSessionGroups: [WorkSessionGroup] {
+    let groups = sessionGroups
+    guard let shelf = groups.first(where: { $0.id == workWorkingSectionId }),
+          workGroupIsCollapsed(shelf) else { return groups }
+    return groups.filter { !$0.inWorkingShelf }
+  }
+
+  /// The first Snoozed/Settled shelf, which draws the quiet zone's rule.
+  var quietZoneStartGroupId: String? {
+    sessionGroups.first(where: { $0.isShelf && $0.id != workWorkingSectionId })?.id
+  }
+
   /// Lanes the user has pinned, read from the Lanes tab's store.
   var workPinnedLaneIds: Set<String> {
     Set(pinnedLaneIdsStorage.split(separator: ",").map(String.init).filter { !$0.isEmpty })
@@ -742,7 +773,8 @@ struct WorkRootListScreen: View, Equatable {
       sync: inputs,
       loadedProjectionProjectId: loadedProjectionProjectId,
       snoozeEpoch: snoozeEpoch,
-      pinnedLaneIdsStorage: pinnedLaneIdsStorage
+      pinnedLaneIdsStorage: pinnedLaneIdsStorage,
+      foldBusyLanes: foldBusyLanes
     )
   }
 
@@ -819,6 +851,7 @@ struct WorkRootListScreen: View, Equatable {
               selectedLaneId: selectedLaneBinding,
               selectedStatus: selectedStatusBinding,
               organization: sessionOrganizationBinding,
+              foldBusyLanes: foldBusyLanesBinding,
               filterOpen: $filterPanelOpen,
               machineFilter: machineFilterBinding,
               machineOptions: inputs.machineFilterOptions,
@@ -878,7 +911,7 @@ struct WorkRootListScreen: View, Equatable {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
-            ForEach(sessionGroups) { group in
+            ForEach(visibleSessionGroups) { group in
               workSessionGroupSection(group)
             }
           }
@@ -933,7 +966,11 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .onChange(of: path.count) { _, newCount in
-        if newCount == 0, selectedSessionTransitionId != nil {
+        if newCount == 0, let leftSessionId = selectedSessionTransitionId {
+          // Leaving a chat counts as having seen it: output that landed while
+          // the user was reading must not hold its lane out of the Working
+          // shelf. The open was stamped too, in `openSession`.
+          WorkSeenStore.stamp([leftSessionId])
           selectedSessionTransitionId = nil
         }
         if newCount == 0 {
@@ -1349,7 +1386,8 @@ struct WorkRootListScreen: View, Equatable {
         // lane record to read it from.
         laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
         lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
-        laneMenu: workLaneMenuActions
+        laneMenu: workLaneMenuActions,
+        startsQuietZone: group.id == quietZoneStartGroupId
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])

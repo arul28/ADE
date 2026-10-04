@@ -124,13 +124,32 @@ struct WorkSessionGroup: Identifiable, Equatable {
   /// inverted collapse marker, but their marker is keyed by section id instead
   /// of lane id — see `quietOpenSectionId`.
   let isShelf: Bool
+  /// The lane's rolled-up focus status (Needs you > Working > Waiting > Done),
+  /// drawn as one dot on the lane header. Nil for shelves, status and time
+  /// sections, and lanes holding only quiet rows.
+  var laneStatus: WorkLaneFocusStatus? = nil
+  /// A lane filed under the Working shelf. It renders only while that shelf is
+  /// expanded, keeping its own header and rows.
+  var inWorkingShelf = false
+  /// One line of context after a shelf label, e.g. when the next snoozed row
+  /// comes back. Nil when there is nothing worth saying.
+  var shelfDetail: String? = nil
+  /// What the header counts when it is not rows: the Working shelf counts lanes.
+  var countOverride: Int? = nil
 
   enum Icon: Equatable {
     case statusDot
     case laneBranch
     case warning
+    /// The Snoozed shelf: a moon, never a blue dot, which is Working's colour.
+    case snoozed
+    /// The Settled shelf: a check, the tier's "filed away" mark.
+    case settled
     case none
   }
+
+  /// The number the header shows.
+  var displayCount: Int { countOverride ?? sessions.count }
 
   init(
     id: String,
@@ -143,8 +162,12 @@ struct WorkSessionGroup: Identifiable, Equatable {
     isOrphaned: Bool = false,
     isQuiet: Bool = false,
     isHeaderless: Bool = false,
-    isShelf: Bool = false
+    isShelf: Bool = false,
+    shelfDetail: String? = nil,
+    countOverride: Int? = nil
   ) {
+    self.shelfDetail = shelfDetail
+    self.countOverride = countOverride
     self.id = id
     self.label = label
     self.icon = icon
@@ -193,6 +216,10 @@ struct WorkSessionGroup: Identifiable, Equatable {
       && lhs.isQuiet == rhs.isQuiet
       && lhs.isHeaderless == rhs.isHeaderless
       && lhs.isShelf == rhs.isShelf
+      && lhs.laneStatus == rhs.laneStatus
+      && lhs.inWorkingShelf == rhs.inWorkingShelf
+      && lhs.shelfDetail == rhs.shelfDetail
+      && lhs.countOverride == rhs.countOverride
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
 }
@@ -207,6 +234,9 @@ struct WorkRootSessionPresentation: Equatable {
   let workOrderedLanes: [LaneSummary]
   let laneById: [String: LaneSummary]
   let lanePrTagsByLaneId: [String: LanePrTag]
+  /// Which lanes came back out of the Working shelf, carried to the next build.
+  /// Bookkeeping, not render state: it is outside the render signature.
+  var laneReturnState: WorkLaneReturnState = .empty
   private let renderSignature: Int
 
   init(
@@ -268,6 +298,10 @@ func buildWorkRootSessionPresentation(
   deletingLaneIds: Set<String> = [],
   pinnedLaneIds: Set<String> = [],
   laneSortMode: WorkLaneSortMode = .created,
+  /// By-lane only: fold lanes with nothing waiting on the user into a Working shelf.
+  foldBusyLanes: Bool = false,
+  seenAtBySessionId: [String: Date] = [:],
+  laneReturnState: WorkLaneReturnState = .empty,
   now: Date = Date()
 ) -> WorkRootSessionPresentation {
   let committedIds = Set(sessions.map(\.id))
@@ -357,7 +391,7 @@ func buildWorkRootSessionPresentation(
     sortMode: laneSortMode
   )
 
-  let sessionGroups = workSessionGroups(
+  let groupedSessions = workSessionGroups(
     organization: organization,
     sessions: displaySessions,
     quietReferenceSessions: mergedSessions,
@@ -368,10 +402,36 @@ func buildWorkRootSessionPresentation(
     headerlessLaneIds: headerlessLaneIds,
     laneWaitingReasonByLaneId: laneWaitingReasonByLaneId,
     nestedChildIds: childSessionIds,
+    foldBusyLanes: foldBusyLanes,
+    seenAtBySessionId: seenAtBySessionId,
+    pinnedLaneIds: pinnedLaneIds,
     now: now
   )
+  // Lanes that just came back out of the Working shelf lead the active lanes,
+  // newest return first. Tracked only while folding is on, so turning it on
+  // again takes a fresh baseline instead of floating every lane at once.
+  let foldActive = foldBusyLanes && organization == .byLane
+  let nextLaneReturnState = foldActive
+    ? workNextLaneReturnState(
+      laneReturnState,
+      foldedNow: Set(groupedSessions.filter(\.inWorkingShelf).compactMap(\.laneId)),
+      presentLaneIds: Set(orderedLanes.map(\.id)),
+      now: now
+    )
+    : .empty
+  let sessionGroups = foldActive
+    ? workFloatReturnedLanes(
+      groupedSessions,
+      laneId: \.laneId,
+      returnedAt: nextLaneReturnState.returnedAt,
+      canFloat: { group in
+        guard let laneId = group.laneId, !group.inWorkingShelf, !group.isQuiet, !group.isOrphaned else { return false }
+        return !pinnedLaneIds.contains(laneId) && laneById[laneId]?.laneType != "primary"
+      }
+    )
+    : groupedSessions
 
-  return WorkRootSessionPresentation(
+  var presentation = WorkRootSessionPresentation(
     mergedSessions: mergedSessions,
     displaySessions: displaySessions,
     displaySessionIds: displaySessionIds,
@@ -393,6 +453,8 @@ func buildWorkRootSessionPresentation(
       chatSummaries: chatSummaries
     )
   )
+  presentation.laneReturnState = nextLaneReturnState
+  return presentation
 }
 
 private func workRootSessionPresentationRenderSignature(
@@ -469,6 +531,10 @@ private func workRootSessionPresentationRenderSignature(
     // Gaining or losing a header reshapes the whole section; without this the
     // equatable short-circuit freezes the old shape on screen.
     hasher.combine(group.isHeaderless)
+    hasher.combine(group.laneStatus)
+    hasher.combine(group.inWorkingShelf)
+    hasher.combine(group.shelfDetail)
+    hasher.combine(group.countOverride)
     hasher.combine(group.sessions.map(\.id))
   }
   for parentId in nestedGroupsByParentId.keys.sorted() {
@@ -621,6 +687,11 @@ func workSessionGroups(
   /// map the Waiting chip filters with.
   laneWaitingReasonByLaneId: [String: WorkBoardWaitingReason] = [:],
   nestedChildIds: Set<String> = [],
+  /// By-lane only: lanes whose live rows are all busy (or done and already
+  /// opened) move under a collapsed Working shelf. See `workLaneFoldsIntoWorking`.
+  foldBusyLanes: Bool = false,
+  seenAtBySessionId: [String: Date] = [:],
+  pinnedLaneIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
   // The quiet zone is a shelf pair, and only by-status and by-time build it.
@@ -666,7 +737,26 @@ func workSessionGroups(
       now: now
     )
   case .byLane:
-    groups = workSessionGroupsByLane(
+    // Focus is read from the UNFILTERED roster, like quietness: a lane must not
+    // change shelves while the user types in search. A finished nested row
+    // (attached shell, subagent) cannot hold its lane out — nobody opens a
+    // helper to mark it seen — but a nested row asking for input still can.
+    let focusRoster = quietReferenceSessions ?? sessions
+    var focusRowsByLaneId: [String: [WorkRowFocus?]] = [:]
+    for session in focusRoster {
+      let focus = workRowFocus(
+        session: session,
+        summary: chatSummaries[session.id],
+        archived: archivedSessionIds.contains(session.id),
+        laneWaiting: laneWaitingReasonByLaneId[session.laneId] != nil,
+        seen: workIsRowSeen(session: session, seenAt: seenAtBySessionId[session.id]),
+        now: now
+      )
+      let counted = (focus?.status == .done && nestedChildIds.contains(session.id)) ? nil : focus
+      focusRowsByLaneId[session.laneId, default: []].append(counted)
+    }
+    let primaryLaneIds = Set(orderedLanes.filter { $0.laneType == "primary" }.map(\.id))
+    let laneGroups = workSessionGroupsByLane(
       sessions: awake,
       orderedLanes: orderedLanes,
       deletingLaneIds: deletingLaneIds,
@@ -680,7 +770,35 @@ func workSessionGroups(
         archivedSessionIds: archivedSessionIds,
         now: now
       )
+      if let laneId = group.laneId, !group.isOrphaned {
+        let rows = focusRowsByLaneId[laneId] ?? []
+        group.laneStatus = workRollUpLaneFocus(rows)
+        group.inWorkingShelf = foldBusyLanes
+          && !group.isQuiet
+          && !pinnedLaneIds.contains(laneId)
+          && !primaryLaneIds.contains(laneId)
+          && workLaneFoldsIntoWorking(rows)
+      }
       return group
+    }
+    // The Working shelf sits after every lane still in the inbox and above the
+    // quiet zone: this work is live, just not waiting on you.
+    let folded = laneGroups.filter(\.inWorkingShelf)
+    groups = laneGroups.filter { !$0.inWorkingShelf }
+    if !folded.isEmpty {
+      groups.append(WorkSessionGroup(
+        id: workWorkingSectionId,
+        label: "Working",
+        icon: .statusDot,
+        tint: ADEColor.info,
+        // No rows of its own: its lanes follow it as their own sections, so
+        // each keeps its header and nothing renders twice.
+        sessions: [],
+        isQuiet: true,
+        isShelf: true,
+        countOverride: folded.count
+      ))
+      groups.append(contentsOf: folded)
     }
   case .byTime:
     groups = workSessionGroupsByTime(sessions: awake)
@@ -691,21 +809,24 @@ func workSessionGroups(
   // back), settled work is finished, so the shelf nearer the live rows is the
   // one that will re-enter them.
   if !snoozed.isEmpty {
+    // Neutral, with a moon: blue is Working's colour, and a blue dot here read
+    // as "running". The detail says when the first of these comes back.
     groups.append(WorkSessionGroup(
       id: workSnoozedSectionId,
       label: "Snoozed",
-      icon: .statusDot,
-      tint: ADEColor.info,
+      icon: .snoozed,
+      tint: ADEColor.textSecondary,
       sessions: snoozed,
       isQuiet: true,
-      isShelf: true
+      isShelf: true,
+      shelfDetail: workSnoozedShelfDetail(snoozed, now: now)
     ))
   }
   if !settled.isEmpty {
     groups.append(WorkSessionGroup(
       id: workSettledSectionId,
       label: "Settled",
-      icon: .statusDot,
+      icon: .settled,
       tint: ADEColor.textMuted,
       sessions: settled,
       isQuiet: true,
@@ -1056,6 +1177,8 @@ struct WorkProjectViewState: Codable, Equatable {
   var collapsedSectionIds: String = ""
   /// Machine filter ids (`workSerializeMachineFilter`). Empty means all machines.
   var machineFilter: String = ""
+  /// By-lane "Fold busy lanes". Off by default.
+  var foldBusyLanes: Bool = false
 
   static let empty = WorkProjectViewState()
 }
@@ -1071,7 +1194,8 @@ extension WorkProjectViewState {
       statusFilter: try container.decodeIfPresent(String.self, forKey: .statusFilter) ?? WorkSessionStatusFilter.all.rawValue,
       organization: try container.decodeIfPresent(String.self, forKey: .organization) ?? WorkSessionOrganization.byLane.rawValue,
       collapsedSectionIds: try container.decodeIfPresent(String.self, forKey: .collapsedSectionIds) ?? "",
-      machineFilter: try container.decodeIfPresent(String.self, forKey: .machineFilter) ?? ""
+      machineFilter: try container.decodeIfPresent(String.self, forKey: .machineFilter) ?? "",
+      foldBusyLanes: try container.decodeIfPresent(Bool.self, forKey: .foldBusyLanes) ?? false
     )
   }
 }
@@ -1121,3 +1245,187 @@ enum WorkViewStateStore {
     defaults.set(map, forKey: storageKey)
   }
 }
+
+// MARK: - Lane focus ("Fold busy lanes")
+
+/// A lane's rolled-up status, in the desktop board's column vocabulary and
+/// priority order: Needs you > Working > Waiting > Done. Mirrors
+/// `apps/desktop/src/renderer/components/terminals/workLaneFocus.ts`.
+enum WorkLaneFocusStatus: Int, Comparable, Hashable {
+  case needsYou = 0
+  case working
+  case waiting
+  case done
+
+  static func < (lhs: WorkLaneFocusStatus, rhs: WorkLaneFocusStatus) -> Bool {
+    lhs.rawValue < rhs.rawValue
+  }
+
+  /// The board column word and accent, read from the status chips so the lane
+  /// dot and the chips can never name or colour the same state differently.
+  var statusFilter: WorkSessionStatusFilter {
+    switch self {
+    case .needsYou: return .needsYou
+    case .working: return .working
+    case .waiting: return .waiting
+    case .done: return .done
+    }
+  }
+}
+
+struct WorkRowFocus: Equatable {
+  let status: WorkLaneFocusStatus
+  /// True when this row alone keeps its lane out of the Working shelf.
+  let holdsOut: Bool
+}
+
+/// Has the user opened this row since it last finished?
+func workIsRowSeen(session: TerminalSessionSummary, seenAt: Date?) -> Bool {
+  guard let seenAt else { return false }
+  var finished = workParsedDate(session.startedAt) ?? .distantPast
+  for value in [session.lastActivityAt, session.endedAt, session.activityStatusChangedAt] {
+    if let parsed = value.flatMap(workParsedDate), parsed > finished { finished = parsed }
+  }
+  return seenAt >= finished
+}
+
+/// One row's place in its lane's focus, or nil for a snoozed, settled or
+/// archived row (those have their own shelves).
+func workRowFocus(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  archived: Bool,
+  laneWaiting: Bool,
+  seen: Bool,
+  now: Date
+) -> WorkRowFocus? {
+  if archived { return nil }
+  if session.isFiledAsSnoozed(summary: summary, now: now) { return nil }
+  let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
+  switch phase {
+  case .needsYou:
+    return WorkRowFocus(status: .needsYou, holdsOut: true)
+  case .starting, .running:
+    return WorkRowFocus(status: laneWaiting ? .waiting : .working, holdsOut: false)
+  case .stale:
+    // Still filed as running, but it may be stuck: never hide it.
+    return WorkRowFocus(status: .working, holdsOut: true)
+  case .settled:
+    return nil
+  case .ready, .idle, .failed, .stopped, .ended:
+    return WorkRowFocus(status: .done, holdsOut: !seen)
+  }
+}
+
+func workRollUpLaneFocus(_ rows: [WorkRowFocus?]) -> WorkLaneFocusStatus? {
+  rows.compactMap { $0?.status }.min()
+}
+
+/// Every live row busy or already-seen Done, and at least one actually busy.
+func workLaneFoldsIntoWorking(_ rows: [WorkRowFocus?]) -> Bool {
+  var busy = 0
+  for row in rows {
+    guard let row else { continue }
+    if row.holdsOut { return false }
+    if row.status == .working || row.status == .waiting { busy += 1 }
+  }
+  return busy > 0
+}
+
+/// Lanes that came back out of the Working shelf, and when this phone saw it.
+/// The first observation only records a baseline, so opening the list never
+/// reshuffles it.
+struct WorkLaneReturnState: Equatable {
+  var folded: Set<String> = []
+  var returnedAt: [String: Date] = [:]
+  var initialized = false
+
+  static let empty = WorkLaneReturnState()
+}
+
+func workNextLaneReturnState(
+  _ previous: WorkLaneReturnState,
+  foldedNow: Set<String>,
+  presentLaneIds: Set<String>,
+  now: Date
+) -> WorkLaneReturnState {
+  guard previous.initialized else {
+    return WorkLaneReturnState(folded: foldedNow, returnedAt: [:], initialized: true)
+  }
+  var next = previous
+  for laneId in previous.folded where !foldedNow.contains(laneId) && presentLaneIds.contains(laneId) {
+    next.returnedAt[laneId] = now
+  }
+  for laneId in foldedNow { next.returnedAt.removeValue(forKey: laneId) }
+  next.returnedAt = next.returnedAt.filter { presentLaneIds.contains($0.key) }
+  next.folded = foldedNow
+  return next
+}
+
+/// Float returned lanes to the front of the floatable run, newest first; every
+/// other item keeps its order. Pins and the primary lane are never floatable.
+func workFloatReturnedLanes<Item>(
+  _ ordered: [Item],
+  laneId: (Item) -> String?,
+  returnedAt: [String: Date],
+  canFloat: (Item) -> Bool
+) -> [Item] {
+  guard !returnedAt.isEmpty else { return ordered }
+  func returnTime(_ item: Item) -> Date? { laneId(item).flatMap { returnedAt[$0] } }
+  let returnedIndices = ordered.indices
+    .filter { canFloat(ordered[$0]) && returnTime(ordered[$0]) != nil }
+    .sorted { (returnTime(ordered[$0]) ?? .distantPast) > (returnTime(ordered[$1]) ?? .distantPast) }
+  guard !returnedIndices.isEmpty else { return ordered }
+  let returnedSet = Set(returnedIndices)
+  var rest = ordered.indices.filter { !returnedSet.contains($0) }.map { ordered[$0] }
+  let insertAt = rest.firstIndex(where: canFloat) ?? rest.count
+  rest.insert(contentsOf: returnedIndices.map { ordered[$0] }, at: insertAt)
+  return rest
+}
+
+/// When the user last opened each session, keyed by session id. Session ids are
+/// globally unique, so one store serves every project. Bounded to the newest
+/// `limit` entries.
+enum WorkSeenStore {
+  static let key = "ade.work.seenAtBySessionId.v1"
+  static let limit = 400
+
+  static func load(_ defaults: UserDefaults = .standard) -> [String: Date] {
+    guard let raw = defaults.dictionary(forKey: key) as? [String: Double] else { return [:] }
+    return raw.mapValues { Date(timeIntervalSince1970: $0) }
+  }
+
+  static func stamp(_ sessionIds: [String], at date: Date = Date(), defaults: UserDefaults = .standard) {
+    guard !sessionIds.isEmpty else { return }
+    var raw = (defaults.dictionary(forKey: key) as? [String: Double]) ?? [:]
+    for id in sessionIds where !id.isEmpty { raw[id] = date.timeIntervalSince1970 }
+    if raw.count > limit {
+      raw = Dictionary(uniqueKeysWithValues: raw.sorted { $0.value > $1.value }.prefix(limit).map { ($0.key, $0.value) })
+    }
+    defaults.set(raw, forKey: key)
+  }
+}
+
+/// "back 6:00 PM" / "back Tue" for the first snoozed row to wake, or nil when
+/// every row waits on something other than a clock (an "Until I'm asked"
+/// snooze runs ~100 years, which no time label describes honestly).
+func workSnoozedShelfDetail(_ sessions: [TerminalSessionSummary], now: Date) -> String? {
+  let horizon = now.addingTimeInterval(60 * 60 * 24 * 365)
+  let next = sessions
+    .compactMap { $0.snoozedUntil.flatMap(workParsedDate) }
+    .filter { $0 > now && $0 < horizon }
+    .min()
+  guard let next else { return nil }
+  let calendar = Calendar.current
+  if calendar.isDate(next, inSameDayAs: now) {
+    return "back \(next.formatted(date: .omitted, time: .shortened))"
+  }
+  if let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: next)).day, days < 7 {
+    return days == 1 ? "back tomorrow" : "back \(next.formatted(.dateTime.weekday(.abbreviated)))"
+  }
+  return "back \(next.formatted(.dateTime.month(.abbreviated).day()))"
+}
+
+/// Stable id for the Working shelf. Uses the `status:` family so its collapse
+/// marker (`shelf-open:status:working`) persists like the other shelves.
+let workWorkingSectionId = "status:working"
