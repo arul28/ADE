@@ -6,7 +6,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
-import { confirmDialog } from "../ui/dialog";
+import { confirmDialog, promptDialog } from "../ui/dialog";
 import {
   canonicalInputFromSummary,
   sessionNeedsYou,
@@ -466,5 +466,36 @@ export async function restartAgentSession(
     });
   } catch (error) {
     reportFailure("Restart agent session", session.id, error);
+  }
+}
+
+/**
+ * Set a chat's goal: Codex through its goal API, Claude through its native
+ * `/goal` command (sent like a typed command). Either way the agent keeps
+ * working across turns until the goal is met.
+ */
+export async function setChatGoal(
+  session: Pick<TerminalSessionSummary, "id" | "toolType">,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const objective = (await promptDialog({
+    title: "Set a goal",
+    message: "The agent keeps working across turns until this is true. You can pause or clear it from the goal chip above the prompt box.",
+    placeholder: "e.g. All tests pass and the PR is merged",
+    confirmLabel: "Set goal",
+  }))?.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  if (!objective) return;
+  try {
+    if (session.toolType === "codex-chat") {
+      await (pin
+        ? window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }, pin)
+        : window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }));
+    } else {
+      const args = { sessionId: session.id, text: `/goal ${objective}` };
+      await (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args));
+    }
+    showToast({ id: `chat-goal:${session.id}`, title: "Goal set", message: objective });
+  } catch (error) {
+    reportFailure("Set goal", session.id, error);
   }
 }

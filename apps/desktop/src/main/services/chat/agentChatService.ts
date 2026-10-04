@@ -9805,6 +9805,13 @@ export function createAgentChatService(args: {
   /** Content-free hook fired after a user dismisses a pending question. */
   onPendingInputDismissed?: (event: { provider: AgentChatProvider }) => void;
   onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
+  /** A chat's goal finished (`reached`) or got stuck (`blocked`); the host may alert the user. */
+  onGoalEnded?: (args: {
+    sessionId: string;
+    title: string | null;
+    objective: string;
+    outcome: "reached" | "blocked";
+  }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -9890,6 +9897,7 @@ export function createAgentChatService(args: {
     onAutoResumeOutcome,
     onPendingInputDismissed,
     onUsageLimitAutoResumed,
+    onGoalEnded,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -20097,6 +20105,13 @@ export function createAgentChatService(args: {
   ): void => {
     if (value === null) {
       if (managed.session.claudeGoal == null) return;
+      // Claude clears a goal when its Stop hook reports it met — or when the
+      // user typed `/goal clear`. Only the first is news worth an alert.
+      const lastUserText = [...managed.recentConversationEntries]
+        .reverse()
+        .find((entry) => entry.role === "user")?.text?.trim() ?? "";
+      const clearedByUser = /^\/goal\s+(?:clear|stop|off|reset|none|cancel)\b/i.test(lastUserText);
+      if (!clearedByUser) reportGoalEnded(managed, managed.session.claudeGoal.condition, "reached");
       managed.session.claudeGoal = null;
       emitChatEvent(managed, {
         type: "claude_goal_cleared",
@@ -22065,6 +22080,28 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
   };
 
+  const reportGoalEnded = (
+    managed: ManagedChatSession,
+    objective: string | null | undefined,
+    outcome: "reached" | "blocked",
+  ): void => {
+    const text = objective?.trim();
+    if (!text || !onGoalEnded) return;
+    try {
+      onGoalEnded({
+        sessionId: managed.session.id,
+        title: sessionService.get(managed.session.id)?.title?.trim() || null,
+        objective: text,
+        outcome,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.goal_ended_report_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const setCodexGoalAndMaybeEmitUpdate = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -22072,6 +22109,11 @@ export function createAgentChatService(args: {
     updateKind: CodexThreadGoalUpdateKind = "sync",
     turnId?: string,
   ): CodexThreadGoal | null => {
+    const previousStatus = managed.session.codexGoal?.status ?? null;
+    const nextStatus = goal?.status ?? null;
+    if (nextStatus !== previousStatus && (nextStatus === "complete" || nextStatus === "blocked") && previousStatus) {
+      reportGoalEnded(managed, goal?.objective ?? managed.session.codexGoal?.objective, nextStatus === "complete" ? "reached" : "blocked");
+    }
     const previousVisible = codexGoalVisibleState(managed.session.codexGoal ?? null);
     const sanitizedGoal = normalizeAdeCodexGoal(goal);
     managed.session.codexGoal = sanitizedGoal;

@@ -1008,6 +1008,32 @@ Three rules are specific to the schedule itself:
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
 
+### Goals
+
+A goal keeps the agent working across turns until a condition is true. Codex
+goals run on the app-server's `thread/goal/*` API; Claude goals are Claude
+Code's native `/goal <condition>` (cleared with `/goal clear`; Claude has no
+pause), mirrored read-only from the SDK's `active_goal` messages
+(`applyClaudeActiveGoal`).
+
+- **Goal chip.** While a goal is in play, a one-line chip sits above the prompt
+  box (`GoalChip.tsx`, next to the usage-limit pill): status dot, objective,
+  and the iteration (Claude) or tokens used (Codex). Clicking it opens a small
+  sheet with the full objective and its controls — Edit, Pause/Resume (Codex),
+  Clear. Claude's Edit and Clear send `/goal …` as a typed command and are
+  disabled mid-turn ("Claude takes goal changes between turns"). A Codex goal
+  that is complete or cancelled drops the chip. The full card stays in Chat
+  Info.
+- **Setting one.** Type `/goal …`, or use **Set goal…** in the command palette
+  for the chat in front of you (Claude and Codex).
+- **Work rows.** `projectActiveGoal` projects the live goal onto the session
+  row (`activeGoal`), and the row shows a goal glyph in its quiet indicator
+  cluster, with the objective in the hover card.
+- **Alert.** When a Codex goal turns `complete` or `blocked`, or a Claude goal
+  clears without the user having typed `/goal clear`, the chat service calls
+  `onGoalEnded` and the desktop shows a "Goal reached" / "Goal blocked" OS
+  notification that opens the chat (skipped while an ADE window is focused).
+
 ### Waits
 
 - **`ade chat wait <session> --for …`** asks the brain (`chat.waitFor`), which

@@ -4233,6 +4233,47 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
+    /**
+     * An OS notification about one chat that opens it on click. Skipped while
+     * any ADE window is focused: there is no per-window "which chat is open"
+     * signal in main, and the chat's own transcript already says what happened.
+     */
+    const showChatOsNotification = (args: {
+      sessionId: string;
+      title: string;
+      body: string;
+      source: string;
+      failureEvent: string;
+    }): void => {
+      if (!Notification.isSupported()) return;
+      if (BrowserWindow.getFocusedWindow()) return;
+      try {
+        const notification = new Notification({ title: args.title, body: args.body });
+        // Clicking it opens the chat, through the same protocol dispatcher
+        // an `ade://` click from outside the app goes through.
+        notification.on("click", () => {
+          handleDeeplinkUrl(
+            buildDeeplink({ kind: "session", sessionId: args.sessionId }, { form: "ade" }),
+            args.source,
+            (request) => {
+              if (dispatchAppNavigationForProjectRoot) {
+                dispatchAppNavigationForProjectRoot(projectRoot, request);
+                return;
+              }
+              dispatchOrQueueAppNavigationRequest(request);
+            },
+            (event, fields) => logger.warn(event, fields),
+          );
+        });
+        notification.show();
+      } catch (error) {
+        logger.warn(args.failureEvent, {
+          sessionId: args.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     const agentChatService = createAgentChatService({
       machineAdeHome: machineAdeLayout.adeDir,
       runtimeBudget: chatRuntimeBudget,
@@ -4344,43 +4385,24 @@ app.whenReady().then(async () => {
         provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
-        if (!Notification.isSupported()) return;
-        // An OS notification for something the user is already looking at is
-        // noise. There is no per-window "which chat is open" signal in main, so
-        // the check is the coarse one that is actually available: any focused
-        // ADE window means the user is here, and the chat's own transcript
-        // notice already says the resume happened.
-        if (BrowserWindow.getFocusedWindow()) return;
-        try {
-          const notification = new Notification({
-            title: "Chat resumed",
-            body: title?.trim()
-              ? `"${title.trim()}" continued after its usage limit reset.`
-              : "A chat continued after its usage limit reset.",
-          });
-          // Clicking it opens the chat, through the same protocol dispatcher
-          // an `ade://` click from outside the app goes through.
-          notification.on("click", () => {
-            handleDeeplinkUrl(
-              buildDeeplink({ kind: "session", sessionId }, { form: "ade" }),
-              "notification:usage_limit_resume",
-              (request) => {
-                if (dispatchAppNavigationForProjectRoot) {
-                  dispatchAppNavigationForProjectRoot(projectRoot, request);
-                  return;
-                }
-                dispatchOrQueueAppNavigationRequest(request);
-              },
-              (event, fields) => logger.warn(event, fields),
-            );
-          });
-          notification.show();
-        } catch (error) {
-          logger.warn("agent_chat.usage_limit_resume_notification_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        showChatOsNotification({
+          sessionId,
+          title: "Chat resumed",
+          body: title?.trim()
+            ? `"${title.trim()}" continued after its usage limit reset.`
+            : "A chat continued after its usage limit reset.",
+          source: "notification:usage_limit_resume",
+          failureEvent: "agent_chat.usage_limit_resume_notification_failed",
+        });
+      },
+      onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        showChatOsNotification({
+          sessionId,
+          title: outcome === "reached" ? "Goal reached" : "Goal blocked",
+          body: `${title ? `"${title}": ` : ""}${objective}`,
+          source: "notification:goal_ended",
+          failureEvent: "agent_chat.goal_ended_notification_failed",
+        });
       },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {

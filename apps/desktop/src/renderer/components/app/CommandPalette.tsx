@@ -38,7 +38,7 @@ import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isChatToolType } from "../../lib/sessions";
-import { restartAgentSession } from "../terminals/sessionLifecycleActions";
+import { restartAgentSession, setChatGoal as setChatGoalFromPalette } from "../terminals/sessionLifecycleActions";
 import {
   appendWorkSearchFilter,
   parseWorkSearchQuery,
@@ -805,6 +805,15 @@ export function CommandPalette({
         group: "Actions",
         run: () => { void restartAgentSession(activeChat); },
       });
+      if (activeChat.toolType === "codex-chat" || activeChat.toolType === "claude-chat") {
+        next.push({
+          id: "action-set-goal",
+          title: "Set goal…",
+          hint: "The agent keeps working across turns until the goal is met",
+          group: "Actions",
+          run: () => { void setChatGoalFromPalette(activeChat); },
+        });
+      }
     }
 
     if (!hasActiveProject) {

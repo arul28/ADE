@@ -184,6 +184,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { ChatUsageLimitResumePill } from "./ChatUsageLimitResumePill";
+import { GoalChip } from "./GoalChip";
 import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
@@ -5755,6 +5756,16 @@ export function AgentChatPane({
         delete next[sessionId];
         return next;
       });
+    }
+  }, []);
+  // Claude's goal lives in its own `/goal` command; ADE sends it like a typed
+  // command, between turns.
+  const sendClaudeGoalCommand = useCallback(async (sessionId: string, argument: string) => {
+    setError(null);
+    try {
+      await window.ade.agentChat.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current);
+    } catch (goalError) {
+      setError(errorMessage(goalError));
     }
   }, []);
   const setCodexGoalStatusFromPanel = useCallback(async (
@@ -15348,6 +15359,48 @@ export function AgentChatPane({
   // capped column the prompt box uses so the two share an edge. It is an
   // ordinary flow child (its popover is the absolutely-positioned part), so it
   // moves the composer by its own height and by nothing else.
+  // The chat's goal as a chip above the prompt box (Codex `thread/goal/*`,
+  // Claude's native `/goal`). Codex goals that finished drop the chip.
+  const goalChipContent = (() => {
+    if (!composerSessionId || !selectedSession) return null;
+    if (selectedSession.provider === "codex" && selectedCodexGoal?.objective?.trim()
+      && selectedCodexGoal.status !== "complete" && selectedCodexGoal.status !== "cancelled") {
+      const sessionId = composerSessionId;
+      return (
+        <GoalChip
+          variant="codex"
+          goal={selectedCodexGoal}
+          pending={selectedCodexGoalPending}
+          onEdit={(objective) => { void setCodexGoalFromPanel(sessionId, objective); }}
+          onClear={() => { void clearCodexGoalFromPanel(sessionId); }}
+          onSetStatus={(status) => { void setCodexGoalStatusFromPanel(sessionId, status); }}
+        />
+      );
+    }
+    if (selectedSession.provider === "claude" && selectedClaudeGoal?.condition?.trim()) {
+      const sessionId = composerSessionId;
+      return (
+        <GoalChip
+          variant="claude"
+          goal={selectedClaudeGoal}
+          turnActive={turnActive}
+          onEdit={(condition) => { void sendClaudeGoalCommand(sessionId, condition); }}
+          onClear={() => { void sendClaudeGoalCommand(sessionId, "clear"); }}
+        />
+      );
+    }
+    return null;
+  })();
+  const goalChip = goalChipContent ? (
+    <div
+      className={cn(
+        "flex px-1 pb-1",
+        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+      )}
+    >
+      {goalChipContent}
+    </div>
+  ) : null;
   const usageLimitPill = usageLimitResume && composerSessionId ? (
     <div
       className={cn(
@@ -16115,6 +16168,7 @@ export function AgentChatPane({
           />
         </div>
       ) : null}
+      {goalChip}
       {usageLimitPill}
       {composerElement}
     </div>
@@ -16534,6 +16588,7 @@ export function AgentChatPane({
                         ) : appPanelLifecyclePill}
                         {takeoverBanner}
                         {stalledTurnBanner}
+                        {goalChip}
                         {usageLimitPill}
                         {composerElement}
                       </div>
