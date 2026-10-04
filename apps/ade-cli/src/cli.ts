@@ -2035,6 +2035,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
+    $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
+                                                    Return now; ADE wakes this chat when all (or any) of them get there
+    $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
+    $ ade chat waits [<session>]                    Waits this chat armed or is a target of
+    $ ade chat wait --cancel <waitId>               Cancel an armed wait
+    $ ade chat wait --background [--job <id>[,<id>]]
+                                                    Wake this chat when its background jobs end (Codex; Claude/OpenCode do it natively)
     $ ade chat recover <session> --turn <turn-id> --action nudge
                                                     Recover a stalled provider turn: wait, nudge, retry, or resume
     $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
@@ -9373,11 +9380,31 @@ function buildChatPlan(args: string[]): CliPlan {
         "--print must be set at session creation time. Use `ade chat create --print ...`.",
       );
     }
+    const afterValue = readValue(args, ["--after"]);
     const sendText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
     );
     const targetSession = requireValue(sessionId, "sessionId");
+    if (afterValue) {
+      // "Start B after A": a durable wait that sends this prompt to B once
+      // every chat named in --after is idle.
+      const afterIds = afterValue.split(",").map((id) => id.trim()).filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat send after",
+        steps: [
+          actionStep("result", "chat", "armWait", {
+            targetSessionIds: afterIds,
+            mode: "all",
+            waitFor: normalizeChatWaitTarget(readValue(args, ["--for", "--until"])),
+            sendToSessionId: targetSession,
+            text: sendText,
+            ...(asString(process.env.ADE_CHAT_SESSION_ID) ? { callerSessionId: asString(process.env.ADE_CHAT_SESSION_ID) } : {}),
+          }),
+        ],
+      };
+    }
     const messageArgs = withSession({
       sessionId: targetSession,
       text: sendText,
@@ -9456,7 +9483,56 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "waits") {
+    const input: JsonObject = {};
+    maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
+    return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if ((sub === "wait" || sub === "watch") && readFlag(args, ["--background"])) {
+    // Wake me when my background jobs end: every running job, or the ones
+    // named with --job id[,id].
+    const jobs = (readValue(args, ["--job", "--jobs", "--task"]) ?? "")
+      .split(",").map((id) => id.trim()).filter(Boolean);
+    const ownSession = sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    return {
+      kind: "execute",
+      label: "chat wait background",
+      steps: [actionStep("result", "chat", "holdBackgroundWork", {
+        sessionId: requireValue(ownSession, "sessionId (run from a chat, or pass the chat id)"),
+        ...(jobs.length ? { taskIds: jobs } : {}),
+      })],
+    };
+  }
   if (sub === "wait" || sub === "watch") {
+    const cancelId = readValue(args, ["--cancel", "--cancel-wait"]);
+    if (cancelId) {
+      return { kind: "execute", label: "chat wait cancel", steps: [actionStep("result", "chat", "cancelWait", { waiterId: cancelId })] };
+    }
+    if (readFlag(args, ["--async"])) {
+      // Arm a durable wait and return at once; ADE wakes the calling chat
+      // when all (or any) of the chats reach the state.
+      // Flags first: what is left are the chat ids to wait on.
+      const any = readFlag(args, ["--any"]);
+      readFlag(args, ["--all"]);
+      const waitForValue = readValue(args, ["--for", "--state", "--until"]);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      const caller = readValue(args, ["--caller", "--wake"]) ?? asString(process.env.ADE_CHAT_SESSION_ID);
+      const targets = [sessionId, ...args.filter((value) => !value.startsWith("-"))]
+        .flatMap((value) => (value ? value.split(",") : []))
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return {
+        kind: "execute",
+        label: "chat wait async",
+        steps: [actionStep("result", "chat", "armWait", {
+          callerSessionId: requireValue(caller, "caller chat (run from a chat, or pass --caller <sessionId>)"),
+          targetSessionIds: targets,
+          mode: any ? "any" : "all",
+          waitFor: normalizeChatWaitTarget(waitForValue),
+          ...(timeoutMinutes ? { timeoutMinutes } : {}),
+        })],
+      };
+    }
     const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
@@ -16851,6 +16927,14 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--delivery",
   "--file",
   "--for",
+  // `ade chat wait/send` (waits): values, so a chat id positional is never swallowed.
+  "--cancel",
+  "--cancel-wait",
+  "--job",
+  "--jobs",
+  "--after",
+  "--caller",
+  "--timeout-minutes",
   "--fps",
   "--bitrate",
   "--bitrate-kbps",
@@ -30051,9 +30135,45 @@ async function runChatWaitCommand(
     return unwrapped;
   };
 
+  // The brain waits on the chat's own events (`chat.waitFor`, one ≤25 s
+  // long-poll per call); an older brain without it is polled as before.
+  let serverWaitSupported = true;
+  const serverWait = async (budgetMs: number): Promise<JsonObject | null | "unsupported"> => {
+    try {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "waitFor",
+          args: { sessionId: plan.sessionId, waitFor: plan.waitFor, timeoutMs: budgetMs },
+        },
+      });
+      const result = unwrapActionEnvelope(unwrapToolResult(raw));
+      if (!isRecord(result)) return "unsupported";
+      if (result.missing === true) return null;
+      return isRecord(result.summary) ? result.summary : null;
+    } catch {
+      // An older brain has no `chat.waitFor`. Any failure here falls back to
+      // polling, which surfaces a real problem through its own reads.
+      return "unsupported";
+    }
+  };
+
   try {
     while (true) {
-      const summary = await readSummary();
+      const remainingMs = Math.max(1, plan.timeoutMs - (Date.now() - startedAt));
+      let summary: JsonObject | null;
+      if (serverWaitSupported) {
+        const waited = await serverWait(Math.min(25_000, remainingMs));
+        if (waited === "unsupported") {
+          serverWaitSupported = false;
+          summary = await readSummary();
+        } else {
+          summary = waited;
+        }
+      } else {
+        summary = await readSummary();
+      }
       const elapsedMs = Date.now() - startedAt;
       if (!summary) {
         const result = {
@@ -30087,7 +30207,9 @@ async function runChatWaitCommand(
         };
         return { output: formatOutput(result, options), exitCode: 1 };
       }
-      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      if (!serverWaitSupported) {
+        await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      }
     }
   } finally {
     await connection.close();

@@ -1008,6 +1008,33 @@ Three rules are specific to the schedule itself:
   The older quota card remains the transcript evidence and fork entry point; it
   does not duplicate the schedule controls.
 
+### Waits
+
+- **`ade chat wait <session> --for …`** asks the brain (`chat.waitFor`), which
+  re-checks the chat's summary whenever the chat emits an event, in long-polls
+  of at most 25 s that the CLI repeats until its own timeout. An older brain
+  without the action is polled every 2 s as before. Matching is
+  `chatWaitTargetMatches` in `shared/chatWait.ts`, shared by both sides.
+- **Durable waits** (`chat.armWait`, `ade chat wait <ids…> --async [--any]`,
+  the CTO tool `waitForChats`) return at once. When all (or any) of the target
+  chats reach the state, ADE wakes the caller with one line per chat (title,
+  status, status note); after the timeout (24 h by default) it wakes the caller
+  with where they are instead. Targets that no longer exist count as finished.
+  Waiters persist in the project database (`agent-chat:waiters:v1`), re-arm on
+  start, fire once, and re-check on each target's events with a 15 s backstop.
+  `chat.listWaits` / `ade chat waits` and `chat.cancelWait` /
+  `ade chat wait --cancel <id>` manage them.
+- **Start B after A.** `ade chat send <B> --after <A>[,<A2>] "<prompt>"` arms
+  the same kind of waiter with a `send` action: once every named chat is idle,
+  B receives the prompt as a wake (a new turn if B is idle, queued at its turn
+  boundary if not).
+- **Waiting on background work** (`chat.holdBackgroundWork`,
+  `ade chat wait --background [--job <id>]`) is the agent's call, with no UI. A
+  chat with live background work already shows as working. Claude and OpenCode
+  wake their agent themselves when a background job finishes, so the action
+  only says so there; Codex does not, so ADE re-reads the held terminals every
+  15 s and wakes the agent with the commands that ended.
+
 ### Restart agent session
 
 **Restart agent session** stops the chat's provider process and keeps the

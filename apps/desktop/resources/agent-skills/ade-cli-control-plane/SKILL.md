@@ -174,6 +174,15 @@ a chat you do not own:
 - If you need to wait for a subagent before reading final output, use
   `ade chat wait <session> --for idle --timeout-ms <ms>` (also supports
   `active`, `awaiting-input`, and `terminal`).
+- To wait on several chats without holding your turn open, arm a wait and end
+  your turn: `ade chat wait <id> <id> --async [--any] [--for idle]` — ADE wakes
+  you once all (or any) of them get there, even across a restart. List with
+  `ade chat waits`, cancel with `ade chat wait --cancel <waitId>`.
+- To start one chat after another finishes, `ade chat send <B> --after <A>
+  "<prompt>"` sends B the prompt once A is idle.
+- To be woken when your own background job ends, `ade chat wait --background
+  [--job <id>]`, then end your turn (Claude and OpenCode already wake you on
+  their own; this matters for Codex).
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then

@@ -871,6 +871,13 @@ import {
   RESTART_RESUME_PROMPT,
   RESTART_RESUME_REASON,
 } from "../../../shared/chatAutoResume";
+import {
+  chatWaitTargetMatches,
+  type ArmChatWaitArgs,
+  type ChatWaiter,
+  type ChatWaitForArgs,
+  type ChatWaitForResult,
+} from "../../../shared/chatWait";
 import { parseUsageLimitResume } from "../../../shared/usageLimitResumePresentation";
 import {
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
@@ -10805,6 +10812,14 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
   const scheduledWorkStateKey = "agent-chat:scheduled-work:v1";
+  // Event-driven wait state (see "Event-driven waits"). Declared this early
+  // because `emitChatEvent` signals it, and events can be emitted while the
+  // service is still being built.
+  const CHAT_WAITERS_STATE_KEY = "agent-chat:waiters:v1";
+  const chatStateListeners = new Map<string, Set<() => void>>();
+  let chatWaiters: ChatWaiter[] = [];
+  let chatWaiterCheckScheduled = false;
+  let chatWaiterBackstop: ReturnType<typeof setInterval> | null = null;
   const claudeRecurringCronTtlMs = 7 * 24 * 60 * 60 * 1_000;
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
   let scheduledWorkReady: Promise<void> = Promise.resolve();
@@ -11984,6 +11999,7 @@ export function createAgentChatService(args: {
         ctoMemoryService: ctoMemoryService ?? null,
         listChats: listSessions,
         getChatStatus: getSessionSummary,
+        armChatWait: (args) => armWait(args),
         getChatTranscript,
         // In-process CTO tools: the CTO is trusted with permissions but, like
         // any non-person caller, never moves the machine's launch defaults.
@@ -19835,6 +19851,7 @@ export function createAgentChatService(args: {
     options: CommitChatEventOptions = {},
   ): void => {
     managed.lastActivityTimestamp = Date.now();
+    signalChatStateChanged(managed.session.id);
     const normalizedEvent = (() => {
       switch (event.type) {
         case "text":
@@ -34268,16 +34285,101 @@ export function createAgentChatService(args: {
       for (const [processId, terminal] of next) {
         emitCodexBackgroundTaskUpdate(managed, processId, "running", terminal);
       }
+      const endedHeld: Array<{ processId: string; command: string }> = [];
       for (const [processId, terminal] of previous) {
         if (next.has(processId)) continue;
         emitCodexBackgroundTaskUpdate(managed, processId, "stopped", terminal);
+        if (heldCodexTerminals.get(managed.session.id)?.delete(processId)) {
+          endedHeld.push({ processId, command: terminal.command });
+        }
       }
+      if (endedHeld.length > 0) wakeForEndedHeldWork(managed.session.id, endedHeld.map((entry) => entry.command));
     } catch (error) {
       logger.warn("codex.background_terminals.list_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  // --- Waiting on background work --------------------------------------------
+  //
+  // An agent can ask to be woken when a background job it started ends
+  // (`ade chat wait --background`). Claude and OpenCode already wake their
+  // agent themselves when such a job finishes; Codex does not, so for Codex ADE
+  // watches the terminals the agent holds and wakes it when one is gone.
+  const heldCodexTerminals = new Map<string, Set<string>>();
+  let heldCodexTerminalTimer: ReturnType<typeof setInterval> | null = null;
+
+  function wakeForEndedHeldWork(sessionId: string, commands: string[]): void {
+    const list = commands.map((command) => `- ${command.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");
+    void messageSession({
+      sessionId,
+      kind: "wake",
+      text: `${commands.length === 1 ? "A background command you were waiting on has finished" : "Background commands you were waiting on have finished"}:\n${list}\nCheck its output and carry on.`,
+    }).catch((error) => {
+      logger.warn("agent_chat.held_background_wake_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  const pollHeldCodexTerminals = (): void => {
+    for (const [sessionId, held] of [...heldCodexTerminals]) {
+      const managed = managedSessions.get(sessionId);
+      const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
+      if (!managed || !runtime || held.size === 0) {
+        heldCodexTerminals.delete(sessionId);
+        continue;
+      }
+      void refreshCodexBackgroundTerminals(managed, runtime);
+    }
+    if (heldCodexTerminals.size === 0 && heldCodexTerminalTimer) {
+      clearInterval(heldCodexTerminalTimer);
+      heldCodexTerminalTimer = null;
+    }
+  };
+
+  const holdBackgroundWork = async ({
+    sessionId,
+    taskIds,
+  }: { sessionId: string; taskIds?: string[] | null }): Promise<{
+    held: string[];
+    nativeWake: boolean;
+    message: string;
+  }> => {
+    const managed = ensureManagedSession(sessionId);
+    const provider = managed.session.provider;
+    if (provider === "claude" || provider === "opencode") {
+      return {
+        held: [],
+        nativeWake: true,
+        message: `${provider === "claude" ? "Claude" : "OpenCode"} wakes you itself when a background job finishes; end your turn and you will hear about it.`,
+      };
+    }
+    const runtime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+    if (provider !== "codex" || !runtime) {
+      throw new Error("This chat has no background work ADE can watch. Only Claude, OpenCode, and Codex report background jobs.");
+    }
+    await refreshCodexBackgroundTerminals(managed, runtime);
+    const live = [...runtime.backgroundTerminalsByProcessId.keys()];
+    const wanted = taskIds?.length ? live.filter((id) => taskIds.includes(id)) : live;
+    if (wanted.length === 0) {
+      throw new Error(taskIds?.length ? "None of those background jobs is running." : "No background job is running in this chat.");
+    }
+    const held = heldCodexTerminals.get(sessionId) ?? new Set<string>();
+    for (const id of wanted) held.add(id);
+    heldCodexTerminals.set(sessionId, held);
+    if (!heldCodexTerminalTimer) {
+      heldCodexTerminalTimer = setInterval(pollHeldCodexTerminals, 15_000);
+      heldCodexTerminalTimer.unref?.();
+    }
+    return {
+      held: wanted,
+      nativeWake: false,
+      message: `ADE wakes you when ${wanted.length === 1 ? "it ends" : "each of them ends"}. End your turn now.`,
+    };
   };
 
   const settleCodexTurnSideEffects = (
@@ -54674,6 +54776,223 @@ export function createAgentChatService(args: {
       .filter((summary) => includeArchived || summary.archivedAt == null);
   };
 
+  // --- Event-driven waits ---------------------------------------------------
+  //
+  // `chat.waitFor` long-polls one chat; durable waiters (`chat.armWait`) wake
+  // a caller, or send a queued prompt, once other chats reach a state. Both
+  // re-check when the chat emits an event (`signalChatStateChanged`), with a
+  // slow timer only as a backstop for state that changes without an event.
+
+  // Under the brain's default action timeout; the CLI loops over these.
+  const CHAT_WAIT_LONG_POLL_MAX_MS = 25_000;
+  const CHAT_WAIT_BACKSTOP_MS = 15_000;
+  const CHAT_WAIT_DEFAULT_TIMEOUT_MINUTES = 24 * 60;
+  chatWaiters = (() => {
+    try {
+      const raw = db?.getJson(CHAT_WAITERS_STATE_KEY);
+      return Array.isArray(raw) ? (raw as ChatWaiter[]).filter((entry) => entry && typeof entry.id === "string") : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const persistChatWaiters = (): void => {
+    try {
+      db?.setJson(CHAT_WAITERS_STATE_KEY, chatWaiters);
+    } catch (error) {
+      logger.warn("agent_chat.waiters_persist_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  function signalChatStateChanged(sessionId: string): void {
+    const listeners = chatStateListeners.get(sessionId);
+    if (listeners?.size) {
+      // After the event lands, so a re-read sees the new state.
+      setTimeout(() => {
+        for (const listener of [...listeners]) listener();
+      }, 0);
+    }
+    if (chatWaiters.some((waiter) => waiter.targetSessionIds.includes(sessionId))) scheduleChatWaiterCheck();
+  }
+
+  const summaryRecord = async (sessionId: string): Promise<Record<string, unknown> | null> => {
+    const summary = await getSessionSummary(sessionId);
+    if (summary) return summary as unknown as Record<string, unknown>;
+    const cli = await getCliTurnStatus(sessionId);
+    return cli ? cli as unknown as Record<string, unknown> : null;
+  };
+
+  /** Resolve once `sessionId`'s summary matches, the budget runs out, or it is gone. */
+  const waitFor = async ({ sessionId, waitFor: target = "idle", timeoutMs }: ChatWaitForArgs): Promise<ChatWaitForResult> => {
+    const id = sessionId.trim();
+    const budget = Math.max(0, Math.min(CHAT_WAIT_LONG_POLL_MAX_MS, Math.floor(timeoutMs ?? CHAT_WAIT_LONG_POLL_MAX_MS)));
+    const deadline = Date.now() + budget;
+    for (;;) {
+      const summary = await summaryRecord(id);
+      if (!summary) return { matched: false, missing: true, summary: null };
+      if (chatWaitTargetMatches(summary, target)) return { matched: true, summary };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { matched: false, summary };
+      await new Promise<void>((resolve) => {
+        const listeners = chatStateListeners.get(id) ?? new Set<() => void>();
+        chatStateListeners.set(id, listeners);
+        const done = () => {
+          clearTimeout(timer);
+          listeners.delete(done);
+          if (listeners.size === 0) chatStateListeners.delete(id);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.min(remaining, CHAT_WAIT_BACKSTOP_MS));
+        listeners.add(done);
+      });
+    }
+  };
+
+  const describeWaitTarget = async (sessionId: string): Promise<string> => {
+    const summary = await getSessionSummary(sessionId).catch(() => null);
+    const title = summary?.title?.trim() || sessionService.get(sessionId)?.title?.trim() || sessionId;
+    const status = summary?.status ?? "gone";
+    const tail = sessionService.get(sessionId)?.statusNote?.trim() || summary?.summary?.trim() || "";
+    return `- "${title}" (${sessionId}): ${status}${tail ? ` — ${tail.replace(/\s+/g, " ").slice(0, 240)}` : ""}`;
+  };
+
+  const fireChatWaiter = async (waiter: ChatWaiter, outcome: "matched" | "expired"): Promise<void> => {
+    const lines = await Promise.all(waiter.targetSessionIds.map(describeWaitTarget));
+    if (waiter.action.kind === "send") {
+      if (outcome === "expired") {
+        logger.info("agent_chat.wait_send_expired", { waiterId: waiter.id, sessionId: waiter.action.sessionId });
+        return;
+      }
+      await messageSession({ sessionId: waiter.action.sessionId, kind: "wake", text: waiter.action.text });
+      return;
+    }
+    if (!waiter.callerSessionId) return;
+    const verb = waiter.mode === "all" ? "All the chats you were waiting on" : "A chat you were waiting on";
+    const header = outcome === "matched"
+      ? `${verb} reached "${waiter.waitFor}":`
+      : `Your wait (for ${waiter.mode} to reach "${waiter.waitFor}") timed out. Where they are now:`;
+    await messageSession({
+      sessionId: waiter.callerSessionId,
+      kind: "wake",
+      text: [header, ...lines, "", "Read a chat with `ade chat read <id>` before acting on it."].join("\n"),
+    });
+  };
+
+  const checkChatWaiters = async (): Promise<void> => {
+    chatWaiterCheckScheduled = false;
+    if (chatWaiters.length === 0) return;
+    const nowMs = Date.now();
+    const due: Array<{ waiter: ChatWaiter; outcome: "matched" | "expired" }> = [];
+    for (const waiter of [...chatWaiters]) {
+      const results = await Promise.all(waiter.targetSessionIds.map(async (target) => {
+        const summary = await summaryRecord(target).catch(() => null);
+        // A target that no longer exists is as finished as it will ever be.
+        return summary ? chatWaitTargetMatches(summary, waiter.waitFor) : true;
+      }));
+      const matched = waiter.mode === "all" ? results.every(Boolean) : results.some(Boolean);
+      if (matched) due.push({ waiter, outcome: "matched" });
+      else if (Date.parse(waiter.expiresAt) <= nowMs) due.push({ waiter, outcome: "expired" });
+    }
+    if (due.length === 0) return;
+    const dueIds = new Set(due.map((entry) => entry.waiter.id));
+    // Removed before delivery: a waiter fires once even if delivery throws.
+    chatWaiters = chatWaiters.filter((waiter) => !dueIds.has(waiter.id));
+    persistChatWaiters();
+    if (chatWaiters.length === 0 && chatWaiterBackstop) {
+      clearInterval(chatWaiterBackstop);
+      chatWaiterBackstop = null;
+    }
+    for (const { waiter, outcome } of due) {
+      try {
+        await fireChatWaiter(waiter, outcome);
+        logger.info("agent_chat.wait_fired", { waiterId: waiter.id, outcome, action: waiter.action.kind });
+      } catch (error) {
+        logger.warn("agent_chat.wait_fire_failed", {
+          waiterId: waiter.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  function scheduleChatWaiterCheck(): void {
+    if (chatWaiterCheckScheduled) return;
+    chatWaiterCheckScheduled = true;
+    setTimeout(() => {
+      void checkChatWaiters().catch((error) => {
+        chatWaiterCheckScheduled = false;
+        logger.warn("agent_chat.wait_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    }, 250);
+  }
+
+  const ensureChatWaiterBackstop = (): void => {
+    if (chatWaiterBackstop || chatWaiters.length === 0) return;
+    chatWaiterBackstop = setInterval(scheduleChatWaiterCheck, CHAT_WAIT_BACKSTOP_MS);
+    chatWaiterBackstop.unref?.();
+  };
+
+  /**
+   * Arm a durable wait: wake the caller (or send a queued prompt to another
+   * chat) once all — or any — of the targets reach the state. Survives brain
+   * restarts and fires once.
+   */
+  const armWait = async (args: ArmChatWaitArgs): Promise<ChatWaiter> => {
+    const targets = [...new Set((args.targetSessionIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (targets.length === 0) throw new Error("Name at least one chat to wait on.");
+    for (const target of targets) {
+      if (!sessionService.get(target)) throw new Error(`No chat or terminal '${target}' in this project.`);
+    }
+    const sendTo = args.sendToSessionId?.trim() || null;
+    const text = args.text?.trim() || "";
+    const caller = args.callerSessionId?.trim() || null;
+    if (sendTo && !text) throw new Error("A prompt is required to send once the wait is over.");
+    if (!sendTo && !caller) throw new Error("A wait needs a chat to wake (run it from a chat, or pass the caller).");
+    const minutes = Number.isFinite(args.timeoutMinutes) && (args.timeoutMinutes ?? 0) > 0
+      ? Math.floor(args.timeoutMinutes!)
+      : CHAT_WAIT_DEFAULT_TIMEOUT_MINUTES;
+    const now = Date.now();
+    const waiter: ChatWaiter = {
+      id: randomUUID(),
+      callerSessionId: caller,
+      targetSessionIds: targets,
+      mode: args.mode === "any" ? "any" : "all",
+      waitFor: args.waitFor ?? "idle",
+      action: sendTo ? { kind: "send", sessionId: sendTo, text } : { kind: "wake" },
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + minutes * 60_000).toISOString(),
+    };
+    chatWaiters = [...chatWaiters, waiter];
+    persistChatWaiters();
+    ensureChatWaiterBackstop();
+    scheduleChatWaiterCheck();
+    return waiter;
+  };
+
+  const listWaits = async (args: { sessionId?: string } = {}): Promise<ChatWaiter[]> => {
+    const id = args.sessionId?.trim();
+    return id
+      ? chatWaiters.filter((waiter) =>
+        waiter.callerSessionId === id
+        || waiter.targetSessionIds.includes(id)
+        || (waiter.action.kind === "send" && waiter.action.sessionId === id))
+      : [...chatWaiters];
+  };
+
+  const cancelWait = async ({ waiterId }: { waiterId: string }): Promise<{ cancelled: boolean }> => {
+    const before = chatWaiters.length;
+    chatWaiters = chatWaiters.filter((waiter) => waiter.id !== waiterId);
+    if (chatWaiters.length === before) return { cancelled: false };
+    persistChatWaiters();
+    return { cancelled: true };
+  };
+
+  // Waiters armed before a restart resume watching.
+  if (chatWaiters.length > 0) {
+    ensureChatWaiterBackstop();
+    void scheduledWorkReady.then(() => scheduleChatWaiterCheck()).catch(() => {});
+  }
+
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
     await scheduledWorkReady;
     const trimmed = sessionId.trim();
@@ -57903,6 +58222,8 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
+    if (chatWaiterBackstop) clearInterval(chatWaiterBackstop);
+    if (heldCodexTerminalTimer) clearInterval(heldCodexTerminalTimer);
     staleRunSweep.dispose();
     // Before the host tears its PTYs down: a brain shutting down must not read
     // its own terminal disposal as every CLI child stopping.
@@ -62140,6 +62461,11 @@ export function createAgentChatService(args: {
     interruptWithQueueMode: interrupt,
     stopTask,
     restartSession,
+    waitFor,
+    armWait,
+    listWaits,
+    cancelWait,
+    holdBackgroundWork,
     /**
      * Is a persisted Claude `--bg` job actually still running?
      *

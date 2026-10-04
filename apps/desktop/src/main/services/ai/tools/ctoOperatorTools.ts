@@ -13,6 +13,7 @@ import {
   summarizeLane,
 } from "./ctoCrossMachineTools";
 import { DEFAULT_ADE_TOOL_BUDGET_MS } from "./toolDeadline";
+import type { ArmChatWaitArgs, ChatWaiter } from "../../../../shared/chatWait";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -137,6 +138,8 @@ export interface CtoOperatorToolDeps {
   > | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
+  /** Durable wait: wake this thread when other chats reach a state. */
+  armChatWait?: (args: ArmChatWaitArgs) => Promise<ChatWaiter>;
   getChatTranscript: (args: {
     sessionId: string;
     limit?: number;
@@ -1240,6 +1243,34 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         const comment = await deps.prService.addComment({ prId, body });
         return { success: true, comment };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.waitForChats = core({
+    description:
+      "Return now and have ADE wake this thread when all (or any) of the named chats reach a state — 'idle' (finished "
+      + "its turn, the default) or 'terminal' (ended or failed). Use it instead of polling getChatStatus. Subagents "
+      + "you spawned already wake you after every turn; this is for joining several chats, or chats you did not spawn.",
+    inputSchema: z.object({
+      sessionIds: z.array(z.string().trim().min(1)).min(1),
+      mode: z.enum(["all", "any"]).default("all"),
+      waitFor: z.enum(["idle", "terminal", "awaiting-input"]).default("idle"),
+      timeoutMinutes: z.number().int().positive().max(7 * 24 * 60).optional(),
+    }),
+    execute: async ({ sessionIds, mode, waitFor, timeoutMinutes }) => {
+      if (!deps.armChatWait) return { success: false, error: "Waits are not available on this runtime." };
+      try {
+        const waiter = await deps.armChatWait({
+          callerSessionId: deps.currentSessionId,
+          targetSessionIds: sessionIds,
+          mode,
+          waitFor,
+          ...(timeoutMinutes ? { timeoutMinutes } : {}),
+        });
+        return { success: true, waitId: waiter.id, expiresAt: waiter.expiresAt, note: "End your turn; ADE wakes you." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
