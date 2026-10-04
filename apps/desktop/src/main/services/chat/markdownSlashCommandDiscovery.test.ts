@@ -2,7 +2,43 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverSkillCommands, frontmatterFlag, resolveSkillCommandFile } from "./markdownSlashCommandDiscovery";
+import { discoverSkillCommands, frontmatterFlag, readFrontmatter, resolveSkillCommandFile } from "./markdownSlashCommandDiscovery";
+
+describe("readFrontmatter", () => {
+  it.each([
+    {
+      name: "a second ': ' in a plain description",
+      markdown: "---\nname: kane\ndescription: Deploy helper: runs the flow\nuser-invocable: false\n---\nBody",
+      expected: { name: "kane", description: "Deploy helper: runs the flow", "user-invocable": false },
+    },
+    {
+      name: "a '[' that starts a value but is not a list",
+      markdown: "---\ndescription: Start here\nargument-hint: [system] [--source <path>]\n---\n",
+      expected: { description: "Start here", "argument-hint": "[system] [--source <path>]" },
+    },
+    {
+      name: "a real list beside a broken value",
+      markdown: "---\ntools: [Read, Write]\ndescription: a: b\n---\n",
+      expected: { tools: ["Read", "Write"], description: "a: b" },
+    },
+    {
+      name: "example dialogue that repeats keys inside an unquoted description",
+      markdown: "---\nname: agent-x\ndescription: Use when: asked\nuser: \"one\"\nassistant: ok\nuser: \"two\"\nmodel: sonnet\n---\n",
+      expected: { name: "agent-x", model: "sonnet" },
+    },
+    {
+      name: "already valid YAML, untouched",
+      markdown: "---\nname: ok\ndescription: \"quoted: fine\"\n---\n",
+      expected: { name: "ok", description: "quoted: fine" },
+    },
+  ])("keeps the keys of $name", ({ markdown, expected }) => {
+    expect(readFrontmatter(markdown)).toMatchObject(expected);
+  });
+
+  it("still returns nothing for a structure that cannot be read", () => {
+    expect(readFrontmatter("---\nname: x\nnested:\n  - a\n   b: [\n---\n")).toEqual({});
+  });
+});
 
 describe("frontmatterFlag", () => {
   // The bug: the `yaml` package parses YAML 1.2 core, where only `true`/`false`

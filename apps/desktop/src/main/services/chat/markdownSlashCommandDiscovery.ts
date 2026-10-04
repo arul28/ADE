@@ -96,8 +96,12 @@ function repairPlainScalarFrontmatter(source: string): string | null {
     const value = entry.value.trim();
     const continuation = entry.lines.slice(1);
     const hasIndentedChildren = continuation.some((line) => /^\s+\S/.test(line));
+    // Verbatim only when the text parses to exactly this one key: a folded
+    // repeat of an earlier key (`user:` in example dialogue) would otherwise
+    // bring the duplicate straight back.
+    const own = parseFrontmatterObject(text);
     if (
-      parseFrontmatterObject(text) !== null
+      (own !== null && Object.keys(own).length === 1 && entry.key in own)
       || !value
       || /^[|>]/.test(value)
       || hasIndentedChildren

@@ -17,6 +17,96 @@ function createLaneServiceStub(rootPath: string) {
   } as any;
 }
 
+function initRepo(prefix: string): string {
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(rootPath, ["init"]);
+  git(rootPath, ["config", "user.email", "ade@example.com"]);
+  git(rootPath, ["config", "user.name", "ADE"]);
+  git(rootPath, ["branch", "-M", "main"]);
+  fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\n", "utf8");
+  fs.writeFileSync(path.join(rootPath, "beta.txt"), "beta\n", "utf8");
+  git(rootPath, ["add", "."]);
+  git(rootPath, ["commit", "-m", "base"]);
+  return rootPath;
+}
+
+function branchLane(rootPath: string, baseRef: string, branchRef: string) {
+  return createDiffService({
+    laneService: { getLaneBaseAndBranch: () => ({ baseRef, branchRef, worktreePath: rootPath }), list: vi.fn() } as any,
+  });
+}
+
+describe("diffService branch scope", () => {
+  it("lists commits, uncommitted edits and untracked files since the base, and leaves the index alone", async () => {
+    const rootPath = initRepo("ade-diff-branch-");
+    try {
+      git(rootPath, ["checkout", "-b", "feature"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
+      git(rootPath, ["commit", "-am", "committed edit"]);
+      fs.writeFileSync(path.join(rootPath, "beta.txt"), "beta changed\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "staged.txt"), "staged\n", "utf8");
+      git(rootPath, ["add", "staged.txt"]);
+      fs.writeFileSync(path.join(rootPath, "untracked.txt"), "new\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), "ignored.log\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "ignored.log"), "noise\n", "utf8");
+      const indexBefore = git(rootPath, ["diff", "--cached", "--name-status"]);
+
+      const changes = await branchLane(rootPath, "main", "feature").getBranchChanges("lane-1");
+
+      expect(changes.baseRef).toBe("main");
+      expect(changes.files.map((file) => [file.path, file.kind]).sort()).toEqual([
+        [".gitignore", "added"],
+        ["alpha.txt", "modified"],
+        ["beta.txt", "modified"],
+        ["staged.txt", "added"],
+        ["untracked.txt", "added"],
+      ]);
+      expect(git(rootPath, ["diff", "--cached", "--name-status"])).toBe(indexBefore);
+
+      const patch = await branchLane(rootPath, "main", "feature").getFilePatch({ laneId: "lane-1", filePath: "untracked.txt", mode: "branch" });
+      expect(patch.patch).toContain("new file mode");
+      const diff = await branchLane(rootPath, "main", "feature").getFileDiff({ laneId: "lane-1", filePath: "alpha.txt", mode: "branch" });
+      expect(diff.original.text).toBe("one\n");
+      expect(diff.modified.text).toBe("one\ntwo\n");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("compares a branch that is its own base with its remote copy, so unpushed work shows", async () => {
+    const rootPath = initRepo("ade-diff-branch-primary-");
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-branch-remote-"));
+    try {
+      git(remote, ["init", "--bare"]);
+      git(rootPath, ["remote", "add", "origin", remote]);
+      git(rootPath, ["push", "-u", "origin", "main"]);
+      fs.writeFileSync(path.join(rootPath, "unpushed.txt"), "local\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "not pushed"]);
+
+      const changes = await branchLane(rootPath, "main", "main").getBranchChanges("primary");
+
+      expect(changes.baseRef).toBe("origin/main");
+      expect(changes.files.map((file) => file.path)).toEqual(["unpushed.txt"]);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+      fs.rmSync(remote, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "a base that does not exist", baseRef: "no-such-branch", branchRef: "feature", error: /base branch "no-such-branch" was not found/ },
+    { name: "a branch that is its own base with no remote copy", baseRef: "main", branchRef: "main", error: /has no remote copy/ },
+  ])("reports $name as an error, not an empty diff", async ({ baseRef, branchRef, error }) => {
+    const rootPath = initRepo("ade-diff-branch-error-");
+    try {
+      await expect(branchLane(rootPath, baseRef, branchRef).getBranchChanges("lane-1")).rejects.toThrow(error);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("diffService", () => {
   it("returns lane line stats against the lane base ref", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-line-stats-"));

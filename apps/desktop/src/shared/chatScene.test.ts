@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSceneDocument,
   hasOpenSceneFence,
+  openFenceLanguage,
   isSceneParseFailure,
   parseSceneFence,
   parseSceneHostMessage,
@@ -206,6 +207,15 @@ describe("hasOpenSceneFence", () => {
     // A ``` inside an open ts block closes that block; it does not open a scene.
     expect(hasOpenSceneFence("```ts\nconst a = 1;\n```\n```scene\n<p>")).toBe(true);
     expect(hasOpenSceneFence("no fences here")).toBe(false);
+  });
+
+  it.each([
+    { markdown: "```mermaid\nflowchart LR\n  A --> B", open: "mermaid" },
+    { markdown: "```mermaid\nflowchart LR\n```\nafter", open: null },
+    { markdown: "```mermaid\nA-->B\n```\n```ts\nconst a", open: "ts" },
+    { markdown: "text only", open: null },
+  ])("names the open fence's language ($open)", ({ markdown, open }) => {
+    expect(openFenceLanguage(markdown)).toBe(open);
   });
 });
 
