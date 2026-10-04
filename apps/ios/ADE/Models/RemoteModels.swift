@@ -852,6 +852,11 @@ struct FileChange: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
   var kind: String
+  /// A rename's source path (branch diffs).
+  var oldPath: String? = nil
+  /// Line counts, sent with branch diffs (`git.getBranchChanges`).
+  var additions: Int? = nil
+  var deletions: Int? = nil
 }
 
 struct DiffChanges: Codable, Equatable {
@@ -859,21 +864,11 @@ struct DiffChanges: Codable, Equatable {
   var staged: [FileChange]
 }
 
-/// One file of a branch diff (`git.getBranchChanges`), with its line counts.
-struct BranchFileChange: Codable, Identifiable, Equatable {
-  var id: String { path }
-  var path: String
-  var oldPath: String?
-  var kind: String
-  var additions: Int?
-  var deletions: Int?
-}
-
 /// Everything a lane changed since its base: commits, uncommitted and untracked.
 struct BranchDiffChanges: Codable, Equatable {
   var baseRef: String
   var mergeBase: String
-  var files: [BranchFileChange]
+  var files: [FileChange]
   var additions: Int
   var deletions: Int
 }
@@ -7208,6 +7203,8 @@ struct MobileAdeUsageModelDetail: Decodable, Equatable {
   var price: MobileAdeUsageModelPrice
   var modelIds: [String]
   var mapTo: String?
+  /// Model ids mapped onto this one; an older host omits it.
+  var mappedFrom: [String]?
 }
 
 // MARK: - Live provider quota

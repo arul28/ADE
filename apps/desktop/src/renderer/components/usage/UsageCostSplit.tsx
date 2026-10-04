@@ -12,7 +12,8 @@
  */
 import React from "react";
 import type { AdeUsageCostSplit } from "../../../shared/types";
-import { formatCost } from "../../lib/format";
+import { formatSpend } from "../../lib/format";
+import { costSplitTotal } from "../../../shared/usageCostSplit";
 import { cn } from "../ui/cn";
 import { USAGE_NUMERIC_CLASS, USAGE_TEXT } from "./usageDesign";
 
@@ -24,7 +25,7 @@ type Theme = "dark" | "light";
  * every adjacent check in both modes; Fast/Ultrafast (orange/violet) pass all
  * checks in both.
  */
-const SPLIT_COLORS = {
+export const SPLIT_COLORS = {
   input: { light: "#2a78d6", dark: "#3987e5" },
   cacheRead: { light: "#eb6834", dark: "#d95926" },
   cacheWrite: { light: "#1baf7a", dark: "#199e70" },
@@ -34,17 +35,9 @@ const SPLIT_COLORS = {
   ultrafast: { light: "#4a3aa7", dark: "#9085e9" },
 } as const;
 
-export type SplitSegment = { key: string; label: string; value: number; color: string };
+type SplitSegment = { key: string; label: string; value: number; color: string };
 
-function usd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
-}
-
-export function costSplitTotal(split: AdeUsageCostSplit): number {
-  return split.input + split.cacheRead + split.cacheWrite + split.output + split.other;
-}
-
-export function typeSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegment[] {
+function typeSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegment[] {
   return [
     { key: "input", label: "Input", value: split.input, color: SPLIT_COLORS.input[theme] },
     { key: "cacheRead", label: "Cache read", value: split.cacheRead, color: SPLIT_COLORS.cacheRead[theme] },
@@ -54,7 +47,7 @@ export function typeSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegme
   ];
 }
 
-export function speedSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegment[] {
+function speedSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegment[] {
   const premium = split.fastPremium + split.ultrafastPremium;
   return [
     { key: "standard", label: "Standard rate", value: Math.max(0, costSplitTotal(split) - premium), color: SPLIT_COLORS.neutral[theme] },
@@ -63,21 +56,11 @@ export function speedSegments(split: AdeUsageCostSplit, theme: Theme): SplitSegm
   ];
 }
 
-/** Adds splits, or null when any one is missing: a partial split would mislead. */
-export function sumCostSplits(splits: ReadonlyArray<AdeUsageCostSplit | undefined>): AdeUsageCostSplit | null {
-  if (splits.length === 0 || splits.some((split) => !split)) return null;
-  const total: AdeUsageCostSplit = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, other: 0, fastPremium: 0, ultrafastPremium: 0 };
-  for (const split of splits as AdeUsageCostSplit[]) {
-    for (const key of Object.keys(total) as Array<keyof AdeUsageCostSplit>) total[key] += split[key];
-  }
-  return total;
-}
-
 /**
  * One labelled part-to-whole bar. Hovering a segment or its legend entry lifts
  * both and names the share, so the bar reads without a separate tooltip layer.
  */
-export function SplitBar({ label, segments, ariaLabel }: { label: string; segments: SplitSegment[]; ariaLabel: string }) {
+function SplitBar({ label, segments, ariaLabel }: { label: string; segments: SplitSegment[]; ariaLabel: string }) {
   const [hovered, setHovered] = React.useState<string | null>(null);
   const total = segments.reduce((sum, segment) => sum + Math.max(0, segment.value), 0);
   if (total <= 0) return null;
@@ -85,7 +68,7 @@ export function SplitBar({ label, segments, ariaLabel }: { label: string; segmen
   return (
     <div className="flex flex-col gap-1.5" role="group" aria-label={ariaLabel}>
       <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>{label}</span>
-      <div className="flex h-2 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={visible.map((segment) => `${segment.label} ${usd(segment.value)}`).join(", ")}>
+      <div className="flex h-2 w-full gap-[2px] overflow-hidden rounded-full" role="img" aria-label={visible.map((segment) => `${segment.label} ${formatSpend(segment.value)}`).join(", ")}>
         {visible.map((segment) => (
           <div
             key={segment.key}
@@ -97,7 +80,7 @@ export function SplitBar({ label, segments, ariaLabel }: { label: string; segmen
               background: segment.color,
               opacity: hovered && hovered !== segment.key ? 0.35 : 1,
             }}
-            title={`${segment.label} · ${usd(segment.value)} · ${Math.round((segment.value / total) * 100)}%`}
+            title={`${segment.label} · ${formatSpend(segment.value)} · ${Math.round((segment.value / total) * 100)}%`}
             onMouseEnter={() => setHovered(segment.key)}
             onMouseLeave={() => setHovered(null)}
           />
@@ -118,7 +101,7 @@ export function SplitBar({ label, segments, ariaLabel }: { label: string; segmen
           >
             <span aria-hidden className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: segment.color }} />
             {segment.label}
-            <span className="text-fg">{usd(segment.value)}</span>
+            <span className="text-fg">{formatSpend(segment.value)}</span>
             {hovered === segment.key ? <span>{`${Math.round((segment.value / total) * 100)}%`}</span> : null}
           </span>
         ))}

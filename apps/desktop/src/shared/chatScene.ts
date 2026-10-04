@@ -245,14 +245,25 @@ export function hasOpenSceneFence(markdown: string): boolean {
  * is open, so it never draws half a source.
  */
 export function openFenceLanguage(markdown: string): string | null {
-  let openLanguage: string | null = null;
-  for (const line of String(markdown ?? "").split("\n")) {
-    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(line);
+  return openFence(markdown)?.language ?? null;
+}
+
+/** The fence a still-arriving document leaves open: its language and the body so far. */
+export function openFence(markdown: string): { language: string; body: string } | null {
+  const lines = String(markdown ?? "").split("\n");
+  let language: string | null = null;
+  let startLine = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(lines[index]!);
     if (!fence) continue;
-    if (openLanguage === null) openLanguage = (fence[1] ?? "").trim().toLowerCase();
-    else if (!(fence[1] ?? "").trim().length) openLanguage = null;
+    if (language === null) {
+      language = (fence[1] ?? "").trim().toLowerCase();
+      startLine = index;
+    } else if (!(fence[1] ?? "").trim().length) {
+      language = null;
+    }
   }
-  return openLanguage;
+  return language === null ? null : { language, body: lines.slice(startLine + 1).join("\n") };
 }
 
 /** One fence, as the scanner below located it. */

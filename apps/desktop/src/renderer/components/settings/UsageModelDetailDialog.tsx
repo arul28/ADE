@@ -13,15 +13,11 @@ import type {
   AdeUsageRangePreset,
   AdeUsageScope,
 } from "../../../shared/types";
-import { formatCost, formatTokens } from "../../lib/format";
-import { CostSplitBars } from "../usage/UsageCostSplit";
+import { formatSpend, formatTokens } from "../../lib/format";
+import { CostSplitBars, SPLIT_COLORS } from "../usage/UsageCostSplit";
 import { USAGE_EYEBROW_CLASS, USAGE_NUMERIC_CLASS, USAGE_TEXT } from "../usage/usageDesign";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
-
-function usd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
-}
 
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
@@ -42,7 +38,7 @@ function localDayKey(date: Date): string {
  * drawn as three full-width columns read as a steady habit; on a calendar they
  * read as the three days they were. Capped at the last 120 days.
  */
-export function fillTrendDays(detail: Pick<AdeUsageModelDetail, "daily" | "range">): AdeUsageModelDetail["daily"] {
+function fillTrendDays(detail: Pick<AdeUsageModelDetail, "daily" | "range">): AdeUsageModelDetail["daily"] {
   if (detail.daily.length === 0) return [];
   const byDate = new Map(detail.daily.map((day) => [day.date, day]));
   const first = detail.daily[0]!.date;
@@ -63,7 +59,7 @@ function Trend({ daily, theme }: { daily: AdeUsageModelDetail["daily"]; theme: "
   const [hovered, setHovered] = React.useState<number | null>(null);
   if (daily.length === 0) return null;
   const max = Math.max(...daily.map((day) => day.costUsd), 0);
-  const color = theme === "light" ? "#2a78d6" : "#3987e5";
+  const color = SPLIT_COLORS.input[theme];
   const width = 100 / daily.length;
   const shown = hovered != null ? daily[hovered] : null;
   return (
@@ -71,7 +67,7 @@ function Trend({ daily, theme }: { daily: AdeUsageModelDetail["daily"]; theme: "
       <div className="flex items-baseline justify-between">
         <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>Daily cost</span>
         <span className={cn(USAGE_TEXT.micro, USAGE_NUMERIC_CLASS, "text-muted-fg")}>
-          {shown ? `${shown.date} · ${usd(shown.costUsd)} · ${formatTokens(shown.totalTokens)} tokens` : `peak ${usd(max)}`}
+          {shown ? `${shown.date} · ${formatSpend(shown.costUsd)} · ${formatTokens(shown.totalTokens)} tokens` : `peak ${formatSpend(max)}`}
         </span>
       </div>
       <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-16 w-full" role="img" aria-label="Daily cost">
@@ -129,10 +125,15 @@ export function UsageModelDetailDialog({
   const [message, setMessage] = React.useState<string | null>(null);
   const canEditPrices = typeof window.ade?.usage?.setModelPriceOverride === "function";
 
+  // Only the newest request may fill the dialog: switching models quickly
+  // must not let the previous model's answer land last.
+  const loadSeq = React.useRef(0);
   const load = React.useCallback(async (target: AdeUsageModelSummary) => {
+    const seq = ++loadSeq.current;
     setFailed(false);
     try {
       const result = await window.ade.usage.getModelDetail?.({ provider: target.provider, model: target.model, preset, scope });
+      if (seq !== loadSeq.current) return;
       setDetail(result ?? null);
       if (!result) setFailed(true);
       else {
@@ -146,7 +147,7 @@ export function UsageModelDetailDialog({
         });
       }
     } catch {
-      setFailed(true);
+      if (seq === loadSeq.current) setFailed(true);
     }
   }, [preset, scope]);
 
@@ -156,14 +157,15 @@ export function UsageModelDetailDialog({
     if (model) void load(model);
   }, [load, model]);
 
-  const priceTarget = detail?.modelIds[0] ?? model?.model ?? "";
-
-  const save = async (change: { price?: AdeUsageModelPrice | null; mapTo?: string | null }, done: string) => {
+  // A change applies to every raw id behind this model, or to `target` (a
+  // model mapped onto this one) when given.
+  const save = async (change: { price?: AdeUsageModelPrice | null; mapTo?: string | null }, done: string, target?: string) => {
     if (!model || !window.ade.usage.setModelPriceOverride) return;
     setSaving(true);
     setMessage(null);
     try {
-      await window.ade.usage.setModelPriceOverride({ model: priceTarget, ...change });
+      const ids = target ? [target] : detail?.modelIds ?? [];
+      await window.ade.usage.setModelPriceOverride({ model: ids[0] ?? model.model, models: ids.slice(1), ...change });
       setMessage(`${done} Re-pricing history in the background; the page updates when it finishes.`);
       setEditing(false);
       await load(model);
@@ -208,9 +210,9 @@ export function UsageModelDetailDialog({
       ) : (
         <div className="flex flex-col gap-5">
           <div className="grid grid-cols-4 gap-4">
-            <Kpi label="Cost" value={usd(detail.costUsd)} />
+            <Kpi label="Cost" value={formatSpend(detail.costUsd)} />
             <Kpi label="Tokens" value={formatTokens(detail.totalTokens)} />
-            <Kpi label="Per 1M tokens" value={detail.costPerMillionUsd != null ? usd(detail.costPerMillionUsd) : "—"} />
+            <Kpi label="Per 1M tokens" value={detail.costPerMillionUsd != null ? formatSpend(detail.costPerMillionUsd) : "—"} />
             <Kpi label="Cache hit" value={detail.cacheHitRate != null ? `${Math.round(detail.cacheHitRate * 100)}%` : "—"} />
           </div>
           <Trend daily={fillTrendDays(detail)} theme={theme} />
@@ -297,6 +299,24 @@ export function UsageModelDetailDialog({
                   {!mapTo.trim() && detail.mapTo ? "Remove mapping" : "Map"}
                 </button>
               </form>
+              {detail.mappedFrom?.length ? (
+                <div className="flex flex-col gap-1">
+                  <span className={cn(USAGE_TEXT.micro, "text-muted-fg")}>Also counted here:</span>
+                  {detail.mappedFrom.map((source) => (
+                    <div key={source} className="flex items-center gap-2">
+                      <span className={cn(USAGE_TEXT.micro, "font-mono text-fg")}>{source}</span>
+                      <button
+                        type="button"
+                        className="ade-settings-button"
+                        disabled={saving}
+                        onClick={() => void save({ mapTo: null }, `${source} is counted on its own again.`, source)}
+                      >
+                        Unmap
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 

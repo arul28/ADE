@@ -6960,14 +6960,6 @@ export function registerIpc({
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
 
-  /**
-   * Spend one banked reset credit.
-   *
-   * Usage tracking is optional on hosts that have not started that service, so
-   * this forwards when it is present and otherwise says so. It never reports a
-   * success it did not perform: a fake "reset applied" would tell the user
-   * their windows cleared when they did not.
-   */
   ipcMain.handle(
     IPC.usageGetCostBreakdown,
     async (_event, arg: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> => {
@@ -7001,6 +6993,14 @@ export function registerIpc({
     },
   );
 
+  /**
+   * Spend one banked reset credit.
+   *
+   * Usage tracking is optional on hosts that have not started that service, so
+   * this forwards when it is present and otherwise says so. It never reports a
+   * success it did not perform: a fake "reset applied" would tell the user
+   * their windows cleared when they did not.
+   */
   ipcMain.handle(
     IPC.usageConsumeResetCredit,
     async (_event, arg: { accountId: string }): Promise<UsageResetCreditResult> => {

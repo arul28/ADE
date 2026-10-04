@@ -37,8 +37,8 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
 }));
 
+import { adeProviderUsageHomes } from "./providerUsageHomes";
 import {
-  adeProviderUsageHomes,
   attachSharedUsageTrackingScope,
   claudePollAllowsKeychain,
   createUsageTrackingService,

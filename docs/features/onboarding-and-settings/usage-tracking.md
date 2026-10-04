@@ -361,9 +361,12 @@ tokens, cache hit rate (cache reads over the whole input side), daily trend,
 split, and the price ADE bills it at (`custom`, `list`, or `fallback`, with
 `unpriced` when nothing prices it).
 
-`usage.setModelPriceOverride {model, price?, mapTo?}` (CTO role; a controller
-action from the phone) writes this machine's
-`<adeHome>/usage-price-overrides.json`:
+`usage.setModelPriceOverride {model, models?, price?, mapTo?}` (CTO role; a
+controller action from the phone) writes this machine's
+`<adeHome>/usage-price-overrides.json` (`usagePriceOverrides.ts`). The change
+applies to `model` and every id in `models`: the dialog sends all the raw ids
+behind one display name (a dated id, a `[1m]` variant). Each write starts from
+the file on disk, so another process's change since is kept.
 
 - a **price** (USD per million input/output tokens; cache rates optional, a
   blank one bills at the input rate, `0` means free) wins over every list in
@@ -375,7 +378,8 @@ action from the phone) writes this machine's
 
 The ledger worker reads the file when it starts, so a save re-prices history
 by starting a history refresh in the background; the page updates when that
-scan lands. `ade usage prices --text` lists both; `ade usage prices set` writes
+scan lands. A scan already running read the old prices, so the re-price runs
+after it finishes rather than joining it. `ade usage prices --text` lists both; `ade usage prices set` writes
 them.
 
 ## Lifetime stats survive lane deletion

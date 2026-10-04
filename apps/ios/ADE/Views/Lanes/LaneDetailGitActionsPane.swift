@@ -44,7 +44,7 @@ struct LaneDetailGitActionsPane: View {
   let onCreateLaneFromChanges: () -> Void
   /// Reads the lane's branch changes; nil when the host predates branch diffs.
   var loadBranchChanges: (() async throws -> BranchDiffChanges)? = nil
-  var onOpenBranchDiff: ((BranchFileChange) -> Void)? = nil
+  var onOpenBranchDiff: ((FileChange) -> Void)? = nil
 
   @State private var pullMode: String = "rebase"
   @State private var showMoreActions = false

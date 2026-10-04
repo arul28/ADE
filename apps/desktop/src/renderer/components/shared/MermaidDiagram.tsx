@@ -4,10 +4,11 @@
  *
  * - Mermaid is imported the first time a diagram mounts, so a surface with no
  *   diagram pays nothing for it.
- * - Every render runs at `securityLevel: "strict"` with HTML labels off, so a
- *   `%%{init}%%` line in the source cannot turn them back on. Strict mode
- *   sanitizes labels and drops click handlers; chat text and PR bodies are
- *   untrusted input, and this is the defense for both.
+ * - Every render runs at `securityLevel: "strict"` with HTML labels off, and
+ *   both (plus the theme CSS) are on mermaid's `secure` list, so a
+ *   `%%{init}%%` line in the source cannot change them. Strict mode sanitizes
+ *   labels and drops click handlers; chat text and PR bodies are untrusted
+ *   input, and this is the defense for both.
  * - Results are cached per source and theme (64 settled entries; a pending
  *   render is never evicted, so a remount reuses its promise).
  * - A failed import offers Retry; a parse error shows mermaid's message above
@@ -30,6 +31,7 @@ type RenderResult = { ok: true; svg: string } | { ok: false; error: string; kind
 const MAX_SETTLED_RENDERS = 64;
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
+const MERMAID_DEFAULT_SECURE_KEYS = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges"];
 let renderSeq = 0;
 let renderQueue: Promise<unknown> = Promise.resolve();
 const renderCache = new Map<string, { promise: Promise<RenderResult>; settled: boolean }>();
@@ -81,6 +83,9 @@ function renderMermaid(source: string, theme: "dark" | "light"): Promise<RenderR
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: "strict",
+        // Keys a diagram's own `%%{init}%%` may not override: mermaid's
+        // defaults plus HTML labels and raw theme CSS.
+        secure: [...MERMAID_DEFAULT_SECURE_KEYS, "htmlLabels", "flowchart", "themeCSS"],
         theme: theme === "light" ? "default" : "dark",
         // Edge labels sit on a box that hides the line behind the text.
         // Mermaid's dark theme paints it mid-grey, a patch on ADE's canvas;

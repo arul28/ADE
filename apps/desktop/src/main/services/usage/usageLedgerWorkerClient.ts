@@ -5,6 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { CostSnapshot, UsageProvider } from "../../../shared/types";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
+import { extraProviderHomesEnvName } from "./ledgers/localUsageLedgers";
 
 /**
  * A ceiling for a wedged child, not a budget for a normal scan.
@@ -358,8 +359,9 @@ export function scanUsageLedgersInWorker(
     const spawnWorker = options.spawnWorker ?? spawn;
     const env = { ...process.env };
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
-    for (const [provider, homes] of Object.entries(options.extraProviderHomes ?? {})) {
-      if (homes?.length) env[`ADE_USAGE_EXTRA_${provider.toUpperCase()}_HOMES`] = homes.join(path.delimiter);
+    for (const provider of ["claude", "codex"] as const) {
+      const homes = options.extraProviderHomes?.[provider];
+      if (homes?.length) env[extraProviderHomesEnvName(provider)] = homes.join(path.delimiter);
     }
     let child: ChildProcessWithoutNullStreams;
     try {

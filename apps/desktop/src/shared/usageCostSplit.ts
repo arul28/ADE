@@ -1,10 +1,10 @@
-import type { AdeUsageCostSplit } from "../../../shared/types";
+import type { AdeUsageCostSplit } from "./types";
 
 /**
  * The arithmetic for `AdeUsageCostSplit`: where a cost figure's dollars went,
- * by token type and by the premium a faster service tier added. Pure, so the
- * ledger scan, the stats aggregation and the account rollup add splits the
- * same way.
+ * by token type and by the premium a faster service tier added. Pure and
+ * shared, so the ledger scan, the stats aggregation, the account rollup, the
+ * Usage page and `ade usage stats` add splits the same way.
  */
 
 const SPLIT_FIELDS = ["input", "cacheRead", "cacheWrite", "output", "other", "fastPremium", "ultrafastPremium"] as const;
@@ -51,4 +51,15 @@ export function parseCostSplit(value: unknown): AdeUsageCostSplit | null {
     split[field] = Number.isFinite(number) && number > 0 ? number : 0;
   }
   return split;
+}
+
+/**
+ * The splits added up, or null when any one is missing: a total built from
+ * part of the providers would mislead, so a page shows no split instead.
+ */
+export function sumCostSplitsOrNull(splits: ReadonlyArray<AdeUsageCostSplit | null | undefined>): AdeUsageCostSplit | null {
+  if (splits.length === 0 || splits.some((split) => !split)) return null;
+  const total = emptyCostSplit();
+  for (const split of splits) addCostSplit(total, split);
+  return total;
 }

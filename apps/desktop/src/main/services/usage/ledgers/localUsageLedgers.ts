@@ -139,8 +139,13 @@ function dedupeResolvedPaths(paths: string[]): string[] {
  * and route. Every chat ADE runs under a second account writes its
  * transcripts there, so a scan of the default home alone missed all of them.
  */
+/** The env var that hands the ledger worker one provider's extra homes, joined by `path.delimiter`. */
+export function extraProviderHomesEnvName(provider: "claude" | "codex"): string {
+  return `ADE_USAGE_EXTRA_${provider.toUpperCase()}_HOMES`;
+}
+
 function extraProviderHomes(provider: "claude" | "codex"): string[] {
-  const raw = process.env[`ADE_USAGE_EXTRA_${provider.toUpperCase()}_HOMES`];
+  const raw = process.env[extraProviderHomesEnvName(provider)];
   return raw ? raw.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean) : [];
 }
 

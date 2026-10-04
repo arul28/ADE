@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
 import { X } from "@phosphor-icons/react";
 import {
@@ -1662,7 +1663,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Git pane selection ---- */
 
-  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged" | "branch") => {
+  const handleSelectFile = useCallback((laneId: string, path: string, mode: LaneDiffMode) => {
     setLanePaneDetails((prev) => ({
       ...prev,
       [laneId]: { selectedFilePath: path, selectedFileMode: mode, selectedCommit: null }

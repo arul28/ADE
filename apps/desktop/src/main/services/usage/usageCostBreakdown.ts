@@ -12,9 +12,9 @@ import type {
  * the names, so the arithmetic is the same on every host.
  */
 
-export const COST_BREAKDOWN_DEFAULT_LIMIT = 50;
+const COST_BREAKDOWN_DEFAULT_LIMIT = 50;
 const DELETED_KEY = "deleted";
-export const COST_BREAKDOWN_MAX_LIMIT = 200;
+const COST_BREAKDOWN_MAX_LIMIT = 200;
 
 export type CostBreakdownLabels = {
   /** A chat's title and lane, or null when the chat is gone. */
@@ -101,6 +101,8 @@ export function buildCostBreakdown(input: {
   labels: CostBreakdownLabels;
   laneId?: string | null;
   limit?: number;
+  /** What ranks the rows before the tail folds; default cost. */
+  rankBy?: "cost" | "tokens";
 }): AdeUsageCostBreakdown {
   const { by, labels } = input;
   const limit = Math.min(COST_BREAKDOWN_MAX_LIMIT, Math.max(1, Math.floor(input.limit ?? COST_BREAKDOWN_DEFAULT_LIMIT)));
@@ -170,7 +172,9 @@ export function buildCostBreakdown(input: {
     const group = groups.get(key);
     if (group) group.label = `${group.label} (${members.size})`;
   }
-  const ranked = [...groups.values()].sort((a, b) => (b.costUsd - a.costUsd) || (b.totalTokens - a.totalTokens) || a.label.localeCompare(b.label));
+  const ranked = [...groups.values()].sort((a, b) => (input.rankBy === "tokens"
+    ? (b.totalTokens - a.totalTokens) || (b.costUsd - a.costUsd)
+    : (b.costUsd - a.costUsd) || (b.totalTokens - a.totalTokens)) || a.label.localeCompare(b.label));
   const shown = ranked.slice(0, limit).map(roundTotals);
   const tail = ranked.slice(limit);
   let other: AdeUsageCostBreakdown["other"] = null;

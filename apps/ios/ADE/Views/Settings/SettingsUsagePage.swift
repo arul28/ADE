@@ -161,6 +161,25 @@ private extension Int {
 
 // MARK: - Page
 
+
+/// The Usage page's breakdown views. Every case but `models` is a host
+/// `usage.getCostBreakdown` dimension, sent as its raw value.
+enum SettingsUsageBreakdownView: String, CaseIterable {
+  case models
+  case chat
+  case lane
+  case account
+
+  var title: String {
+    switch self {
+    case .models: return "Models"
+    case .chat: return "Chats"
+    case .lane: return "Lanes"
+    case .account: return "Accounts"
+    }
+  }
+}
+
 struct SettingsUsagePage: View {
   let syncService: SyncService
 
@@ -170,7 +189,7 @@ struct SettingsUsagePage: View {
 
   @State private var model = SettingsUsagePageModel()
   @State private var estimationSheetPresented = false
-  @State private var breakdownView = "models"
+  @State private var breakdownView: SettingsUsageBreakdownView = .models
   @State private var breakdown: MobileAdeUsageCostBreakdown?
   @State private var breakdownLane: (id: String, name: String)?
   @State private var billing: MobileAdeUsageCostBreakdownTotals?
@@ -243,8 +262,8 @@ struct SettingsUsagePage: View {
       billing = totals?.available == true ? totals?.totals : nil
     }
     .task(id: "\(modelKey):\(breakdownView):\(breakdownLane?.id ?? "")") {
-      guard breakdownView != "models" else { breakdown = nil; return }
-      breakdown = try? await syncService.fetchUsageCostBreakdown(by: breakdownView, preset: rangeRaw, laneId: breakdownLane?.id)
+      guard breakdownView != .models else { breakdown = nil; return }
+      breakdown = try? await syncService.fetchUsageCostBreakdown(by: breakdownView.rawValue, preset: rangeRaw, laneId: breakdownLane?.id)
     }
     .refreshable { await refresh() }
     .sheet(isPresented: $estimationSheetPresented) {
@@ -513,17 +532,16 @@ struct SettingsUsagePage: View {
 
       if ledgerAvailable {
         Picker("Breakdown", selection: $breakdownView) {
-          Text("Models").tag("models")
-          Text("Chats").tag("chat")
-          Text("Lanes").tag("lane")
-          Text("Accounts").tag("account")
+          ForEach(SettingsUsageBreakdownView.allCases, id: \.self) { view in
+            Text(view.title).tag(view)
+          }
         }
         .pickerStyle(.segmented)
         .onChange(of: breakdownView) { _, _ in breakdownLane = nil }
         .accessibilityLabel("Breakdown view")
       }
 
-      if breakdownView == "models" {
+      if breakdownView == .models {
         modelsList
       } else {
         ledgerList
@@ -570,7 +588,7 @@ struct SettingsUsagePage: View {
     if let lane = breakdownLane {
       Button {
         breakdownLane = nil
-        breakdownView = "lane"
+        breakdownView = .lane
       } label: {
         Text("Lanes › \(lane.name)")
           .font(ADEUsageType.detailFont(.medium))
@@ -578,11 +596,11 @@ struct SettingsUsagePage: View {
       }
       .buttonStyle(.plain)
     }
-    Text(breakdownView == "account" ? "ADE chats on this machine. Billed is what API keys were charged." : "ADE chats in this project. Billed is what API keys were charged.")
+    Text(breakdownView == .account ? "ADE chats on this machine. Billed is what API keys were charged." : "ADE chats in this project. Billed is what API keys were charged.")
       .font(ADEUsageType.microFont())
       .foregroundStyle(ADEColor.textMuted)
       .fixedSize(horizontal: false, vertical: true)
-    if let breakdown, breakdown.by == breakdownView {
+    if let breakdown, breakdown.by == breakdownView.rawValue {
       if breakdown.rows.isEmpty {
         Text("No ADE chat turns in this range.")
           .font(ADEUsageType.detailFont())
@@ -598,12 +616,12 @@ struct SettingsUsagePage: View {
               assetName: row.provider.flatMap(providerAssetName),
               cost: row.costUsd,
               share: total > 0 ? row.costUsd / total : 0,
-              showsChevron: breakdownView == "lane" && row.laneId != nil
+              showsChevron: breakdownView == .lane && row.laneId != nil
             )
-            if breakdownView == "lane", let laneId = row.laneId {
+            if breakdownView == .lane, let laneId = row.laneId {
               Button {
                 breakdownLane = (laneId, row.label)
-                breakdownView = "chat"
+                breakdownView = .chat
               } label: { rowView }
               .buttonStyle(.plain)
             } else {
@@ -1007,6 +1025,23 @@ struct SettingsUsageModelDetailScreen: View {
           }
           .disabled(saving || mapTo.trimmingCharacters(in: .whitespaces) == (detail.mapTo ?? ""))
         }
+        if let mappedFrom = detail.mappedFrom, !mappedFrom.isEmpty {
+          Text("Also counted here:")
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textMuted)
+          ForEach(mappedFrom, id: \.self) { source in
+            HStack {
+              Text(source)
+                .font(ADEUsageType.microFont().monospaced())
+                .foregroundStyle(ADEColor.textPrimary)
+              Spacer()
+              Button("Unmap") {
+                Task { await save(mapTo: "", target: source, done: "\(source) is counted on its own again.") }
+              }
+              .disabled(saving)
+            }
+          }
+        }
       }
     }
   }
@@ -1016,11 +1051,13 @@ struct SettingsUsageModelDetailScreen: View {
     await save(price: MobileAdeUsageModelPrice(input: input, output: output, cacheRead: nil, cacheWrite: nil, source: nil, unpriced: nil), done: "Price saved.")
   }
 
-  private func save(price: MobileAdeUsageModelPrice? = nil, clearPrice: Bool = false, mapTo: String? = nil, done: String) async {
+  /// Applies to every raw id behind this model, or to `target` (a model mapped onto this one).
+  private func save(price: MobileAdeUsageModelPrice? = nil, clearPrice: Bool = false, mapTo: String? = nil, target: String? = nil, done: String) async {
     saving = true
     defer { saving = false }
+    let ids = target.map { [$0] } ?? detail?.modelIds ?? []
     do {
-      try await syncService.setUsageModelPrice(model: detail?.modelIds.first ?? model, price: price, clearPrice: clearPrice, mapTo: mapTo)
+      try await syncService.setUsageModelPrice(model: ids.first ?? model, otherModelIds: Array(ids.dropFirst()), price: price, clearPrice: clearPrice, mapTo: mapTo)
       message = "\(done) The machine re-prices its history in the background."
       await load()
     } catch {

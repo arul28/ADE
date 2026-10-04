@@ -42,7 +42,7 @@ import type {
 import { poolLiveQuota } from "../../../shared/usageLiveQuota";
 import { localDayKey, localDayOrdinal } from "./localDay";
 import { isSameTranscriptSource } from "./accountUsageSource";
-import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "./usageCostSplit";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 
 // The pooling rule is shared with the renderer's environment filter, so the
 // account-scope merge and the filtered view can never disagree about one number.

@@ -244,8 +244,8 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { ADE_USAGE_COST_BREAKDOWN_BY, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
-import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePricing";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -7406,7 +7406,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("usage.getCostBreakdown", { viewerAllowed: true }, async (payload) => {
     if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
     const by = asTrimmedString(payload.by);
-    if (!by || !(ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(by)) {
+    if (!isAdeUsageCostBreakdownBy(by)) {
       throw new Error("usage.getCostBreakdown by must be chat, lane, or account.");
     }
     const preset = asTrimmedString(payload.preset);
@@ -7424,6 +7424,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       ...(until && !Number.isNaN(Date.parse(until)) ? { until } : {}),
       ...(laneId ? { laneId } : {}),
       ...(limit != null ? { limit } : {}),
+      ...(payload.rankBy === "tokens" ? { rankBy: "tokens" as const } : {}),
     });
   });
 
@@ -7453,14 +7454,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("usage.setModelPriceOverride", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
     const service = args.usageTrackingService;
     if (!service) throw new Error("Model prices are not available in this runtime.");
-    const price = payload.price === null
-      ? null
-      : payload.price !== undefined
-        ? normalizePriceOverride(payload.price) ?? (() => { throw new Error("usage.setModelPriceOverride price needs input and output rates."); })()
-        : undefined;
+    const price = payload.price == null ? payload.price as null | undefined : normalizePriceOverride(payload.price);
+    if (payload.price != null && !price) throw new Error("usage.setModelPriceOverride price needs input and output rates.");
     const mapTo = payload.mapTo === null ? null : asTrimmedString(payload.mapTo);
+    const models = Array.isArray(payload.models) ? payload.models.filter((model): model is string => typeof model === "string") : [];
     return service.setModelPriceOverride({
       model: requireString(payload.model, "usage.setModelPriceOverride requires model."),
+      ...(models.length ? { models } : {}),
       ...(price !== undefined ? { price } : {}),
       ...(payload.mapTo !== undefined ? { mapTo: mapTo || null } : {}),
     });

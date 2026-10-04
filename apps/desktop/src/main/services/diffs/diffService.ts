@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { runGit } from "../git/git";
+import { parseNameStatusRecords, runGit } from "../git/git";
 import { PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
@@ -332,20 +332,42 @@ async function resolveBranchCompareBase(
 }
 
 /**
- * Runs `fn` against a throwaway index holding the whole working tree:
- * HEAD's tree plus every tracked edit and every untracked file .gitignore
- * keeps. Diffing that index with `--cached` is what lets one diff carry
- * commits, uncommitted edits and new files together, without touching the
- * user's real index. The file lives in the OS temp directory and is removed
- * whatever happens.
+ * Runs `fn` against a throwaway index holding the working tree: HEAD's tree
+ * plus every tracked edit and every untracked file .gitignore keeps. Diffing
+ * that index with `--cached` is what lets one diff carry commits, uncommitted
+ * edits and new files together, without touching the user's real index.
+ *
+ * The throwaway starts as a copy of the real index, so `git add` re-hashes
+ * only files whose stat changed (not every file through its clean filters, as
+ * a fresh `read-tree` would) and a sparse checkout's skip-worktree entries
+ * stay present rather than reading as deleted. A repository with no index yet
+ * starts from HEAD. `pathspec` limits the add to the files `fn` reads. The
+ * file lives in the OS temp directory and is removed whatever happens.
  */
-async function withWorkingTreeIndex<T>(worktreePath: string, fn: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+async function withWorkingTreeIndex<T>(
+  worktreePath: string,
+  fn: (env: NodeJS.ProcessEnv) => Promise<T>,
+  pathspec = ".",
+): Promise<T> {
   const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexPath };
   try {
-    const read = await runGit(["read-tree", "HEAD"], { cwd: worktreePath, env, timeoutMs: 20_000 });
-    if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
-    const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
+    const realIndex = await runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: 10_000 });
+    const realIndexPath = realIndex.exitCode === 0 ? path.resolve(worktreePath, realIndex.stdout.trim()) : "";
+    let copied = false;
+    if (realIndexPath) {
+      try {
+        fs.copyFileSync(realIndexPath, indexPath);
+        copied = true;
+      } catch {
+        // No index yet (a fresh clone mid-checkout, an empty repo): start from HEAD.
+      }
+    }
+    if (!copied) {
+      const read = await runGit(["read-tree", "HEAD"], { cwd: worktreePath, env, timeoutMs: 20_000 });
+      if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
+    }
+    const add = await runGit(["add", "-A", "--", pathspec], { cwd: worktreePath, env, timeoutMs: 60_000 });
     if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "git add failed");
     return await fn(env);
   } finally {
@@ -357,26 +379,11 @@ async function withWorkingTreeIndex<T>(worktreePath: string, fn: (env: NodeJS.Pr
   }
 }
 
-function parseNameStatusZ(stdout: string): FileChange[] {
-  const tokens = stdout.split("\0");
-  const files: FileChange[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const status = tokens[i] ?? "";
-    if (!status) continue;
-    const letter = status.charAt(0);
-    if (letter === "R" || letter === "C") {
-      const oldPath = tokens[i + 1] ?? "";
-      const newPath = tokens[i + 2] ?? "";
-      i += 2;
-      if (newPath) files.push({ path: newPath, oldPath, kind: letter === "R" ? "renamed" : "added" });
-      continue;
-    }
-    const filePath = tokens[i + 1] ?? "";
-    i += 1;
-    if (!filePath) continue;
-    files.push({ path: filePath, kind: letter === "A" ? "added" : letter === "D" ? "deleted" : letter === "M" || letter === "T" ? "modified" : "unknown" });
-  }
-  return files;
+function nameStatusFileChanges(stdout: string): FileChange[] {
+  return parseNameStatusRecords(stdout).map(({ letter, path: filePath, oldPath }): FileChange => {
+    if (letter === "R" || letter === "C") return { path: filePath, oldPath: oldPath ?? "", kind: letter === "R" ? "renamed" : "added" };
+    return { path: filePath, kind: letter === "A" ? "added" : letter === "D" ? "deleted" : letter === "M" || letter === "T" ? "modified" : "unknown" };
+  });
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
@@ -423,7 +430,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
           runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
         ]);
         if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
-        const files = parseNameStatusZ(names.stdout);
+        const files = nameStatusFileChanges(names.stdout);
         if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
         return {
           baseRef: label,
@@ -564,7 +571,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
         const res = await withWorkingTreeIndex(worktreePath, (env) => runGit(
           ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", gitPath],
           { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
-        ));
+        ), `:(literal)${gitPath}`);
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "git diff failed");
         return {
           mode,

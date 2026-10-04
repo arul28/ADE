@@ -21,7 +21,7 @@ import type {
   AdeUsageScope,
   AdeUsageStats,
 } from "../../../shared/types";
-import { formatCost, formatTokens, relativeTimeCompact } from "../../lib/format";
+import { formatSpend, formatTokens, relativeTimeCompact } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
@@ -34,7 +34,8 @@ import {
   selectTopSeries,
 } from "../usage/UsageDailyChart";
 import { UsagePooledLimits } from "../usage/UsagePooledLimits";
-import { CostSplitBars, sumCostSplits } from "../usage/UsageCostSplit";
+import { CostSplitBars } from "../usage/UsageCostSplit";
+import { sumCostSplitsOrNull } from "../../../shared/usageCostSplit";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import {
@@ -121,10 +122,6 @@ function persistPreset(preset: AdeUsageRangePreset): void {
 
 function formatWhole(value: number): string {
   return Math.max(0, Math.floor(value || 0)).toLocaleString();
-}
-
-function formatUsd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
 }
 
 function humanizeProvider(provider: string): string {
@@ -374,7 +371,7 @@ function CostHero({
 }) {
   // The page total's split is the providers' splits added up, shown only when
   // every provider with a cost sent one: a partial split would mislead.
-  const split = sumCostSplits(providers.filter((provider) => provider.rangeCostUsd > 0).map((provider) => provider.costSplit));
+  const split = sumCostSplitsOrNull(providers.filter((provider) => provider.rangeCostUsd > 0).map((provider) => provider.costSplit));
   const estimated = providers
     .map((provider) => {
       const note = estimationNote(provider.estimation);
@@ -393,7 +390,7 @@ function CostHero({
     <div className="flex flex-col gap-2">
       <span className={USAGE_EYEBROW_CLASS}>Estimated cost</span>
       <span className={cn(USAGE_TEXT.hero, USAGE_NUMERIC_CLASS, "font-semibold text-fg")}>
-        {loading ? "—" : `${formatUsd(costUsd)}*`}
+        {loading ? "—" : `${formatSpend(costUsd)}*`}
       </span>
       <span
         className={cn(USAGE_TEXT.micro, "cursor-help text-muted-fg")}
@@ -412,9 +409,9 @@ function CostHero({
           title="From ADE's per-turn ledger: chats ADE ran on this machine. Billed is what API keys and routed accounts were charged; plan value is what subscription turns would have cost at list prices."
         >
           {"ADE chats · billed to API keys "}
-          <span className="text-fg">{formatUsd(billing.billedUsd)}</span>
+          <span className="text-fg">{formatSpend(billing.billedUsd)}</span>
           {" · plan value "}
-          <span className="text-fg">{formatUsd(billing.planValueUsd)}</span>
+          <span className="text-fg">{formatSpend(billing.planValueUsd)}</span>
         </span>
       ) : null}
       {!loading ? <CostSplitBars split={split} theme={theme} /> : null}
@@ -489,7 +486,7 @@ function ProviderCostSplit({
                 {humanizeProvider(provider.provider)}
               </span>
               <span className={cn(USAGE_TEXT.body, USAGE_NUMERIC_CLASS, "text-fg")}>
-                {formatUsd(provider.rangeCostUsd)}
+                {formatSpend(provider.rangeCostUsd)}
               </span>
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -872,7 +869,7 @@ export function AdeUsageSection() {
       const undated = rangeCost - chartedCost;
       if (undated > 0.01 && undated / rangeCost > 0.01) {
         notes.push(
-          `${formatUsd(undated)} of this total comes from records with no date and isn't on the daily chart.`,
+          `${formatSpend(undated)} of this total comes from records with no date and isn't on the daily chart.`,
         );
       }
     }
@@ -1045,7 +1042,7 @@ export function AdeUsageSection() {
                   label="Output"
                   source="Providers"
                   value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
-                  detail={summary ? `${formatUsd(summary.observedProviderCostTodayUsd)} today` : ""}
+                  detail={summary ? `${formatSpend(summary.observedProviderCostTodayUsd)} today` : ""}
                 />
                 <Metric label="Lines changed" {...codeMovement} />
                 <Metric
@@ -1091,11 +1088,6 @@ export function AdeUsageSection() {
           </>
         )}
 
-        {/* Pooled live limits belong to the account scope only: "This machine"
-            and "This project" are single-environment views, and the top-bar
-            popover already carries this machine's limits. Rendered outside the
-            historical empty state: live quota is a current reading, so an empty
-            date range must not hide a working account's limits. */}
         <UsageModelDetailDialog
           model={detailModel}
           preset={preset}
@@ -1105,6 +1097,11 @@ export function AdeUsageSection() {
           onClose={() => setDetailModel(null)}
         />
 
+        {/* Pooled live limits belong to the account scope only: "This machine"
+            and "This project" are single-environment views, and the top-bar
+            popover already carries this machine's limits. Rendered outside the
+            historical empty state: live quota is a current reading, so an empty
+            date range must not hide a working account's limits. */}
         {scope === "account" && stats?.liveQuota ? (
           <SettingsSection title="Live limits" description="Every signed-in machine, pooled. The top bar shows this one.">
             <UsagePooledLimits environments={stats.liveQuota.environments} />

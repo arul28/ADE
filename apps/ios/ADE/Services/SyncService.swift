@@ -21573,7 +21573,7 @@ final class SyncService: ObservableObject {
 
   /// Sets or clears the host's price for a model, or its "Map to". `price: nil`
   /// with `clearPrice` goes back to automatic; `mapTo: ""` removes a mapping.
-  func setUsageModelPrice(model: String, price: MobileAdeUsageModelPrice?, clearPrice: Bool = false, mapTo: String? = nil) async throws {
+  func setUsageModelPrice(model: String, otherModelIds: [String] = [], price: MobileAdeUsageModelPrice?, clearPrice: Bool = false, mapTo: String? = nil) async throws {
     guard canSetUsageModelPrices else {
       throw NSError(domain: "ADE", code: 17, userInfo: [
         NSLocalizedDescriptionKey: "Model prices can't be changed on this machine version. Update ADE on the machine and reconnect.",
@@ -21581,6 +21581,7 @@ final class SyncService: ObservableObject {
       ])
     }
     var args: [String: Any] = ["model": model]
+    if !otherModelIds.isEmpty { args["models"] = otherModelIds }
     if clearPrice {
       args["price"] = NSNull()
     } else if let price {

@@ -1,6 +1,7 @@
 import type {
   LaneSummary
 } from "../../../shared/types";
+import type { LaneDiffMode } from "../../../shared/types";
 
 /* ---- Sort helpers ---- */
 
@@ -65,7 +66,7 @@ export function laneMatchesFilter(lane: LaneSummary, query: string): boolean {
 
 export type LanePaneDetailSelection = {
   selectedFilePath: string | null;
-  selectedFileMode: "staged" | "unstaged" | "branch" | null;
+  selectedFileMode: LaneDiffMode | null;
   selectedCommit: import("../../../shared/types").GitCommitSummary | null;
 };
 

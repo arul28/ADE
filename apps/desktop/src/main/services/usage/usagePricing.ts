@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { getModelListPrice, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost, type ModelsDevEntry } from "../ai/modelsDevCatalog";
-import { getErrorMessage, isRecord, writeTextAtomic } from "../shared/utils";
+import { getErrorMessage, isRecord } from "../shared/utils";
+import { customTokenPrice } from "./usagePriceOverrides";
 import type { UsageSpeed } from "../../../shared/types/usage";
 
 export type TokenRates = {
@@ -33,8 +34,6 @@ export type TokenPrice = TokenRates & {
    */
   modes?: Partial<Record<Exclude<UsageSpeed, "standard">, TokenRates>>;
 };
-
-export type { UsageSpeed };
 
 /**
  * A Codex `service_tier` as the speed it bills at. `priority` is what Codex's
@@ -350,8 +349,8 @@ function parseModelsDevModes(entry: ModelsDevEntry | undefined, modelKey?: strin
     if (!isRecord(raw)) continue;
     const body = isRecord(raw.provider) && isRecord(raw.provider.body) ? raw.provider.body : {};
     const tier = typeof body.service_tier === "string" ? body.service_tier : typeof body.speed === "string" ? body.speed : name;
-    const speed = tier === "priority" || tier === "fast" ? "fast" : tier === "ultrafast" ? "ultrafast" : null;
-    if (!speed || out[speed]) continue;
+    const speed = codexServiceTierSpeed(tier);
+    if (speed === "standard" || out[speed]) continue;
     const rates = parseRateBlock(raw.cost, modelKey);
     if (rates) out[speed] = rates;
   }
@@ -605,8 +604,13 @@ function findDynamicPrice(model: string, options?: { exactOnly?: boolean }): Tok
  */
 export type TokenPriceSource = "list" | "fallback";
 
+/** `custom` is a price the user set (`usagePriceOverrides`), which wins over both lists. */
+export type ResolvedTokenPriceSource = TokenPriceSource | "custom";
+
+/** A custom price counts as `list`: it is a real rate, not a guess. */
 export function tokenPriceSource(model: string): TokenPriceSource {
-  return resolveTokenPriceWithSource(model).source;
+  const { source } = resolveTokenPriceWithSource(model);
+  return source === "custom" ? "list" : source;
 }
 
 /** When the loaded copy of the rate list was fetched. Null = none loaded. */
@@ -632,12 +636,12 @@ export function resolveTokenPrice(model: string): TokenPrice {
   return resolveTokenPriceWithSource(model).price;
 }
 
-function resolveTokenPriceWithSource(model: string): { price: TokenPrice; source: TokenPriceSource } {
+export function resolveTokenPriceWithSource(model: string): { price: TokenPrice; source: ResolvedTokenPriceSource } {
   ensureDynamicTokenPricingLoaded();
   const name = model ?? "";
   // A price the user set wins over every list: it is the one they bill at.
-  const custom = usagePriceOverrides().prices.get(usagePriceOverrideKey(name));
-  if (custom) return { price: custom, source: "list" };
+  const custom = customTokenPrice(name);
+  if (custom) return { price: custom, source: "custom" };
   const priced = exactOrRegistryPrice(name);
   if (priced) return priced;
 
@@ -832,162 +836,6 @@ export function installModelsDevPricingForTest(payload: unknown): number {
 // ---------------------------------------------------------------------------
 // User price overrides and "Map to"
 // ---------------------------------------------------------------------------
-
-/**
- * Prices the user set and model ids they mapped onto another model, kept on
- * this machine next to the models.dev cache. The ledger worker is a fresh
- * process per scan and reads the file when it starts; the brain re-reads it
- * when a setter writes it (`reloadUsagePriceOverrides`).
- */
-const ADE_PRICE_OVERRIDES_PATH = path.join(os.homedir(), ".ade", "usage-price-overrides.json");
-const PRICE_OVERRIDES_FORMAT_VERSION = 1;
-
-/** USD per million tokens, as the user typed them. */
-export type UsagePriceOverride = { input: number; output: number; cacheRead?: number | null; cacheWrite?: number | null };
-
-export type UsagePriceOverridesFile = {
-  version: 1;
-  prices: Record<string, UsagePriceOverride>;
-  /** `from` model id → the model its usage counts as. */
-  aliases: Record<string, string>;
-};
-
-type LoadedPriceOverrides = { prices: Map<string, TokenPrice>; aliases: Map<string, string>; file: UsagePriceOverridesFile };
-
-let loadedPriceOverrides: LoadedPriceOverrides | null = null;
-let priceOverridesPathForTest: string | null = null;
-
-/** Override and alias keys match a model id however its runtime spelled it. */
-export function usagePriceOverrideKey(model: string): string {
-  return (model ?? "").trim().toLowerCase();
-}
-
-function emptyPriceOverridesFile(): UsagePriceOverridesFile {
-  return { version: PRICE_OVERRIDES_FORMAT_VERSION, prices: {}, aliases: {} };
-}
-
-function priceOverridesPath(): string {
-  return priceOverridesPathForTest ?? ADE_PRICE_OVERRIDES_PATH;
-}
-
-function parsePriceOverridesFile(raw: unknown): UsagePriceOverridesFile {
-  const file = emptyPriceOverridesFile();
-  if (!isRecord(raw) || raw.version !== PRICE_OVERRIDES_FORMAT_VERSION) return file;
-  if (isRecord(raw.prices)) {
-    for (const [model, value] of Object.entries(raw.prices)) {
-      const override = normalizePriceOverride(value);
-      const key = usagePriceOverrideKey(model);
-      if (override && key) file.prices[key] = override;
-    }
-  }
-  if (isRecord(raw.aliases)) {
-    for (const [from, to] of Object.entries(raw.aliases)) {
-      const fromKey = usagePriceOverrideKey(from);
-      const target = typeof to === "string" ? to.trim() : "";
-      if (fromKey && target && usagePriceOverrideKey(target) !== fromKey) file.aliases[fromKey] = target;
-    }
-  }
-  return file;
-}
-
-export function normalizePriceOverride(value: unknown): UsagePriceOverride | null {
-  if (!isRecord(value)) return null;
-  const rate = (field: unknown): number | null => (typeof field === "number" && Number.isFinite(field) && field >= 0 && field <= 1_000_000 ? field : null);
-  const input = rate(value.input);
-  const output = rate(value.output);
-  if (input == null || output == null) return null;
-  const cacheRead = rate(value.cacheRead);
-  const cacheWrite = rate(value.cacheWrite);
-  return { input, output, ...(cacheRead != null ? { cacheRead } : {}), ...(cacheWrite != null ? { cacheWrite } : {}) };
-}
-
-function loadPriceOverrides(): LoadedPriceOverrides {
-  let file = emptyPriceOverridesFile();
-  try {
-    file = parsePriceOverridesFile(JSON.parse(fs.readFileSync(priceOverridesPath(), "utf8")) as unknown);
-  } catch {
-    // No file, or an unreadable one: no overrides.
-  }
-  const prices = new Map<string, TokenPrice>();
-  for (const [model, override] of Object.entries(file.prices)) {
-    // A blank cache rate bills at the input rate, as the user would expect
-    // from leaving it empty; 0 means the tokens are free.
-    prices.set(model, tokenPrice(override.input, override.output, override.cacheRead ?? override.input, override.cacheWrite ?? override.input));
-  }
-  return { prices, aliases: new Map(Object.entries(file.aliases)), file };
-}
-
-function usagePriceOverrides(): LoadedPriceOverrides {
-  loadedPriceOverrides ??= loadPriceOverrides();
-  return loadedPriceOverrides;
-}
-
-export function readUsagePriceOverrides(): UsagePriceOverridesFile {
-  return usagePriceOverrides().file;
-}
-
-export function reloadUsagePriceOverrides(): void {
-  loadedPriceOverrides = null;
-}
-
-/**
- * The model a usage record counts as. Follows a chain of mappings to its end
- * and stops at a loop, so `a → b → a` leaves `a` as itself.
- */
-export function applyUsageModelAlias(model: string): string {
-  const aliases = usagePriceOverrides().aliases;
-  if (aliases.size === 0) return model;
-  let current = model;
-  const seen = new Set<string>([usagePriceOverrideKey(model)]);
-  for (let hop = 0; hop < 16; hop += 1) {
-    const next = aliases.get(usagePriceOverrideKey(current));
-    if (!next) break;
-    const key = usagePriceOverrideKey(next);
-    if (seen.has(key)) return model;
-    seen.add(key);
-    current = next;
-  }
-  return current;
-}
-
-/**
- * Writes one change to the overrides file and reloads it. `price: null`
- * removes a model's price; `mapTo: null` removes its mapping. Mapping a model
- * drops its own price: its usage is priced as the target from then on.
- */
-export function updateUsagePriceOverrides(change: {
-  model: string;
-  price?: UsagePriceOverride | null;
-  mapTo?: string | null;
-}): UsagePriceOverridesFile {
-  const key = usagePriceOverrideKey(change.model);
-  if (!key) throw new Error("A model id is required.");
-  const file = parsePriceOverridesFile(readUsagePriceOverrides());
-  if (change.price !== undefined) {
-    if (change.price === null) delete file.prices[key];
-    else {
-      const normalized = normalizePriceOverride(change.price);
-      if (!normalized) throw new Error("A price needs input and output rates in USD per million tokens.");
-      file.prices[key] = normalized;
-    }
-  }
-  if (change.mapTo !== undefined) {
-    const target = change.mapTo?.trim() ?? "";
-    if (!target || usagePriceOverrideKey(target) === key) delete file.aliases[key];
-    else {
-      file.aliases[key] = target;
-      delete file.prices[key];
-    }
-  }
-  writeTextAtomic(priceOverridesPath(), `${JSON.stringify(file, null, 2)}\n`);
-  reloadUsagePriceOverrides();
-  return readUsagePriceOverrides();
-}
-
-export function setUsagePriceOverridesPathForTest(filePath: string | null): void {
-  priceOverridesPathForTest = filePath;
-  reloadUsagePriceOverrides();
-}
 
 export const _testing = {
   canonicalPricingName,

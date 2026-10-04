@@ -16,7 +16,7 @@ import type {
   AdeUsageRangePreset,
   AdeUsageScope,
 } from "../../../shared/types";
-import { formatCost, formatTokens } from "../../lib/format";
+import { formatSpend, formatTokens } from "../../lib/format";
 import { triggerBrowserDownload } from "../../lib/transcriptExport";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
@@ -48,17 +48,13 @@ type ListRow = {
   onOpen?: () => void;
 };
 
-function usd(value: number): string {
-  return value > 0 ? formatCost(value) : "$0.00";
-}
-
 function csvCell(value: string | number): string {
   const text = String(value);
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 /** The current view as CSV: the table a reader reconciles against a bill. */
-export function breakdownCsv(view: UsageBreakdownView, rows: readonly ListRow[]): string {
+function breakdownCsv(view: UsageBreakdownView, rows: readonly ListRow[]): string {
   const ledger = view !== "models";
   const header = ledger
     ? [view, "detail", "api_equivalent_usd", "billed_usd", "plan_value_usd", "tokens"]
@@ -152,6 +148,9 @@ export function UsageBreakdown({
     void window.ade.usage.getCostBreakdown!({
       by: view,
       preset,
+      // Ranked by the metric on screen before the tail folds into Other, so a
+      // cheap chat with the most tokens is not hidden behind the cost top 50.
+      rankBy: metric,
       ...(view === "chat" && lane ? { laneId: lane.id } : {}),
     })
       .then((result) => {
@@ -169,7 +168,7 @@ export function UsageBreakdown({
     return () => {
       cancelled = true;
     };
-  }, [canReadLedger, lane, preset, reloadKey, view]);
+  }, [canReadLedger, lane, metric, preset, reloadKey, view]);
 
   const changeView = React.useCallback((next: UsageBreakdownView) => {
     setLane(null);
@@ -304,11 +303,11 @@ export function UsageBreakdown({
                     </span>
                   </td>
                   <td className={cn("py-2 text-right text-fg", USAGE_NUMERIC_CLASS)}>
-                    {metric === "cost" ? usd(row.costUsd) : formatTokens(row.totalTokens)}
+                    {metric === "cost" ? formatSpend(row.costUsd) : formatTokens(row.totalTokens)}
                   </td>
                   {ledgerView ? (
                     <td className={cn("py-2 text-right text-muted-fg", USAGE_NUMERIC_CLASS)}>
-                      {(row.billedUsd ?? 0) > 0 ? usd(row.billedUsd ?? 0) : "—"}
+                      {(row.billedUsd ?? 0) > 0 ? formatSpend(row.billedUsd ?? 0) : "—"}
                     </td>
                   ) : null}
                   <td className="py-2 pr-2">

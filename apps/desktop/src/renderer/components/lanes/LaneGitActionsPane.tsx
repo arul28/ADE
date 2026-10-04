@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import type { LaneDiffMode } from "../../../shared/types";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -8,6 +9,7 @@ import {
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
@@ -653,12 +655,12 @@ export function LaneGitActionsPane({
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
   onViewRebaseDetails?: (laneId?: string | null) => void;
   onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
-  onSelectFile: (path: string, mode: "staged" | "unstaged" | "branch") => void;
+  onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   /** Clears file + commit diff selection (back to file list in this section). */
   onClearDiffSelection?: () => void;
   selectedPath: string | null;
-  selectedMode: "staged" | "unstaged" | "branch" | null;
+  selectedMode: LaneDiffMode | null;
   /** Defaults to null when omitted (e.g. floating pane / legacy call sites). */
   selectedCommit?: GitCommitSummary | null;
   selectedCommitSha: string | null;
@@ -927,9 +929,8 @@ export function LaneGitActionsPane({
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        const message = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
-        if (/unknown (?:action|method|command)|unsupported|not supported/i.test(message)) setBranchSupported(false);
-        else setBranchError(message);
+        if (isBranchDiffUnsupported(error)) setBranchSupported(false);
+        else setBranchError(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)));
       });
     return () => {
       cancelled = true;
@@ -1695,7 +1696,7 @@ export function LaneGitActionsPane({
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
 
-  const renderFileRow = (file: FileChange, mode: "staged" | "unstaged" | "branch") => {
+  const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
     if (mode === "branch") {
       // Read-only: staging and discarding belong to Uncommitted.
@@ -1886,7 +1887,7 @@ export function LaneGitActionsPane({
 
   const renderChangeTreeNode = (
     node: ChangeTreeNode,
-    mode: "staged" | "unstaged" | "branch",
+    mode: LaneDiffMode,
     depth: number,
     statsByPath: Map<string, ChangeTreeStats>,
   ): React.ReactNode[] => {
@@ -1946,7 +1947,7 @@ export function LaneGitActionsPane({
     return rows;
   };
 
-  const renderChangeTree = (files: FileChange[], mode: "staged" | "unstaged" | "branch", statsByPath: Map<string, ChangeTreeStats>) => {
+  const renderChangeTree = (files: FileChange[], mode: LaneDiffMode, statsByPath: Map<string, ChangeTreeStats>) => {
     const tree = buildChangeTree(files);
     return renderChangeTreeNode(tree, mode, 0, statsByPath);
   };

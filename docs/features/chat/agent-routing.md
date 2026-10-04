@@ -816,7 +816,11 @@ thread id; ADE's git-backed per-file restore plan runs the same way in both
 cases.
 
 The per-file restore writes a file back as it was at the turn's starting commit
-(`git restore --source=<beforeSha> --worktree`, which leaves the index alone).
+(`git restore --source=<beforeSha> --staged --worktree`). The index is restored
+too: the plan only restores a file that was clean when the turn began, so
+anything staged for it was staged by the turn, and leaving it would let the next
+commit carry the work the rewind undid. A file the turn created is deleted and
+unstaged (`git rm --cached`).
 That is only safe for a file nothing else had changed, so the plan leaves three
 kinds of file as they are and reports them in `skippedFiles`, which the
 confirmation dialog lists under **Left as they are**:

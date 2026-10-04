@@ -408,9 +408,13 @@ mode concept):
 merge-base(base, HEAD) against the file on disk now, so commits, uncommitted
 edits and untracked files read as one diff per file. `diffService.getBranchChanges`
 lists the files with line counts by diffing `--cached` against a throwaway
-index (`GIT_INDEX_FILE` in the OS temp directory: `read-tree HEAD`, then
-`add -A`, which honours `.gitignore`), so the user's own index is never
-touched; the temp file is removed whatever happens. `getFileDiff` /
+index (`GIT_INDEX_FILE` in the OS temp directory: a copy of the real index,
+or `read-tree HEAD` when there is none, then `add -A`, which honours
+`.gitignore`), so the user's own index is never touched. Starting from the
+real index means `add` re-hashes only files whose stat changed, and a sparse
+checkout's skip-worktree entries stay present instead of reading as deleted.
+A single-file patch adds only that path. The temp file is removed whatever
+happens. `getFileDiff` /
 `getFilePatch` take `mode: "branch"` the same way.
 
 The base is the lane's `base_ref`; a lane that is its own base (the primary

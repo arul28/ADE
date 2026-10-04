@@ -198,6 +198,10 @@ export type AdeUsageModelSummary = {
 export const ADE_USAGE_COST_BREAKDOWN_BY = ["chat", "lane", "account"] as const;
 export type AdeUsageCostBreakdownBy = (typeof ADE_USAGE_COST_BREAKDOWN_BY)[number];
 
+export function isAdeUsageCostBreakdownBy(value: unknown): value is AdeUsageCostBreakdownBy {
+  return typeof value === "string" && (ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(value);
+}
+
 export type GetAdeUsageCostBreakdownArgs = {
   by: AdeUsageCostBreakdownBy;
   preset?: AdeUsageRangePreset;
@@ -207,6 +211,8 @@ export type GetAdeUsageCostBreakdownArgs = {
   laneId?: string | null;
   /** Rows before the tail folds into `other`. Default 50, max 200. */
   limit?: number;
+  /** What ranks the rows before that fold: cost (default) or tokens. An older host ranks by cost. */
+  rankBy?: "cost" | "tokens";
 };
 
 /**
@@ -300,6 +306,12 @@ export type AdeUsageModelDetail = {
   modelIds: string[];
   /** Where a "Map to" sends this model, when the user set one. */
   mapTo: string | null;
+  /**
+   * Model ids the user mapped onto this one. Their usage is counted here and
+   * they no longer appear on their own, so this is where they are unmapped.
+   * An older host omits it.
+   */
+  mappedFrom?: string[];
 };
 
 /** The prices and "Map to" mappings the user set on this machine. */
@@ -310,6 +322,11 @@ export type AdeUsagePriceOverrides = {
 
 export type SetAdeUsageModelPriceArgs = {
   model: string;
+  /**
+   * Other raw ids the same change applies to: one display name can stand for
+   * several (a dated id, a `[1m]` variant). An older host ignores this.
+   */
+  models?: string[];
   /** Null removes the user's price, back to automatic. */
   price?: AdeUsageModelPrice | null;
   /** Null or empty removes the mapping. Mapping a model drops its own price. */

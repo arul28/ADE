@@ -54,7 +54,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import {
-  ADE_USAGE_COST_BREAKDOWN_BY,
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   isAdeUsageRangePreset,
   isAdeUsageScope,
@@ -89,7 +89,7 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { machineProviderUsageHomes } from "./providerUsageHomes";
 import { pickInstanceForNewChat, type AccountBalanceResult } from "./accountBalance";
 import { createWindowAutoStartScheduler } from "./windowAutoStart";
 import {
@@ -106,21 +106,17 @@ import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/proce
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
-  applyUsageModelAlias,
   isZeroTokenPrice,
   priceTokenSplitDetailed,
-  usagePriceOverrideKey,
-  readUsagePriceOverrides,
   refreshDynamicTokenPricing,
-  reloadUsagePriceOverrides,
-  updateUsagePriceOverrides,
-  type UsagePriceOverride,
   resetDynamicTokenPricingForTest,
   resolveTokenPrice,
   setDynamicTokenPricingForTest,
   tokenPriceSource,
   WEB_SEARCH_COST_USD,
 } from "./usagePricing";
+import { applyUsageModelAlias, readUsagePriceOverrides, updateUsagePriceOverrides } from "./usagePriceOverrides";
+import { buildModelDetail, type ModelDetailDayRow } from "./usageModelDetail";
 import {
   type TokenEntry,
   discoverClaudeProjectDirs,
@@ -156,7 +152,7 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
-import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "./usageCostSplit";
+import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 import { buildCostBreakdown } from "./usageCostBreakdown";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 import {
@@ -197,7 +193,7 @@ import {
   pollOpenCodeQuota,
 } from "./extraProviderQuota";
 import { localDayKey, localDayOffset, localDayStart } from "./localDay";
-import { buildTurnUsageLedgerSummary, type TurnUsageLedger } from "./turnUsageLedger";
+import { buildTurnUsageLedgerSummary, repriceTurnForUserPrices, type TurnUsageLedger } from "./turnUsageLedger";
 import type { ModelRouterService, RouterPreviewArgs, RouterRoutesArgs } from "../router/modelRouterService";
 import { usageAccountId } from "./usageAccountId";
 import {
@@ -753,66 +749,6 @@ function fallbackQuotaInstance(provider: QuotaInstanceProvider): QuotaInstance {
  * singular: the status line's account email, the poll `source`, and the Codex
  * spend-control / 7-day series.
  */
-/**
- * Every config home on this machine that holds Claude or Codex history besides
- * the provider's default: each account home in the instance registry, and
- * every directory ADE owns under `<adeHome>/provider-homes/` (accounts,
- * presets, credentials, routes), including ones whose registry entry is gone,
- * because the usage they recorded still happened.
- *
- * A home's provider comes from its namespace (`provider-homes/claude/…`) or
- * registry entry; a preset, credential or route home is identified by the
- * CLI's own files (`.claude.json`; Codex's `config.toml` / `auth.json`).
- * Claude keeps a `sessions/` folder too, so the folder alone would hand every
- * Claude home to the Codex scan.
- */
-export function adeProviderUsageHomes(adeDir: string = resolveMachineAdeDir()): { claude: string[]; codex: string[] } {
-  const childDirs = (dir: string): string[] => {
-    try {
-      return fs.readdirSync(dir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => path.join(dir, entry.name));
-    } catch {
-      return [];
-    }
-  };
-  const exists = (home: string, child: string) => fs.existsSync(path.join(home, child));
-  const claude = new Set<string>();
-  const codex = new Set<string>();
-  const root = path.join(adeDir, "provider-homes");
-  for (const namespaceDir of childDirs(root)) {
-    const namespace = path.basename(namespaceDir).toLowerCase();
-    for (const home of childDirs(namespaceDir)) {
-      const isClaude = namespace === "claude" || (namespace !== "codex" && exists(home, ".claude.json"));
-      const isCodex = !isClaude && (namespace === "codex" || exists(home, "config.toml") || exists(home, "auth.json"));
-      if (isClaude) claude.add(home);
-      if (isCodex) codex.add(home);
-    }
-  }
-  for (const instance of listQuotaInstances("claude")) if (!instance.isDefault && instance.configHome.trim()) claude.add(instance.configHome);
-  for (const instance of listQuotaInstances("codex")) if (!instance.isDefault && instance.configHome.trim()) codex.add(instance.configHome);
-  return {
-    claude: [...claude].filter((home) => exists(home, "projects")).sort(),
-    codex: [...codex].filter((home) => exists(home, "sessions") || exists(home, "archived_sessions")).sort(),
-  };
-}
-
-/**
- * `adeProviderUsageHomes` plus each CLI's own default home (`~/.claude`,
- * `~/.codex`). A brain or `ade` started from an agent's shell inherits that
- * agent's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, and the scanners treat those as
- * the default, so without this the machine's main history silently dropped out
- * of every total that process reported. The scanners dedupe by path.
- */
-function machineProviderUsageHomes(): { claude: string[]; codex: string[] } {
-  const homes = adeProviderUsageHomes();
-  const ifPresent = (home: string, child: string) => (fs.existsSync(path.join(home, child)) ? [home] : []);
-  return {
-    claude: [...ifPresent(path.join(os.homedir(), ".claude"), "projects"), ...homes.claude],
-    codex: [...ifPresent(path.join(os.homedir(), ".codex"), "sessions"), ...homes.codex],
-  };
-}
-
 function listQuotaInstances(provider: QuotaInstanceProvider): QuotaInstance[] {
   try {
     const mapped: QuotaInstance[] = getMachineProviderInstanceStore()
@@ -2255,29 +2191,29 @@ function calculateTokenEntryCost(entry: TokenEntry): EntryCost {
     timestampMs: entry.timestamp,
     speed: entry.speed ?? "standard",
   });
-  const split = emptyCostSplit();
   const override = finiteNumberOrNull(entry.costOverrideUsd);
   if (override != null && override >= 0) {
-    if (listed.totalUsd > 0) {
-      const scale = override / listed.totalUsd;
-      addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
-      addSpeedPremium(split, entry.speed, listed.speedPremiumUsd * scale);
-    } else {
-      split.other = override;
-    }
-    return { costUsd: override, split };
+    if (listed.totalUsd > 0) return { costUsd: override, split: splitFromListed(listed, entry.speed, override / listed.totalUsd) };
+    return { costUsd: override, split: { ...emptyCostSplit(), other: override } };
   }
-  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 });
-  addSpeedPremium(split, entry.speed, listed.speedPremiumUsd);
+  const split = splitFromListed(listed, entry.speed, 1);
   const webSearchUsd = toNonNegativeInt(entry.webSearchRequests) * WEB_SEARCH_COST_USD;
   split.other += webSearchUsd;
   return { costUsd: listed.totalUsd + webSearchUsd, split };
 }
 
-function addSpeedPremium(split: AdeUsageCostSplit, speed: TokenEntry["speed"], premiumUsd: number): void {
-  if (!(premiumUsd > 0)) return;
-  if (speed === "ultrafast") split.ultrafastPremium += premiumUsd;
-  else if (speed === "fast") split.fastPremium += premiumUsd;
+/** A listed price's split, scaled (a provider's own figure over the list total), with its speed premium. */
+function splitFromListed(
+  listed: ReturnType<typeof priceTokenSplitDetailed>,
+  speed: TokenEntry["speed"],
+  scale: number,
+): AdeUsageCostSplit {
+  const split = emptyCostSplit();
+  addCostSplit(split, { ...listed.byType, other: 0, fastPremium: 0, ultrafastPremium: 0 }, scale);
+  const premiumUsd = listed.speedPremiumUsd * scale;
+  if (premiumUsd > 0 && speed === "ultrafast") split.ultrafastPremium += premiumUsd;
+  else if (premiumUsd > 0 && speed === "fast") split.fastPremium += premiumUsd;
+  return split;
 }
 
 function aggregateCosts(
@@ -4846,9 +4782,7 @@ export function createUsageTrackingService({
     args: GetAdeUsageCostBreakdownArgs,
     forScope: AttachedScope = defaultScope,
   ): Promise<AdeUsageCostBreakdown> {
-    const by: AdeUsageCostBreakdownBy = (ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(args?.by)
-      ? args.by
-      : "chat";
+    const by: AdeUsageCostBreakdownBy = isAdeUsageCostBreakdownBy(args?.by) ? args.by : "chat";
     const nowMs = Date.now();
     const range = widenRangeToLocalDays(resolveAdeUsageRange(args, nowMs));
     const rangeOut = { since: range.since, until: range.until };
@@ -4864,7 +4798,7 @@ export function createUsageTrackingService({
       if (!(atMs >= sinceMs && atMs <= untilMs)) return false;
       if (by === "account" || !scopeRoot) return true;
       return Boolean(row.projectRoot) && pathKey(path.resolve(row.projectRoot!)) === scopeRoot;
-    });
+    }).map(repriceTurnForUserPrices);
     const db = forScope.db;
     const chatCache = new Map<string, { title: string | null; laneId: string | null } | null>();
     const laneCache = new Map<string, string | null>();
@@ -4874,6 +4808,7 @@ export function createUsageTrackingService({
       range: rangeOut,
       laneId: args.laneId ?? null,
       limit: args.limit,
+      rankBy: args.rankBy === "tokens" ? "tokens" : "cost",
       labels: {
         chat: (sessionId) => {
           if (!chatCache.has(sessionId)) {
@@ -5737,72 +5672,27 @@ export function createUsageTrackingService({
       : lastSnapshot.costs;
     const provider = String(args.provider ?? "");
     const model = String(args.model ?? "");
-    const byDate = new Map<string, { costUsd: number; totalTokens: number }>();
-    const modelIds = new Set<string>();
-    const totals = { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    const split = emptyCostSplit();
+    const rows: ModelDetailDayRow[] = [];
     for (const cost of costs) {
       if (cost.provider !== provider) continue;
       for (const [date, models] of Object.entries(cost.dailyTokenBreakdownByPreset?.all ?? {})) {
         if (!dateIntersectsRange(date, range)) continue;
         for (const [modelId, row] of Object.entries(models)) {
           if (displayModelName(modelId) !== model) continue;
-          modelIds.add(modelId);
-          const input = toNonNegativeInt(row.input);
-          const output = toNonNegativeInt(row.output);
-          const cacheRead = toNonNegativeInt(row.cached);
-          const cacheWrite = toNonNegativeInt(row.cacheWrite);
-          const costUsd = Math.max(0, toFiniteNumber(row.costUsd));
-          totals.costUsd += costUsd;
-          totals.input += input;
-          totals.output += output;
-          totals.cacheRead += cacheRead;
-          totals.cacheWrite += cacheWrite;
-          addCostSplit(split, parseCostSplit(row.costSplit));
-          const day = byDate.get(date) ?? { costUsd: 0, totalTokens: 0 };
-          day.costUsd += costUsd;
-          day.totalTokens += input + output + cacheRead + cacheWrite;
-          byDate.set(date, day);
+          rows.push({
+            date,
+            modelId,
+            input: toNonNegativeInt(row.input),
+            output: toNonNegativeInt(row.output),
+            cacheRead: toNonNegativeInt(row.cached),
+            cacheWrite: toNonNegativeInt(row.cacheWrite),
+            costUsd: Math.max(0, toFiniteNumber(row.costUsd)),
+            costSplit: parseCostSplit(row.costSplit),
+          });
         }
       }
     }
-    const totalTokens = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
-    const inputSide = totals.input + totals.cacheRead + totals.cacheWrite;
-    const priceId = [...modelIds][0] ?? model;
-    const overrides = readUsagePriceOverrides();
-    const custom = overrides.prices[usagePriceOverrideKey(priceId)] ?? overrides.prices[usagePriceOverrideKey(model)] ?? null;
-    const resolved = resolveTokenPrice(priceId);
-    const perMillion = (value: number) => Math.round(value * 1_000_000 * 1_000_000) / 1_000_000;
-    const mapSource = Object.entries(overrides.aliases).find(([from]) => from === usagePriceOverrideKey(model) || modelIds.has(from));
-    return {
-      provider,
-      model,
-      range: { since: range.since, until: range.until },
-      costUsd: roundUsd(totals.costUsd),
-      inputTokens: totals.input,
-      outputTokens: totals.output,
-      cachedTokens: totals.cacheRead + totals.cacheWrite,
-      cacheReadTokens: totals.cacheRead,
-      totalTokens,
-      costPerMillionUsd: totalTokens > 0 ? Math.round((totals.costUsd / totalTokens) * 1_000_000 * 100) / 100 : null,
-      cacheHitRate: inputSide > 0 ? totals.cacheRead / inputSide : null,
-      ...(finalizeCostSplit(split) ? { costSplit: finalizeCostSplit(split)! } : {}),
-      daily: [...byDate.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, day]) => ({ date, costUsd: Math.round(day.costUsd * 10_000) / 10_000, totalTokens: day.totalTokens })),
-      price: custom
-        ? { ...custom, source: "custom", unpriced: false }
-        : {
-            input: perMillion(resolved.input),
-            output: perMillion(resolved.output),
-            cacheRead: perMillion(resolved.cacheRead),
-            cacheWrite: perMillion(resolved.cacheWrite),
-            source: tokenPriceSource(priceId),
-            unpriced: isZeroTokenPrice(resolved),
-          },
-      modelIds: [...modelIds].sort(),
-      mapTo: mapSource?.[1] ?? null,
-    };
+    return buildModelDetail({ provider, model, range: { since: range.since, until: range.until }, rows });
   }
 
   function getModelPriceOverrides(): AdeUsagePriceOverrides {
@@ -5814,18 +5704,21 @@ export function createUsageTrackingService({
    * Saves one price or mapping and re-prices history in the background: the
    * history scan is what applies it, and it can take a minute on a large
    * machine, so the caller gets the saved overrides now and the page updates
-   * when the scan's snapshot lands.
+   * when the scan's snapshot lands. A scan already running read the old
+   * prices when it started, so the re-price runs after it, not joined to it.
    */
   function setModelPriceOverride(args: SetAdeUsageModelPriceArgs): AdeUsagePriceOverrides {
-    const model = typeof args?.model === "string" ? args.model.trim() : "";
-    if (!model) throw new Error("usage.setModelPrice needs a model id.");
+    const models = [args?.model, ...(Array.isArray(args?.models) ? args.models : [])]
+      .filter((model): model is string => typeof model === "string" && model.trim().length > 0);
+    if (models.length === 0) throw new Error("usage.setModelPrice needs a model id.");
     updateUsagePriceOverrides({
-      model,
-      ...(args.price !== undefined ? { price: args.price as UsagePriceOverride | null } : {}),
+      models,
+      ...(args.price !== undefined ? { price: args.price } : {}),
       ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
     });
-    reloadUsagePriceOverrides();
-    void refreshHistory({ reason: "user" }).catch((error) => {
+    const reprice = () => refreshHistory({ reason: "user" });
+    const running = inFlightHistoryRefresh;
+    void (running ? running.then(reprice, reprice) : reprice()).catch((error) => {
       logger.warn("usage.price_override.reprice_failed", { error: getErrorMessage(error) });
     });
     return getModelPriceOverrides();

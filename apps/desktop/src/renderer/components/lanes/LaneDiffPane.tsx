@@ -5,7 +5,7 @@ import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
-import type { FileDiff, FilePatch, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
+import type { FileDiff, FilePatch, GitCommitSummary, LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { getFileIcon } from "../files/filePresentation";
@@ -69,7 +69,7 @@ export function LaneDiffPane({
 }: {
   laneId: string | null;
   selectedPath: string | null;
-  selectedFileMode: "staged" | "unstaged" | "branch" | null;
+  selectedFileMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
   liveSync?: boolean;
   /**

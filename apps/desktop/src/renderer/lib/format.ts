@@ -192,6 +192,11 @@ export function formatCost(usd: number, currency?: string): string {
   return `$${withThousandsSeparators(usd.toFixed(2))}`;
 }
 
+/** A spend figure where nothing spent reads `$0.00` rather than `<$0.01`. */
+export function formatSpend(usd: number): string {
+  return usd > 0 ? formatCost(usd) : "$0.00";
+}
+
 /** Map a status string to Tailwind text+border classes (automations style). */
 export function statusToneAutomation(status: string | null): string {
   if (status === "succeeded") return "border-emerald-500/40 text-emerald-300";

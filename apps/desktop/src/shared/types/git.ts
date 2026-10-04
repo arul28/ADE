@@ -196,6 +196,9 @@ export type GitStashSummary = {
  */
 export type DiffMode = "unstaged" | "staged" | "commit" | "branch";
 
+/** A lane file selection: every scope but a single commit. */
+export type LaneDiffMode = Exclude<DiffMode, "commit">;
+
 export type FileChange = {
   path: string;
   oldPath?: string;

@@ -1,33 +1,8 @@
 import React, { useEffect, useState } from "react";
-import type { FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
+import type { DiffMode, FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
+import { hostSupportsBranchDiff } from "../../../../lib/branchDiffSupport";
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../../shared/AdeDiffViewer";
-
-type DiffMode = "branch" | "unstaged" | "staged" | "commit";
-
-/**
- * Whether the host behind a lane understands `mode: "branch"`, asked once per
- * lane. An older host reads an unknown mode as "unstaged" without complaint,
- * so the Branch tab appears only after `getBranchChanges` answered.
- */
-const branchSupportByLane = new Map<string, Promise<boolean>>();
-
-function hostSupportsBranchDiff(laneId: string): Promise<boolean> {
-  let pending = branchSupportByLane.get(laneId);
-  if (!pending) {
-    const getBranchChanges = window.ade.diff.getBranchChanges;
-    pending = getBranchChanges
-      ? getBranchChanges({ laneId }).then((result) => result != null, (error: unknown) => {
-          // A lane whose base cannot be resolved still supports the mode; the
-          // diff then shows that error, which is the useful thing to see.
-          const message = error instanceof Error ? error.message : String(error);
-          return !/unknown (?:action|method|command)|unsupported|not supported/i.test(message);
-        })
-      : Promise.resolve(false);
-    branchSupportByLane.set(laneId, pending);
-  }
-  return pending;
-}
 
 function diffHasChanges(diff: FileDiff | null): boolean {
   if (!diff) return false;

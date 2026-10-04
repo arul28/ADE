@@ -33,6 +33,7 @@ import { reasoningBilledSeparately, uncachedInputTokens } from "./tokenSplit";
 import { modelSupportsFastMode, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { UsageSpeed } from "../../../shared/types/usage";
 import { usageAccountId } from "./usageAccountId";
+import { applyUsageModelAlias, customTokenPrice } from "./usagePriceOverrides";
 import {
   codexServiceTierSpeed,
   isZeroTokenPrice,
@@ -361,6 +362,28 @@ export function apiEquivalentTurnUsd(
     cacheWrite: split.cacheWriteTokens ?? 0,
     cacheWrite1h: nonNegative(request.cacheWrite1hTokens) ?? 0,
   }));
+}
+
+/**
+ * A recorded turn valued at today's user prices. `apiEquivalentUsd` is written
+ * when the turn ends; a price the user set, or a "Map to", after that must
+ * still reach the breakdown, so a turn whose model either touches is re-priced
+ * on read. Every other turn keeps its recorded figure.
+ */
+export function repriceTurnForUserPrices(row: AdeTurnUsageRecord): AdeTurnUsageRecord {
+  const model = row.servedModel ?? row.requestedModel;
+  if (!model) return row;
+  const priced = applyUsageModelAlias(model);
+  if (priced === model && !customTokenPrice(model)) return row;
+  const atMs = Date.parse(row.at);
+  const apiEquivalentUsd = apiEquivalentTurnUsd(priced, row, {
+    contextTokens: row.contextTokens,
+    cacheWrite1hTokens: row.cacheWrite1hTokens,
+    timestampMs: Number.isFinite(atMs) ? atMs : Date.now(),
+    provider: row.provider,
+    speed: row.speed ?? null,
+  });
+  return { ...row, apiEquivalentUsd };
 }
 
 /**

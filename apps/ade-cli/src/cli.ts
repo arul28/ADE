@@ -169,11 +169,13 @@ import {
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_COST_BREAKDOWN_BY,
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
   isAdeUsageRangePreset,
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
+import { parseCostSplit, sumCostSplitsOrNull } from "../../desktop/src/shared/usageCostSplit";
 import {
   ADE_TURN_USAGE_GROUP_BY,
   ADE_TURN_USAGE_MAX_DAYS,
@@ -15048,7 +15050,7 @@ function buildUsagePlan(args: string[]): CliPlan {
     // instead of printing the page summary.
     const by = readValue(args, ["--by"]);
     if (by != null) {
-      if (!(ADE_USAGE_COST_BREAKDOWN_BY as readonly string[]).includes(by)) {
+      if (!isAdeUsageCostBreakdownBy(by)) {
         throw new CliUsageError(`usage stats --by must be one of ${ADE_USAGE_COST_BREAKDOWN_BY.join(", ")}.`);
       }
       const laneId = readValue(args, ["--lane"]);
@@ -15141,14 +15143,16 @@ function buildUsagePlan(args: string[]): CliPlan {
       return { kind: "execute", label: "usage prices", steps: [actionStep("result", "usage", "getModelPriceOverrides", {})] };
     }
     if (mode === "set") {
-      const model = args.filter((arg) => !arg.startsWith("--"))[1];
-      if (!model) throw new CliUsageError("usage prices set needs a model id.");
+      // Value flags come out first, so the model id is the one positional left.
       const input = readValue(args, ["--input"]);
       const output = readValue(args, ["--output"]);
       const cacheRead = readValue(args, ["--cache-read"]);
       const cacheWrite = readValue(args, ["--cache-write"]);
       const mapTo = readValue(args, ["--map-to"]);
       const automatic = readFlag(args, ["--automatic", "--clear"]);
+      const unmap = readFlag(args, ["--unmap"]);
+      const model = firstPositional(args);
+      if (!model) throw new CliUsageError("usage prices set needs a model id.");
       const rate = (value: string | null, flag: string): number | undefined => {
         if (value == null) return undefined;
         const parsed = Number(value);
@@ -15167,7 +15171,7 @@ function buildUsagePlan(args: string[]): CliPlan {
         };
       }
       if (mapTo != null) change.mapTo = mapTo.trim() || null;
-      if (readFlag(args, ["--unmap"])) change.mapTo = null;
+      if (unmap) change.mapTo = null;
       if (!("price" in change) && !("mapTo" in change)) {
         throw new CliUsageError("usage prices set needs --input/--output, --map-to, --unmap, or --automatic.");
       }
@@ -24454,17 +24458,6 @@ type UsageAccountTextLine = {
   machines: string;
 };
 
-/**
- * `ade usage snapshot --text` (and the two refresh verbs, which return the same
- * snapshot) — the quota half of the desktop Limits band.
- *
- * Prints headroom per window the way the cards read it, plus the account the
- * numbers belong to and the provider-hosted limits page, because those are the
- * two things a terminal reader otherwise has to go to the GUI for. Accounts
- * come from the snapshot's pooled `accounts`; a host that predates account
- * attribution sends none, so `providerStatus.accountEmail/accountPlan/
- * accountUrl` is the fallback rather than a second source of truth.
- */
 function usdText(value: unknown): string {
   const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
   return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : `$${amount.toFixed(2)}`;
@@ -24508,16 +24501,10 @@ export function formatUsageStats(value: unknown): string {
   ];
   // The page total's split is the providers' splits added up, and only when
   // every provider with a cost brought one; a partial split would mislead.
-  const withCost = providers.filter((provider) => Number(provider.rangeCostUsd) > 0);
-  if (withCost.length && withCost.every((provider) => isRecord(provider.costSplit))) {
-    const total: Record<string, number> = {};
-    for (const provider of withCost) {
-      for (const [key, amount] of Object.entries(provider.costSplit as Record<string, unknown>)) {
-        if (typeof amount === "number") total[key] = (total[key] ?? 0) + amount;
-      }
-    }
-    lines.push(...costSplitLines(total));
-  }
+  const total = sumCostSplitsOrNull(
+    providers.filter((provider) => Number(provider.rangeCostUsd) > 0).map((provider) => parseCostSplit(provider.costSplit)),
+  );
+  if (total) lines.push(...costSplitLines(total));
   lines.push("", renderTable(
     ["provider", "cost", "tokens", "premium"],
     providers.map((provider) => {
@@ -24592,6 +24579,7 @@ export function formatUsageModelDetail(value: unknown): string {
     ...costSplitLines(detail.costSplit),
     `Price     ${priceText}`,
     ...(asString(detail.mapTo) ? [`Maps to   ${asString(detail.mapTo)}`] : []),
+    ...(Array.isArray(detail.mappedFrom) && detail.mappedFrom.length ? [`Also here ${detail.mappedFrom.map(String).join(", ")}`] : []),
     "",
     renderTable(["day", "cost", "tokens"], daily.map((day) => [asString(day.date) ?? "", usdText(day.costUsd), tokensText(day.totalTokens)]), "No usage in this range."),
   ].join("\n");
@@ -24614,6 +24602,17 @@ export function formatUsagePrices(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * `ade usage snapshot --text` (and the two refresh verbs, which return the same
+ * snapshot) — the quota half of the desktop Limits band.
+ *
+ * Prints headroom per window the way the cards read it, plus the account the
+ * numbers belong to and the provider-hosted limits page, because those are the
+ * two things a terminal reader otherwise has to go to the GUI for. Accounts
+ * come from the snapshot's pooled `accounts`; a host that predates account
+ * attribution sends none, so `providerStatus.accountEmail/accountPlan/
+ * accountUrl` is the fallback rather than a second source of truth.
+ */
 export function formatUsageSnapshot(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const nowMs = Date.now();
