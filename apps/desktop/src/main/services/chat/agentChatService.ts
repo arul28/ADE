@@ -783,6 +783,13 @@ import type {
 } from "../ai/tools/universalTools";
 import type { ExecutableTool } from "../ai/tools/executableTool";
 import {
+  ADE_MCP_TRANSPORT_TIMEOUT_MS,
+  ADE_TOOL_APPROVAL_TIMEOUT_MS,
+  pauseAdeToolDeadline,
+  resolveAdeToolBudgetMs,
+  runAdeToolWithDeadline,
+} from "../ai/tools/toolDeadline";
+import {
   buildCodexDynamicToolSpecs,
   codexDeferCtoTool,
   jsonSchemaForExecutableTool,
@@ -1417,8 +1424,6 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
-/** Hung SDK MCP tool calls currently freeze the chat with no error. 120s is generous enough for slow tools. */
-const CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS = 120_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
 const PI_WORKER_EXIT_WAIT_MS = 5_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
@@ -11995,8 +12000,12 @@ export function createAgentChatService(args: {
               // Destructive CTO tools raise the SAME approval card an agent's
               // tool call raises; the user answers it through `approveToolUse`.
               requestApproval: async ({ title, description, detail }) => {
-                const response = await requestChatInput({
+                // The user's time on the card is not the tool's working time,
+                // so the tool's deadline stops while it is open; the card has
+                // its own, much longer cap.
+                const response = await pauseAdeToolDeadline(() => requestChatInput({
                   chatSessionId: managed.session.id,
+                  timeoutMs: ADE_TOOL_APPROVAL_TIMEOUT_MS,
                   title,
                   body: description,
                   source: "ade",
@@ -12013,7 +12022,10 @@ export function createAgentChatService(args: {
                   providerMetadata: { toolApproval: true, detail: detail ?? null },
                   eventDescription: description,
                   eventDetail: { toolApproval: true, detail: detail ?? null },
-                });
+                }));
+                if (response.timedOut) {
+                  return { approved: false, reason: "No answer on the approval card within 60 minutes." };
+                }
                 const answer = firstAnswerText(response.answers, response.responseText).toLowerCase();
                 const denied = response.decision === "decline"
                   || response.decision === "cancel"
@@ -15813,7 +15825,15 @@ export function createAgentChatService(args: {
         // matching how every other provider sees them.
         ...Object.fromEntries(opencodeMcpLeases.map((lease) => [
           lease.serverName,
-          { type: "remote" as const, url: lease.url, disabled: false as const, codemode: false },
+          {
+            type: "remote" as const,
+            url: lease.url,
+            disabled: false as const,
+            codemode: false,
+            // OpenCode otherwise ends every tool call at its MCP client's 60 s
+            // default. ADE ends its own waits (`runAdeToolWithDeadline`).
+            timeout: ADE_MCP_TRANSPORT_TIMEOUT_MS,
+          },
         ])),
       }
       : undefined;
@@ -22665,6 +22685,17 @@ export function createAgentChatService(args: {
     managed.activeBashControllers.clear();
   };
 
+  /**
+   * Every transport (Claude SDK MCP, the HTTP lease, Codex dynamic tools) runs
+   * ADE tools through here, so ADE — not the provider's MCP client — decides
+   * when a call has waited long enough.
+   */
+  const executeAdeTool = (toolDefinition: ExecutableTool, args: unknown): Promise<unknown> =>
+    runAdeToolWithDeadline(
+      resolveAdeToolBudgetMs(toolDefinition, args),
+      () => toolDefinition.execute(args),
+    );
+
   const droidMcpInputShapeForTool = (toolDefinition: ExecutableTool): Record<string, z.ZodTypeAny> => {
     const schema = toolDefinition.inputSchema as unknown as {
       shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
@@ -22710,7 +22741,7 @@ export function createAgentChatService(args: {
             const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
             if (!parsed.success) return parsed.error.message;
             try {
-              return stringifyExecutableToolOutput(await toolDefinition.execute(parsed.data));
+              return stringifyExecutableToolOutput(await executeAdeTool(toolDefinition, parsed.data));
             } catch (error) {
               return error instanceof Error ? error.message : String(error);
             }
@@ -22817,7 +22848,7 @@ export function createAgentChatService(args: {
             };
           }
           try {
-            const result = await toolDefinition.execute(parsed.data);
+            const result = await executeAdeTool(toolDefinition, parsed.data);
             return {
               content: [{
                 type: "text" as const,
@@ -22842,7 +22873,8 @@ export function createAgentChatService(args: {
       version: appVersion,
       tools: sdkTools,
       alwaysLoad: true,
-      timeout: CLAUDE_SDK_MCP_TOOL_TIMEOUT_MS,
+      // The SDK's own cap sits above every ADE budget; ADE ends its waits.
+      timeout: ADE_MCP_TRANSPORT_TIMEOUT_MS,
     });
   };
 
@@ -31557,7 +31589,7 @@ export function createAgentChatService(args: {
     }
 
     try {
-      const result = await toolDefinition.execute(parsed.data);
+      const result = await executeAdeTool(toolDefinition, parsed.data);
       runtime.sendResponse(id, {
         success: true,
         contentItems: [{
@@ -61029,6 +61061,8 @@ export function createAgentChatService(args: {
   const requestChatInput = async (args: {
     chatSessionId: string;
     title: string;
+    /** Cancel the card and answer `timedOut` when nobody answers in time. */
+    timeoutMs?: number;
     body: string;
     source?: PendingInputSource;
     kind?: PendingInputKind;
@@ -61054,7 +61088,7 @@ export function createAgentChatService(args: {
       defaultAssumption?: string | null;
       impact?: string | null;
     }>;
-  }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null }> => {
+  }): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
     const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
       const normalizedBody = bodyText.replace(/\r/g, "").trim();
       if (!normalizedBody.length) return null;
@@ -61176,6 +61210,8 @@ export function createAgentChatService(args: {
       turnId: managed.runtime?.activeTurnId ?? null,
     };
 
+    let timedOut = false;
+    let expiry: ReturnType<typeof setTimeout> | null = null;
     const response = await new Promise<{
       decision?: AgentChatApprovalDecision;
       answers?: Record<string, string | string[]>;
@@ -61187,6 +61223,24 @@ export function createAgentChatService(args: {
         description: args.eventDescription ?? request.description ?? args.body,
         ...(args.eventDetail !== undefined ? { detail: args.eventDetail } : {}),
       });
+      if (args.timeoutMs && args.timeoutMs > 0) {
+        expiry = setTimeout(() => {
+          // Answered, or cancelled by a turn ending, in the meantime.
+          if (managed.localPendingInputs.get(itemId)?.resolve !== resolve) return;
+          timedOut = true;
+          managed.localPendingInputs.delete(itemId);
+          emitPendingInputResolved(managed, {
+            itemId,
+            decision: "cancel",
+            turnId: request.turnId ?? null,
+            questions: request.questions,
+          });
+          persistChatState(managed);
+          resolve({ decision: "cancel" });
+        }, args.timeoutMs);
+      }
+    }).finally(() => {
+      if (expiry) clearTimeout(expiry);
     });
 
     const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
@@ -61194,6 +61248,7 @@ export function createAgentChatService(args: {
       decision: response.decision ?? "none",
       answers: normalizedAnswers,
       responseText: typeof response.responseText === "string" ? response.responseText : null,
+      ...(timedOut ? { timedOut: true } : {}),
     };
   };
 

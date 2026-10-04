@@ -2,7 +2,17 @@ import path from "node:path";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
 import type { CtoCrossMachineDeps } from "./ctoCrossMachine";
-import { asRemoteChat, asRemoteChats, asRemoteLanes, createCtoCrossMachineToolKit, summarizeLane } from "./ctoCrossMachineTools";
+import {
+  asRemoteChat,
+  asRemoteChats,
+  asRemoteLanes,
+  CREATE_REMOTE_LANE_BUDGET_MS,
+  createCtoCrossMachineToolKit,
+  REMOTE_LANE_CREATE_TIMEOUT_MS,
+  SPAWN_REMOTE_CHAT_BUDGET_MS,
+  summarizeLane,
+} from "./ctoCrossMachineTools";
+import { DEFAULT_ADE_TOOL_BUDGET_MS } from "./toolDeadline";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -708,6 +718,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       parentLaneId: z.string().optional().describe("A lane on the same machine the new lane is created on."),
       machine: machineArgSchema,
     }),
+    budgetMs: ({ machine }) => (machine ? CREATE_REMOTE_LANE_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
     execute: async ({ name, description, parentLaneId, machine }) => {
       try {
         const target = await remoteMachine(machine);
@@ -720,8 +731,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               ...(description !== undefined ? { description } : {}),
               ...(parentLaneId !== undefined ? { parentLaneId } : {}),
             },
-            // Creating a worktree on a large repository takes a while.
-            timeoutMs: 120_000,
+            timeoutMs: REMOTE_LANE_CREATE_TIMEOUT_MS,
           });
           return { success: true, ...onMachine(target), lane };
         }
@@ -842,6 +852,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .optional()
         .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
+    budgetMs: ({ machine }) => (machine ? SPAWN_REMOTE_CHAT_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
     execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, machine, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
