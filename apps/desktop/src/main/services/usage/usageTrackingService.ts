@@ -797,6 +797,22 @@ export function adeProviderUsageHomes(adeDir: string = resolveMachineAdeDir()): 
   };
 }
 
+/**
+ * `adeProviderUsageHomes` plus each CLI's own default home (`~/.claude`,
+ * `~/.codex`). A brain or `ade` started from an agent's shell inherits that
+ * agent's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, and the scanners treat those as
+ * the default, so without this the machine's main history silently dropped out
+ * of every total that process reported. The scanners dedupe by path.
+ */
+function machineProviderUsageHomes(): { claude: string[]; codex: string[] } {
+  const homes = adeProviderUsageHomes();
+  const ifPresent = (home: string, child: string) => (fs.existsSync(path.join(home, child)) ? [home] : []);
+  return {
+    claude: [...ifPresent(path.join(os.homedir(), ".claude"), "projects"), ...homes.claude],
+    codex: [...ifPresent(path.join(os.homedir(), ".codex"), "sessions"), ...homes.codex],
+  };
+}
+
 function listQuotaInstances(provider: QuotaInstanceProvider): QuotaInstance[] {
   try {
     const mapped: QuotaInstance[] = getMachineProviderInstanceStore()
@@ -4921,7 +4937,7 @@ export function createUsageTrackingService({
     if (!hasInjectedLedgerScanners) {
       const roots = scopeProjectRoots();
       scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal, allRoots) => (
-        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots, extraProviderHomes: adeProviderUsageHomes() })
+        scanUsageLedgersInWorker(root, { signal, additionalProjectRoots: allRoots, extraProviderHomes: machineProviderUsageHomes() })
       )))(projectRoot ?? null, ledgerAbortController.signal, roots);
     } else {
       // Recorded, not merely logged: a provider whose scan failed produced no

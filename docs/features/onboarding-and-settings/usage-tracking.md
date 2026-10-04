@@ -301,8 +301,7 @@ ADE runs a second Claude or Codex account under its own config home
 (`<adeHome>/provider-homes/claude/<id>`, and the `preset`, `credential` and
 `route` homes harness presets use). Each of those homes keeps its own
 transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat ADE
-ran under another account — on the machine this was measured on, $740 of Claude
-usage in 30 days. `adeProviderUsageHomes` lists them: every directory under
+ran under another account. `adeProviderUsageHomes` lists them: every directory under
 `provider-homes/` (including homes whose account was removed, because their
 usage still happened) plus each registry instance's home. A home's provider
 comes from its namespace or registry entry; a preset, credential or route home
@@ -312,6 +311,12 @@ passes them to the ledger worker as `ADE_USAGE_EXTRA_CLAUDE_HOMES` /
 `ADE_USAGE_EXTRA_CODEX_HOMES`; the scanners add them after the default home and
 dedupe by message id as before. The scanners never discover homes themselves,
 so a test that points `CODEX_HOME` at a fixture reads only the fixture.
+
+The service also passes each CLI's own default home (`~/.claude`, `~/.codex`)
+in the same list (`machineProviderUsageHomes`). A brain or `ade` started from an
+agent's shell inherits that agent's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, which
+the scanners take as the default; without the explicit default home, the
+machine's main history dropped out of every total that process reported.
 
 ## Where the dollars went
 
