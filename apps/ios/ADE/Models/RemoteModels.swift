@@ -6997,6 +6997,70 @@ struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
   var scopeSupported: Bool?
   var adeOriginatedTokens: Int?
   var externalTokens: Int?
+  /// `rangeCostUsd` split by token type and speed premium. Hosts predating the
+  /// split omit it, and the page hides the split rather than show zeros.
+  var costSplit: MobileAdeUsageCostSplit?
+}
+
+/// Where a cost's dollars went (`AdeUsageCostSplit`): the five type fields sum
+/// to the cost; the two premiums are inside them, not on top.
+struct MobileAdeUsageCostSplit: Codable, Equatable {
+  var input: Double
+  var cacheRead: Double
+  var cacheWrite: Double
+  var output: Double
+  var other: Double
+  var fastPremium: Double
+  var ultrafastPremium: Double
+
+  static let zero = MobileAdeUsageCostSplit(input: 0, cacheRead: 0, cacheWrite: 0, output: 0, other: 0, fastPremium: 0, ultrafastPremium: 0)
+
+  var total: Double { input + cacheRead + cacheWrite + output + other }
+  var premium: Double { fastPremium + ultrafastPremium }
+
+  static func + (lhs: MobileAdeUsageCostSplit, rhs: MobileAdeUsageCostSplit) -> MobileAdeUsageCostSplit {
+    MobileAdeUsageCostSplit(
+      input: lhs.input + rhs.input,
+      cacheRead: lhs.cacheRead + rhs.cacheRead,
+      cacheWrite: lhs.cacheWrite + rhs.cacheWrite,
+      output: lhs.output + rhs.output,
+      other: lhs.other + rhs.other,
+      fastPremium: lhs.fastPremium + rhs.fastPremium,
+      ultrafastPremium: lhs.ultrafastPremium + rhs.ultrafastPremium
+    )
+  }
+
+  init(input: Double, cacheRead: Double, cacheWrite: Double, output: Double, other: Double, fastPremium: Double, ultrafastPremium: Double) {
+    self.input = input
+    self.cacheRead = cacheRead
+    self.cacheWrite = cacheWrite
+    self.output = output
+    self.other = other
+    self.fastPremium = fastPremium
+    self.ultrafastPremium = ultrafastPremium
+  }
+
+  /// Every field optional on the wire: a missing one is zero.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    func value(_ key: CodingKeys) -> Double { max(0, (try? container.decodeIfPresent(Double.self, forKey: key)) ?? 0) }
+    input = value(.input)
+    cacheRead = value(.cacheRead)
+    cacheWrite = value(.cacheWrite)
+    output = value(.output)
+    other = value(.other)
+    fastPremium = value(.fastPremium)
+    ultrafastPremium = value(.ultrafastPremium)
+  }
+}
+
+struct MobileAdeUsageModelSummary: Codable, Equatable, Identifiable {
+  var id: String { "\(provider):\(model)" }
+  var provider: String
+  var model: String
+  var totalTokens: Int?
+  var costUsd: Double?
+  var costSplit: MobileAdeUsageCostSplit?
 }
 
 struct MobileAdeUsageStats: Decodable, Equatable {
@@ -7011,6 +7075,8 @@ struct MobileAdeUsageStats: Decodable, Equatable {
   var githubActivity: MobileAdeUsageGithubActivity?
   var localActivity: MobileAdeUsageLocalActivity?
   var providers: [MobileAdeUsageProviderSummary]?
+  /// Per-model totals, for the breakdown's Models view and its detail screen.
+  var models: [MobileAdeUsageModelSummary]?
   /// When the loaded copy of the public rate list was fetched. Null/absent
   /// means none is loaded, so every cost came from the built-in table.
   var pricingUpdatedAt: String?
@@ -7019,7 +7085,7 @@ struct MobileAdeUsageStats: Decodable, Equatable {
 extension MobileAdeUsageStats {
   private enum CodingKeys: String, CodingKey {
     case generatedAt, scope, summary, clients, daily, freshness
-    case githubActivity, localActivity, providers, pricingUpdatedAt
+    case githubActivity, localActivity, providers, models, pricingUpdatedAt
   }
 
   init(from decoder: Decoder) throws {
@@ -7036,7 +7102,93 @@ extension MobileAdeUsageStats {
     // Lossy-decode the providers array so one malformed provider entry can't drop
     // the whole stats payload (mirrors ExternalSessionSummary's sessions decode).
     providers = (try? container.decode(ADELossyArray<MobileAdeUsageProviderSummary>.self, forKey: .providers))?.wrappedValue
+    models = (try? container.decode(ADELossyArray<MobileAdeUsageModelSummary>.self, forKey: .models))?.wrappedValue
   }
+}
+
+/// `usage.getCostBreakdown`: ADE chat spend by chat, lane, or account, from
+/// the host's per-turn ledger.
+struct MobileAdeUsageCostBreakdownRow: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var label: String
+  var detail: String?
+  var laneId: String?
+  var sessionId: String?
+  var provider: String?
+  var accountKind: String?
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownTotals: Codable, Equatable {
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownOther: Codable, Equatable {
+  var count: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdown: Decodable, Equatable {
+  var by: String
+  var available: Bool
+  var rows: [MobileAdeUsageCostBreakdownRow]
+  var other: MobileAdeUsageCostBreakdownOther?
+  var totals: MobileAdeUsageCostBreakdownTotals
+
+  private enum CodingKeys: String, CodingKey { case by, available, rows, other, totals }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    by = try container.decode(String.self, forKey: .by)
+    available = try container.decodeIfPresent(Bool.self, forKey: .available) ?? false
+    rows = (try? container.decode(ADELossyArray<MobileAdeUsageCostBreakdownRow>.self, forKey: .rows))?.wrappedValue ?? []
+    other = try? container.decodeIfPresent(MobileAdeUsageCostBreakdownOther.self, forKey: .other)
+    totals = try container.decode(MobileAdeUsageCostBreakdownTotals.self, forKey: .totals)
+  }
+}
+
+/// `usage.getModelDetail`: one model's cost, cache hit rate, trend, split and price.
+struct MobileAdeUsageModelDetailDay: Codable, Equatable, Identifiable {
+  var id: String { date }
+  var date: String
+  var costUsd: Double
+  var totalTokens: Int
+}
+
+struct MobileAdeUsageModelPrice: Codable, Equatable {
+  var input: Double
+  var output: Double
+  var cacheRead: Double?
+  var cacheWrite: Double?
+  /// "custom" | "list" | "fallback".
+  var source: String?
+  var unpriced: Bool?
+}
+
+struct MobileAdeUsageModelDetail: Decodable, Equatable {
+  var provider: String
+  var model: String
+  var costUsd: Double
+  var totalTokens: Int
+  var costPerMillionUsd: Double?
+  var cacheHitRate: Double?
+  var costSplit: MobileAdeUsageCostSplit?
+  var daily: [MobileAdeUsageModelDetailDay]
+  var price: MobileAdeUsageModelPrice
+  var modelIds: [String]
+  var mapTo: String?
 }
 
 // MARK: - Live provider quota
