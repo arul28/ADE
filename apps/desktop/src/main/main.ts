@@ -183,6 +183,7 @@ import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLoca
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createPrWatchService } from "./services/prs/prWatchService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -3844,6 +3845,7 @@ app.whenReady().then(async () => {
     prServiceRef = prService;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let prWatchServiceRef: ReturnType<typeof createPrWatchService> | null = null;
 
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
@@ -3861,7 +3863,14 @@ app.whenReady().then(async () => {
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
     // PR event channel, and a freshly created worktree lane triggers a
     // best-effort auto-map of any existing open PR on its branch (Trigger #1).
-    prService.setEventEmitter(emitPrEvent);
+    prService.setEventEmitter((event) => {
+      emitPrEvent(event);
+      // A watch the user (or an agent) just armed takes its first look now
+      // instead of on the next minute tick.
+      if (event.type === "pr-chat-watch-changed" && event.watch?.status === "active") {
+        prWatchServiceRef?.poke(event.prId);
+      }
+    });
     laneService.setOnWorktreeLaneCreated((lane) => {
       void prService.tryAutoMapLaneByBranch(lane.id);
     });
@@ -3905,6 +3914,7 @@ app.whenReady().then(async () => {
           ),
         );
         const chatService = agentChatServiceRef;
+        prWatchServiceRef?.onPullRequestsChanged(changes.map((change) => change.pr.id));
         if (chatService) {
           await Promise.all(changes.map(async (change) => {
             try {
@@ -4406,6 +4416,19 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    prWatchServiceRef = createPrWatchService({
+      logger,
+      prService,
+      getChatState: (sessionId) => {
+        const row = sessionService.get(sessionId);
+        if (!row) return null;
+        return { settled: Boolean(row.settledAt), archived: Boolean(row.archivedAt) };
+      },
+      messageSession: (args) => agentChatService.messageSession(args),
+      emitWatchChanged: ({ sessionId, prId, watch }) =>
+        emitPrEvent({ type: "pr-chat-watch-changed", sessionId, prId, watch }),
+      getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
+    });
     prMergeAutoSettlementServiceRef = createPrMergeAutoSettlementService({
       db,
       sessionService,
@@ -5268,7 +5291,10 @@ app.whenReady().then(async () => {
 
     scheduleBackgroundProjectTask(
       "prs.polling_start",
-      () => prPollingService.start(),
+      () => {
+        prPollingService.start();
+        prWatchServiceRef?.start();
+      },
       (error) => {
         logger.warn("prs.polling_start_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -5845,6 +5871,7 @@ app.whenReady().then(async () => {
       feedbackReporterService,
       prService,
       prPollingService,
+      prWatchService: prWatchServiceRef,
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
@@ -6060,6 +6087,7 @@ app.whenReady().then(async () => {
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,
+      prWatchService: null,
       prSummaryService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
@@ -6310,6 +6338,7 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService?.dispose();
+      ctx.prWatchService?.dispose();
     } catch {
       // ignore
     }

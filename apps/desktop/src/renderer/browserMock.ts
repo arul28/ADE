@@ -8089,6 +8089,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       linkChatSession: async () => ({ ok: true }),
       unlinkChatSession: async () => ({ ok: true }),
+      setChatWatch: async () => null,
+      getChatWatches: async () => [],
       linkChatStack: async () => ({ ok: true, linked: 0 }),
       listChatSessionsForPr: async () => [],
       getStackLinkOffer: async () => null,

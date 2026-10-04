@@ -1845,6 +1845,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
     $ ade prs link-chat --pr <ade-pr-id> --session <id>    Link a pull request to a chat
     $ ade prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+    $ ade prs watch <pr> [--chat <id>]     Wake the chat on each PR change (failed check, checks passed, comments, conflict, merge)
+    $ ade prs ship <pr> [--chat <id>]      Watch + standing instructions to take the PR to merged; waits for CI and review bots
+    $ ade prs unwatch <pr> [--chat <id>]   Stop watching. <pr> is an ADE PR id, a PR number, or a PR URL
+    $ ade prs watch-status [--chat <id>]   The chat's live watches. --chat defaults to $ADE_CHAT_SESSION_ID
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
@@ -7296,6 +7300,38 @@ function buildPrPlan(args: string[]): CliPlan {
             prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "watch" || sub === "ship" || sub === "unwatch" || sub === "watch-status") {
+    // A tracked agent shell watches for its own chat by default.
+    const explicitSessionId = readValue(args, ["--session", "--session-id", "--chat"]);
+    const sessionId = explicitSessionId ?? asString(process.env.ADE_CHAT_SESSION_ID);
+    if (sub === "watch-status") {
+      const input: JsonObject = {};
+      maybePut(input, "sessionId", sessionId ?? undefined);
+      maybePut(input, "prId", prId ?? firstPositional(args) ?? undefined);
+      return {
+        kind: "execute",
+        label: "PR watch status",
+        steps: [actionStep("result", "pr", "getChatWatches", input)],
+      };
+    }
+    const target = requireValue(
+      prId ?? firstPositional(args),
+      "prId (an ADE PR id, a PR number, or a PR URL)",
+    );
+    return {
+      kind: "execute",
+      label: sub === "unwatch" ? "PR unwatch" : sub === "ship" ? "PR ship" : "PR watch",
+      steps: [
+        actionStep("result", "pr", "setChatWatch", {
+          prId: target,
+          sessionId: requireValue(sessionId, "sessionId (--chat, or run from a tracked agent shell)"),
+          mode: sub === "unwatch" ? null : sub,
+          // From an agent's own shell the agent armed it; the chat header says so.
+          armedBy: explicitSessionId ? "user" : "agent",
+        }),
       ],
     };
   }

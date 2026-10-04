@@ -885,6 +885,8 @@ import type {
 } from "../../../shared/types/accountSettings";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
+import type { PrWatchService } from "../prs/prWatchService";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../../../shared/prWatch";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
@@ -1239,6 +1241,7 @@ export type AppContext = {
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
+  prWatchService: PrWatchService | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
@@ -12173,6 +12176,27 @@ export function registerIpc({
     IPC.prsListChatSessionsForPr,
     async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
       ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
+  );
+
+  ipcMain.handle(
+    IPC.prsSetChatWatch,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
+      const mode = prChatLinkOptionalString(raw, "mode");
+      return ensurePrMutationContext().prService.setChatWatch({
+        prId: requirePrChatLinkString(raw, "prId"),
+        sessionId: requirePrChatLinkString(raw, "sessionId"),
+        mode: mode === "watch" || mode === "ship" ? mode : null,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsGetChatWatches,
+    async (_event, raw: unknown): Promise<PrChatWatchSummary[]> =>
+      ensurePrReadContext().prService.getChatWatches({
+        sessionId: prChatLinkOptionalString(raw, "sessionId") ?? undefined,
+        prId: prChatLinkOptionalString(raw, "prId") ?? undefined,
+      }),
   );
 
   ipcMain.handle(

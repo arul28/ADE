@@ -2775,6 +2775,8 @@ export type SyncRemoteCommandAction =
   | "prs.linkChatStack"
   | "prs.listChatSessionsForPr"
   | "prs.getStackLinkOffer"
+  | "prs.setChatWatch"
+  | "prs.getChatWatches"
   | "prs.linkToLane"
   | "prs.preflightCreateLaneFromPrBranch"
   | "prs.createLaneFromPrBranch"

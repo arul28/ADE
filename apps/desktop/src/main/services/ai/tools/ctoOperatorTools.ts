@@ -1246,6 +1246,34 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     },
   });
 
+  tools.watchPullRequest = core({
+    description:
+      "Have ADE wake a chat whenever its pull request changes: a check fails, the checks pass, someone comments "
+      + "or reviews, the branch starts conflicting, or the PR merges or closes. 'ship' adds standing instructions to "
+      + "take the PR all the way to merged (fix CI and review findings in one push, rebase only on a real conflict, "
+      + "merge when green) and waits until CI and the review bots have finished before waking. 'off' stops it. "
+      + "Defaults to your own thread; pass sessionId to watch for a worker chat.",
+    inputSchema: z.object({
+      pr: z.string().trim().min(1).describe("ADE PR id, PR number, or PR URL."),
+      mode: z.enum(["watch", "ship", "off"]).default("watch"),
+      sessionId: z.string().trim().min(1).optional().describe("Chat to wake. Defaults to this CTO thread."),
+    }),
+    execute: async ({ pr, mode, sessionId }) => {
+      if (!deps.prService) return { success: false, error: "PR service is not available." };
+      try {
+        const watch = deps.prService.setChatWatch({
+          prId: pr,
+          sessionId: sessionId ?? deps.currentSessionId,
+          mode: mode === "off" ? null : mode,
+          armedBy: "agent",
+        });
+        return { success: true, watch };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
   tools.updatePullRequestTitle = core({
     description: "Update a pull request title through ADE's PR service.",
     inputSchema: z.object({

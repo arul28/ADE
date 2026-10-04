@@ -190,6 +190,13 @@ import {
 import { createGithubStackStore } from "./githubStackStore";
 import { createGithubStackMerge } from "./githubStackMerge";
 import { createPrChatLinkStore } from "./prChatLinkStore";
+import { createPrChatWatchStore, prChatWatchSummary, type PrChatWatchRecord } from "./prChatWatchStore";
+import {
+  adeReviewRemarkKey,
+  type GetPrChatWatchArgs,
+  type PrChatWatchSummary,
+  type SetPrChatWatchArgs,
+} from "../../../shared/prWatch";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
@@ -1614,6 +1621,7 @@ export function createPrService({
     },
   });
   const withChatSessionLinks = chatLinks.withChatSessionLinks;
+  const chatWatchStore = createPrChatWatchStore({ db, projectId, logger });
   const resolveCanonicalChatSessionId = chatLinks.resolveCanonicalChatSessionId;
   const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
   const linkPrToChatSession = chatLinks.linkPrToChatSession;
@@ -12514,6 +12522,77 @@ export function createPrService({
       return { ok };
     },
 
+    /**
+     * Turn PR Watch / Ship on, switch it, or (`mode: null`) turn it off for one
+     * chat. Watching links the chat to the PR when it was not linked yet,
+     * because the watch only makes sense for a chat that works on the PR.
+     */
+    setChatWatch(args: SetPrChatWatchArgs): PrChatWatchSummary | null {
+      const sessionId = String(args.sessionId ?? "").trim();
+      const canonicalSessionId = resolveCanonicalChatSessionId(sessionId) ?? sessionId;
+      type WatchPrRow = { id: string; lane_id: string; state: string; head_sha: string | null; github_pr_number: number };
+      const select = "select id, lane_id, state, head_sha, github_pr_number from pull_requests";
+      const target = String(args.prId ?? "").trim();
+      let pr = db.get<WatchPrRow>(`${select} where id = ? and project_id = ? limit 1`, [target, projectId]);
+      // Agents know a PR by number or URL, not by ADE's row id. Prefer a row
+      // the chat is already linked to when the number exists in two repos.
+      const number = pr ? null : Number(/(?:^#?|\/pull\/)(\d+)\/?$/.exec(target)?.[1] ?? Number.NaN);
+      if (!pr && number != null && Number.isInteger(number) && number > 0) {
+        const candidates = db.all<WatchPrRow>(
+          `${select} where project_id = ? and github_pr_number = ? and detached_at is null order by updated_at desc`,
+          [projectId, number],
+        );
+        const links = chatLinks.chatSessionIdsByPrId(candidates.map((row) => row.id));
+        pr = candidates.find((row) => links.get(row.id)?.includes(canonicalSessionId)) ?? candidates[0] ?? null;
+      }
+      if (!pr || !sessionId) {
+        if (args.mode === null) return null;
+        throw new Error(`No pull request "${target}" is tracked in this project. Use an ADE PR id, a PR number, or a PR URL.`);
+      }
+      let record: PrChatWatchRecord | null;
+      if (args.mode === null) {
+        const existing = chatWatchStore.getForPair(pr.id, canonicalSessionId);
+        record = existing && !existing.stoppedAt ? chatWatchStore.stop(existing.id, "unwatched") : existing;
+      } else {
+        if (pr.state === "merged" || pr.state === "closed") {
+          throw new Error(`PR #${pr.github_pr_number} is ${pr.state}; there is nothing left to watch.`);
+        }
+        // An explicit watch is an explicit link, even over an earlier unlink.
+        if (linkPrToChatSession({ prId: pr.id, laneId: pr.lane_id, sessionId: canonicalSessionId, allowCrossLane: true })) {
+          emitPrsUpdated();
+        }
+        record = chatWatchStore.arm({
+          prId: pr.id,
+          sessionId: canonicalSessionId,
+          mode: args.mode === "ship" ? "ship" : "watch",
+          armedBy: args.armedBy === "agent" ? "agent" : "user",
+          headSha: pr.head_sha,
+        });
+        markHotRefresh([pr.id]);
+      }
+      const summary = record ? prChatWatchSummary(record, { githubPrNumber: pr.github_pr_number }) : null;
+      emitPrEvent?.({ type: "pr-chat-watch-changed", sessionId: canonicalSessionId, prId: pr.id, watch: summary });
+      return summary;
+    },
+
+    /** A chat's (or a PR's) live watches. */
+    getChatWatches(args: GetPrChatWatchArgs = {}): PrChatWatchSummary[] {
+      const sessionId = args.sessionId?.trim()
+        ? resolveCanonicalChatSessionId(args.sessionId.trim()) ?? args.sessionId.trim()
+        : undefined;
+      if (!sessionId && !args.prId) return [];
+      return chatWatchStore.list({ sessionId, prId: args.prId, activeOnly: true }).map((record) => {
+        const number = db.get<{ github_pr_number: number }>(
+          "select github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
+          [record.prId, projectId],
+        )?.github_pr_number ?? null;
+        return prChatWatchSummary(record, { githubPrNumber: number });
+      });
+    },
+
+    /** The reactor's handle on the watch rows. In-process only, not an action. */
+    chatWatchStore,
+
     linkChatStack(args: LinkPrChatStackArgs): { ok: boolean; linked: number } {
       const offer = getStackLinkOffer({ sessionId: args.sessionId, prId: args.prId });
       if (!offer || offer.stackNumber !== args.stackNumber) return { ok: false, linked: 0 };
@@ -12827,7 +12906,9 @@ export function createPrService({
         body: { body: args.body }
       });
       forgetActivityInputs(repo, prNumber);
-      return toPrComment("issue", data);
+      const comment = toPrComment("issue", data);
+      chatWatchStore.recordAdeComment(args.prId, comment.id);
+      return comment;
     },
 
     /**
@@ -12923,6 +13004,9 @@ export function createPrService({
         throw new Error("GitHub did not return the review-thread reply.");
       }
       forgetActivityInputsForPr(args.prId);
+      // ADE posted it for an agent: a PR watch must not wake that agent with
+      // its own reply.
+      chatWatchStore.recordAdeComment(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -12988,6 +13072,9 @@ export function createPrService({
         throw new Error("GitHub did not return the review-thread reply.");
       }
       forgetActivityInputsForPr(args.prId);
+      // ADE posted it for an agent: a PR watch must not wake that agent with
+      // its own reply.
+      chatWatchStore.recordAdeComment(args.prId, asString(comment.id));
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -13165,7 +13252,9 @@ export function createPrService({
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
-      return await submitReviewRequest(args);
+      const result = await submitReviewRequest(args);
+      if (result.submittedAt) chatWatchStore.recordAdeComment(args.prId, adeReviewRemarkKey(result.submittedAt));
+      return result;
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {

@@ -980,6 +980,8 @@ export const IPC = {
   prsUnlinkChatSession: "ade.prs.unlinkChatSession",
   prsLinkChatStack: "ade.prs.linkChatStack",
   prsListChatSessionsForPr: "ade.prs.listChatSessionsForPr",
+  prsSetChatWatch: "ade.prs.setChatWatch",
+  prsGetChatWatches: "ade.prs.getChatWatches",
   prsGetStackLinkOffer: "ade.prs.getStackLinkOffer",
   prsSimulateIntegration: "ade.prs.simulateIntegration",
   prsCommitIntegration: "ade.prs.commitIntegration",

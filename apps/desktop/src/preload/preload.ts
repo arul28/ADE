@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import {
   type AppOpenSystemSettingsPaneArgs,
   type AppOpenSystemSettingsPaneResult,
@@ -11915,6 +11916,21 @@ const adeBridge = {
         "listChatSessionsForPr",
         { args },
         () => ipcRenderer.invoke(IPC.prsListChatSessionsForPr, args),
+      ),
+    setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null): Promise<PrChatWatchSummary | null> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "pr",
+        "setChatWatch",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsSetChatWatch, args),
+      ),
+    getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null): Promise<PrChatWatchSummary[]> =>
+      callPrReadRuntimeActionOr(
+        pin,
+        "getChatWatches",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsGetChatWatches, args),
       ),
     getStackLinkOffer: (
       args: {

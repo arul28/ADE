@@ -1100,6 +1100,16 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   usageLimitResume?: "manual";
   /** Marks the host-authored nudge that accompanies a Work-board drag. */
   boardMove?: AgentChatBoardMoveMetadata;
+  /** Marks a PR Watch / Ship wake. Renders as its card, never as a user bubble. */
+  prWatchWake?: AgentChatPrWatchWakeMetadata;
+};
+
+export type AgentChatPrWatchWakeMetadata = {
+  watchId: string;
+  prId: string;
+  githubPrNumber: number;
+  mode: "watch" | "ship";
+  card: AdeCardPayload;
 };
 
 export type AgentChatScheduledWorkKind =

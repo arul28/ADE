@@ -1,4 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import type { GetPrChatWatchArgs, SetPrChatWatchArgs } from "../../../../desktop/src/shared/prWatch";
 import { normalizeThreadCommentAnchor } from "../../../../desktop/src/shared/threadComments";
 import fs from "node:fs";
 import path from "node:path";
@@ -3568,6 +3569,24 @@ function parseUnlinkPrChatSessionArgs(value: Record<string, unknown>): UnlinkPrC
   };
 }
 
+function parseSetPrChatWatchArgs(value: Record<string, unknown>): SetPrChatWatchArgs {
+  const mode = asTrimmedString(value.mode);
+  return {
+    prId: requireString(value.prId, "prs.setChatWatch requires prId."),
+    sessionId: requireString(value.sessionId, "prs.setChatWatch requires sessionId."),
+    mode: mode === "watch" || mode === "ship" ? mode : null,
+  };
+}
+
+function parseGetPrChatWatchArgs(value: Record<string, unknown>): GetPrChatWatchArgs {
+  const sessionId = asTrimmedString(value.sessionId);
+  const prId = asTrimmedString(value.prId);
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(prId ? { prId } : {}),
+  };
+}
+
 function parseListPrChatSessionsArgs(value: Record<string, unknown>): ListPrChatSessionsArgs {
   return {
     prId: requireString(value.prId, "prs.listChatSessionsForPr requires prId."),
@@ -7131,6 +7150,12 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.unlinkChatSession(parseUnlinkPrChatSessionArgs(payload)));
   register("prs.linkChatStack", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.linkChatStack(parseLinkPrChatStackArgs(payload)));
+  // Same reach as `chat.send`: arming a watch is how a client asks the agent
+  // to keep working on its PR.
+  register("prs.setChatWatch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.setChatWatch(parseSetPrChatWatchArgs(payload)));
+  register("prs.getChatWatches", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.getChatWatches(parseGetPrChatWatchArgs(payload)));
   register("prs.listChatSessionsForPr", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listChatSessionsForPr(parseListPrChatSessionsArgs(payload)));
   register("prs.getStackLinkOffer", { viewerAllowed: true, observesAbort: true }, async (payload) =>

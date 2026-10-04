@@ -363,6 +363,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return { ok: true, linked: linkedIds.length };
     },
     listChatSessionsForPr: (args: unknown) => read("prs.listChatSessionsForPr", args, []),
+    setChatWatch: (args: unknown) => call("prs.setChatWatch", args, null, false),
+    getChatWatches: (args: unknown) => read("prs.getChatWatches", args, []),
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {

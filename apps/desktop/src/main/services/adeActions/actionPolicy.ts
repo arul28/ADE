@@ -596,6 +596,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linkChatStack",
     "listChatSessionsForPr",
     "getStackLinkOffer",
+    "setChatWatch",
+    "getChatWatches",
     "updateBody",
     "updateBranch",
     "updateComment",
