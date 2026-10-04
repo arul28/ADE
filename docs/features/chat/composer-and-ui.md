@@ -1870,6 +1870,28 @@ Mechanics and guardrails:
   is invisible and costs four times the React work for the same perceived
   speed, so sub-interval frames accumulate their elapsed time instead.
 
+## Mermaid diagrams
+
+A ` ```mermaid ` fence in an assistant reply draws as a diagram
+(`MarkdownBlock`'s code-fence handler, `chatMarkdownBlock.tsx`). Tool calls
+render elsewhere and are not affected. While the turn streams and a mermaid
+fence is still open (`openFenceLanguage` in `shared/chatScene.ts`, the same
+line scanner the scene guard uses), mermaid fences stay as highlighted code,
+because half a source either fails to parse or draws the wrong graph; closed
+fences draw. Under the diagram a small row toggles back to the code and copies
+the source; clicking the diagram opens it full size in `MediaLightbox` through
+one blob URL at a time.
+
+Chat, PR descriptions and comments (`PrMarkdown`), and markdown files
+(`RichMarkdown`) all use one renderer, `components/shared/MermaidDiagram.tsx`:
+mermaid is imported on the first diagram, renders run at
+`securityLevel: "strict"` with HTML labels off (a `%%{init}%%` line cannot turn
+them back on), one at a time because mermaid's config is global, and results
+are cached per source and theme (64 settled entries; a pending render is never
+evicted). The diagram follows the light or dark theme. A failed import shows
+Retry; a parse error shows mermaid's message above the source. iOS renders
+markdown natively and shows the fence as code.
+
 ## Mosaic cards
 
 A Claude-family agent can emit a fenced ` ```mosaic ` code block whose body

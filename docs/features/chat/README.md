@@ -2750,8 +2750,9 @@ The same list decides what counts as **user activity**.
 path reads: no metadata clears the markers; a `boardMove` clears them *unless*
 the move is into Needs you, since parking a card for your input is the one move
 that must leave the raised hand standing; and a message carrying
-`scheduledWake`, `spawnCompletion`, or `hostContinuation` clears nothing,
-because ADE wrote it rather than the user. iOS mirrors the key list by hand in
+`scheduledWake`, `spawnCompletion`, `hostContinuation`, or `agentRelay` (a
+message another bound agent sent: a grandchild reporting in, a sibling)
+clears nothing, because ADE or an agent wrote it rather than the user. iOS mirrors the key list by hand in
 `SyncService.hostAuthoredChatMessageMetadataKeys` for the same reason.
 
 ### CLI children

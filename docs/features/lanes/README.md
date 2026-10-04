@@ -228,7 +228,9 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   from Settings and shows an inline setup hint when that picker is
   empty — it does not fall through to Haiku), pull/push/fetch,
   staged and unstaged files with per-file and bulk stage / unstage /
-  discard / restore / open-diff / open-files affordances, stash
+  discard / restore / open-diff / open-files affordances, a read-only
+  "Branch vs <base>" section (shown when the host advertises
+  `git.getBranchChanges`; tapping a file opens its `mode: "branch"` diff), stash
   push/apply/pop/drop, recent-commit history with revert / cherry-pick
   context actions, and a "more actions" menu carrying switch branch
   plus the destructive escape hatches (rebase lane, rebase +

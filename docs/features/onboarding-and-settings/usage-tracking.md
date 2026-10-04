@@ -265,13 +265,24 @@ Mechanics:
   01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
   public holidays are not modelled. OpenCode entries carry OpenCode's own cost
   figure, which uses the off-peak price, so the peak rule does not reach them.
-- Claude Code's fast mode bills at 2× the model's standard rate (Opus 5.5,
-  Opus 5, Opus 4.8). The transcript scan reads the flag from `usage.speed`, and
-  the multiplier is `FAST_MODE_PRICE_MULTIPLIER` — models.dev carries no fast
-  rate, so it is a constant, the same number t3code reads from LiteLLM's
-  `provider_specific_entry.fast`. It composes with a long-context tier rather
-  than replacing it. `USAGE_SNAPSHOT_CACHE_VERSION` is bumped when the rule
-  changes so cached snapshots re-price once.
+- a faster service tier bills at its own published rate. models.dev lists
+  them under `experimental.modes` (`fast` with `service_tier: "priority"` or
+  Anthropic's `speed: "fast"`, `ultrafast` with `service_tier: "ultrafast"`),
+  and `parseModelsDevModes` stores them as `TokenPrice.modes`. GPT-6 Astra's
+  Ultrafast is $60/$300 per MTok against $10/$50 standard, so pricing it at the
+  standard rate under-reports by 6×. Each request carries a `speed`
+  (`standard` | `fast` | `ultrafast`): the Claude scan reads `usage.speed`; the
+  Codex scan carries `thread_settings_applied.thread_settings.service_tier`
+  forward the way it carries the model (`priority` and `fast` are Fast,
+  `ultrafast` is Ultrafast; a missing field, `default`, `standard` and `flex`
+  are standard — `codexServiceTierSpeed`). `ratesForRequest` uses the published
+  mode rate scaled by the long-context tier's ratio; a Claude model with no
+  published fast rate falls back to `FAST_MODE_PRICE_MULTIPLIER` (2×), and any
+  other tier with no published rate bills at standard, because nothing prices
+  the premium. The per-turn ledger records the turn's `speed` (Codex from the
+  tier its thread reports, Claude from fast mode on a model that offers it)
+  and prices `apiEquivalentUsd` with it. `USAGE_SNAPSHOT_CACHE_VERSION` is
+  bumped when the rule changes so cached snapshots re-price once.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.
@@ -283,6 +294,84 @@ loaded copy of the list was fetched, or null when nothing but the built-in table
 priced anything. Settings > Usage turns the two into one plain sentence under
 the cost figures. The number is the page's headline, and an unexplained headline
 cost has burned users before.
+
+## Every account home is scanned
+
+ADE runs a second Claude or Codex account under its own config home
+(`<adeHome>/provider-homes/claude/<id>`, and the `preset`, `credential` and
+`route` homes harness presets use). Each of those homes keeps its own
+transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat ADE
+ran under another account — on the machine this was measured on, $740 of Claude
+usage in 30 days. `adeProviderUsageHomes` lists them: every directory under
+`provider-homes/` (including homes whose account was removed, because their
+usage still happened) plus each registry instance's home. A home's provider
+comes from its namespace or registry entry; a preset, credential or route home
+is identified by the CLI's own files (`.claude.json`; Codex's `config.toml` or
+`auth.json`), because Claude keeps a `sessions/` folder too. The usage service
+passes them to the ledger worker as `ADE_USAGE_EXTRA_CLAUDE_HOMES` /
+`ADE_USAGE_EXTRA_CODEX_HOMES`; the scanners add them after the default home and
+dedupe by message id as before. The scanners never discover homes themselves,
+so a test that points `CODEX_HOME` at a fixture reads only the fixture.
+
+## Where the dollars went
+
+Every cost figure on the page can be split two ways, and the host computes the
+split so no client needs a rate table. `AdeUsageCostSplit` holds dollars by
+token type (`input`, `cacheRead`, `cacheWrite`, `output`, and `other` for a
+provider-reported cost no list rate can split, or a per-request fee) and the
+premium each faster tier added (`fastPremium`, `ultrafastPremium`, which sit
+inside the type fields, not on top). A provider-reported cost is split in
+proportion to what the list rates would have charged each type. The split
+rides on provider and model summaries and on each breakdown row as an extra
+field, never a bucket key, so merging and dedupe are unchanged and an older
+host's rows simply have none.
+
+Account scope merges the split only where every row carried one: the live
+`usage.getUsageRollup` response has it, but the replicated
+`usage_machine_rollups` table does not store it (adding a column to a
+replicated table would break peers on an older build), so a provider fed by a
+machine's saved rollup shows no split and the page says why.
+
+## Spend by chat, lane, and account
+
+`usage.getCostBreakdown {by: chat | lane | account, range, laneId?}` ranks
+ADE's per-turn ledger. Each row carries the turns' value at list prices
+(`costUsd`, `apiEquivalentUsd` where the ledger has it), `billedUsd` — what API
+keys and routed-away accounts (keyed presets, redirected endpoints, Bedrock)
+were charged, the provider's own bill when it sent one — and `planValueUsd`,
+the list-price value of turns a subscription covered. A local model's turns
+are in neither. Chats and lanes are the calling project's (titles and lane
+names come from its database); accounts are the machine's, one row per login
+(the same email reached through two provider instances is one account).
+Deleted chats and lanes leave no name, so they fold into one "Deleted lanes
+(N)" / "Deleted chats (N)" row each. The ledger keeps three months.
+
+The Usage page's hero adds one line from it — ADE chats billed to API keys and
+plan value — under the API-equivalent total, then the type and speed bars.
+
+## Model detail, Set price, and Map to
+
+`usage.getModelDetail` returns one model's cost, tokens, cost per million
+tokens, cache hit rate (cache reads over the whole input side), daily trend,
+split, and the price ADE bills it at (`custom`, `list`, or `fallback`, with
+`unpriced` when nothing prices it).
+
+`usage.setModelPriceOverride {model, price?, mapTo?}` (CTO role; a controller
+action from the phone) writes this machine's
+`<adeHome>/usage-price-overrides.json`:
+
+- a **price** (USD per million input/output tokens; cache rates optional, a
+  blank one bills at the input rate, `0` means free) wins over every list in
+  `resolveTokenPrice`;
+- a **Map to** makes a model id count as another model: its usage is bucketed
+  and priced as the target (`applyUsageModelAlias`, before bucketing). Chains
+  resolve to their end, a loop leaves the model as itself, and mapping a model
+  drops its own price.
+
+The ledger worker reads the file when it starts, so a save re-prices history
+by starting a history refresh in the background; the page updates when that
+scan lands. `ade usage prices --text` lists both; `ade usage prices set` writes
+them.
 
 ## Lifetime stats survive lane deletion
 
@@ -830,7 +919,18 @@ for each provider, mainly Claude and Codex. The wire contract is in
   cached live quota without starting a ledger scan; the rest of the page owns
   the expensive history refresh explicitly.
 - `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
-  the separate history path. `ade code` `/usage` reads the runtime snapshot for
+  the separate history path. `ade usage stats --text` prints the spend
+  summary with the type and speed split and the top models;
+  `--by chat|lane|account` prints the ledger breakdown, and
+  `--provider P --model M` one model's detail.
+- Settings > Usage: the hero carries the billed / plan-value line and the type
+  and speed bars; Breakdown switches between Models (every session on the
+  machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
+  Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
+  switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
+  Breakdown view as CSV. The bars use the data-viz categorical order validated
+  for the light and dark surfaces, with grey for the remainder and every
+  segment named with its dollars. `ade code` `/usage` reads the runtime snapshot for
   every tracked quota provider and displays source metadata.
 - Remote desktop/runtime calls use the same runtime actions as a local project.
 - Paired iOS devices request `usage.getQuotaSnapshot` for the host-cached
@@ -843,7 +943,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   quota actions remain connected in limited mode and show update guidance.
 - Paired iOS also has a full Usage page in Settings (`SettingsUsagePage.swift`),
   composed in the same reading order as the desktop page: cost hero and
-  per-provider split, daily chart, Live limits, metric strip, breakdown. It
+  per-provider split (with the type and speed bars and the billed / plan-value
+  line), daily chart, Live limits, metric strip, breakdown. Breakdown offers
+  Models, Chats, Lanes and Accounts when the host advertises
+  `usage.getCostBreakdown`; a model opens its detail screen, with Set price
+  and Map to when the host advertises `usage.setModelPriceOverride`. It
   reads history through `usage.getAdeStats` and shows update guidance when the
   host does not advertise it. Type, colour, and the chart's top-N/Other rule
   come from `ADEUsageDesign.swift`, the iOS counterpart of `usageDesign.ts`, so
