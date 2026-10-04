@@ -1113,6 +1113,20 @@ Renderer surfaces:
   `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
+  The funnel's by-lane **Fold busy lanes** chip (`workFoldBusyLanes`) adds a
+  third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
+  after the user has left them) folds onto a collapsed **Working** shelf between
+  the inbox and the quiet zone, and unfolds when something needs the user or
+  finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
+  hand, a stale run, or an unseen finish holds the lane out with its rows
+  visible, a finished nested row never does, and pins/primaries never fold. Each
+  lane header draws one rolled-up status dot (`LaneFocusStatusDot`, Needs you >
+  Working > Waiting > Done) from the same derivation. A finished row counts as
+  seen only once the user leaves it — `useWorkSessions` stamps
+  `workSeenAtBySessionId` on selection change, bounded to `WORK_SEEN_AT_LIMIT` —
+  so opening a finished row does not fold its lane out from under the cursor, and
+  a lane returning from the shelf floats to the front of the active tier (never
+  in Manual sort).
   Renders a bulk action bar at the bottom when sessions are multi-selected
   (Stop N running / Settle N / Delete N ended / clear selection), and offers an
   eight-second undo after bulk settle. The filter panel is width-constrained by

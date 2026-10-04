@@ -162,6 +162,29 @@ touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
 removing the marker closes them again. Notification deep links add the open
 marker so a Settled destination cannot remain hidden.
 
+In by-lane list mode the funnel's **Fold busy lanes** chip
+(persisted as `workFoldBusyLanes`) moves every lane whose live rows are all
+Working or Waiting — or Done in a way the user has already left — onto a
+collapsed **Working** shelf between the inbox and the quiet zone. The rule lives
+in `workLaneFocus.ts` (`summarizeLaneFocus`) so the shelf and the lane headers
+cannot disagree with the board's columns. A lane folds only when at least one
+live row is actually busy: a raised hand (`needs_you`), a stale run, or a
+finished row the user has not left holds the whole lane out with its rows
+visible. Snoozed and settled rows take no part. A finished nested row (attached
+shell, subagent) can never hold its lane out — nobody opens a helper to mark it
+seen — though a nested raised hand still can. Pins and the primary lane never
+fold. Turning the option off forgets the return state, so turning it back on
+takes a fresh baseline instead of floating every lane at once.
+
+Each by-lane header carries one rolled-up status dot
+(`LaneFocusStatusDot`, Needs you > Working > Waiting > Done) read from the same
+focus derivation as the shelf. A finished row counts as seen only after the user
+**leaves** it: `useWorkSessions` stamps `workSeenAtBySessionId` on selection
+change, bounded to `WORK_SEEN_AT_LIMIT` entries, so opening a finished row in
+the inbox does not fold its lane out from under the cursor. A lane that just
+came back out of the Working shelf floats to the front of the active tier,
+newest return first, except in Manual sort where the user's own order wins.
+
 Lane groups with two or more sessions render an accent-coloured lane name,
 optional machine/PR markers, then indent the cards beside a lane-tinted rail.
 A lane with exactly one session suppresses the redundant divider and rail; the
@@ -293,7 +316,8 @@ Also renders:
   is not in the chat/CLI header. When the list is collapsed, a thin left
   rail in `TerminalsPage` shows the same glyph as **Show sessions**.
 - an expandable filter panel with group selector (Lane / Status / Time), lane
-  sort, status/tool/machine chips, Has PR / Dirty, and `LaneCombobox`
+  sort, status/tool/machine chips, Has PR / Dirty, the by-lane **Fold busy
+  lanes** Focus chip, and `LaneCombobox`
 - the actual list of `SessionCard` rows (memoized)
 - a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
   Work flow uses the host's `close-on-create` behavior: it closes as
