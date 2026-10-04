@@ -2167,7 +2167,7 @@ describe("createAgentChatService", () => {
 
     it.each([
       {
-        name: "restores a file that was clean at turn start, without touching the index",
+        name: "restores a file that was clean at turn start, in the index too",
         dirtyAtStart: [] as string[] | undefined,
         peerTouches: false,
         restored: ["src/a.ts"],
@@ -2251,8 +2251,9 @@ describe("createAgentChatService", () => {
       const result = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
       expect(result.filesChanged).toEqual(restored);
       const writes = vi.mocked(runGit).mock.calls.map(([args]) => args).filter((args) => args[0] === "restore" || args[0] === "checkout");
-      // Only the worktree is restored: `checkout <sha> -- path` would also stage it.
-      expect(writes).toEqual(restored.map((file) => ["restore", "--source=before-sha", "--worktree", "--", file]));
+      // Index and worktree: the file was clean at turn start, so whatever is
+      // staged for it the turn staged, and the next commit must not carry it.
+      expect(writes).toEqual(restored.map((file) => ["restore", "--source=before-sha", "--staged", "--worktree", "--", file]));
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {

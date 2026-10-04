@@ -341,13 +341,12 @@ async function resolveBranchCompareBase(
  * only files whose stat changed (not every file through its clean filters, as
  * a fresh `read-tree` would) and a sparse checkout's skip-worktree entries
  * stay present rather than reading as deleted. A repository with no index yet
- * starts from HEAD. `pathspec` limits the add to the files `fn` reads. The
- * file lives in the OS temp directory and is removed whatever happens.
+ * starts from HEAD. The file lives in the OS temp directory and is removed
+ * whatever happens.
  */
 async function withWorkingTreeIndex<T>(
   worktreePath: string,
   fn: (env: NodeJS.ProcessEnv) => Promise<T>,
-  pathspec = ".",
 ): Promise<T> {
   const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexPath };
@@ -367,7 +366,7 @@ async function withWorkingTreeIndex<T>(
       const read = await runGit(["read-tree", "HEAD"], { cwd: worktreePath, env, timeoutMs: 20_000 });
       if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
     }
-    const add = await runGit(["add", "-A", "--", pathspec], { cwd: worktreePath, env, timeoutMs: 60_000 });
+    const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
     if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "git add failed");
     return await fn(env);
   } finally {
@@ -566,12 +565,23 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
       if (mode === "branch") {
         // One file of the branch diff, built the same way as the list, so an
-        // untracked file reads as added rather than missing.
+        // untracked file reads as added rather than missing. A renamed file
+        // needs its source in the diff too, or it reads as a new file: the
+        // whole tree is staged and the rename looked up before the patch.
         const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
-        const res = await withWorkingTreeIndex(worktreePath, (env) => runGit(
-          ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", gitPath],
-          { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
-        ), `:(literal)${gitPath}`);
+        const res = await withWorkingTreeIndex(worktreePath, async (env) => {
+          const names = await runGit(
+            ["diff", "--cached", "--name-status", "-z", "--find-renames", mergeBase],
+            { cwd: worktreePath, env, timeoutMs: 20_000 },
+          );
+          const oldPath = names.exitCode === 0
+            ? parseNameStatusRecords(names.stdout).find((record) => record.path === gitPath)?.oldPath ?? null
+            : null;
+          return runGit(
+            ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", mergeBase, "--", ...(oldPath ? [oldPath] : []), gitPath],
+            { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
+          );
+        });
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "git diff failed");
         return {
           mode,

@@ -161,6 +161,7 @@ import {
 } from "../../../shared/usageResetCredit";
 import { usageScopeSelectedCapture } from "../analytics/usageScopeAnalytics";
 import {
+  captureModelPriceAnalytics,
   captureResetCreditAnalytics,
   type ResetCreditAnalyticsOutcome,
 } from "../analytics/featureProductAnalytics";
@@ -5716,6 +5717,16 @@ export function createUsageTrackingService({
       ...(args.price !== undefined ? { price: args.price } : {}),
       ...(args.mapTo !== undefined ? { mapTo: args.mapTo } : {}),
     });
+    const sink = dependencies?.captureInternalAnalytics;
+    if (sink) {
+      const analytics = { captureInternal: sink };
+      if (args.price !== undefined) {
+        captureModelPriceAnalytics({ analytics, surface: "api", action: "model_price_changed", outcome: args.price ? "enabled" : "disabled" });
+      }
+      if (args.mapTo !== undefined) {
+        captureModelPriceAnalytics({ analytics, surface: "api", action: "model_mapping_changed", outcome: args.mapTo?.trim() ? "enabled" : "disabled" });
+      }
+    }
     const reprice = () => refreshHistory({ reason: "user" });
     const running = inFlightHistoryRefresh;
     void (running ? running.then(reprice, reprice) : reprice()).catch((error) => {

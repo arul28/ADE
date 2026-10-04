@@ -33,8 +33,21 @@ export function hostSupportsBranchDiff(laneId: string, pin?: OpenProjectBinding 
   let pending = supportByLane.get(key);
   if (!pending) {
     const getBranchChanges = window.ade?.diff?.getBranchChanges;
+    // Only a definite answer is kept: a diff that came back, or a refusal of
+    // the action. A null (a client stub while reconnecting) or a failure
+    // (a lane with no base, a dropped connection) is asked again next time.
     pending = getBranchChanges
-      ? getBranchChanges({ laneId }, pin).then((result) => result != null, (error: unknown) => !isBranchDiffUnsupported(error))
+      ? getBranchChanges({ laneId }, pin).then(
+        (result) => {
+          if (result == null) supportByLane.delete(key);
+          return result != null;
+        },
+        (error: unknown) => {
+          const unsupported = isBranchDiffUnsupported(error);
+          if (!unsupported) supportByLane.delete(key);
+          return !unsupported;
+        },
+      )
       : Promise.resolve(false);
     supportByLane.set(key, pending);
   }

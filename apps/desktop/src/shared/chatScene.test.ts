@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSceneDocument,
   hasOpenSceneFence,
+  openFence,
   openFenceLanguage,
   isSceneParseFailure,
   parseSceneFence,
@@ -214,8 +215,19 @@ describe("hasOpenSceneFence", () => {
     { markdown: "```mermaid\nflowchart LR\n```\nafter", open: null },
     { markdown: "```mermaid\nA-->B\n```\n```ts\nconst a", open: "ts" },
     { markdown: "text only", open: null },
+    // Only a bare run of the opener's character, at least as long, closes it.
+    { markdown: "```mermaid\nA-->B\n~~~\nC-->D", open: "mermaid" },
+    { markdown: "````mermaid\nA-->B\n```\nC-->D", open: "mermaid" },
+    { markdown: "~~~scene\n<p>\n~~~~", open: null },
   ])("names the open fence's language ($open)", ({ markdown, open }) => {
     expect(openFenceLanguage(markdown)).toBe(open);
+  });
+
+  it("returns the open fence's body, so only the diagram still arriving is held", () => {
+    const markdown = "```mermaid\nflowchart LR\n  A --> B\n```\nThen:\n```mermaid\nflowchart TD\n  C --> D";
+    expect(openFence(markdown)).toEqual({ language: "mermaid", body: "flowchart TD\n  C --> D" });
+    expect(openFence("```mermaid\nA-->B\n```")).toBeNull();
+    expect(openFence("~~~scene\n<p>")).toEqual({ language: "scene", body: "<p>" });
   });
 });
 

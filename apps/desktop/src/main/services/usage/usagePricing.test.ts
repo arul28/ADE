@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { _testing, priceTokenSplitDetailed, ratesForRequest, resolveTokenPrice, tokenPrice } from "./usagePricing";
 
 const PER_M = 1 / 1_000_000;
@@ -250,5 +250,87 @@ describe("Claude fast mode", () => {
     };
     expect(ratesForRequest("claude-opus-5-5", tiered, { contextTokens: 250_000, speed: "fast" }).output / PER_M)
       .toBeCloseTo(80);
+  });
+});
+
+describe("user prices and Map to", () => {
+  const originalAdeHome = process.env.ADE_HOME;
+  let adeHome = "";
+
+  // The overrides file is read once per process and cached, so each case gets
+  // fresh modules and its own ADE home.
+  async function freshModules() {
+    adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-price-overrides-"));
+    process.env.ADE_HOME = adeHome;
+    vi.resetModules();
+    const overrides = await import("./usagePriceOverrides");
+    const pricing = await import("./usagePricing");
+    const detail = await import("./usageModelDetail");
+    return { overrides, pricing, detail, file: path.join(adeHome, "usage-price-overrides.json") };
+  }
+
+  afterEach(() => {
+    if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+    else process.env.ADE_HOME = originalAdeHome;
+    if (adeHome) fs.rmSync(adeHome, { recursive: true, force: true });
+  });
+
+  it("prices every raw id of a model under this ADE home, keeping a change another process made since", async () => {
+    const { overrides, pricing, file } = await freshModules();
+    expect(overrides.readUsagePriceOverrides().aliases).toEqual({});
+    // Another writer (the in-process service, a second brain) maps a model after this one loaded.
+    fs.writeFileSync(file, JSON.stringify({ version: 1, prices: {}, aliases: { "my-preview": "claude-opus-5-5" } }));
+
+    overrides.updateUsagePriceOverrides({ models: ["Local-X", "local-x-2026"], price: { input: 1, output: 4 } });
+
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(saved.aliases).toEqual({ "my-preview": "claude-opus-5-5" });
+    expect(Object.keys(saved.prices).sort()).toEqual(["local-x", "local-x-2026"]);
+    for (const id of ["local-x", "LOCAL-X-2026"]) {
+      const resolved = pricing.resolveTokenPriceWithSource(id);
+      expect(resolved.source).toBe("custom");
+      expect(resolved.price.input / PER_M).toBeCloseTo(1);
+      expect(resolved.price.cacheRead / PER_M).toBeCloseTo(1);
+    }
+    // A custom price is a real rate in the stats' list/fallback summary.
+    expect(pricing.tokenPriceSource("local-x")).toBe("list");
+  });
+
+  it.each([
+    { name: "a cache rate that is not a number", price: { input: 1, output: 4, cacheRead: "cheap" } },
+    { name: "a negative cache write", price: { input: 1, output: 4, cacheWrite: -1 } },
+    { name: "no output rate", price: { input: 1 } },
+  ])("refuses $name rather than saving a different price", async ({ price }) => {
+    const { overrides, file } = await freshModules();
+    expect(overrides.normalizePriceOverride(price)).toBeNull();
+    expect(() => overrides.updateUsagePriceOverrides({ models: ["local-x"], price: price as never })).toThrow(/input and output rates/);
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("shows a mapping on both ends: the source names its target, the target lists the source to unmap", async () => {
+    const { overrides, detail } = await freshModules();
+    overrides.updateUsagePriceOverrides({ models: ["My-Preview"], mapTo: "claude-opus-5-5" });
+    const row = (modelId: string) => ({ date: "2026-10-04", modelId, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, costUsd: 1, costSplit: null });
+    const range = { since: null, until: "2026-10-05T00:00:00.000Z" };
+
+    const source = detail.buildModelDetail({ provider: "claude", model: "My-Preview", range, rows: [row("My-Preview")] });
+    expect(source.mapTo).toBe("claude-opus-5-5");
+    expect(source.mappedFrom).toEqual([]);
+
+    const target = detail.buildModelDetail({ provider: "claude", model: "Claude Opus 5.5", range, rows: [row("claude-opus-5-5")] });
+    expect(target.mapTo).toBeNull();
+    expect(target.mappedFrom).toEqual(["my-preview"]);
+
+    overrides.updateUsagePriceOverrides({ models: ["my-preview"], mapTo: null });
+    expect(detail.buildModelDetail({ provider: "claude", model: "Claude Opus 5.5", range, rows: [row("claude-opus-5-5")] }).mappedFrom).toEqual([]);
+  });
+
+  it.each(["constructor", "toString", "__proto__"])("treats a model named %s as any other unpriced model", async (modelId) => {
+    const { overrides, detail } = await freshModules();
+    fs.writeFileSync(path.join(adeHome, "usage-price-overrides.json"), `{"version":1,"prices":{},"aliases":{"__proto__":"x"}}`);
+    const result = detail.buildModelDetail({ provider: "other", model: modelId, range: { since: null, until: "2026-10-05T00:00:00.000Z" }, rows: [] });
+    expect(result.price.source).not.toBe("custom");
+    expect(result.mapTo).toBe(modelId === "__proto__" ? "x" : null);
+    expect(overrides.applyUsageModelAlias(modelId)).toBe(modelId === "__proto__" ? "x" : modelId);
   });
 });

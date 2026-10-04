@@ -1738,7 +1738,9 @@ export function usageLedgerTranscriptRoots(): Record<string, string[]> {
       ...getClaudeConfigDirs().map((dir) => path.join(dir, "projects")),
       getClaudeDesktopSessionsDir(),
     ],
-    codex: [path.join(codexHome, "sessions"), path.join(codexHome, "archived_sessions")],
+    // The same homes the Codex scan reads, as the Claude entry does.
+    codex: [...new Set([codexHome, ...extraProviderHomes("codex")])]
+      .flatMap((home) => [path.join(home, "sessions"), path.join(home, "archived_sessions")]),
     cursor: [defaultCursorDbPath()],
     "cursor-agent": [path.join(os.homedir(), ".cursor", "projects")],
     openclaw: defaultOpenClawAgentRoots(),

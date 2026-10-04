@@ -7400,6 +7400,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     });
   }, "runtime");
 
+  // A bound the caller sent and the host cannot read is an error, never a
+  // quietly different period.
+  const rejectInvalidUsageBounds = (action: string, since: string | null | undefined, until: string | null | undefined) => {
+    if (since && Number.isNaN(Date.parse(since))) throw new Error(`${action} since must be an ISO timestamp.`);
+    if (until && Number.isNaN(Date.parse(until))) throw new Error(`${action} until must be an ISO timestamp.`);
+  };
+
   // Spend by chat / lane / account comes from this machine's per-turn ledger;
   // chat titles and lane names come from the project, so it is project-scoped
   // like `usage.getAdeStats`.
@@ -7415,13 +7422,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     const since = asTrimmedString(payload.since);
     const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getCostBreakdown", since, until);
     const laneId = asTrimmedString(payload.laneId);
     const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
     return await args.usageTrackingService.getCostBreakdown({
       by: by as AdeUsageCostBreakdownBy,
       ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
-      ...(since && !Number.isNaN(Date.parse(since)) ? { since } : {}),
-      ...(until && !Number.isNaN(Date.parse(until)) ? { until } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
       ...(laneId ? { laneId } : {}),
       ...(limit != null ? { limit } : {}),
       ...(payload.rankBy === "tokens" ? { rankBy: "tokens" as const } : {}),
@@ -7431,16 +7439,23 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
     if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
     const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getModelDetail preset must be today, 7d, 30d, year, or all.");
+    }
     const scope = asTrimmedString(payload.scope);
+    if (scope && !isAdeUsageScope(scope)) {
+      throw new Error("usage.getModelDetail scope must be account, machine, or project.");
+    }
     const since = asTrimmedString(payload.since);
     const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getModelDetail", since, until);
     return args.usageTrackingService.getModelDetail({
       provider: requireString(payload.provider, "usage.getModelDetail requires provider."),
       model: requireString(payload.model, "usage.getModelDetail requires model."),
       ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
       ...(isAdeUsageScope(scope) ? { scope } : {}),
-      ...(since && !Number.isNaN(Date.parse(since)) ? { since } : {}),
-      ...(until && !Number.isNaN(Date.parse(until)) ? { until } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
     });
   });
 

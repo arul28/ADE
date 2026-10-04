@@ -7997,6 +7997,43 @@ describe("per-account quota attribution", () => {
 
     service.dispose();
   });
+
+  it("records a model price or mapping saved or cleared, never the model or the rates", async () => {
+    const originalAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = tempHome;
+    try {
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          ...scannerStubs(),
+        },
+      });
+
+      const saved = service.setModelPriceOverride({ model: "Local-X", models: ["local-x-2026"], price: { input: 1, output: 4 } });
+      expect(Object.keys(saved.prices).sort()).toEqual(["local-x", "local-x-2026"]);
+      service.setModelPriceOverride({ model: "local-x", price: null });
+      service.setModelPriceOverride({ model: "my-preview", mapTo: "claude-opus-5-5" });
+      expect(service.getModelPriceOverrides().aliases).toEqual({ "my-preview": "claude-opus-5-5" });
+      expect(fs.existsSync(path.join(tempHome, "usage-price-overrides.json"))).toBe(true);
+
+      const facts = analyticsEvents
+        .filter((event) => event.properties?.feature === "usage" && String(event.properties?.action).startsWith("model_"))
+        .map((event) => [event.properties?.action, event.properties?.outcome]);
+      expect(facts).toEqual([
+        ["model_price_changed", "enabled"],
+        ["model_price_changed", "disabled"],
+        ["model_mapping_changed", "enabled"],
+      ]);
+      expect(JSON.stringify(analyticsEvents)).not.toMatch(/local-x|my-preview|opus/i);
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+    }
+  });
 });
 
 

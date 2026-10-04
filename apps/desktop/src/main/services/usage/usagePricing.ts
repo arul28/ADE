@@ -229,7 +229,8 @@ function withProviderPricingName(model: string): string {
 function resolveAlias(model: string): string {
   let current = model;
   for (let i = 0; i < 4; i++) {
-    const alias = BUILTIN_PRICING_ALIASES[current];
+    // Own keys only: a model id can be any string, `constructor` included.
+    const alias = Object.hasOwn(BUILTIN_PRICING_ALIASES, current) ? BUILTIN_PRICING_ALIASES[current] : undefined;
     if (alias) return alias;
     const stripped = stripKnownVariantSuffix(current);
     if (!stripped || stripped === current) break;

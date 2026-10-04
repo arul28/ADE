@@ -413,7 +413,8 @@ or `read-tree HEAD` when there is none, then `add -A`, which honours
 `.gitignore`), so the user's own index is never touched. Starting from the
 real index means `add` re-hashes only files whose stat changed, and a sparse
 checkout's skip-worktree entries stay present instead of reading as deleted.
-A single-file patch adds only that path. The temp file is removed whatever
+A single-file patch looks up the file's rename first, so a renamed file
+shows as a rename rather than a new file. The temp file is removed whatever
 happens. `getFileDiff` /
 `getFilePatch` take `mode: "branch"` the same way.
 

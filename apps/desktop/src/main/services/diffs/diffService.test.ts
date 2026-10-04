@@ -73,6 +73,44 @@ describe("diffService branch scope", () => {
     }
   });
 
+  it("opens a renamed file's patch as a rename, not a new file", async () => {
+    const rootPath = initRepo("ade-diff-branch-rename-");
+    try {
+      git(rootPath, ["checkout", "-b", "feature"]);
+      git(rootPath, ["mv", "alpha.txt", "gamma.txt"]);
+      git(rootPath, ["commit", "-m", "rename"]);
+      const lane = branchLane(rootPath, "main", "feature");
+
+      const changes = await lane.getBranchChanges("lane-1");
+      expect(changes.files.map((file) => [file.path, file.kind, file.oldPath])).toEqual([["gamma.txt", "renamed", "alpha.txt"]]);
+      const patch = await lane.getFilePatch({ laneId: "lane-1", filePath: "gamma.txt", mode: "branch" });
+      expect(patch.patch).toContain("rename from alpha.txt");
+      expect(patch.patch).not.toContain("new file mode");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not report a file a sparse checkout leaves out as deleted", async () => {
+    const rootPath = initRepo("ade-diff-branch-sparse-");
+    try {
+      git(rootPath, ["checkout", "-b", "feature"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
+      // What sparse-checkout does to a path outside the cone: flagged
+      // skip-worktree in the index, absent from disk.
+      git(rootPath, ["update-index", "--skip-worktree", "beta.txt"]);
+      fs.rmSync(path.join(rootPath, "beta.txt"));
+
+      const changes = await branchLane(rootPath, "main", "feature").getBranchChanges("lane-1");
+
+      expect(changes.files.map((file) => [file.path, file.kind])).toEqual([["alpha.txt", "modified"]]);
+      expect(changes.additions).toBe(1);
+      expect(git(rootPath, ["ls-files", "-v", "beta.txt"]).trim()).toBe("S beta.txt");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("compares a branch that is its own base with its remote copy, so unpushed work shows", async () => {
     const rootPath = initRepo("ade-diff-branch-primary-");
     const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-branch-remote-"));

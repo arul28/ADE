@@ -125,5 +125,13 @@ describe("buildCostBreakdown", () => {
     const limited = buildCostBreakdown({ rows, by: "chat", range, labels, limit: 1 });
     expect(limited.rows.map((row) => row.label)).toEqual(["Chat B"]);
     expect(limited.other).toMatchObject({ count: 2, costUsd: 7 });
+
+    // Ranked by tokens, the cheap chat with the most tokens is the one shown.
+    const byTokens = buildCostBreakdown({
+      rows: [...rows, turn({ sessionId: "chat-a", inputTokens: 5_000_000, apiEquivalentUsd: 0 })],
+      by: "chat", range, labels, limit: 1, rankBy: "tokens",
+    });
+    expect(byTokens.rows.map((row) => row.label)).toEqual(["Chat A"]);
+    expect(byTokens.other).toMatchObject({ count: 2 });
   });
 });

@@ -60224,8 +60224,8 @@ export function createAgentChatService(args: {
         if (currentStat.isDirectory()) continue;
         fs.rmSync(absolutePath, { force: true });
         // A file the turn created and staged would otherwise stay staged as added.
-        await runGit(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", file.path], { cwd, timeoutMs: 10_000 });
-        restored.push(file.path);
+        const unstage = await runGit(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", file.path], { cwd, timeoutMs: 10_000 });
+        if (unstage.exitCode === 0) restored.push(file.path);
       } catch {
         // Keep going; the caller reports the successfully restored subset.
       }

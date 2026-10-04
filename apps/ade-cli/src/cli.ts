@@ -15055,6 +15055,9 @@ function buildUsagePlan(args: string[]): CliPlan {
       }
       const laneId = readValue(args, ["--lane"]);
       const limit = readValue(args, ["--limit"]);
+      if (limit != null && !(Number.isInteger(Number(limit)) && Number(limit) > 0)) {
+        throw new CliUsageError("usage stats --limit must be a positive whole number.");
+      }
       return {
         kind: "execute",
         label: "usage cost breakdown",
@@ -15065,7 +15068,7 @@ function buildUsagePlan(args: string[]): CliPlan {
             ...(since != null ? { since } : {}),
             ...(until != null ? { until } : {}),
             ...(laneId != null ? { laneId } : {}),
-            ...(limit != null && Number.isFinite(Number(limit)) ? { limit: Number(limit) } : {}),
+            ...(limit != null ? { limit: Number(limit) } : {}),
           }),
         ],
       };

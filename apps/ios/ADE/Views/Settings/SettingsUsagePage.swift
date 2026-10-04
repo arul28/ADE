@@ -194,6 +194,7 @@ struct SettingsUsagePage: View {
   @State private var breakdownLane: (id: String, name: String)?
   @State private var billing: MobileAdeUsageCostBreakdownTotals?
   @State private var ledgerAvailable = false
+  @State private var breakdownFailed = false
 
   init(syncService: SyncService) {
     self.syncService = syncService
@@ -259,11 +260,25 @@ struct SettingsUsagePage: View {
       // Billed vs plan value for ADE's own chats, from the host's ledger.
       let totals = try? await syncService.fetchUsageCostBreakdown(by: "account", preset: rangeRaw)
       ledgerAvailable = totals != nil
+      // The picker hides with the ledger; a ledger view left selected would
+      // spin with no way back to Models.
+      if !ledgerAvailable {
+        breakdownView = .models
+        breakdownLane = nil
+      }
       billing = totals?.available == true ? totals?.totals : nil
     }
     .task(id: "\(modelKey):\(breakdownView):\(breakdownLane?.id ?? "")") {
       guard breakdownView != .models else { breakdown = nil; return }
-      breakdown = try? await syncService.fetchUsageCostBreakdown(by: breakdownView.rawValue, preset: rangeRaw, laneId: breakdownLane?.id)
+      breakdownFailed = false
+      do {
+        breakdown = try await syncService.fetchUsageCostBreakdown(by: breakdownView.rawValue, preset: rangeRaw, laneId: breakdownLane?.id)
+        breakdownFailed = breakdown == nil
+      } catch {
+        if Task.isCancelled || error is CancellationError { return }
+        breakdown = nil
+        breakdownFailed = true
+      }
     }
     .refreshable { await refresh() }
     .sheet(isPresented: $estimationSheetPresented) {
@@ -640,6 +655,10 @@ struct SettingsUsagePage: View {
           }
         }
       }
+    } else if breakdownFailed {
+      Text("Couldn't load this view.")
+        .font(ADEUsageType.detailFont())
+        .foregroundStyle(ADEColor.textSecondary)
     } else {
       ProgressView().frame(maxWidth: .infinity)
     }

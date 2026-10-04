@@ -517,6 +517,8 @@ struct LaneDetailGitActionsPane: View {
       branchChanges = try await loadBranchChanges()
       branchError = nil
     } catch {
+      // A newer reload replaced this one (`.task(id:)` cancels it); that is not a failure.
+      if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
       branchError = error.localizedDescription
     }
   }

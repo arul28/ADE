@@ -77,7 +77,7 @@ function statusLabel(status: TurnDiffFile["status"]): string {
 function skippedReasonLabel(reason: AgentChatRewindSkippedFile["reason"]): string {
   if (reason === "dirty_before_turn") return "Had uncommitted changes before this turn";
   if (reason === "other_chat") return "Another chat in this worktree changed it since";
-  return "Changed before ADE recorded what it looked like at the start of this turn";
+  return "ADE did not record this file's state before this turn";
 }
 
 function getDiffCacheKey(args: AgentChatGetTurnFileDiffArgs): string {

@@ -339,8 +339,9 @@ machine's saved rollup shows no split and the page says why.
 
 ## Spend by chat, lane, and account
 
-`usage.getCostBreakdown {by: chat | lane | account, range, laneId?}` ranks
-ADE's per-turn ledger. Each row carries the turns' value at list prices
+`usage.getCostBreakdown {by: chat | lane | account, range, laneId?, rankBy?}`
+ranks ADE's per-turn ledger, by cost or (`rankBy: "tokens"`, the page's Tokens
+metric) by tokens, before the tail folds into Other. Each row carries the turns' value at list prices
 (`costUsd`, `apiEquivalentUsd` where the ledger has it), `billedUsd` — what API
 keys and routed-away accounts (keyed presets, redirected endpoints, Bedrock)
 were charged, the provider's own bill when it sent one — and `planValueUsd`,
@@ -349,7 +350,10 @@ are in neither. Chats and lanes are the calling project's (titles and lane
 names come from its database); accounts are the machine's, one row per login
 (the same email reached through two provider instances is one account).
 Deleted chats and lanes leave no name, so they fold into one "Deleted lanes
-(N)" / "Deleted chats (N)" row each. The ledger keeps three months.
+(N)" / "Deleted chats (N)" row each. The ledger keeps three months. A turn
+records its list-price value when it ends; one whose model has a user price or
+"Map to" (below) is re-priced when read (`repriceTurnForUserPrices`), so a price
+set later reaches past chats too.
 
 The Usage page's hero adds one line from it — ADE chats billed to API keys and
 plan value — under the API-equivalent total, then the type and speed bars.
@@ -358,8 +362,11 @@ plan value — under the API-equivalent total, then the type and speed bars.
 
 `usage.getModelDetail` returns one model's cost, tokens, cost per million
 tokens, cache hit rate (cache reads over the whole input side), daily trend,
-split, and the price ADE bills it at (`custom`, `list`, or `fallback`, with
-`unpriced` when nothing prices it).
+split, the price ADE bills it at (`custom`, `list`, or `fallback`, with
+`unpriced` when nothing prices it), its own "Map to", and `mappedFrom`: the
+model ids mapped onto it. A mapped model no longer appears on its own, so its
+target's detail is where it is unmapped (desktop, web and the phone show an
+Unmap button; `ade usage stats --model` prints "Also here").
 
 `usage.setModelPriceOverride {model, models?, price?, mapTo?}` (CTO role; a
 controller action from the phone) writes this machine's

@@ -202,6 +202,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "start",
   "stop",
   "reset_credit_consumed",
+  // A model price set or cleared, a "Map to" added or removed. Never the
+  // model id or the rates.
+  "model_price_changed",
+  "model_mapping_changed",
   "pending_input_dismissed",
   "new_lane_launch",
   // One event after Codex realtime answers a chat's voice offer. It is scoped
