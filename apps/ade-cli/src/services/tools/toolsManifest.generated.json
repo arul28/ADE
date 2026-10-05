@@ -13,33 +13,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@openai/codex-darwin-arm64",
-          "version": "0.159.0-darwin-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.0-darwin-arm64.tgz",
-          "integrity": "sha512-D1x+5n2y0TE43ERJs3CbBDRPLQl968hpqsInOwYNhfnTOTT53McpfFa6+VfPWwmPi0zW0aJ0C97K+6MhNHYe6A=="
+          "version": "0.160.0-darwin-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-darwin-arm64.tgz",
+          "integrity": "sha512-aefV6cqZA2REZgR//4McyXlp7zLcTti4CI2v3j9IVgNndPBv2kCeNEcz07qeelXcwOdSFPUKb6roA48vZmDgrQ=="
         },
         "darwin-x64": {
           "package": "@openai/codex-darwin-x64",
-          "version": "0.159.0-darwin-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.0-darwin-x64.tgz",
-          "integrity": "sha512-uNsvmDAYH2H7/uJi3NYtn0d+bpMHgovZyZwm62Q8q/cdd1rp5oEbk2Axe5pbyiWFwSpjdT6fbuY8gTdX2i7zjg=="
+          "version": "0.160.0-darwin-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-darwin-x64.tgz",
+          "integrity": "sha512-ir7cdsPrb9VkqNqpTECoTiomv04xws/FQ968mHQzuL+2J5Da0Dkh2Qlxp7sguDDZJab4YpYmNjQvBVMXbTeQaQ=="
         },
         "linux-arm64": {
           "package": "@openai/codex-linux-arm64",
-          "version": "0.159.0-linux-arm64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.0-linux-arm64.tgz",
-          "integrity": "sha512-cm7ihiXIZILGQPWgak3ApOcRZ6beupDNPHVAJ9CyHxZSQPsTy6CSYg1GYLVe2DlRUQYprnXHZceOgheXo0PvHA=="
+          "version": "0.160.0-linux-arm64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-linux-arm64.tgz",
+          "integrity": "sha512-VnVdsS06YlDsL8OwaJjQ3xdqdJNG4i+eBJBV3LytddknzSaF/urijLzVg3ptkwvoj8C7Gn7iWpVE+y8WEaPiCg=="
         },
         "linux-x64": {
           "package": "@openai/codex-linux-x64",
-          "version": "0.159.0-linux-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.0-linux-x64.tgz",
-          "integrity": "sha512-7ks+EeQjX33wfJXbggseyF0CJRFVgzDHA6BzC7mJjFsJKmdAuOFWMFeMeZe8vL/G6xEpL29wOdwR85sK49F0iA=="
+          "version": "0.160.0-linux-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-linux-x64.tgz",
+          "integrity": "sha512-KI/73OqGrHmR18s7ya7E1NqV6rT0y3lxr0s8S1qR2m6zU6QRF/HlR529jALLh5vjdUnsRT4Ahoxt0axb4kY99g=="
         },
         "win32-x64": {
           "package": "@openai/codex-win32-x64",
-          "version": "0.159.0-win32-x64",
-          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.0-win32-x64.tgz",
-          "integrity": "sha512-Fp+TghoUzxOguHj/WAxOIZCIJpTOb4pB9p90tf6+g2PSTWSCvqpawwxPmDuCMxKs8Sn1gO5zP621PoCkBt5cuQ=="
+          "version": "0.160.0-win32-x64",
+          "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-win32-x64.tgz",
+          "integrity": "sha512-/gCFcuOmGlQkgGivWCtY8BNEDixh70Pue0HZOk9S8bj2vUIE1GLD9zcNB/KqqDJmn0S+lIttauLpzQnw6HOCHA=="
         }
       }
     },
@@ -95,33 +95,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@opencode/cli-darwin-arm64",
-          "version": "2.0.18",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.18.tgz",
-          "integrity": "sha512-GRJMkkyQKDPIJbYr2WtFTgK1Vb1p/4xrqxgXA/TLyJ1Tn5tK5hNOtbslUZgsktrEQD6TeT5bVZcjRLC41n+d/A=="
+          "version": "2.0.23",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.23.tgz",
+          "integrity": "sha512-5qZx8IqfCKdymb711qBxkjBtNJZ9H2JIkrqIUiLwsrxmIyDMKu8tPTxKKMH91sC5fElZbrBP9M8Jq6LckDnxUw=="
         },
         "darwin-x64": {
           "package": "@opencode/cli-darwin-x64",
-          "version": "2.0.18",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.18.tgz",
-          "integrity": "sha512-w6TKuEob/XM+KzSZmmNL69P1DMvHN4LEfE9NfMwdUj5wPLXDqzz1yLOhAYEnFYW1LBAsV5Xo1giyvtpWz5vyzg=="
+          "version": "2.0.23",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.23.tgz",
+          "integrity": "sha512-gsNPdmJ8AbWBJTEB8Qtun00E0IOLw4zCK6dMyZi3N63Th33b33p3//AeZvrdDMY61WxCX1sl18foFfApU6rSCA=="
         },
         "linux-arm64": {
           "package": "@opencode/cli-linux-arm64",
-          "version": "2.0.18",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.18.tgz",
-          "integrity": "sha512-OjKG0staG+KRG9sNORb2vIPcfthMVk9RtCamU1vMWPquV70bQEYUM0JUT+t0A49eAc2H4lZWhqkpH2gpg87D+Q=="
+          "version": "2.0.23",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.23.tgz",
+          "integrity": "sha512-kuLDSOpFFGCdCS/fdaHZ2yMqXsP4jwYfS0yV4ilYxaB7c0PJ84eY1b/bl2N9JXELXU13I2OFDI+NWzXhyXrxOQ=="
         },
         "linux-x64": {
           "package": "@opencode/cli-linux-x64",
-          "version": "2.0.18",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.18.tgz",
-          "integrity": "sha512-94dH7lwB+tpmzI1/NIfzFxLBIeshZSNtyx2sskL0C0kgYjMaiVMIHvQLYIECUOWSuVz5/dH/KPUIOGn7ML311g=="
+          "version": "2.0.23",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.23.tgz",
+          "integrity": "sha512-5CQisdKXLDXVjUZYF1ROqIH/HS5YUwo4SjEBJ3DndATJL2vFgbvN0pqZQkKQqBjUrZ19jNXDHvp+LP/uGIECAQ=="
         },
         "win32-x64": {
           "package": "@opencode/cli-windows-x64-baseline",
-          "version": "2.0.18",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.18.tgz",
-          "integrity": "sha512-+On2KUd7GWN4NpzevZw3y/tjWvDcTXeZmg9DvquN33HO9AqEoxtKpYzcM1NjoswOA708mXH/GtaVRSyUQNIlOA=="
+          "version": "2.0.23",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.23.tgz",
+          "integrity": "sha512-2bXl72/7sH8LdhSNMY68PNF5APlMiq+33QerXGB1qOYYmSVdv0ES3dtBF1JaojhMXm2F5toH+ZRK4igIZjjesw=="
         }
       }
     }

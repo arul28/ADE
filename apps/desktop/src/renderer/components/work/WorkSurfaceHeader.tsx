@@ -4,7 +4,6 @@ import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { WorkHeaderDevServerButton } from "./WorkHeaderDevServerButton";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
-import { SessionSnoozeChip } from "./SessionLifecycleChips";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
@@ -128,8 +127,6 @@ export type WorkSurfaceHeaderProps = {
   cacheIdleSinceAt?: string | null;
   /** Session id whose metadata-generation state controls the title shimmer. */
   lifecycleSessionId?: string | null;
-  /** Session id whose snooze state should surface as an ambient header chip. */
-  snoozeSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
   showGitToolbar?: boolean;
   /** Chat session owning the header; lets PR badges stay chat-specific. */
@@ -231,7 +228,6 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
     onLaneChipClick,
     showCacheBadge = false,
     cacheIdleSinceAt,
-    snoozeSessionId = null,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -260,7 +256,6 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
             />
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
-          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}
@@ -291,7 +286,6 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     titleAccessory,
     showCacheBadge = false,
     cacheIdleSinceAt,
-    snoozeSessionId = null,
     runtimePin = null,
     trailingActions,
     actionsToggle,
@@ -313,7 +307,6 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
           </div>
         </div>
         <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
-          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}

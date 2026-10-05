@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.159.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.160.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `devin` | The user's `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
@@ -1148,6 +1148,15 @@ run: that is a recovery action, not a permission level, and it is reachable
 only through `CursorSdkSendPrompt.forceExpireActiveRun` on ADE's automatic
 recovery re-send. Conflating the two would let a full-auto session silently
 discard a turn that was still working.
+
+Because Cursor kills a `preToolUse` command hook at the `timeout` in
+`~/.cursor/hooks.json` (60 seconds when unset, and its timer overflows past
+~24.8 days), ADE's gate entry states `timeout: 86400` and the gate script stops
+waiting 15 seconds earlier, denying with a reason the model can relay instead of
+being killed mid-wait. If the script gives up or Cursor kills it anyway, the
+worker posts `hook_abandoned`; ADE retires the approval card as cancelled rather
+than reporting a pending permission no answer can reach
+(`agent_chat.cursor_permission_hook_abandoned`).
 
 Cursor is also the one provider whose local fork is not a provider fork.
 `@cursor/sdk` exposes no fork/clone/branch operation and a Cursor thread cannot

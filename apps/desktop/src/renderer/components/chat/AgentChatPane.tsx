@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom";
 import { sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
-import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitDiff, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import { applySteerOrder } from "../../../shared/steerOrder";
 import { providerSupportsPerTaskStop } from "../../../shared/chatStopModes";
 import {
@@ -188,7 +188,7 @@ import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ThreadEntityProvider } from "./threadEntities";
-import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
+import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -217,7 +217,7 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { Banner, NoticeChip, StatusStrip } from "../ui/notice";
+import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -236,6 +236,7 @@ import {
 } from "../terminals/importSessions/contract";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
+import { CHAT_COMPOSER_CHIP_ROW_ATTR, CHAT_COMPOSER_JUMP_SLOT_ATTR, ChatComposerOverlayClear } from "./chatComposerOverlayInset";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
@@ -289,6 +290,7 @@ import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../wor
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -2616,6 +2618,22 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
+/**
+ * The composer's model id for an existing chat. A chat on a harness preset or
+ * an ad-hoc route (`--via opencode-go`) runs a model the registry may not know
+ * (a DeepSeek model in Claude Code), so its id comes from the preset, the same
+ * value the model picker passes when that route is chosen there.
+ */
+function resolveSessionComposerModelId(
+  session: Pick<AgentChatSessionSummary, "modelId" | "model" | "presetId">,
+  harnessPresets: readonly HarnessPreset[],
+): string | null {
+  return session.modelId
+    ?? resolveRegistryModelId(session.model)
+    ?? resolveHarnessLaunchTarget(session.presetId, harnessPresets)?.launchModelId
+    ?? null;
+}
+
 const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
 const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
 const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "never"];
@@ -4041,6 +4059,8 @@ export function AgentChatPane({
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
   // Root store: the preset list is account-scoped (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((s) => s.harnessPresets);
+  const harnessPresetsRef = useRef(harnessPresets);
+  harnessPresetsRef.current = harnessPresets;
   /* The harness a draft's Custom pick runs in. A saved preset or an ad-hoc
      Run-in route names its own harness, and that — not the family the model id
      happens to belong to — decides the provider the chat or CLI launches. */
@@ -4786,8 +4806,9 @@ export function AgentChatPane({
   }, [laneId, laneLabel]);
   const selectedSessionModelId = useMemo(() => {
     if (!selectedSession) return null;
-    return selectedSession.modelId ?? resolveRegistryModelId(selectedSession.model);
-  }, [selectedSession]);
+    return resolveSessionComposerModelId(selectedSession, harnessPresets);
+  }, [selectedSession, harnessPresets]);
+  const selectedSessionPresetId = selectedSession?.presetId ?? null;
   const composerModelIdRef = useRef(modelId);
   composerModelIdRef.current = modelId;
   const selectedSessionModelIdRef = useRef(selectedSessionModelId);
@@ -6493,7 +6514,7 @@ export function AgentChatPane({
     ) {
       deferredComposerSessionIdRef.current = null;
     }
-    const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
+    const nextModelId = resolveSessionComposerModelId(session, harnessPresetsRef.current);
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       nextModelId,
@@ -8142,6 +8163,9 @@ export function AgentChatPane({
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
+    // A chat on a preset or route runs the preset's model, which discovery and
+    // the registry may not list (DeepSeek in Claude Code). Keep it.
+    if (selectedSessionPresetId && modelId === selectedSessionModelId) return;
     const modelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || modelDesc) return;
@@ -8150,7 +8174,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId, selectedSessionPresetId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -15240,9 +15264,6 @@ export function AgentChatPane({
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
-        // Snooze keeps a small header affordance; settled state is shown only
-        // in the compact pill floating directly above the composer.
-        snoozeSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
         // Only wire the pane toggle where the pane actually renders (a selected
@@ -15947,15 +15968,38 @@ export function AgentChatPane({
       />
   );
 
-  // Settled / snoozed and branch drift, side by side on the composer's top
-  // edge instead of stacked cards over the thread.
+  // Lifecycle, branch drift and the chat's diff, side by side on the
+  // composer's top edge instead of stacked cards over the thread. The row's
+  // end is where Jump to Latest docks while a chip is showing; CSS hides the
+  // row when no chip renders (see chatComposerOverlayInset).
   const composerStatusStrip = (
-    <StatusStrip
-      className={layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]"}
+    <div
+      {...{ [CHAT_COMPOSER_CHIP_ROW_ATTR]: "" }}
+      className={cn(
+        "flex min-w-0 items-center gap-2 [&:not(:has([data-status-strip]>*))]:hidden",
+        layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
+      )}
     >
-      {lifecyclePill}
-      <LaneBranchComposerChip laneId={laneId} />
-    </StatusStrip>
+      <StatusStrip className="min-w-0 flex-1">
+        {lifecyclePill}
+        <LaneBranchComposerChip laneId={laneId} />
+        {sessionDelta ? (
+          <StatusChip
+            tone="neutral"
+            icon={<GitDiff size={10} weight="bold" />}
+            label={(
+              <span className="font-mono">
+                <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>{" "}
+                <span className="text-red-400/75">-{sessionDelta.deletions}</span>
+              </span>
+            )}
+            tooltip="Lines changed since this chat started"
+            testId="chat-session-delta-chip"
+          />
+        ) : null}
+      </StatusStrip>
+      <div {...{ [CHAT_COMPOSER_JUMP_SLOT_ATTR]: "" }} className="flex shrink-0 pb-1.5 empty:hidden" />
+    </div>
   );
   /**
    * The turn's time-lapse of the lane's macOS screen, when there was one.
@@ -15974,12 +16018,13 @@ export function AgentChatPane({
     />
   ) : null;
   const composerNoticeOverlay = macDesktopTimeLapseCard ? (
-    <div
+    <ChatComposerOverlayClear
+      basePx={8}
       data-testid="chat-composer-notice-overlay"
-      className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
+      className="pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
-    </div>
+    </ChatComposerOverlayClear>
   ) : null;
 
   // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
@@ -16134,7 +16179,8 @@ export function AgentChatPane({
           /* Same column the composer below uses. `mx-3` without `mx-auto`
              left-pinned this card while the still-open composer stayed
              centered, so the non-blocking steering card read as off-axis. */
-          className="mx-auto w-full max-w-[var(--chat-column,52rem)]"
+          // Opaque: it can float over transcript text (ChatSurfaceShell `overlayFooter`).
+          className="mx-auto w-full max-w-[var(--chat-column,52rem)] bg-[color:var(--chat-canvas-bg)]"
         >
           <AskQuestionComposer
             key={steeringPendingInput.itemId}
@@ -16198,39 +16244,53 @@ export function AgentChatPane({
   // Wrap a right-side panel for either grid-tile (overlay) or standard
   // (resizable split) layout. Used for proof, iOS simulator, and App Control
   // panels which all share the same outer chrome.
+  // Right panes end above the floating composer: the composer spans the whole
+  // shell, and only the transcript is meant to run behind it.
   const renderRightPane = (content: React.ReactNode) =>
     layoutVariant === "grid-tile" ? (
-      <div className="absolute inset-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl">
+      <ChatComposerOverlayClear
+        basePx={12}
+        className="absolute inset-x-3 top-3 z-10 flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_92%,black_8%)] shadow-[var(--chat-shell-shadow)] backdrop-blur-xl"
+      >
         {content}
-      </div>
+      </ChatComposerOverlayClear>
     ) : (
-      <div
+      <ChatComposerOverlayClear
+        basePx={0}
+        edge="paddingBottom"
         style={splitRightPaneStyle}
         className="flex h-full min-w-0 flex-1 basis-0 flex-col bg-surface/80"
       >
         {content}
-      </div>
+      </ChatComposerOverlayClear>
     );
 
   const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
   const FLOATING_PANE_CARD_CLASS =
-    // `min-h-0` lets the card shrink below its content inside the max-h-capped
-    // motion.div, so the inner overflow-auto engages instead of the content
-    // clipping at the max-h boundary.
+    // `min-h-0` lets the card shrink below its content inside the box that
+    // stops above the composer, so the inner overflow-auto engages instead of
+    // the content clipping at the box's edge.
     "ade-floating-side-pane flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
-      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
-      style={{ right: `${rightPaneOffsetPx}px` }}
+      className="pointer-events-none absolute inset-0 z-20"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={SIDE_PANE_FADE}
     >
-      <div className={FLOATING_PANE_CARD_CLASS}>
-        {content}
-      </div>
+      {/* Its box ends 12px above the floating composer; the card inside
+          grows with its content up to that box. */}
+      <ChatComposerOverlayClear
+        basePx={12}
+        className="absolute top-3 flex w-[min(16.5rem,calc(100%-1.5rem))] flex-col"
+        style={{ right: `${rightPaneOffsetPx}px` }}
+      >
+        <div className={cn(FLOATING_PANE_CARD_CLASS, "pointer-events-auto max-h-full")}>
+          {content}
+        </div>
+      </ChatComposerOverlayClear>
     </motion.div>
   );
   return (
@@ -16259,6 +16319,7 @@ export function AgentChatPane({
         onDropCapture={clearChatPaneDropActive}
         dropOverlay={chatPaneDropActive ? <ChatAttachmentDropOverlay variant="pane" /> : undefined}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
+        overlayFooter
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
@@ -16553,12 +16614,6 @@ export function AgentChatPane({
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}
-                    {sessionDelta ? (
-                      <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
-                        <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
-                        <span className="text-red-400/75">-{sessionDelta.deletions}</span>
-                      </div>
-                    ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}

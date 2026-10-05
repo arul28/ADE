@@ -280,6 +280,8 @@ import {
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
 import { ChatProofFilmstrip } from "./chatCardPrimitives";
+import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
+import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -6788,6 +6790,21 @@ function AgentChatMessageListMain({
     setScrollTop(el.scrollTop);
   }, []);
 
+  // The composer floats over the bottom of this list (see ChatSurfaceShell
+  // `overlayFooter`). Reserve its height at the end of the scroll content so
+  // the last row can scroll clear of it, and keep browser-driven scrolls
+  // (focus, find, PageDown) from landing under it. Written to the DOM
+  // directly: the height moves with every prompt line, and neither a list
+  // render nor a subtree restyle should pay for that.
+  useChatComposerOverlayInset((px) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.style.paddingBottom = px > 0 ? `calc(var(--chat-timeline-pad-bottom) + ${px}px)` : "";
+    el.style.scrollPaddingBottom = px > 0 ? `${px}px` : "";
+    // A taller composer must not cover the line a pinned reader is on.
+    if (stickToBottomRef.current) pinScrollToBottomNow(el);
+  });
+
   const measureScrollContainerHeight = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -8294,18 +8311,7 @@ function AgentChatMessageListMain({
           )}
         </div>
       </div>
-      {showJumpToLatest ? (
-        <button
-          type="button"
-          onClick={jumpToLatest}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-violet-400/30 bg-violet-500/20 px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-violet-100 shadow-lg shadow-violet-500/20 backdrop-blur-md transition-colors hover:bg-violet-500/30"
-          aria-label={newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump to latest message"}
-        >
-          <CaretDown size={9} weight="bold" />
-          {/* Answers "did I miss anything?" without making the reader scroll to find out. */}
-          <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · Jump To Latest` : "Jump To Latest"}</span>
-        </button>
-      ) : null}
+      {showJumpToLatest ? <ChatJumpToLatestPill newRows={newRowsSinceDetach} onJump={jumpToLatest} /> : null}
       {/* With comments on, the layer owns the selection toolbar (it adds "Comment"). */}
       {threadComments ? (
         <ThreadCommentLayer

@@ -16,6 +16,8 @@ import {
   TEXT_REVEAL_HORIZON_STORAGE_KEY,
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
+import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
+import { ChatSurfaceShell } from "./ChatSurfaceShell";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 
 vi.mock("@lobehub/icons", () => {
@@ -61,7 +63,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
   };
 });
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactElement } from "react";
 import type * as AppStoreModule from "../../state/appStore";
 import {
   AgentChatMessageList,
@@ -166,11 +168,14 @@ function renderMessageList(
     usageLimitResumeTurnId?: string | null;
     sessionProvider?: string | null;
     resolveSpawnedChatProvider?: (sessionId: string) => string | null;
+    /** Mount the list inside a host, e.g. a chat shell with a floating composer. */
+    wrapList?: (list: ReactElement) => ReactElement;
   },
 ) {
+  const wrapList = options?.wrapList ?? ((list: ReactElement) => list);
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
-      <AgentChatMessageList
+      {wrapList(<AgentChatMessageList
         events={events}
         usageLimitResumeActive={options?.usageLimitResumeActive}
         usageLimitResumeTurnId={options?.usageLimitResumeTurnId}
@@ -201,7 +206,7 @@ function renderMessageList(
         allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
         onOpenTurnSources={options?.onOpenTurnSources}
-      />
+      />)}
       <LocationProbe />
     </MemoryRouter>,
   );
@@ -2557,6 +2562,90 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(transcript.scrollTop).toBe(800);
     expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+  });
+
+  it("stays pinned to latest when a floating composer grows over the transcript", async () => {
+    // The thread runs behind a floating composer, so a taller composer adds
+    // reserved space at the end of the scroll content instead of shrinking the
+    // viewport. Fake layout: the content grows by whatever the composer covers.
+    const overlay = createChatComposerOverlay();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Keep typing", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Still at the bottom.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatComposerOverlayContext.Provider value={overlay}>{list}</ChatComposerOverlayContext.Provider>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, get: () => 1_000 + overlay.inset.get() });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 400 });
+    act(() => overlay.inset.set(100));
+    transcript.scrollTop = 700;
+    fireEvent.scroll(transcript);
+
+    act(() => overlay.inset.set(260));
+
+    expect(transcript.scrollTop).toBe(860);
+    expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+
+    // A reader who scrolled up keeps their place when the composer grows again.
+    transcript.scrollTop = 300;
+    fireEvent.scroll(transcript);
+    act(() => overlay.inset.set(320));
+    expect(transcript.scrollTop).toBe(300);
+  });
+
+  it.each([
+    { chips: 1, docked: true },
+    { chips: 0, docked: false },
+  ])("docks Jump To Latest in the composer's chip row only while it shows a chip (chips: $chips)", async ({ chips, docked }) => {
+    const footer = (
+      <div data-chat-composer-dock="">
+        <div data-chat-composer-chip-row="">
+          <div data-status-strip="">
+            {Array.from({ length: chips }, (_, index) => <span key={index}>Snoozed</span>)}
+          </div>
+          <div data-chat-composer-jump-slot="" />
+        </div>
+      </div>
+    );
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Start the audit", deliveryState: "delivered" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "text", text: "Working through the inventory.", itemId: "text-1", turnId: "turn-1" },
+      },
+    ], {
+      wrapList: (list) => <ChatSurfaceShell mode="standard" overlayFooter footer={footer}>{list}</ChatSurfaceShell>,
+    });
+
+    const transcript = timelinePane();
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 100;
+    fireEvent.scroll(transcript);
+
+    const jump = await screen.findByRole("button", { name: "Jump to latest message" });
+    const slot = document.querySelector("[data-chat-composer-jump-slot]");
+    expect(slot?.contains(jump)).toBe(docked);
+    expect(transcript.closest("[data-chat-message-list-root]")?.contains(jump)).toBe(!docked);
+    fireEvent.click(jump);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+    });
   });
 
   it("automatically backfills an underfilled transcript without requiring a scroll event", async () => {
