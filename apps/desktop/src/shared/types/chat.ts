@@ -2183,6 +2183,8 @@ export type AgentChatEvent =
        * See `AgentChatUsageLimitResume`.
        */
       usageLimitResume?: AgentChatUsageLimitResume | null;
+      /** The chat moved to this provider account (a user switch or a usage-limit move). */
+      instanceId?: string;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
       /**

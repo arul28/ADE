@@ -298,8 +298,9 @@ export function ChatAccountNote({
     </>
   );
   const rowClass = "flex h-[30px] w-full min-w-0 items-center gap-2 px-4 font-sans text-[11px] leading-4";
-  const canSwitch = Boolean(current) && targets.length > 0 && typeof window.ade?.agentChat?.switchAccount === "function";
-  if (!canSwitch || !current) {
+  // A saved key or custom provider pays for the turns, so there is no account to switch.
+  const keyed = Boolean(preset) || Boolean(clean(credentialId));
+  if (keyed || !current || targets.length === 0 || typeof window.ade?.agentChat?.switchAccount !== "function") {
     return (
       <div data-testid="chat-account-note" className={rowClass} title={model.detail}>
         {row}

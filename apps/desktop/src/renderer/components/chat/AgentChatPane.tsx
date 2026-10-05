@@ -8961,6 +8961,7 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
         // updates live for every viewer of this chat instead of waiting for a
