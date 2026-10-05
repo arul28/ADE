@@ -961,6 +961,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
           accountRouteActive={isAccountRoute}
+          settingsRouteActive={location.pathname === "/settings"}
           onNavigate={(path, opts) => navigate(path, opts)}
           onOpenActivityPane={() => setActivityPaneOpen(true)}
         />

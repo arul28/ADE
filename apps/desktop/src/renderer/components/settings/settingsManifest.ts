@@ -351,10 +351,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     label: "Reset ADE",
     keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
     tab: "general",
-    anchor: "about.reset",
+    anchor: "reset-ade",
     scope: "machine",
     web: "hidden",
-    group: "About",
+    group: "Reset",
   },
 
   // ── Appearance ───────────────────────────────────────────────────────────
@@ -1136,6 +1136,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
   "session-lifecycle": "storage.session-lifecycle",
+  // Reset ADE lived inside the About card (#1410) before it got its own section.
+  "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
   "product-analytics": "general.analytics",
   storage: "storage.usage",
@@ -1168,12 +1170,36 @@ export function settingsEntryById(id: string): SettingEntry | null {
  * where to land it.
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
-  if (!isWebClientMode()) return entry.webOnly !== true;
+  if (!isWebClientMode()) {
+    // Standalone Settings, opened from the new-project screen with no project:
+    // a project-scoped setting has nowhere to write, so it is hidden here as
+    // it is on the web client with no bound machine.
+    if (standaloneSettingsResolver?.() ?? false) {
+      return entry.webOnly !== true && entry.scope !== "account-repo" && entry.scope !== "machine-repo";
+    }
+    return entry.webOnly !== true;
+  }
   if (entry.web === "hidden") return false;
   // A machine-scoped setting writes to the machine the active project tab is
   // bound to. With no tab open there is no such machine, so the control would
   // be a write with nowhere to land — the same reason `hidden` exists.
   return entry.web !== "machine" || hasWebMachineBinding();
+}
+
+/**
+ * Whether Settings is open with no project — the new-project screen's own
+ * Settings entry. Installing the resolver hides every project-scoped setting
+ * from nav, search and the palette at once.
+ */
+let standaloneSettingsResolver: (() => boolean) | null = null;
+
+export function setStandaloneSettingsResolver(resolve: () => boolean): void {
+  standaloneSettingsResolver = resolve;
+}
+
+/** Uninstall a standalone resolver, but only if it is still the installed one. */
+export function clearStandaloneSettingsResolver(resolve: () => boolean): void {
+  if (standaloneSettingsResolver === resolve) standaloneSettingsResolver = null;
 }
 
 /**
@@ -1242,6 +1268,14 @@ export function clearWebMachineBindingResolver(resolve: () => boolean): void {
 
 export function hasWebMachineBinding(): boolean {
   return webMachineBindingResolver?.() ?? false;
+}
+
+/** Whether any of these settings is reachable right now. */
+export function sectionHasAvailableEntries(entryIds: readonly string[]): boolean {
+  return entryIds.some((id) => {
+    const entry = settingsEntryById(id);
+    return entry != null && isSettingAvailable(entry);
+  });
 }
 
 /** Every setting reachable in this renderer, in manifest order. */

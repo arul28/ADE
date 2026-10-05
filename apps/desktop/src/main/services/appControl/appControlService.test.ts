@@ -498,6 +498,67 @@ describe("appControlService", () => {
     ]);
   });
 
+  it("streams a lane's screencast only while something wants its frames", async () => {
+    mockState.httpResponses.push([target("a")]);
+    const events: AppControlEventPayload[] = [];
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+      onEvent: (payload) => events.push(payload),
+    });
+    const sentMethods = () => mockState.sockets.flatMap((socket) =>
+      socket.sent.map((payload) => (JSON.parse(payload) as { method: string }).method));
+    const frameEvents = () => events.filter((event) => event.type === "frame").length;
+
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    await vi.advanceTimersByTimeAsync(0);
+    // Attached, but nobody shows the lane: the app encodes nothing.
+    expect(sentMethods()).not.toContain("Page.startScreencast");
+
+    service.setFrameDemand("viewer", ["lane-1"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentMethods().filter((method) => method === "Page.startScreencast")).toHaveLength(1);
+    const streaming = mockState.sockets.find((socket) => socket.sent.some((payload) => payload.includes("Page.startScreencast")));
+    expect(streaming, "screencast socket").toBeTruthy();
+    streaming!.emitMessage({ method: "Page.screencastFrame", params: { data: mockState.screenshotData, sessionId: 1, metadata: {} } });
+    expect(frameEvents()).toBe(1);
+
+    // The viewer goes; a pane that remounts within the grace keeps the stream.
+    service.setFrameDemand("viewer", null);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(sentMethods()).not.toContain("Page.stopScreencast");
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(sentMethods()).toContain("Page.stopScreencast");
+
+    // A frame already in flight when the stream paused is acked, not published.
+    streaming!.emitMessage({ method: "Page.screencastFrame", params: { data: mockState.screenshotData, sessionId: 2, metadata: {} } });
+    expect(frameEvents()).toBe(1);
+    expect(sentMethods().filter((method) => method === "Page.screencastFrameAck")).toHaveLength(2);
+    service.dispose();
+  });
+
+  it("captures a paused lane afresh for every screenshot instead of reusing a one-off capture", async () => {
+    mockState.httpResponses.push([target("a")]);
+    const service = createAppControlService({ projectRoot: "/tmp/project", logger: createLogger() });
+    const captures = () => mockState.sockets.flatMap((socket) => socket.sent)
+      .filter((payload) => payload.includes("Page.captureScreenshot")).length;
+
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A viewer mounting over a paused lane gets one fresh picture...
+    const latest = await service.getLatestFrame({ laneId: "lane-1" });
+    expect(latest?.data).toBe(mockState.screenshotData);
+    expect(captures()).toBe(1);
+    // ...but nothing streams to keep it current, so an agent's screenshot
+    // later must look at the app again rather than at that picture.
+    await service.screenshot({ laneId: "lane-1" });
+    expect(captures()).toBe(2);
+    await service.getLatestFrame({ laneId: "lane-1" });
+    expect(captures()).toBe(3);
+    service.dispose();
+  });
+
   it("normalizes screenshot-space input by the viewport device scale, not the downscaled screencast frame", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
@@ -860,6 +921,41 @@ function sentMethods(socketIndex = -1): Array<{ method: string; params?: Record<
   const socket = mockState.sockets.at(socketIndex);
   return (socket?.sent ?? []).map((payload) => JSON.parse(payload) as { method: string; params?: Record<string, unknown> });
 }
+
+describe("App Control window frame gate", () => {
+  it("sends a window frames only for lanes it holds, and forgets the holds of a reloaded window", async () => {
+    const { EventEmitter } = await import("node:events");
+    const {
+      heldAppControlFrameLanes,
+      setAppControlFrameLanesForSender,
+      setAppControlFrameLanesListener,
+      shouldSendAppControlFrameToWebContents,
+    } = await import("./appControlFrameSubscriptions");
+    const makeWindow = (id: number) => Object.assign(new EventEmitter(), { id }) as unknown as import("electron").WebContents;
+    const changes = vi.fn();
+    setAppControlFrameLanesListener(changes);
+    const panel = makeWindow(901);
+    const floating = makeWindow(902);
+
+    // Closed by default: a window that never held a lane has nothing to paint on.
+    expect(shouldSendAppControlFrameToWebContents(panel, "lane-a")).toBe(false);
+
+    setAppControlFrameLanesForSender(panel, new Set(["lane-a"]));
+    setAppControlFrameLanesForSender(floating, new Set(["*"]));
+    expect(shouldSendAppControlFrameToWebContents(panel, "lane-a")).toBe(true);
+    expect(shouldSendAppControlFrameToWebContents(panel, "lane-b")).toBe(false);
+    expect(shouldSendAppControlFrameToWebContents(floating, "lane-b")).toBe(true);
+    expect(heldAppControlFrameLanes()).toBe("all");
+
+    (floating as unknown as InstanceType<typeof EventEmitter>).emit("did-navigate");
+    expect(shouldSendAppControlFrameToWebContents(floating, "lane-b")).toBe(false);
+    expect(heldAppControlFrameLanes()).toEqual(["lane-a"]);
+    (panel as unknown as InstanceType<typeof EventEmitter>).emit("destroyed");
+    expect(heldAppControlFrameLanes()).toEqual([]);
+    expect(changes).toHaveBeenCalledTimes(4);
+    setAppControlFrameLanesListener(null);
+  });
+});
 
 describe("appControlService agent actions", () => {
   let projectRoot: string;

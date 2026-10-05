@@ -2787,6 +2787,108 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  describe("App Control frame demand", () => {
+    function makeFrameService() {
+      const demand = new Map<string, unknown>();
+      return {
+        demand,
+        setFrameDemand: (sourceId: string, value: unknown) => {
+          if (value === null) demand.delete(sourceId);
+          else demand.set(sourceId, value);
+        },
+      };
+    }
+
+    function makeScopes(projectRoot: string, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const added = registry.add(projectRoot);
+      let service = makeFrameService();
+      const disposeListeners: Array<(projectId: string) => void> = [];
+      let nextGet: Promise<void> | null = null;
+      const scopeRegistry = {
+        get: vi.fn(async () => {
+          const gate = nextGet;
+          nextGet = null;
+          const current = service;
+          if (gate) await gate;
+          return {
+            registryProjectId: added.projectId,
+            record: added,
+            runtime: { eventBuffer: createEventBuffer(), appControlService: current, dispose: vi.fn() },
+            dispose: vi.fn(),
+          };
+        }),
+        onDispose: (listener: (projectId: string) => void) => {
+          disposeListeners.push(listener);
+          return () => {};
+        },
+        ensureSyncHost: vi.fn(),
+        dispose: vi.fn(),
+        disposeAll: vi.fn(),
+      } as unknown as ProjectScopeRegistry;
+      return {
+        added,
+        scopeRegistry,
+        service: () => service,
+        holdNextLookup: (gate: Promise<void>) => { nextGet = gate; },
+        restartScope: () => {
+          service = makeFrameService();
+          for (const listener of disposeListeners) listener(added.projectId);
+        },
+      };
+    }
+
+    async function connect(scopeRegistry: ProjectScopeRegistry, registry: ReturnType<typeof createRegistry>["registry"]) {
+      const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+      handler.setNotifier(vi.fn());
+      await handler({ jsonrpc: "2.0", id: 0, method: "ade/initialize", params: {} });
+      let id = 1;
+      return {
+        handler,
+        call: (method: string, params: Record<string, unknown>) => handler({ jsonrpc: "2.0", id: id++, method, params }),
+      };
+    }
+
+    it("keeps every lane streaming for an undeclared frame subscriber until it declares, and releases on close", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { handler, call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual(["all"]);
+
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["lane-1"] });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      // A declared connection never falls back to every lane.
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["lane-1"]]);
+
+      handler.dispose();
+      expect(scopes.service().demand.size).toBe(0);
+    });
+
+    it("lands declarations in call order and replays them onto a restarted scope", async () => {
+      const { projectRoot, registry } = createRegistry();
+      const scopes = makeScopes(projectRoot, registry);
+      const { call } = await connect(scopes.scopeRegistry, registry);
+      const projectId = scopes.added.projectId;
+
+      let releaseFirst!: () => void;
+      scopes.holdNextLookup(new Promise<void>((resolve) => { releaseFirst = resolve; }));
+      const first = call("appControl.setFrameDemand", { projectId, laneIds: ["old-pane"] });
+      await call("appControl.setFrameDemand", { projectId, laneIds: ["new-pane"] });
+      releaseFirst();
+      await first;
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+
+      scopes.restartScope();
+      expect(scopes.service().demand.size).toBe(0);
+      await call("runtimeEvents.subscribe", { projectId, includeHighVolumeEvents: true });
+      expect([...scopes.service().demand.values()]).toEqual([["new-pane"]]);
+    });
+  });
+
   it("subscribes to project runtime events and emits JSON-RPC notifications", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);

@@ -279,6 +279,7 @@ import {
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
 import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
 import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
@@ -974,7 +975,8 @@ export async function createAdeRuntime(args: {
 
     const operationService = createOperationService({ db, projectId });
     const keybindingsService = createKeybindingsService({ db });
-    const eventBuffer = createEventBuffer();
+    // Screencast frames reach live viewers but are never kept for replay.
+    const eventBuffer = createEventBuffer(undefined, { isTransient: isHighVolumeRuntimeEvent });
 
     function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
       eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
@@ -3050,6 +3052,7 @@ export async function createAdeRuntime(args: {
               getStatus: appControlService.getStatus,
               subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
               getLatestFrame: appControlService.getLatestFrame,
+              setFrameDemand: appControlService.setFrameDemand,
             }
           : null,
         appleDeviceService: iosSimulatorService,

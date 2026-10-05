@@ -1459,6 +1459,12 @@ export type AppState = {
    */
   gitFolderTrustPrompt: GitFolderTrustPrompt | null;
   isNewTabOpen: boolean;
+  /**
+   * Settings is open with no project, from the new-project screen's Settings
+   * button. Set only by that request: a project that closes while `/settings`
+   * is on screen falls back to the welcome page, not to this.
+   */
+  standaloneSettingsOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
@@ -1718,6 +1724,7 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
   refreshProject: () => Promise<void>;
@@ -1937,6 +1944,9 @@ function transitionFailureState(
   return { projectTransitionError: formatProjectTransitionError(kind, error) };
 }
 
+/** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
+const CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS = 10_000;
+
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;
   /** Monotonic counter incremented before each lane refresh request.
@@ -2035,6 +2045,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: cachedLanes?.laneSnapshots ?? [],
         lanes: cachedLanes?.lanes ?? [],
         laneStatusStale: true,
@@ -2094,6 +2105,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   worktreeOpenPrompt: null,
   gitFolderTrustPrompt: null,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
   personalChatsTabOpen: false,
   laneSnapshots: [],
   lanes: [],
@@ -2447,6 +2459,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
+      // A read that found nothing new still re-stamps the sync clocks. Their
+      // readers judge staleness on a minute scale, so a stamp-only change waits
+      // until it is worth a re-render of every surface that lists machines.
+      const stampCurrent = (prevMs: number | null, nextMs: number | null): boolean =>
+        prevMs === nextMs
+        || (prevMs != null && nextMs != null && nextMs - prevMs < CROSS_MACHINE_SYNC_STAMP_PUBLISH_MS);
       const sliceUnchanged = (
         previous
         && previous.machineName === next.machineName
@@ -2457,8 +2475,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
-        && previous.lastSyncedAtMs === next.lastSyncedAtMs
-        && previous.lanesSyncedAtMs === next.lanesSyncedAtMs
+        && stampCurrent(previous.lastSyncedAtMs, next.lastSyncedAtMs)
+        && stampCurrent(previous.lanesSyncedAtMs, next.lanesSyncedAtMs)
         && previous.error === next.error
       );
       if (sliceUnchanged && !intendedChanged) return {};
@@ -2760,11 +2778,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? { activeDictationTarget: null }
         : prev,
     ),
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
+  // A new tab is the new-project screen, so it also ends Settings-without-a-project.
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
+  setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
@@ -3197,6 +3217,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
             lanes: cachedWarmLanes?.lanes ?? [],
             laneStatusStale: true,
@@ -3239,6 +3260,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
           }
         : {
             projectHydrated: true,
@@ -3246,6 +3268,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectTransition: null,
             projectTransitionError: null,
             isNewTabOpen: false,
+            standaloneSettingsOpen: false,
             laneSnapshots: cachedLanes?.laneSnapshots ?? [],
             lanes: cachedLanes?.lanes ?? [],
             laneStatusStale: true,
@@ -3436,6 +3459,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransition: null,
           projectTransitionError: null,
           isNewTabOpen: false,
+          standaloneSettingsOpen: false,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
@@ -3502,6 +3526,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectTransition: null,
         projectTransitionError: null,
         isNewTabOpen: false,
+        standaloneSettingsOpen: false,
         laneSnapshots: [],
         lanes: [],
         lanesLoading: false,
@@ -3584,6 +3609,7 @@ export function createProjectAppStore(
     projectHydrated: true,
     showWelcome: false,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     theme: rootState.theme,
     themeId: rootState.themeId,

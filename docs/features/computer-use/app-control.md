@@ -79,6 +79,11 @@ Mac Desktop recording.
 Rules:
 
 - **One per lane.** A lane has at most one recording.
+- **Start.** The start goes through `startHelperRecording`. If the driver
+  watchdog answers a `record.start` as timed out, the recording may still
+  install late, so ADE follows with a stop (only while the start still owns the
+  slot). App Control's per-lane key is exclusive and starts one at a time, so
+  an "already recording" answer here is an orphan: stop it and retry once.
 - **Limits.** Every recording stops itself after 5 minutes of real time
   (`maxSeconds` sets less; `stopReason: "cap"`), after 2 minutes with no
   action (`"idle"`), or when the disk is nearly full (`"disk"`). A recording
@@ -136,12 +141,47 @@ brain may offer the floating card by itself (an `auto` request), like Mac
 Desktop's driven-device path. The per-chat "Show preview when minimized" choice
 can refuse an auto request.
 
+## Frames follow demand
+
+A lane's CDP screencast streams only while something shows or records it.
+With nobody watching, the attached app encodes nothing and the brain forwards
+nothing. An always-on screencast pushed 80-350 KB JPEGs at the page's repaint
+rate for every lane with a session, filling the brain's heap and the renderer
+whether or not anything painted a frame.
+
+A frame source declares the lanes it shows:
+
+- **Desktop windows.** Every view that paints a lane holds it through the
+  preload (`appControl.holdFrames(laneId)`); a hold with no lane admits every
+  lane. `appControlFrameSubscriptions.ts` keeps the refcounts per window and
+  the window gate is closed by default, so a window that holds nothing
+  receives no frames. A reloaded or crashed renderer forgets its old
+  document's holds.
+- **The sync stream** (web client, phone) declares the lanes it has viewers
+  for.
+- **A recording** demands its lane for as long as it runs.
+
+The desktop pool sends the union of its windows' held lanes to the brain with
+the `appControl.setFrameDemand` RPC. Demand is machine level and per
+connection, kept as data and replayed onto a project scope that restarts under
+an open connection (`apps/ade-cli/src/connectionFrameDemand.ts`). A client that
+subscribes to high-volume events without ever declaring its lanes keeps the
+old always-on behavior, so an older client still sees frames.
+
+A lane with no demand pauses its stream but keeps its CDP client for
+diagnostics. The pause waits out a short grace (5 s) so a view switch does not
+restart the stream. A paused lane drops its cached frame, so a screenshot or a
+new viewer captures the app as it is now rather than as it was; recordings and
+new viewers take a fresh capture. Frames are transient in the runtime event
+buffer: they reach live listeners but are never retained for replay.
+
 ## Remote viewing
 
 The web client and the phone watch a lane's session over the sync socket.
 `apps/ade-cli/src/services/sync/appControlSyncStream.ts` forwards the frames
-App Control already gets from the CDP screencast. It never starts the
-screencast and never encodes video.
+App Control already gets from the CDP screencast. It declares the lanes it has
+viewers for, so those are the lanes the brain streams, and it never encodes
+video.
 
 | Command | Purpose |
 |---|---|
@@ -176,10 +216,17 @@ ids are always null.
   - recording: `startRecording`, `stopRecording`, `getRecordingStatus`;
   - capability: `listDrivers`;
   - launch terminal: `readTerminal`, `writeTerminal`, `signalTerminal`;
-  - screencast frames go out on `onEvent` (`type: "frame"`).
+  - screencast frames go out on `onEvent` (`type: "frame"`); `setFrameDemand`
+    records which lanes a source (a window, the sync stream, a legacy
+    subscription) shows, so only those lanes' screencasts stream.
 - `appControlAgentActions.ts` — the agent observe/act loop.
 - `appControlRecording.ts` — the per-lane recorder: start, stop, status, the
-  cap, and filing a captioned video as proof.
+  cap, and filing a captioned video as proof. A recording demands its lane and
+  seeds itself from the newest frame, taking a fresh capture when the lane had
+  none.
+- `appControlFrameSubscriptions.ts` — per-window refcounts of the lanes each
+  window paints, the union handed to the project's frame demand, and the window
+  gate, which is closed by default. Mirrors `ptyDataSubscriptions`.
 - `appControlLaunchCommand.ts` — launch parsing and rewrites for direct
   Electron and package-script commands. On Windows, a resolvable `electron`,
   `npx electron` or package-script launch becomes a structured
@@ -209,6 +256,10 @@ ids are always null.
 
 ### Shared types (`apps/desktop/src/shared/types/appControl.ts`)
 
+- `apps/desktop/src/shared/appControlFrameDemand.ts` — the
+  `AppControlFrameDemand` type (`readonly string[] | "all"`), the `*` key of a
+  hold that admits every lane, the `appControl.setFrameDemand` params codec,
+  and the resolver that reads a frame event's lane id.
 - Identity: `AppControlAppKind`, `AppControlProvider`, `AppControlDriver`,
   `AppControlSession` (status `starting` | `running` | `connected` |
   `stopping` | `exited` | `stopped` | `failed`; carries `projectRoot`,
@@ -239,8 +290,16 @@ ids are always null.
 Channels live under `ade.appControl.*`: `getStatus`, `launch` /
 `launchInTerminal`, `connect`, `stop`, `focusWindow` / `minimizeWindow`,
 `screenshot`, `getSnapshot`, `inspectPoint` / `selectPoint`, `click` /
-`typeText` / `scroll` / `dispatchKey`, `listTargets` / `attachToTarget`, and the
-push channel `ade.appControl.event`.
+`typeText` / `scroll` / `dispatchKey`, `listTargets` / `attachToTarget`,
+`getLatestFrame`, the invoke channel `frameSubscriptions` (a window reports the
+lanes its views hold), and the push channel `ade.appControl.event`.
+
+`preload.ts` exposes `window.ade.appControl.holdFrames(laneId?)`. A showing
+view holds its lane and releases on unmount; omitting the lane admits every
+lane. `main.ts` answers `frameSubscriptions` through
+`appControlFrameSubscriptions.ts`, and `runtimeBridge.ts` gates each forwarded
+`frame` event on the destination window's held lanes, the same way `pty_data`
+is gated.
 
 `registerIpc.ts` rate-limits launch, snapshot, click and type, and validates
 argument shapes. Heavy calls bypass the global 30 s IPC timeout, because CDP
@@ -307,7 +366,14 @@ line with the filed artifact id.
 `ade app-control show`.
 
 `apps/ade-cli/src/bootstrap.ts` builds an `AppControlService` for the headless
-brain with the same lane resolution as the desktop main process.
+brain with the same lane resolution as the desktop main process, and registers
+the `appControl.setFrameDemand` RPC.
+
+`apps/ade-cli/src/connectionFrameDemand.ts` holds one RPC connection's declared
+frame demand per project. A scope that restarts under the connection gets the
+connection's latest demand when it next subscribes; a subscription from a
+client that never declares keeps every lane streaming. Demand released when the
+connection closes.
 
 ### Action registry
 
@@ -343,7 +409,9 @@ resolve it on another machine) and the `terminal` domain (`list`, `read`,
    then every 2 s once a target is picked. `pickCdpTarget` prefers `page`, then
    `webview`, then any non-`devtools://` URL.
 4. **Attach.** A `CdpClient` WebSocket opens. The session moves `starting` →
-   `running` → `connected`. The screencast starts when a viewer needs frames.
+   `running` → `connected`. The screencast follows demand (see "Frames follow
+   demand"): it starts when a window, a sync viewer or a recording needs the
+   lane's frames.
 5. **Health.** If the socket drops, the session goes back to `running`
    (terminal alive) or `failed` (terminal exited), with `lastError` set.
 

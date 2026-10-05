@@ -77,6 +77,7 @@ function resetStore() {
     projectTransition: null,
     projectTransitionError: null,
     isNewTabOpen: false,
+    standaloneSettingsOpen: false,
     personalChatsTabOpen: false,
     laneSnapshots: [],
     lanes: [],
@@ -685,6 +686,18 @@ describe("appStore", () => {
       expect(useAppStore.getState().showWelcome).toBe(false);
       useAppStore.getState().setShowWelcome(true);
       expect(useAppStore.getState().showWelcome).toBe(true);
+    });
+
+    it("a new tab ends Settings-without-a-project and shows the new-project screen", () => {
+      useAppStore.getState().setStandaloneSettingsOpen(true);
+      expect(useAppStore.getState().standaloneSettingsOpen).toBe(true);
+
+      useAppStore.getState().openNewTab();
+
+      const state = useAppStore.getState();
+      expect(state.standaloneSettingsOpen).toBe(false);
+      expect(state.isNewTabOpen).toBe(true);
+      expect(state.showWelcome).toBe(true);
     });
 
     it("setLanes updates the lanes array", () => {

@@ -3201,17 +3201,45 @@ export function createProjectConfigService({
     });
   };
 
+  /**
+   * The last config file read from disk, keyed by what the files looked like.
+   * `get()` runs per session row when a chat list is summarized; each read
+   * re-parsed the YAML and rewrote `test_suites` in a write transaction on the
+   * shared project database. An unchanged file now skips the parse and the
+   * rewrite. Validation still runs every time: it checks that paths the config
+   * names (compose files, cwds) exist, and those change without the file.
+   */
+  let cachedLocalFile: { key: string; config: ProjectConfigFile; raw: string } | null = null;
+  /** The file identity whose valid config was last written to `test_suites`. */
+  let persistedKey: string | null = null;
+
+  const fileIdentity = (filePath: string): string => {
+    try {
+      const stat = fs.statSync(filePath);
+      return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch {
+      return "missing";
+    }
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
-    fs.mkdirSync(adeDir, { recursive: true });
-
-    carryOverLegacySharedConfig();
-
-    const localFile = readConfigFile(localPath);
-
-    const sharedHash = hashContent("");
-    const localHash = hashContent(localFile.raw);
-
-    return buildSnapshotFromFiles(emptySharedConfig(), localFile.config, { sharedHash, localHash }, { persistSnapshots: true });
+    // Keyed by the identity seen before the read: a write racing the read
+    // changes the files again, so the next call misses and reads afresh.
+    const key = `${fileIdentity(localPath)}|${fileIdentity(sharedPath)}`;
+    if (cachedLocalFile?.key !== key) {
+      fs.mkdirSync(adeDir, { recursive: true });
+      carryOverLegacySharedConfig();
+      const localFile = readConfigFile(localPath);
+      cachedLocalFile = { key, config: localFile.config, raw: localFile.raw };
+    }
+    const snapshot = buildSnapshotFromFiles(
+      emptySharedConfig(),
+      structuredClone(cachedLocalFile.config),
+      { sharedHash: hashContent(""), localHash: hashContent(cachedLocalFile.raw) },
+      { persistSnapshots: persistedKey !== key },
+    );
+    if (snapshot.validation.ok) persistedKey = key;
+    return snapshot;
   };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
@@ -3237,6 +3265,7 @@ export function createProjectConfigService({
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
+    cachedLocalFile = null;
 
     logger.info("projectConfig.save", {
       localPath,

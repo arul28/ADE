@@ -24,6 +24,8 @@ const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
   isNewTabOpen: false,
+  standaloneSettingsOpen: false,
+  setStandaloneSettingsOpen: vi.fn(),
   personalChatsTabOpen: false,
   openNewTab: vi.fn(),
   setPersonalChatsTabOpen: vi.fn(),
@@ -218,6 +220,12 @@ vi.mock("../onboarding/LaunchGate", () => ({
   LaunchGate: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+vi.mock("./SettingsPage", () => ({
+  SettingsPage: ({ standalone }: { standalone?: boolean }) => (
+    <div data-testid={standalone ? "standalone-settings" : "project-settings"} />
+  ),
+}));
+
 vi.mock("../projects/ProjectWelcomePage", () => ({
   ProjectWelcomePage: () => <div data-testid="project-page" />,
 }));
@@ -306,6 +314,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
     appStoreState.isNewTabOpen = false;
+    appStoreState.standaloneSettingsOpen = false;
     appStoreState.personalChatsTabOpen = false;
     appStoreState.openNewTab.mockReset();
     appStoreState.openNewTab.mockImplementation(() => {
@@ -568,6 +577,28 @@ describe("App Work route keep-alive", () => {
     await screen.findByTestId("project-page");
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(workLifecycle.mounts).toBe(0);
+  });
+
+  /*
+   * Settings with no project opens only when the new-project screen asked for
+   * it. A project that closes while its Settings tab is on screen leaves the
+   * route at /settings, and that must land on the welcome page, not on a
+   * Settings page nobody opened.
+   */
+  it.each([
+    ["a project closed while its Settings was on screen", false, "project-page", "standalone-settings"],
+    ["the new-project screen's Settings button", true, "standalone-settings", "project-page"],
+  ] as const)("with no project on /settings, %s leads to the right screen", async (_label, requested, shown, absent) => {
+    appStoreState.project = { rootPath: "" };
+    appStoreState.standaloneSettingsOpen = requested;
+    window.history.replaceState({}, "", "/settings");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId(shown);
+    expect(screen.queryByTestId(absent)).toBeNull();
+    expect(screen.queryByTestId("work-page")).toBeNull();
   });
 
   it("shows the welcome page when the welcome flow is active on the Work route", async () => {

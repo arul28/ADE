@@ -5928,7 +5928,10 @@ html[data-motion="reduced"] *::after {
 }
 
 @container settings-column (max-width: 999px) {
-  .ade-settings-column--wide > * {
+  /* The rail layout keeps the full width it was given — capping it would put
+     the rail and the content in a column narrower than the page. Every other
+     child keeps the narrow measure. */
+  .ade-settings-column--wide > :not(.ade-settings-layout) {
     width: 100%;
     max-width: 860px;
     margin-inline: auto;
@@ -6245,12 +6248,58 @@ html[data-motion="reduced"] *::after {
 }
 
 /* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
-   column that becomes two balanced columns on a wide page. A `full` item
-   spans both. */
+   single-column list of named blocks, top to bottom. The even two-column grid
+   was tried and read as two columns of uneven height, so it is gone. */
 .ade-settings-flow {
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 48px;
+}
+
+/* One named block: a heading with its icon and one line, then its sections. */
+.ade-settings-group-block {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  scroll-margin-top: 12px;
+}
+
+.ade-settings-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-settings-group-title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.ade-settings-group-description {
+  margin: 3px 0 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-muted-fg);
+}
+
+/* The danger zone says so before anything in it is read. */
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-head {
+  border-bottom-color: color-mix(in srgb, var(--color-error) 35%, transparent);
+}
+
+.ade-settings-group-block[data-tone="red"] .ade-settings-group-title {
+  color: var(--color-error);
+}
+
+.ade-settings-rail svg {
+  width: 14px;
+  height: 14px;
 }
 
 .ade-settings-flow-item {
@@ -6260,29 +6309,29 @@ html[data-motion="reduced"] *::after {
   min-width: 0;
 }
 
-@container settings-column (min-width: 1180px) {
-  /* Rows, not masonry: each pair of sections starts on the same line, and the
-     panels in a row stretch to the same height, so headings and edges align. */
-  .ade-settings-flow {
+/* A sticky list of the page's own sections, beside the content on a page wide
+   enough for it. Below that width the list is not drawn at all. */
+.ade-settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-rail {
+  display: none;
+}
+
+@container settings-column (min-width: 900px) {
+  .ade-settings-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    align-items: stretch;
-    gap: 32px 28px;
+    grid-template-columns: 176px minmax(0, 1fr);
+    align-items: start;
+    gap: 40px;
   }
-  .ade-settings-flow-item {
-    display: flex;
-    flex-direction: column;
-  }
-  .ade-settings-flow-item[data-span="full"] {
-    grid-column: 1 / -1;
-  }
-  .ade-settings-flow-item {
-    gap: 32px;
-  }
-  /* Every heading in a row takes the same height (a title and one line), so
-     panels side by side start level whether or not a heading has a caption. */
-  .ade-settings-flow-item:not([data-span="full"]) .ade-settings-head {
-    min-height: 42px;
+  .ade-settings-rail {
+    display: block;
+    position: sticky;
+    top: 8px;
   }
 }
 

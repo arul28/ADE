@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppControlSession } from "../../../shared/types/appControl";
+import type { AppControlScreencastFrame, AppControlSession } from "../../../shared/types/appControl";
 import type { Logger } from "../logging/logger";
 import {
   APP_CONTROL_RECORDING_NOT_RUNNING_CODE,
@@ -89,7 +89,12 @@ afterEach(() => {
 });
 
 describe("createAppControlRecording", () => {
-  function harness(platform: NodeJS.Platform, recorder: AppControlWindowRecorder, screencast: ReturnType<typeof vi.fn> | null = null) {
+  function harness(
+    platform: NodeJS.Platform,
+    recorder: AppControlWindowRecorder,
+    screencast: ReturnType<typeof vi.fn> | null = null,
+    freshCapture: AppControlScreencastFrame | null = null,
+  ) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-recording-"));
     roots.push(root);
     let current: AppControlSession | null = { ...session };
@@ -100,6 +105,7 @@ describe("createAppControlRecording", () => {
       emit: () => undefined,
       getSession: () => current,
       getLastFrame: () => null,
+      getLatestFrame: async () => freshCapture,
       resolveAppProcessId: async () => 42,
       windowRecorder: platform === "darwin" ? recorder : recorder,
       screencastRecorder: () => screencast as never,
@@ -148,6 +154,42 @@ describe("createAppControlRecording", () => {
     expect(changedRecorder.stop).toHaveBeenCalledWith(appControlRecordingKey("lane-1"));
   });
 
+  /*
+   * The helper keeps one recorder per key, and its watchdog answers a slow
+   * `record.start` with internal_error while the start goes on to install its
+   * recording. Before the fix that orphan refused every later start ("already
+   * recording") and the service refused every stop ("not recording").
+   */
+  it.each([
+    ["a start the watchdog answered for installs its recording late", { heldAtFirstStart: false }],
+    ["the helper already holds an orphan from an earlier run", { heldAtFirstStart: true }],
+  ])("records again when %s", async (_label, { heldAtFirstStart }) => {
+    let held = heldAtFirstStart;
+    let starts = 0;
+    const recorder = windowRecorder(deferred());
+    recorder.start = vi.fn(async () => {
+      starts += 1;
+      if (held) throw new Error("internal_error: Lane app-control:lane-1 is already recording.");
+      if (starts === 1) {
+        held = true;
+        throw new Error("internal_error: record.start did not complete within 16s. The driver gave up waiting and answered on its behalf; the operation may still be running.");
+      }
+      held = true;
+    });
+    recorder.stop = vi.fn(async () => {
+      if (!held) throw new Error("recording_not_running: Lane app-control:lane-1 is not recording.");
+      held = false;
+      return { filePath: "", durationMs: 0, wallDurationMs: 0, idleCutMs: 0 };
+    });
+    const { recording } = harness("darwin", recorder);
+
+    if (!heldAtFirstStart) await expect(recording.startRecording("lane-1", {})).rejects.toThrow(/did not complete/);
+    const status = await recording.startRecording("lane-1", {});
+    expect(status.running).toBe(true);
+    await recording.stopRecording("lane-1");
+    expect(held).toBe(false);
+  });
+
   it("records a Windows lane through the screencast engine, not the Mac window recorder", async () => {
     const recorder = windowRecorder(deferred());
     const backend = {
@@ -156,12 +198,16 @@ describe("createAppControlRecording", () => {
       stop: vi.fn(),
       cancel: vi.fn(),
     };
-    const { recording } = harness("win32", recorder, backend as never);
+    // A lane nobody watches streams no screencast, so it has no cached frame;
+    // the recording still opens on the app's picture, from a fresh capture.
+    const capture = { sessionId: session.id, laneId: "lane-1", data: "fresh", mimeType: "image/jpeg", width: 2, height: 2 } as AppControlScreencastFrame;
+    const { recording } = harness("win32", recorder, backend as never, capture);
     const status = await recording.startRecording("lane-1", {});
     expect(status.engine).toBe("screencast");
     expect(status.running).toBe(true);
     expect(backend.start).toHaveBeenCalledTimes(1);
     expect(recorder.start).not.toHaveBeenCalled();
+    expect(backend.pushFrame).toHaveBeenCalledWith(appControlRecordingKey("lane-1"), capture);
   });
 });
 

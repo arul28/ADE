@@ -255,6 +255,7 @@ import {
   type JsonRpcHandler,
   type JsonRpcId,
   type JsonRpcInternalErrorReport,
+  type JsonRpcNotifyOptions,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -19303,9 +19304,18 @@ type HeadlessRpcServerState = {
 
 type NotifiableJsonRpcHandler = JsonRpcHandler & {
   setNotifier?: (
-    notify: ((method: string, params?: unknown) => void) | null,
+    notify: ((method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void) | null,
   ) => void;
 };
+
+/**
+ * Bytes a local client may leave unread before the brain drops it. Socket
+ * writes queue on the brain's heap, so a client that stops reading -- a stalled
+ * desktop, an `ade` process blocked on a full stdout pipe -- otherwise grows the
+ * brain until V8 aborts and every chat on the machine dies with it. Dropped,
+ * the client reconnects and resumes from its event cursor.
+ */
+const HEADLESS_RPC_MAX_PENDING_WRITE_BYTES = 64 * 1024 * 1024;
 
 function reportContainedJsonRpcError(
   error: unknown,
@@ -19469,10 +19479,25 @@ function createHeadlessRpcServer(
         );
       },
       write(data) {
+        if (conn.destroyed) return;
+        // Judged before the write, so one large reply still goes out whole.
+        if (conn.writableLength > HEADLESS_RPC_MAX_PENDING_WRITE_BYTES) {
+          try {
+            process.stderr.write(
+              `ade jsonrpc client dropped: ${conn.writableLength} bytes unread (limit ${HEADLESS_RPC_MAX_PENDING_WRITE_BYTES})\n`,
+            );
+          } catch {}
+          conn.destroy();
+          return;
+        }
         conn.write(data);
       },
       close() {
         if (!conn.destroyed) conn.destroy();
+      },
+      pendingWriteBytes: () => conn.writableLength,
+      onDrain(callback) {
+        conn.on("drain", callback);
       },
     };
     const stop = startJsonRpcServer(handler, transport, {
@@ -19480,8 +19505,8 @@ function createHeadlessRpcServer(
       onError: reportContainedJsonRpcError,
       onInternalError: reportInternalJsonRpcError,
     });
-    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
-      stop.notify(method, params),
+    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params, options) =>
+      stop.notify(method, params, options),
     );
     activeStops.add(stop);
     let cleanedUp = false;

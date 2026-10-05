@@ -1450,6 +1450,37 @@ describe("macDesktopService recordings", () => {
     service.dispose();
   });
 
+  /*
+   * The lane's recorder is shared by every chat's clip and the user's
+   * recording. A start refused because someone else holds it must leave that
+   * recording alone; only a start the helper's watchdog answered for (which
+   * may still install its recording late) is followed by a stop.
+   */
+  it.each([
+    ["refused because another chat's clip holds the recorder", "internal_error: Lane lane-1 is already recording.", 0],
+    [
+      "answered for by the helper's watchdog",
+      "internal_error: record.start did not complete within 15s. The driver gave up waiting and answered on its behalf; the operation may still be running.",
+      1,
+    ],
+  ] as const)("a second chat's clip start %s stops the recorder only when the start was its own", async (_label, message, expectedStops) => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-1", turnId: "turn-1" });
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
+
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.startRecording] = () => {
+      throw new Error(message);
+    };
+    driver.calls.length = 0;
+    await service.beginTurn({ laneId: "lane-1", chatSessionId: "chat-2", turnId: "turn-2" });
+
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording)).toHaveLength(1);
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(expectedStops);
+    service.dispose();
+  });
+
   it("ends a turn clip whose turn id no longer matches", async () => {
     const driver = createFakeDriver({
       [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),

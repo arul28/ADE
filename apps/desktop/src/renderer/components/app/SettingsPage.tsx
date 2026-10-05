@@ -17,52 +17,15 @@ import {
   Palette,
   PlugsConnected,
   UserCircle,
-  UsersThree,
 } from "@phosphor-icons/react";
-import { AccountPage } from "../account/AccountPage";
-import { AppearanceSection } from "../settings/AppearanceSection";
-import { AppleDevicesSection } from "../settings/AppleDevicesSection";
-import { SettingsColumn } from "../settings/primitives";
-import { ChatSection } from "../settings/ChatSection";
-import { BudgetCapSettings } from "../settings/BudgetCapEditor";
-import { AboutSection } from "../settings/AboutSection";
-import { AdeCliSection } from "../settings/AdeCliSection";
-import { AdeUsageSection } from "../settings/AdeUsageSection";
-import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
-import { KeepAwakeSection } from "../settings/KeepAwakeSection";
-import { CaptureGestureSection } from "../settings/CaptureGestureSection";
-import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
-import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
-import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
-import { NotificationsSection } from "../settings/NotificationsSection";
-import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
-import { BrowserLinksSection } from "../settings/BrowserLinksSection";
-import { BrowserAgentAccessSection } from "../settings/BrowserAgentAccessSection";
-import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
-import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
-import { ProjectSection } from "../settings/ProjectSection";
-import { ProvidersSection } from "../settings/ProvidersSection";
-import { ProviderAccountsPanel } from "../settings/providers/accounts/ProviderAccountsPanel";
-import { SettingsManagerPage } from "../settings/primitives/SettingsManagerPage";
-import { SettingsSection } from "../settings/primitives/SettingsRows";
-import { providerDescriptor } from "../settings/providers/descriptors";
-import { SecretsSection } from "../settings/SecretsSection";
-import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
-import { StorageSection } from "../settings/StorageSection";
-import { ArchiveSection } from "../settings/ArchiveSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import {
-  MachineUnavailableNotice,
   SettingsMachineEyebrow,
   SettingsMachineNavRow,
-  machineSectionAvailable,
   useSettingsMachinePage,
-  type MachineSectionKind,
-  type SettingsMachinePage,
 } from "../settings/SettingsMachinesNav";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
-import { WebSettingsSection } from "../settings/WebScopePill";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
 import {
@@ -73,6 +36,8 @@ import {
   searchSettingsEntries,
   clearWebMachineBindingResolver,
   setWebMachineBindingResolver,
+  setStandaloneSettingsResolver,
+  clearStandaloneSettingsResolver,
   settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
@@ -89,6 +54,12 @@ import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "./projectSidebar/ProjectSidebarSlot";
+import {
+  BOUND_MACHINE_ENTRY_IDS,
+  STANDALONE_TAB_IDS,
+  TabContent,
+  decodeSettingsHash,
+} from "../settings/settingsTabContent";
 
 /**
  * The settings shell. Tabs, ordering, deep links, and search all resolve
@@ -131,28 +102,12 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "archive",
 ]);
 
-/** Tabs whose sections `TabContent` flows into the two-column layout. */
-const FLOW_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
-  "general",
-  "lanes-git",
-  "integrations",
-  "storage",
-]);
 
 /** Tour targets kept stable across the nine-tab split. */
 const TOUR_IDS: Partial<Record<SettingsTabId, string>> = {
   agents: "backgroundJobs",
   "lanes-git": "laneTemplates",
 };
-
-/**
- * Every setting on a tab, unreachable ones included. `WebSettingsSection` needs
- * the full list to tell "this section has nowhere to write" apart from "this
- * section was handed no ids".
- */
-function settingsEntryIdsForTab(tab: SettingsTabId): string[] {
-  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab).map((entry) => entry.id);
-}
 
 /** Whether anything on this tab needs a machine to write to. */
 function tabHasMachineSettings(tab: SettingsTabId): boolean {
@@ -176,354 +131,6 @@ function WebNoMachineNotice() {
         title: "Connect to a project to edit machine settings.",
       }}
     />
-  );
-}
-
-/**
- * A `location.hash` as the manifest wants it: no leading `#`, percent-decoding
- * applied, and a malformed escape treated as literal text rather than thrown.
- *
- * Three call sites decoded the hash themselves — provider deeplinks, tab
- * resolution, and the scroll effect — which meant three chances for one of them
- * to forget the try/catch and take the settings page down on a URL a user can
- * type by hand.
- */
-function decodeSettingsHash(hash: string): string {
-  const raw = hash.replace(/^#/, "");
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-/** `#ai-provider-<id>` — the deeplink form of one provider's page. */
-const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
-
-/** `#ai-harnesses` — the deeplink form of the harnesses page. */
-const HARNESSES_ANCHOR = "ai-harnesses";
-
-function providerIdFromHash(hash: string): string | null {
-  const raw = decodeSettingsHash(hash);
-  if (!raw.startsWith(PROVIDER_ANCHOR_PREFIX)) return null;
-  return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
-}
-
-/**
- * Agents & Models. One provider's page is a sub-view of this tab rather than a
- * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
- * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the budget cap below the provider
- * list is not part of the provider you drilled into. Dictation lives
- * on the chat tab; scheduled work lives on notifications.
- */
-function AgentsTabContent() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const requested = searchParams.get("provider")?.trim() || providerIdFromHash(location.hash);
-  const providerId = requested && providerDescriptor(requested) ? requested : null;
-  const harnessesOpen =
-    searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
-
-  const handleProviderChange = useCallback((next: string | null) => {
-    const nextParams = new URLSearchParams(searchParams);
-    if (next) nextParams.set("provider", next);
-    else nextParams.delete("provider");
-    nextParams.delete("harnesses");
-    navigate(
-      {
-        pathname: location.pathname,
-        search: `?${nextParams.toString()}`,
-        hash: next ? `#${PROVIDER_ANCHOR_PREFIX}${next}` : "",
-      },
-      { replace: true },
-    );
-  }, [location.pathname, navigate, searchParams]);
-
-  if (isWebClientMode()) {
-    return (
-      <WebSettingsSection entryIds={["agents.accounts"]}>
-        <WebAiAccountsPage />
-      </WebSettingsSection>
-    );
-  }
-
-  if (providerId) {
-    return (
-      <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
-      </WebSettingsSection>
-    );
-  }
-
-  return (
-    <>
-      <WebSettingsSection entryIds={["agents.providers"]}>
-        <ProvidersSection
-          forceRefreshOnMount
-          providerParam={null}
-          onProviderChange={handleProviderChange}
-          // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
-          harnessesParam={harnessesOpen}
-        />
-      </WebSettingsSection>
-      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime. */}
-      <WebSettingsSection entryIds={["agents.budget"]}>
-        <BudgetCapSettings />
-      </WebSettingsSection>
-    </>
-  );
-}
-
-/**
- * The web client's whole Providers tab: the connected machine's Claude and
- * Codex logins. Every other provider control signs in or reads files on that
- * machine, which a browser cannot do, so the tab shows only these two panels.
- */
-function WebAiAccountsPage() {
-  return (
-    <SettingsManagerPage
-      anchor="ai-accounts"
-      title="AI accounts"
-      description="Claude and Codex logins on the connected machine. Switching the default only changes new chats; running chats keep their account."
-      icon={<UsersThree size={15} weight="duotone" />}
-      tone="violet"
-    >
-      {([["claude", "Claude"], ["codex", "Codex"]] as const).map(([provider, label]) => (
-        <SettingsSection key={provider} title={label}>
-          <ProviderAccountsPanel provider={provider} providerLabel={label} />
-        </SettingsSection>
-      ))}
-    </SettingsManagerPage>
-  );
-}
-
-/**
- * One rendered section of a tab, and the manifest settings it holds.
- *
- * `"tab"` means "every entry on this tab", which is what a section that IS the
- * whole tab wants; naming them again would be a second list to keep in sync.
- */
-type TabSection = {
-  entryIds: readonly string[] | "tab";
-  render: () => React.ReactNode;
-  /** For pages under Machines: how the section reaches its machine. */
-  machine?: MachineSectionKind;
-  /** How the section is named in "not available here" notes. */
-  title?: string;
-  /** `full` spans both columns of a wide page instead of taking one. */
-  span?: "full";
-  /** Stack under the previous section in the same cell of a wide page. */
-  stack?: true;
-};
-
-/**
- * What each tab renders, as data rather than as an eleven-arm switch.
- *
- * Every arm was the same shape — a `WebSettingsSection` wrapping one or two
- * section components — so the switch was a table written out longhand, and the
- * `entryIds` list beside each section is the part that actually matters: on the
- * desktop `WebSettingsSection` is a passthrough, and in the browser it uses
- * those ids to drop sections the manifest marks unreachable and head the rest
- * with their scope.
- *
- * `agents` is absent because it is a sub-view router, not a list of sections;
- * `TabContent` handles it directly.
- */
-const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
-  account: [
-    {
-      entryIds: ["account.profile", "account.computers"],
-      // The account page, without its own page chrome.
-      render: () => (
-        <div id="account-profile" data-settings-anchor="account-profile">
-          <AccountPage embedded />
-        </div>
-      ),
-    },
-  ],
-  general: [
-    {
-      entryIds: ["general.about", "general.auto-updates"],
-      // About has no section file of its own, so the page supplies its anchor.
-      render: () => (
-        <div id="about" data-settings-anchor="about">
-          <AboutSection />
-        </div>
-      ),
-      machine: "local",
-      title: "About ADE and updates",
-    },
-    { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health" },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", stack: true },
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", stack: true },
-    {
-      entryIds: ["general.browser-agent-access"],
-      render: () => <BrowserAgentAccessSection />,
-      machine: "local",
-      title: "ADE browser access",
-    },
-    // `.ade/local.yaml`, read by the link router of the window bound to that
-    // checkout, so it has an effect only on the tab's own machine.
-    { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
-    // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", stack: true },
-    {
-      entryIds: ["general.diagnostics-sharing"],
-      render: () => <DiagnosticsSharingSection />,
-      machine: "local",
-      title: "Diagnostics sharing",
-    },
-  ],
-  appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
-  apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
-  chat: [
-    {
-      entryIds: "tab",
-      render: () => <ChatSection />,
-    },
-  ],
-  "lanes-git": [
-    {
-      entryIds: [
-        "lanes-git.new-lane-base",
-        "lanes-git.auto-rebase",
-        "lanes-git.rebase-suggestions",
-        "lanes-git.rebase-min-behind",
-      ],
-      render: () => <LaneBehaviorSection />,
-      machine: "routed",
-      title: "Lane behaviour",
-    },
-    {
-      entryIds: ["lanes-git.pr-chat-transcripts"],
-      render: () => <PrChatTranscriptsSection />,
-      machine: "routed",
-      title: "PR chat transcripts",
-    },
-    // Last, so the two short sections above pair up and the full-width
-    // template manager sits under them.
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", span: "full" },
-  ],
-  // Connections live in the machine's credential store and are read by its
-  // runtime. Their calls follow the tab's binding (no pin yet), so they are
-  // shown for the machine the tab is bound to.
-  integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "bound", title: "GitHub" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear" },
-  ],
-  notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
-  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  storage: [
-    {
-      entryIds: ["storage.usage", "storage.lane-rules", "storage.diagnostics"],
-      render: () => <StorageSection />,
-      machine: "routed",
-      title: "Disk usage and cleanup",
-      span: "full",
-    },
-    {
-      entryIds: ["storage.session-lifecycle"],
-      render: () => <SessionLifecycleSection />,
-      machine: "routed",
-      title: "Session lifecycle",
-      span: "full",
-    },
-  ],
-  // Archived lanes and sessions belong to one machine's checkout, so the page
-  // reads and acts through that machine's pin.
-  archive: [{ entryIds: ["archive.items"], render: () => <ArchiveSection />, machine: "routed" }],
-  stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
-};
-
-/**
- * Providers is routed: every runtime call, the key store, provider accounts,
- * login terminals and auth-status feeds take the machine's pin. What stays on
- * This computer (opening a config file in the OS) is disabled in place.
- */
-const AGENTS_TAB_KIND: MachineSectionKind = "routed";
-
-/** Manifest entries whose section only works on the tab's own machine. */
-const BOUND_MACHINE_ENTRY_IDS: ReadonlySet<string> = new Set(
-  Object.values(TAB_SECTIONS).flatMap((sections) =>
-    (sections ?? []).filter((section) => section.machine === "bound")
-      .flatMap((section) => (section.entryIds === "tab" ? [] : [...section.entryIds]))),
-);
-
-function TabContent({
-  tab,
-  machine,
-}: {
-  tab: SettingsTabId;
-  /** The machine a Machines page is for. Null for Account and Project pages. */
-  machine: SettingsMachinePage | null;
-}) {
-  if (machine && !machine.online) {
-    return <MachineUnavailableNotice machine={machine} />;
-  }
-  // Providers is the one tab that is not a list of sections: it routes between
-  // the grid and one provider's page off `?provider=`.
-  if (tab === "agents") {
-    if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
-      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
-    }
-    return (
-      <SettingsColumn wide>
-        <AgentsTabContent />
-      </SettingsColumn>
-    );
-  }
-  const sections = TAB_SECTIONS[tab];
-  if (!sections) return null;
-  const shown = machine
-    ? sections.filter((section) => !section.machine || machineSectionAvailable(section.machine, machine))
-    : sections;
-  const hiddenTitles = machine
-    ? sections.filter((section) => !shown.includes(section)).map((section) => section.title ?? "")
-      .filter(Boolean)
-    : [];
-  const items = shown.map((section) => {
-    const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
-    return { section, entryIds, node: (
-      <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-        {section.render()}
-      </WebSettingsSection>
-    ) };
-  });
-  const notice = machine && hiddenTitles.length > 0 ? (
-    <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
-  ) : null;
-  // A tab whose one section is the whole page lays itself out.
-  if (items.length === 1 && TAB_SECTIONS[tab]!.length === 1 && !FLOW_TABS.has(tab)) {
-    return (
-      <>
-        {items[0]!.node}
-        {notice}
-      </>
-    );
-  }
-  // Otherwise the sections flow into a two-column grid on a wide page. A
-  // `stack` section joins the previous cell, so a short pair can sit beside
-  // one tall section and the row still lines up.
-  const cells: { key: string; span?: "full"; nodes: React.ReactNode[] }[] = [];
-  for (const { section, entryIds, node } of items) {
-    const last = cells[cells.length - 1];
-    if (section.stack && last) last.nodes.push(node);
-    else cells.push({ key: entryIds.join(","), span: section.span, nodes: [node] });
-  }
-  return (
-    <SettingsColumn wide>
-      <div className="ade-settings-flow">
-        {cells.map((cell) => (
-          <div key={cell.key} className="ade-settings-flow-item" data-span={cell.span}>
-            {cell.nodes}
-          </div>
-        ))}
-      </div>
-      {notice}
-    </SettingsColumn>
   );
 }
 
@@ -600,7 +207,11 @@ const FLASH_STYLES = (
 );
 
 
-export function SettingsPage({ active = true }: { active?: boolean } = {}) {
+export function SettingsPage({
+  active = true,
+  standalone = false,
+  onClose,
+}: { active?: boolean; standalone?: boolean; onClose?: () => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   // Read-only: every write to the settings URL goes through `navigate` so the
@@ -645,10 +256,31 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     return () => clearWebMachineBindingResolver(installed);
   }, []);
   const webMachineSectionsHidden = isWebClientMode() && !machineBound;
+  // Standalone Settings, opened from the new-project screen. Installed during
+  // render like the web resolver, because the manifest answers
+  // `isSettingAvailable` mid-render. Only the standalone page installs one, and
+  // its unmount clears only its own: the project page's unmount can land in
+  // the same commit as the standalone page's first render.
+  const standaloneResolverRef = useRef<() => boolean>(() => true);
+  if (standalone) setStandaloneSettingsResolver(standaloneResolverRef.current);
+  useEffect(() => {
+    if (!standalone) return undefined;
+    const installed = standaloneResolverRef.current;
+    return () => clearStandaloneSettingsResolver(installed);
+  }, [standalone]);
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
-  const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
+  const tabs = useMemo(
+    () => {
+      const all = availableSettingsTabs();
+      return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id)) : all;
+    },
+    // `machineBound` is read by the manifest's web resolver, not here: the
+    // list has to be recomputed when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [machineBound, standalone],
+  );
   // Explicit, so reordering the sidebar cannot move where Settings opens.
   const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
     ? DEFAULT_SETTINGS_TAB
@@ -1038,6 +670,18 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              {/* Standalone Settings has no project to return to but the
+                  new-project screen, so it carries its own Back. */}
+              {standalone && onClose ? (
+                <button
+                  type="button"
+                  aria-label="Back to new project"
+                  onClick={onClose}
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer", flexShrink: 0, marginLeft: -6 }}
+                >
+                  <ArrowLeft size={18} weight="bold" />
+                </button>
+              ) : null}
               {subViewOpen ? (
                 <button
                   type="button"
@@ -1147,7 +791,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
             <SettingsMachineScopeProvider key={machinePageScope.machineId} scope={machinePageScope}>
-              <TabContent tab={section} machine={machinePageScope} />
+              <TabContent tab={section} machine={machinePageScope} standalone={standalone} />
             </SettingsMachineScopeProvider>
           ) : (
             <TabContent tab={section} machine={null} />
