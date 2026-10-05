@@ -1105,6 +1105,8 @@ type SyncRuntime = {
   pendingLaneReadDepth: LaneReadDepth;
   /** Lane ids a completed lane read did not explain, so we stop re-asking. */
   unresolvedLaneIdsByMachineId: Map<string, Set<string>>;
+  /** `connectionsReadSignature` of the last snapshot that forced a read. */
+  connectionsReadSignature: string | null;
 };
 
 /**
@@ -1151,6 +1153,7 @@ const runtime: SyncRuntime = {
   laneStatusReadAtMsByMachineId: new Map(),
   pendingLaneReadDepth: "identity",
   unresolvedLaneIdsByMachineId: new Map(),
+  connectionsReadSignature: null,
 };
 
 /**
@@ -1996,13 +1999,35 @@ function resetMachineTracking(): void {
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();
   runtime.unresolvedLaneIdsByMachineId.clear();
+  runtime.connectionsReadSignature = null;
+}
+
+/**
+ * What in a connection snapshot can change which machines the union reads, or
+ * what it finds there. Everything else (timestamps, errors on a machine that
+ * stays down) is not a reason to read anyone.
+ */
+function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionStatus[]): string {
+  return connections
+    .map((connection) => [
+      connection.target.id,
+      connection.state,
+      connection.projects.map((project) => `${project.projectId}@${project.rootPath}`).sort().join(","),
+    ].join("|"))
+    .sort()
+    .join("\n");
 }
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
   applyReachability();
   // A machine that just appeared has no rows at all, so its first read has to be
-  // the full one or it renders statusless until the cadence comes round.
+  // the full one or it renders statusless until the cadence comes round. A
+  // snapshot that changes nothing the union reads is not one: forcing a status
+  // read of every machine on each of those made the reads produce the snapshots.
+  const signature = connectionsReadSignature(runtime.connections);
+  if (signature === runtime.connectionsReadSignature) return;
+  runtime.connectionsReadSignature = signature;
   scheduleRefresh("status");
 }
 

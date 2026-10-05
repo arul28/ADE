@@ -1581,14 +1581,25 @@ export class RemoteConnectionService {
         };
       }
     }
-    this.statusById.set(targetId, {
+    const next = {
       ...current,
       ...normalizedPatch,
       state: (normalizedPatch.state ??
         current.state ??
         "idle") as RemoteRuntimeConnectionState,
-    });
-    this.emit();
+    };
+    this.statusById.set(targetId, next);
+    // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
+    // Broadcasting that told every window "the connections changed", and the
+    // cross-machine lane union answered each one with a status read of every
+    // machine -- itself a call, so the loop ran several times a second. Only a
+    // change a window can act on is broadcast.
+    const changedKeys = new Set([...Object.keys(current), ...Object.keys(next)]);
+    changedKeys.delete("lastAttemptedAt");
+    const meaningful = [...changedKeys].some(
+      (key) => (current as Record<string, unknown>)[key] !== (next as Record<string, unknown>)[key],
+    );
+    if (meaningful) this.emit();
   }
 
   private getDisconnectGeneration(targetId: string): number {
