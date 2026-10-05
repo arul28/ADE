@@ -84,7 +84,8 @@ type MacDesktopWindowCardProps = {
   /** Resolved PNG for this app. The window row may not carry one of its own. */
   iconPng: string | null;
   onSelect: (windowId: number) => void;
-  onRelease: (windowId: number) => void;
+  /** Absent where a window cannot leave the lane's screen (a private Windows screen). */
+  onRelease?: (windowId: number) => void;
 };
 
 const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
@@ -126,12 +127,14 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
           windows of one app apart, and it does not fit on the face. */}
       <span className={cn(MAC_DESKTOP_LIST_TITLE, "text-[11.5px]")}>{entry.appName}</span>
       {entry.minimized ? <MacDesktopMinimizedBadge /> : null}
-      <MacDesktopRowAction
-        label="Release"
-        testId="mac-desktop-window-release"
-        title={`Send “${title}” back to your main screen`}
-        onClick={() => onRelease(entry.id)}
-      />
+      {onRelease ? (
+        <MacDesktopRowAction
+          label="Release"
+          testId="mac-desktop-window-release"
+          title={`Send “${title}” back to your main screen`}
+          onClick={() => onRelease(entry.id)}
+        />
+      ) : null}
     </div>
   );
 });
@@ -160,6 +163,9 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     windowsDesktop: display ? status?.windowsDesktop : null,
   });
   const windowsShared = Boolean(display) && seatKind === "windows-shared";
+  // A private Windows screen is another Windows session: a window cannot move
+  // between it and the user's screen, so the two "move" controls are not drawn.
+  const windowsMovable = seatKind !== "windows-private";
   const { action: stopLabel, consequence: stopConsequence } = STOP_CONFIRM_COPY[seatKind];
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
@@ -380,13 +386,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
     : null;
   const presentAction = macDesktopPresentAction({
-    hostIsLocal: Boolean(status?.hostIsLocal),
+    hostIsLocal: Boolean(status?.hostIsLocal) && windowsMovable,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
   const controls = macDesktopStripControls({
     expanded,
-    hostIsLocal: Boolean(status?.hostIsLocal),
+    hostIsLocal: Boolean(status?.hostIsLocal) && windowsMovable,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
@@ -1052,23 +1058,25 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 selected={entry.id === selectedWindowId}
                 iconPng={claimAppIcons[entry.bundleId ?? entry.appName] ?? entry.iconPng ?? null}
                 onSelect={selectWindow}
-                onRelease={releaseWindowById}
+                onRelease={windowsMovable ? releaseWindowById : undefined}
               />
             ))}
-            <button
-              type="button"
-              data-testid="mac-desktop-add-app"
-              onClick={() => setPickerOpen(true)}
-              title="Add an app to this desktop"
-              className={cn(
-                "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
-                "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
-                "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
-              )}
-            >
-              <Plus size={12} />
-              {parkedWindows.length ? <span className="sr-only">Add app</span> : "Add app"}
-            </button>
+            {windowsMovable ? (
+              <button
+                type="button"
+                data-testid="mac-desktop-add-app"
+                onClick={() => setPickerOpen(true)}
+                title="Add an app to this desktop"
+                className={cn(
+                  "flex h-8 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2",
+                  "border border-dashed border-border/70 text-[11.5px] text-muted-fg",
+                  "transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg",
+                )}
+              >
+                <Plus size={12} />
+                {parkedWindows.length ? <span className="sr-only">Add app</span> : "Add app"}
+              </button>
+            ) : null}
           </div>
 
         </div>

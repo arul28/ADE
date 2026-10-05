@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -186,26 +186,49 @@ function readOwnProcessStartTimeMs(
   platform: NodeJS.Platform = process.platform,
 ): number | null {
   if (platform !== "win32") return readProcessStartTimeMs(process.pid, platform);
+  try {
+    return ownStartTimeFromOutput(execFileSync(
+      resolveTrustedWindowsTool("powershell"),
+      windowsOwnStartTimeArgs(),
+      { encoding: "utf8", timeout: WINDOWS_OWN_START_TIME_TIMEOUT_MS, maxBuffer: 16 * 1024, windowsHide: true },
+    ));
+  } catch {
+    return null;
+  }
+}
+
+// Starting the PowerShell runtime alone routinely outlasts the 2s POSIX budget
+// on a cold or Defender-contended box (see `defaultScanText`). Timing out here
+// costs the machine its recovery identity for the whole life of the lock, and
+// this runs once per acquisition, so buy the time.
+const WINDOWS_OWN_START_TIME_TIMEOUT_MS = 10_000;
+const WINDOWS_OWNER_MATCH_TIMEOUT_MS = 2_000;
+
+function windowsOwnStartTimeArgs(): string[] {
   const script = [
     `$target = Get-Process -Id ${Math.floor(process.pid)} -ErrorAction SilentlyContinue`,
     "if ($null -eq $target) { exit 3 }",
     "[Console]::Out.Write($target.StartTime.ToUniversalTime().ToString('o'))",
   ].join("; ");
-  try {
-    const raw = execFileSync(
-      resolveTrustedWindowsTool("powershell"),
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      // Starting the PowerShell runtime alone routinely outlasts the 2s POSIX
-      // budget on a cold or Defender-contended box (see `defaultScanText`).
-      // Timing out here costs the machine its recovery identity for the whole
-      // life of the lock, and this runs once per acquisition, so buy the time.
-      { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true },
-    );
-    const startedAtMs = Date.parse(raw.trim());
-    return Number.isFinite(startedAtMs) ? startedAtMs : null;
-  } catch {
-    return null;
-  }
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function ownStartTimeFromOutput(raw: string): number | null {
+  const startedAtMs = Date.parse(raw.trim());
+  return Number.isFinite(startedAtMs) ? startedAtMs : null;
+}
+
+function windowsOwnerMatchArgs(owner: SyncHostSingletonOwner): string[] {
+  const script = [
+    `$target = Get-Process -Id ${Math.floor(owner.pid)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $target) { exit 3 }",
+    "$executablePath = $null",
+    "$startedAt = $null",
+    "try { $executablePath = $target.Path } catch {}",
+    "try { $startedAt = $target.StartTime.ToUniversalTime().ToString('o') } catch {}",
+    "[Console]::Out.Write((@{ executablePath = $executablePath; startedAt = $startedAt } | ConvertTo-Json -Compress))",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
 
 function executableFromCommandLine(commandLine: string | null): string | null {
@@ -227,23 +250,14 @@ export function defaultProcessMatchesOwner(
     if (actualStartedAtMs === null || !Number.isFinite(actualStartedAtMs)) return null;
     return Math.abs(actualStartedAtMs - expectedStartedAtMs) <= 2_000;
   }
-  const script = [
-    `$target = Get-Process -Id ${Math.floor(owner.pid)} -ErrorAction SilentlyContinue`,
-    "if ($null -eq $target) { exit 3 }",
-    "$executablePath = $null",
-    "$startedAt = $null",
-    "try { $executablePath = $target.Path } catch {}",
-    "try { $startedAt = $target.StartTime.ToUniversalTime().ToString('o') } catch {}",
-    "[Console]::Out.Write((@{ executablePath = $executablePath; startedAt = $startedAt } | ConvertTo-Json -Compress))",
-  ].join("; ");
   let raw = "";
   try {
     raw = execFileSync(
       resolveTrustedWindowsTool("powershell"),
-      ["-NoProfile", "-NonInteractive", "-Command", script],
+      windowsOwnerMatchArgs(owner),
       {
         encoding: "utf8",
-        timeout: 2_000,
+        timeout: WINDOWS_OWNER_MATCH_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
         windowsHide: true,
       },
@@ -253,6 +267,14 @@ export function defaultProcessMatchesOwner(
     // the lock rather than risking two live sync hosts.
     return null;
   }
+  return windowsOwnerMatchFromOutput(owner, raw);
+}
+
+/** The win32 verdict of `defaultProcessMatchesOwner` from its PowerShell output. */
+function windowsOwnerMatchFromOutput(owner: SyncHostSingletonOwner, raw: string): boolean | null {
+  const expectedStartedAtMs = owner.processStartedAt
+    ? Date.parse(owner.processStartedAt)
+    : Number.NaN;
   try {
     const parsed = JSON.parse(raw) as {
       executablePath?: unknown;
@@ -561,13 +583,15 @@ type SyncHostListenerScanDeps = {
   readText?: (command: string, args: string[]) => string;
 };
 
+const WINDOWS_LISTENER_SCAN_TIMEOUT_MS = 15_000;
+
 function defaultScanText(command: string, args: string[]): string {
   try {
     return execFileSync(command, args, {
       encoding: "utf8",
       // PowerShell needs to start a runtime and load Get-NetTCPConnection plus
       // CIM before it answers; the 2s POSIX budget kills it every time.
-      timeout: command.toLowerCase().endsWith("powershell.exe") ? 15_000 : 2_000,
+      timeout: command.toLowerCase().endsWith("powershell.exe") ? WINDOWS_LISTENER_SCAN_TIMEOUT_MS : 2_000,
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
     });
@@ -803,6 +827,80 @@ export function acquireSyncHostSingleton(
       }
     },
   };
+}
+
+function execFileText(
+  command: string,
+  args: string[],
+  timeout: number,
+  maxBuffer: number,
+): Promise<{ stdout: string; failed: boolean }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { encoding: "utf8", timeout, maxBuffer, windowsHide: true }, (error, stdout) => {
+      resolve({ stdout: typeof stdout === "string" ? stdout : "", failed: Boolean(error) });
+    });
+  });
+}
+
+/**
+ * `acquireSyncHostSingleton` for the brain's event loop.
+ *
+ * On Windows each probe the acquire needs is a PowerShell start: the owner
+ * check of a live lock holder (killed at 2 s), the machine-wide listener scan
+ * (about 1 s warm, longer cold) and this process's own start time. Run
+ * synchronously they froze the brain for 2-5 s around every start. Here they
+ * run as child processes the event loop does not wait on, with the same
+ * command lines and budgets, and their answers feed the same synchronous lock
+ * logic, so the verdicts do not change. Elsewhere, and whenever a caller
+ * injects its own probes, this is `acquireSyncHostSingleton`.
+ */
+export async function acquireSyncHostSingletonAsync(
+  args: { port?: number | null; projectRoot?: string | null },
+  deps: SyncHostSingletonDeps = {},
+): Promise<SyncHostSingletonLease> {
+  const platform = deps.platform ?? process.platform;
+  const injected = Boolean(
+    deps.processMatchesOwner || deps.scanListeners || deps.scanListenersReadText || deps.readOwnProcessStartTimeMs,
+  );
+  if (platform !== "win32" || injected || isTestProcess()) return acquireSyncHostSingleton(args, deps);
+  let powershell: string;
+  try {
+    powershell = resolveTrustedWindowsTool("powershell");
+  } catch {
+    return acquireSyncHostSingleton(args, deps);
+  }
+  const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
+  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const lockOwner = safeReadLock(lockPath, platform)?.owner ?? null;
+  const checkOwner = lockOwner && lockOwner.pid !== process.pid && pidAlive(lockOwner.pid) ? lockOwner : null;
+  const [ownerOutput, scanOutput, startOutput] = await Promise.all([
+    checkOwner
+      ? execFileText(powershell, windowsOwnerMatchArgs(checkOwner), WINDOWS_OWNER_MATCH_TIMEOUT_MS, 64 * 1024)
+      : null,
+    deps.skipListenerScan
+      ? null
+      : execFileText(
+        powershell,
+        buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT),
+        WINDOWS_LISTENER_SCAN_TIMEOUT_MS,
+        4 * 1024 * 1024,
+      ),
+    execFileText(powershell, windowsOwnStartTimeArgs(), WINDOWS_OWN_START_TIME_TIMEOUT_MS, 16 * 1024),
+  ]);
+  const ownerVerdict = checkOwner && ownerOutput && !ownerOutput.failed
+    ? windowsOwnerMatchFromOutput(checkOwner, ownerOutput.stdout)
+    : null;
+  const startedAtMs = startOutput.failed ? null : ownStartTimeFromOutput(startOutput.stdout);
+  return acquireSyncHostSingleton(args, {
+    ...deps,
+    // The lock may have changed hands while the probes ran; any other owner
+    // gets the synchronous check, as before.
+    processMatchesOwner: (owner) => checkOwner && owner.id === checkOwner.id && owner.pid === checkOwner.pid
+      ? ownerVerdict
+      : defaultProcessMatchesOwner(owner, platform),
+    ...(scanOutput ? { scanListeners: () => scanWindowsSyncHostListeners(() => scanOutput.stdout) } : {}),
+    readOwnProcessStartTimeMs: () => startedAtMs,
+  });
 }
 
 export function formatSyncHostSingletonConflictMessage(

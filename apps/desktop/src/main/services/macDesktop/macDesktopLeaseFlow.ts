@@ -97,7 +97,9 @@ export async function askChatAllowDeny(
         header: args.header,
         question: args.question,
         options: [
-          { label: "Allow", value: "allow", recommended: args.recommendAllow },
+          // The card draws the question and its options, not the body: what
+          // Allow means for the user rides on the Allow option.
+          { label: "Allow", value: "allow", description: args.body, recommended: args.recommendAllow },
           { label: "Don't allow", value: "deny" },
         ],
         allowsFreeform: false,

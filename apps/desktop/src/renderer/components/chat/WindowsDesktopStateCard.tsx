@@ -163,7 +163,8 @@ export function WindowsDesktopStateCard({
   const [, setDismissTick] = useState(0);
 
   const api = window.ade.macDesktop;
-  const holderName = windows.heldByLaneName?.trim() || "Another lane";
+  const holderLane = windows.heldByLaneName?.trim();
+  const holderName = holderLane ? `Lane ${holderLane}` : "Another lane";
   const heldByOther = Boolean(windows.heldByLaneId && windows.heldByLaneId !== laneId);
   const hostOperation = windowsDesktopOperationFor(windows, laneId);
   const errorOptions = { laneId, laneName, passwordSaved: windows.passwordSaved };
@@ -378,7 +379,7 @@ export function WindowsDesktopStateCard({
               className={MAC_DESKTOP_SECONDARY_BUTTON}
               onClick={() => void (async () => {
                 const confirmed = await confirmDialog({
-                  title: `Take the private screen from ${holderName}?`,
+                  title: `Take the private screen from ${holderLane ? `lane ${holderLane}` : "the other lane"}?`,
                   message: "Their screen signs out and its apps close. Nothing carries over.",
                   confirmLabel: "Take over",
                 });

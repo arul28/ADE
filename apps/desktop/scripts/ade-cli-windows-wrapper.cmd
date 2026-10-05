@@ -40,10 +40,12 @@ if defined NODE_PATH (
   )
 )
 
+rem Every branch below runs the CLI through :run. `exit /b %ERRORLEVEL%` inside
+rem a parenthesized block is expanded when the block is parsed, before the CLI
+rem runs, so it always returned 0 and a failed command looked like a success.
 if defined ADE_CLI_NODE (
-  if defined NODE_PATH_VALUE set "NODE_PATH=%NODE_PATH_VALUE%"
-  "%ADE_CLI_NODE%" "%CLI_JS%" %*
-  exit /b %ERRORLEVEL%
+  set "ADE_RUN_EXE=%ADE_CLI_NODE%"
+  goto :run
 )
 
 rem Interactive full-screen commands cannot run under the bundled Electron on
@@ -61,9 +63,8 @@ if defined ADE_NEEDS_TTY (
   if not errorlevel 1 (
     node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)" >nul 2>nul
     if not errorlevel 1 (
-      if defined NODE_PATH_VALUE set "NODE_PATH=%NODE_PATH_VALUE%"
-      node "%CLI_JS%" %*
-      exit /b %ERRORLEVEL%
+      set "ADE_RUN_EXE=node"
+      goto :run
     )
   )
   rem Reaching here means no Node 22+ was found. The bundled Electron cannot
@@ -79,20 +80,23 @@ if defined ADE_NEEDS_TTY (
 
 if exist "%APP_EXE%" (
   set "ELECTRON_RUN_AS_NODE=1"
-  if defined NODE_PATH_VALUE set "NODE_PATH=%NODE_PATH_VALUE%"
-  "%APP_EXE%" "%CLI_JS%" %*
-  exit /b %ERRORLEVEL%
+  set "ADE_RUN_EXE=%APP_EXE%"
+  goto :run
 )
 
 where node >nul 2>nul
 if not errorlevel 1 (
   node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)" >nul 2>nul
   if not errorlevel 1 (
-    if defined NODE_PATH_VALUE set "NODE_PATH=%NODE_PATH_VALUE%"
-    node "%CLI_JS%" %*
-    exit /b %ERRORLEVEL%
+    set "ADE_RUN_EXE=node"
+    goto :run
   )
 )
 
 echo ade: Node.js 22+ or the packaged ADE.exe runtime is required to run this CLI. 1>&2
 exit /b 127
+
+:run
+if defined NODE_PATH_VALUE set "NODE_PATH=%NODE_PATH_VALUE%"
+"%ADE_RUN_EXE%" "%CLI_JS%" %*
+exit /b %ERRORLEVEL%

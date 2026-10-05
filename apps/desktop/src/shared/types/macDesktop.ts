@@ -1713,7 +1713,7 @@ export const WINDOWS_DESKTOP_WORK_TOOL_ID = "windows-desktop" as const;
  * ask card shows. Kept here so the pane and the thread cannot drift.
  */
 export const WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE =
-  "The private Windows screen is not available. ADE can still work on your main Windows desktop, but it will take over the window you are using while it acts.";
+  "The agent works on your main Windows desktop, in windows it opens there. It takes over the window you are using while it acts.";
 
 /** `providerMetadata` key on the shared-seat consent card. */
 export const WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY = "windowsDesktopSharedConsent" as const;

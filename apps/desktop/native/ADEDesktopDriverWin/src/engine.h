@@ -98,8 +98,9 @@ class Engine {
   Json stopStream(const Json& req);
   Json startRecording(const Json& req);
   Json stopRecording(const Json& req);
-  // window.focus / window.minimize / window.close for one lane window.
-  Json windowCommand(const std::string& op, const Json& req);
+  // window.focus / window.minimize / window.close for one lane window. Close
+  // releases `operation` while it waits for the window to go.
+  Json windowCommand(const std::string& op, const Json& req, std::unique_lock<std::recursive_mutex>& operation);
   // The lane window `windowId` names, or a typed error.
   HWND requireLaneWindow(Lane& lane, int64_t windowId);
 

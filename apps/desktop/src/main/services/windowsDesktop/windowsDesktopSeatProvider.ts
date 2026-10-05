@@ -40,6 +40,9 @@ import {
   type WindowsDesktopPhase,
 } from "../../../shared/types/macDesktop";
 
+/** The product part of a Windows lane screen's display name. */
+const WINDOWS_DISPLAY_NAME_PREFIX = "Windows Desktop";
+
 /**
  * How long a private `display.create` waits for the interactive Windows sign-in
  * (120s for the user to type a password) plus the child pipe connect (30s),
@@ -127,6 +130,18 @@ function privateUnavailableFor(state: WindowsDesktopHostState): WindowsDesktopPr
  * `privateUnavailableReason` are derived from `state` here rather than trusted
  * from the wire, so the cards key off one boolean and one code.
  */
+/**
+ * The driver reports the holder by the display name it was given
+ * ("Windows Desktop · <lane>"). Clients name the lane, so the product prefix
+ * comes off; a display with no lane name ("Windows Desktop lane") has none.
+ */
+function laneNameOfHolder(displayName: string | null): string | null {
+  if (!displayName) return null;
+  const prefix = `${WINDOWS_DISPLAY_NAME_PREFIX} · `;
+  if (displayName.startsWith(prefix)) return displayName.slice(prefix.length).trim() || null;
+  return displayName === `${WINDOWS_DISPLAY_NAME_PREFIX} lane` ? null : displayName;
+}
+
 export function asWindowsDesktopStatus(raw: unknown): WindowsDesktopStatus {
   const record = asRecord(asRecord(raw).windowsDesktop ?? raw);
   const onConsole = asBoolean(record.inConsoleSession ?? record.hostIsConsoleSession, true);
@@ -144,7 +159,7 @@ export function asWindowsDesktopStatus(raw: unknown): WindowsDesktopStatus {
     childSessionId: asNullableNumber(record.childSessionId),
     edition: asNullableString(record.edition),
     heldByLaneId: asNullableString(record.holderLaneId ?? record.heldByLaneId),
-    heldByLaneName: asNullableString(record.heldByLaneName),
+    heldByLaneName: laneNameOfHolder(asNullableString(record.heldByLaneName)),
     seatMode: asSeatMode(record.seatMode),
     privateAvailable: state === "ready",
     privateUnavailableReason: privateUnavailableFor(state),
@@ -238,6 +253,6 @@ export function createWindowsDesktopSeatAdapter(args: {
     // reports both as granted and never probes or prompts.
     permissionsSupported: false,
     // The pane and the CLI print this; "ADE · <lane>" read as a Mac display.
-    displayName: (laneName) => macDesktopDisplayName(laneName, "Windows Desktop"),
+    displayName: (laneName) => macDesktopDisplayName(laneName, WINDOWS_DISPLAY_NAME_PREFIX),
   };
 }

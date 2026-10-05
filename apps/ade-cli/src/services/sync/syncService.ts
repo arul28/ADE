@@ -91,7 +91,7 @@ import {
 } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
-import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
+import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
@@ -972,7 +972,7 @@ export function createSyncService(args: SyncServiceArgs) {
     const localDevice = deviceRegistryService.ensureLocalDevice();
     const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
     let lastError: unknown = null;
-    hostSingletonLease ??= acquireSyncHostSingleton({ projectRoot: args.projectRoot });
+    hostSingletonLease ??= await acquireSyncHostSingletonAsync({ projectRoot: args.projectRoot });
     const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
       db: args.db,
       logger: args.logger,

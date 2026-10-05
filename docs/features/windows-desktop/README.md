@@ -221,6 +221,15 @@ Policy lives at the service and action boundaries, never in prompts:
 
 ## Tooling
 
+- On a private screen the pane has no **Release**, **Add app** or **Bring to
+  my screen**: a window cannot move between two Windows sessions. The shared
+  seat keeps them.
+- The proof viewer shows a demo video's steps as chapters; a click seeks the
+  video to that step.
+- The consent card for the main desktop explains, on its **Allow** option, what
+  the agent does there and why it asks.
+- The `ade` command returns the exit code of the CLI on Windows, so a failed
+  command is not zero.
 - The Work tools pane shows **Windows Desktop** on a Windows host and **Mac
   Desktop** on a Mac host; Browser and App Control show on both. Apple is
   Mac-only. A tool for the other platform is not shown at all; a host of the

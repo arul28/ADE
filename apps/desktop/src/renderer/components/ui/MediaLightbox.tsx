@@ -1,5 +1,6 @@
 import { Check, Copy, DownloadSimple, X } from "@phosphor-icons/react";
 import React, { useCallback, useRef, useState } from "react";
+import { formatProofDuration } from "../../../shared/proofProvenance";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "./cn";
 import { Dialog } from "./dialog";
@@ -10,7 +11,8 @@ import { Dialog } from "./dialog";
  * The media is the whole view: it fits the window at its own aspect, with no
  * header, frame or rounded corners, so nothing of it is cut. A small toolbar
  * shows on hover over its top edge with the tools every opened picture needs:
- * copy (pictures), download, close.
+ * copy (pictures), download, close. A video with chapters also shows them
+ * there, on the left; a click on one seeks the video to that step.
  *
  * `readDataUrl` gives the bytes for copy and download. The renderer's CSP
  * blocks `fetch` of `ade-artifact:` and loopback URLs, so a caller whose
@@ -28,6 +30,7 @@ export function MediaLightbox({
   saveToDisk,
   onMediaError,
   failureText = null,
+  chapters,
   onClose,
 }: {
   src: string;
@@ -45,8 +48,11 @@ export function MediaLightbox({
   onMediaError?: () => void;
   /** Set once the media failed to load: shown in its place, with only Close. */
   failureText?: string | null;
+  /** A video's steps, in seconds from its start. Fewer than two show nothing. */
+  chapters?: ReadonlyArray<{ t: number; text: string }>;
   onClose: () => void;
 }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState<"copy" | "download" | null>(null);
@@ -141,6 +147,7 @@ export function MediaLightbox({
           </div>
         ) : kind === "video" ? (
           <video
+            ref={videoRef}
             src={src}
             controls
             autoPlay
@@ -157,6 +164,29 @@ export function MediaLightbox({
             className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] object-contain"
           />
         )}
+        {kind === "video" && !failureText && chapters && chapters.length >= 2 ? (
+          <div
+            data-testid="media-lightbox-chapters"
+            className="absolute left-2.5 right-28 top-2.5 flex flex-wrap items-center gap-1 opacity-0 transition-opacity duration-150 has-[:focus-visible]:opacity-100 group-hover/lightbox:opacity-100"
+          >
+            {chapters.map((chapter, index) => (
+              <button
+                key={`${index}:${chapter.t}`}
+                type="button"
+                className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-white/[0.12] bg-black/60 px-2 font-sans text-[11px] text-white/80 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
+                onClick={() => {
+                  const video = videoRef.current;
+                  if (!video) return;
+                  video.currentTime = chapter.t;
+                  void video.play().catch(() => {});
+                }}
+              >
+                <span className="tabular-nums text-white/55">{formatProofDuration(chapter.t * 1000)}</span>
+                <span className="truncate">{chapter.text}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div
           // Hidden until the pointer is over the media or a tool has keyboard focus, so
           // the picture shows whole and unobstructed.
