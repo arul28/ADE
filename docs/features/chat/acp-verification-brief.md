@@ -117,7 +117,7 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   and a Copilot row with an `agent_id` exist only as binary strings and
   fixtures; a long Grok session (80% context) and a Copilot subagent turn
   would confirm them.
-- Qwen (verified live on 0.22.3 and 0.25.0; the 0.24.0 fixture is retained):
+- Qwen (verified live on 0.22.3 and 0.25.0; 0.24.0 was captured earlier):
   `--session-id` vs `--resume`/`--continue` and `--yolo` vs `--approval-mode`
   are parse errors on all three. `session/close` is **not** implemented
   (-32601 on 0.22.3/0.24.0/0.25.0). Cancel is a **notification**: the request

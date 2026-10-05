@@ -517,8 +517,8 @@ describe("handshake", () => {
       spawnPlan: dialect.buildSpawnPlan({ binaryPath: "/bin/x", cwd: "/lane", baseEnv: {} }),
       spawnOverride: () => agent.child,
     });
-    const result = await withDeadline("initialize", initializeAcpConnection({ connection, dialect }));
-    expect(result.protocolVersionAccepted).toBe(true);
+    const response = await withDeadline("initialize", initializeAcpConnection({ connection, dialect }));
+    expect(response.protocolVersion).toBe(1);
     const request = agent.received.find((entry) => entry.method === ACP_METHOD.initialize);
     const params = request?.params as Record<string, unknown>;
     expect(params.protocolVersion).toBe(1);
@@ -1270,7 +1270,7 @@ describe("tool call translation", () => {
         title: "Consult the oracle",
         kind: "divination",
         status: "pending",
-      } as never);
+      });
       // The result arrives on an update whose kind and status are unknown to
       // ADE. Dropping that update would lose the result the row later shows.
       agent.emitUpdate("session-1", {
@@ -1279,7 +1279,7 @@ describe("tool call translation", () => {
         kind: "divination",
         status: "deferred",
         rawOutput: "42",
-      } as never);
+      });
       agent.emitUpdate("session-1", {
         sessionUpdate: "tool_call_update",
         toolCallId: "tc-new",
@@ -1727,7 +1727,7 @@ describe("unsupervised session invariant", () => {
         toolCallId: `tc-${kind}`,
         title: kind === "execute" ? "Run ls" : "Write src/app.ts",
         // Grok reports file writes as `write`, which is not an ACP tool kind.
-        kind: kind as "edit",
+        kind,
         status: "completed",
         rawInput: { command: "ls" },
       });
@@ -2511,7 +2511,8 @@ describe("run | degrade conformance matrix", () => {
     prompt_stream: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     permission: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
     cancel: { qwen: "run", kimi: "run", grok: "run", copilot: "run", devin: "run" },
-    // Qwen and Devin have no session/close. They degrade to releasing the process.
+    // Qwen and Devin have no session/close. Qwen degrades by ending its private
+    // process; Devin releases its shared one.
     close_eviction: { qwen: "degrade", kimi: "run", grok: "run", copilot: "run", devin: "degrade" },
 
     // Copilot and Devin advertise no session/resume, so ADE uses session/load instead.

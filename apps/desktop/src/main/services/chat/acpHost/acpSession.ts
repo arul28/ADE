@@ -490,9 +490,8 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   };
 
   try {
-    if (entryPlan.mode === "new") {
-      await openNewSession();
-    } else {
+    let mode = entryPlan.mode;
+    if (mode !== "new") {
       const storedId = args.existingSessionId as string;
       const behavior =
         entryPlan.mode === "resume"
@@ -503,7 +502,6 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       }
       const call = behavior({ sessionId: storedId, cwd: args.cwd, mcpServers: effectiveMcpServers });
       suppressUpdates = entryPlan.suppressReplay;
-      let agentLostSession = false;
       try {
         const response = await connection.request<AcpNewSessionResponse>(call.method, call.params);
         sessionId = response.sessionId ?? storedId;
@@ -514,20 +512,18 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         // finish a turn, or its store was cleared. There is nothing left to
         // rejoin, so open a new session rather than leave the chat unopenable.
         if (!(error instanceof AcpRpcError) || error.code !== ACP_RPC_RESOURCE_NOT_FOUND) throw error;
-        agentLostSession = true;
         args.logger?.warn("agent_chat.acp_rejoin_session_missing", {
           provider: dialect.providerId,
-          mode: entryPlan.mode,
+          mode,
           error: getErrorMessage(error),
         });
+        entryPlan = { mode: "new", suppressReplay: false, reason: `agent has no stored session for ${mode}` };
+        mode = "new";
       } finally {
         suppressUpdates = false;
       }
-      if (agentLostSession) {
-        entryPlan = { mode: "new", suppressReplay: false, reason: `agent has no stored session for ${entryPlan.mode}` };
-        await openNewSession();
-      }
     }
+    if (mode === "new") await openNewSession();
   } catch (error) {
     for (const unsubscribe of unsubscribers) unsubscribe();
     permissionBridge.rejectAll("the session could not be opened");

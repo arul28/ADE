@@ -4,8 +4,8 @@
  * Live handshakes on 0.22.3 and 0.25.0 are identical apart from the version
  * string: `loadSession`, session list/resume, image + audio prompts, MCP
  * http/sse, `session/set_config_option` for mode/model/reasoning_effort.
- * Slash via `available_commands_update`. The 0.24.0 fixture ADE keeps has the
- * same shape.
+ * Slash via `available_commands_update`. The 0.24.0 handshake captured earlier
+ * had the same shape.
  *
  * Neither 0.22.3 nor 0.25.0 advertises `session/close`, and a dummy
  * `session/close` is -32601 on both. Ending a chat therefore ends the process

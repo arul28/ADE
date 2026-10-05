@@ -542,12 +542,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   return connection;
 }
 
-export type InitializeAcpConnectionResult = {
-  response: AcpInitializeResponse;
-  /** True when the agent answered with a protocol version this host speaks. */
-  protocolVersionAccepted: boolean;
-};
-
 /**
  * Run the `initialize` handshake.
  *
@@ -571,7 +565,7 @@ export async function initializeAcpConnection(args: {
   connection: AcpConnection;
   dialect: AcpDialect;
   timeoutMs?: number;
-}): Promise<InitializeAcpConnectionResult> {
+}): Promise<AcpInitializeResponse> {
   const { connection, dialect } = args;
   try {
     const response = await connection.request<AcpInitializeResponse>(
@@ -587,8 +581,15 @@ export async function initializeAcpConnection(args: {
     const advertised = typeof response.protocolVersion === "number" && Number.isFinite(response.protocolVersion)
       ? response.protocolVersion
       : null;
-    const protocolVersionAccepted = advertised === null || advertised <= ACP_PROTOCOL_VERSION;
-    if (!protocolVersionAccepted) {
+    if (advertised === null) {
+      // ACP requires the agent to name the protocol version it selected. An
+      // answer without one has not established compatibility at all.
+      throw new Error(
+        `${dialect.displayName} answered the ACP handshake without a protocol version, so ADE cannot tell `
+        + `whether it speaks ACP ${ACP_PROTOCOL_VERSION}. Update ${dialect.displayName}, or update ADE.`,
+      );
+    }
+    if (advertised > ACP_PROTOCOL_VERSION) {
       // The agent speaks a newer protocol than this build of ADE. Continuing
       // would fail later on an unrecognized request or session update, so stop
       // at the handshake with a message that names the CLI and both ways out.
@@ -599,10 +600,7 @@ export async function initializeAcpConnection(args: {
       );
     }
     connection.initializeResult = response;
-    return {
-      response,
-      protocolVersionAccepted,
-    };
+    return response;
   } catch (error) {
     // A crash during the handshake precedes every exit handler, so the pool's
     // rethrow is the only chance to pass the agent's stderr to the caller.

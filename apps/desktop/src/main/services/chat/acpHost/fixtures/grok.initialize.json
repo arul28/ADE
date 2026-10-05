@@ -62,7 +62,7 @@
     "defaultAuthMethodId": "cached_token",
     "x.ai/mcp/sdk": true,
     "x.ai/pluginDirs": true,
-    "currentWorkingDirectory": "/Users/admin/Projects/ADE/.ade/worktrees/b535832f-ff62-40cc-bc5f-5a932674f8da-f6d21f9f/apps/desktop/src/main/services/chat/acpHost/fixtures/live-scratch",
+    "currentWorkingDirectory": "/lane/worktree",
     "agentVersion": "1.0.46",
     "agentId": "3d41fd5f-8cfa-5711-9ba3-615cb8465a5c",
     "agentInstanceId": "0fa3a619-47e8-49b1-859f-137698b97358",

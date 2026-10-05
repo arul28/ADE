@@ -118,7 +118,10 @@ export const devinDialect = defineAcpDialect({
   // is accepted (verified 3000.11.3, like the other four CLIs).
   cancelStyle: "notification",
   poolEnvKeys: ["WINDSURF_API_KEY"],
-  oneProcessPerSession: false,
+  // No `session/close`, so a chat can only end its session by ending the
+  // process. A shared process would keep every closed chat's session alive
+  // for as long as any other chat held it.
+  oneProcessPerSession: true,
   advertiseFsCapability: false,
   advertiseTerminalCapability: false,
   initializeMeta: null,
@@ -154,9 +157,8 @@ export const devinDialect = defineAcpDialect({
   inferCompaction: true,
   usageUpdateAfterTurn: false,
 
-  // No `session/close` on the wire (-32601). The handshake also omits `close`.
-  // The host releases the pooled process; `oneProcessPerSession` stays false
-  // because sessions were only ever exercised one at a time here.
+  // No `session/close` on the wire (-32601). The handshake also omits `close`,
+  // so ending a chat ends its private process.
   closeStyle: "kill_process",
   closeSession: capabilityAbsent,
 

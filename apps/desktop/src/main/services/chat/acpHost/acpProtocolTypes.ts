@@ -129,6 +129,15 @@ export type { AcpToolKind };
 
 export type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
+/**
+ * The tool kind and status as they arrive on the wire. Both enums are open: a
+ * CLI on a newer schema (or Grok, which reports file writes as `write`) may
+ * send a value this host does not know. The translator narrows them to the
+ * closed types before anything switches on them.
+ */
+export type AcpWireToolKind = AcpToolKind | (string & {});
+export type AcpWireToolCallStatus = AcpToolCallStatus | (string & {});
+
 export type AcpDiff = {
   path: string;
   oldText?: string | null;
@@ -147,8 +156,8 @@ export type AcpToolCall = {
   toolCallId: AcpToolCallId;
   title: string;
   name?: string | null;
-  kind?: AcpToolKind;
-  status?: AcpToolCallStatus;
+  kind?: AcpWireToolKind;
+  status?: AcpWireToolCallStatus;
   content?: AcpToolCallContent[];
   locations?: AcpToolCallLocation[];
   rawInput?: unknown;
@@ -158,8 +167,8 @@ export type AcpToolCall = {
 
 export type AcpToolCallUpdate = {
   toolCallId: AcpToolCallId;
-  kind?: AcpToolKind | null;
-  status?: AcpToolCallStatus | null;
+  kind?: AcpWireToolKind | null;
+  status?: AcpWireToolCallStatus | null;
   title?: string | null;
   name?: string | null;
   content?: AcpToolCallContent[] | null;
@@ -177,7 +186,8 @@ export type AcpPlanEntryPriority = "high" | "medium" | "low";
 export type AcpPlanEntry = {
   content: string;
   priority?: AcpPlanEntryPriority;
-  status: AcpPlanEntryStatus;
+  /** Open on the wire; a status this host does not know reads as pending. */
+  status: AcpPlanEntryStatus | (string & {});
   _meta?: AcpMeta;
 };
 
@@ -339,7 +349,7 @@ function isAcpContentBlock(raw: unknown): boolean {
 function isAcpToolCallUpdate(raw: unknown): raw is AcpToolCallUpdate {
   if (!isRecord(raw) || typeof raw.toolCallId !== "string" || !raw.toolCallId.length) return false;
   // A kind or status from a newer schema keeps the update: the translator
-  // degrades unknown values, and dropping the update would lose its content.
+  // narrows unknown values, and dropping the update would lose its content.
   if (raw.kind != null && typeof raw.kind !== "string") return false;
   if (raw.status != null && typeof raw.status !== "string") return false;
   if (raw.title != null && typeof raw.title !== "string") return false;
