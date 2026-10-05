@@ -706,6 +706,9 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
 
   transport.onData(onData);
 
+  /** supersedeKey → the newest droppable notification skipped under that key. */
+  const skippedDroppable = new Map<string, { method: string; params: unknown }>();
+
   const stop = (() => {
     skippedDroppable.clear();
     activeDispatches.clear();
@@ -729,8 +732,6 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     }
   };
 
-  /** supersedeKey → the newest droppable notification skipped under that key. */
-  const skippedDroppable = new Map<string, { method: string; params: unknown }>();
   transport.onDrain?.(() => {
     for (const [key, notification] of skippedDroppable) {
       if (stopped || peerIsBehind()) return;
