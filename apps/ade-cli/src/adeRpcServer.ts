@@ -3236,6 +3236,8 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // Continuing on another account spends a turn on a different login. A
   // session-bound agent may only aim it at its own row.
   "continueUsageLimitOnAlternate",
+  // Switching accounts changes which login pays for a chat's next turn.
+  "switchAccount",
   "requestSessionAttention",
   "setSessionActivity",
   "setSessionStatusNote",

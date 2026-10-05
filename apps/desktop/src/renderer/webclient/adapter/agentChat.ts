@@ -16,6 +16,7 @@ import type {
   AgentChatRegenerateSessionMetadataResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSession,
@@ -463,6 +464,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("continueUsageLimitOnAlternate", pin);
       return await callRequired<AgentChatContinueUsageLimitOnAlternateResult>(
         "chat.continueUsageLimitOnAlternate", args, "Usage limit", false,
+      );
+    },
+    switchAccount: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("switchAccount", pin);
+      return await callRequired<AgentChatSwitchAccountResult>(
+        "chat.switchAccount", args, "Chat", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {

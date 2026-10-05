@@ -169,6 +169,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
   captureSessionImportAnalytics,
@@ -2122,6 +2123,11 @@ export async function createAdeRuntime(args: {
           properties,
         }),
         onPendingInputDismissed: ({ provider }) => capturePendingInputDismissedAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          provider,
+        }),
+        onAccountSwitched: ({ provider }) => captureChatAccountSwitchedAnalytics({
           analytics: productAnalyticsService,
           surface: "api",
           provider,

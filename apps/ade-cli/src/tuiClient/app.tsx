@@ -194,6 +194,7 @@ import {
   respondToInput,
   resumeUsageLimitNow,
   continueUsageLimitOnAlternate,
+  switchChatAccount,
   runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
@@ -12657,6 +12658,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         setUsageLimitResumeNotice(null);
         addNotice("Continuing on the other account.", "success");
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
+    if (name === "/switch-account") {
+      const targetSessionId = activeSessionIdRef.current;
+      const accountId = args.trim();
+      if (!targetSessionId || !accountId) {
+        addNotice(targetSessionId ? "Usage: /switch-account <account-id> (ids: ade providers accounts list)" : "Open a chat first.", "info");
+        return;
+      }
+      try {
+        const result = await switchChatAccount(conn, targetSessionId, accountId);
+        if (!result.ok) {
+          addNotice(result.message, "info");
+          return;
+        }
+        addNotice(`Switched to account ${result.instanceId}.`, "success");
         await refreshState();
       } catch (err) {
         addNotice(err instanceof Error ? err.message : String(err), "error");

@@ -8961,6 +8961,7 @@ export function AgentChatPane({
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
         if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (meta.spawnKind !== undefined) summaryPatch.spawnKind = meta.spawnKind;
+        if (typeof meta.instanceId === "string" && meta.instanceId) summaryPatch.instanceId = meta.instanceId;
         // The host republishes the whole usage-limit resume state on every
         // transition (armed -> resuming -> paused, or cleared), so the pill
         // updates live for every viewer of this chat instead of waiting for a
@@ -14867,12 +14868,15 @@ export function AgentChatPane({
   const chatAccountNote = selectedSession && selectedSession.sessionId === renderedSessionId ? (
     <ChatAccountNote
       key={selectedSession.sessionId}
+      sessionId={selectedSession.sessionId}
       provider={selectedSession.provider}
       instanceId={selectedSession.instanceId}
       credentialId={selectedSession.credentialId}
       preset={selectedSessionPreset}
       events={selectedEvents}
       runtimePin={chatRuntimePin}
+      busy={turnActiveBySession[selectedSession.sessionId] ?? false}
+      onSwitched={() => void refreshSessions({ force: true }).catch(() => {})}
     />
   ) : null;
   const chatActionsPanelContent = (

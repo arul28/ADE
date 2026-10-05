@@ -5154,6 +5154,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").continueUsageLimitOnAlternate({
       sessionId: requireString(payload.sessionId, "chat.continueUsageLimitOnAlternate requires sessionId."),
     }));
+  // Owner-only: it changes which login pays for the chat's next turn.
+  register("chat.switchAccount", { viewerAllowed: false, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").switchAccount({
+      sessionId: requireString(payload.sessionId, "chat.switchAccount requires sessionId."),
+      instanceId: requireString(payload.instanceId, "chat.switchAccount requires instanceId."),
+    }));
   register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
     if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");

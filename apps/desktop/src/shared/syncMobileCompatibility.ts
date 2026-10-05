@@ -82,6 +82,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Usage-limit "Continue on <account>". Optional for the same reason as
   // Resume now: older phones keep their connection and simply omit the button.
   "chat.continueUsageLimitOnAlternate",
+  // Account switch from the chat's account row. Optional so older phones keep
+  // their connection and simply have no switcher.
+  "chat.switchAccount",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",

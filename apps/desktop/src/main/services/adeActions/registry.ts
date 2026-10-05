@@ -1019,6 +1019,15 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.switchAccount === "function") {
+    service.switchAccount = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.switchAccount");
+      return agentChatService.switchAccount({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        instanceId: requireNonEmptyString(record.instanceId, "instanceId"),
+      });
+    };
+  }
   if (typeof base.getChatEventHistory === "function") {
     service.getChatEventHistory = (args?: unknown, positionalOptions?: unknown) => {
       const actionArgs = positionalOptions === undefined ? args : [args, positionalOptions];

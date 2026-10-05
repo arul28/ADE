@@ -36,6 +36,7 @@ export type FeatureAnalyticsAction =
   | "model_price_changed"
   | "model_mapping_changed"
   | "pending_input_dismissed"
+  | "account_switched"
   | "new_lane_launch"
   | "voice_conversation_started"
   | "session_continue_chat"
@@ -229,6 +230,20 @@ export function capturePendingInputDismissedAnalytics(args: {
     ...args,
     feature: "chat",
     action: "pending_input_dismissed",
+    outcome: "completed",
+  });
+}
+
+/** The user moved a chat to another account of its provider. */
+export function captureChatAccountSwitchedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  provider: unknown;
+}): void {
+  captureFeatureUsedAnalytics({
+    ...args,
+    feature: "chat",
+    action: "account_switched",
     outcome: "completed",
   });
 }

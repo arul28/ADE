@@ -6491,6 +6491,8 @@ describe("CTO-gated Linear sync commands", () => {
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
         "chat.continueUsageLimitOnAlternate",
+        // Switching accounts changes which login pays for the next turn.
+        "chat.switchAccount",
         // Cursor Cloud writes are controller-only: phone/browser controllers
         // may invoke them, but a desktop viewer must not.
         "ai.createCursorCloudRun",

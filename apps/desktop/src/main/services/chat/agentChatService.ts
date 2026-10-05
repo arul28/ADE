@@ -693,6 +693,8 @@ import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandof
 import { findInstanceHoldingThread, moveProviderThread } from "./providerThreadMove";
 import type {
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatUsageLimitAlternateAccount,
 } from "../../../shared/types/chat";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
@@ -9867,6 +9869,8 @@ export function createAgentChatService(args: {
   onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
   /** Content-free hook fired after a user dismisses a pending question. */
   onPendingInputDismissed?: (event: { provider: AgentChatProvider }) => void;
+  /** Content-free hook fired after a user moves a chat to another account. */
+  onAccountSwitched?: (event: { provider: AgentChatProvider }) => void;
   onUsageLimitAutoResumed?: (args: { sessionId: string; title?: string | null }) => void;
   /** A chat's goal finished (`reached`) or got stuck (`blocked`); the host may alert the user. */
   onGoalEnded?: (args: {
@@ -9959,6 +9963,7 @@ export function createAgentChatService(args: {
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
+    onAccountSwitched,
     onUsageLimitAutoResumed,
     onGoalEnded,
     onSessionEnded,
@@ -10259,7 +10264,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     provider: ProviderInstanceProvider,
   ): ProviderInstance | null | undefined => {
-    const threadId = providerThreadIdForMove(managed);
+    const threadId = providerThreadIdsForMove(managed)[0];
     if (!threadId) return null;
     try {
       return findInstanceHoldingThread(provider, threadId, getMachineProviderInstanceStore().list(provider));
@@ -18817,65 +18822,100 @@ export function createAgentChatService(args: {
   const usageLimitMoveInFlight = new Set<string>();
   /** Limited turns whose chat already moved; a late arm for one is not a new limit. */
   const usageLimitMovedTurnIds = new Set<string>();
+  /**
+   * User account switches in progress. A send waits for its chat's switch, so
+   * it never relaunches on the old account while the thread is being copied.
+   */
+  const accountSwitchesInFlight = new Map<string, Promise<AgentChatSwitchAccountResult>>();
 
-  /** The provider thread id a relaunched runtime resumes, from memory or disk. */
-  const providerThreadIdForMove = (managed: ManagedChatSession): string | null => {
+  /**
+   * The provider threads a relaunched runtime may read, from memory or disk.
+   * A Claude fork that has not run its first turn also reads the source thread
+   * it forks from, and its own id may not be on disk yet.
+   */
+  const providerThreadIdsForMove = (managed: ManagedChatSession): string[] => {
     const persisted = readPersistedState(managed.session.id);
     if (managed.session.provider === "claude") {
-      const live = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
-      return live?.trim() || persisted?.sdkSessionId?.trim() || null;
+      const runtime = managed.runtime?.kind === "claude" ? managed.runtime : null;
+      const own = runtime?.sdkSessionId?.trim() || persisted?.sdkSessionId?.trim();
+      const forkSource = runtime?.forkFromSdkSessionId?.trim() || persisted?.forkFromSdkSessionId?.trim();
+      return [...new Set([own, forkSource].filter((id): id is string => Boolean(id)))];
     }
     if (managed.session.provider === "codex") {
-      return managed.session.threadId?.trim() || persisted?.threadId?.trim() || null;
+      const threadId = managed.session.threadId?.trim() || persisted?.threadId?.trim();
+      return threadId ? [threadId] : [];
     }
-    return null;
+    return [];
+  };
+
+  /**
+   * Points a chat at another account of its provider. The chat's thread file,
+   * when it has one, is copied into that account's config home first, and the
+   * runtime is stopped so the next turn relaunches there and resumes the same
+   * thread id. The source copy stays, so moving back works too.
+   */
+  const moveChatToAccount = async (
+    managed: ManagedChatSession,
+    instanceId: string,
+    options: { requireThread?: boolean } = {},
+  ): Promise<{ ok: true; from: ProviderInstance; to: ProviderInstance } | { ok: false; message: string }> => {
+    const rawProvider = managed.session.provider;
+    const provider = rawProvider === "claude" ? "claude" : rawProvider === "codex" ? "codex" : null;
+    if (!provider) return { ok: false, message: "Only Claude and Codex chats can switch accounts." };
+    const threadIds = providerThreadIdsForMove(managed);
+    if (!threadIds.length && options.requireThread) return { ok: false, message: "This chat has no provider thread to move yet." };
+    const from = resolveSessionInstance(managed);
+    let to: ProviderInstance | null = null;
+    try {
+      to = getMachineProviderInstanceStore().get(instanceId);
+    } catch {
+      to = null;
+    }
+    if (!from || !to || to.provider !== provider) {
+      return { ok: false, message: "ADE could not find that account." };
+    }
+    // Stop the runtime first, so nothing writes the thread while it is copied.
+    // The kept resume pointer still serves the old account if the copy fails.
+    // A chat with no thread yet still stops: a warmed runtime holds the old
+    // account's config home.
+    teardownRuntime(managed, "paused_run");
+    if (threadIds.length) {
+      const moves = [];
+      for (const threadId of threadIds) {
+        moves.push(await moveProviderThread({
+          provider,
+          threadId,
+          fromConfigHome: from.configHome,
+          toConfigHome: to.configHome,
+        }));
+      }
+      const failed = moves.find((moved) => !moved.ok);
+      // One readable thread is enough; a fork's own id can predate its file.
+      if (!moves.some((moved) => moved.ok) && failed && !failed.ok) return { ok: false, message: failed.message };
+    }
+    managed.session.instanceId = to.id;
+    persistChatState(managed);
+    emitTransientChatEnvelope(managed.session.id, { type: "session_meta_updated", instanceId: to.id });
+    return { ok: true, from, to };
   };
 
   /**
    * Moves a limited chat to another account IN PLACE: same chat, same
-   * provider thread, next turn on the other login.
-   *
-   * The thread file is copied into the other account's config home (see
-   * `moveProviderThread`), the runtime is stopped with its resume pointer
-   * kept, and the chat's account changes. The next turn relaunches with the
-   * other account's config home and resumes the same thread id, so the model
-   * keeps the whole conversation. The first turn there has no prompt cache.
+   * provider thread, next turn on the other login. The model keeps the whole
+   * conversation; the first turn there has no prompt cache.
    */
   const moveUsageLimitChatInPlace = async (
     managed: ManagedChatSession,
     alternate: AgentChatUsageLimitAlternateAccount,
   ): Promise<{ ok: true } | { ok: false; message: string }> => {
-    const rawProvider = managed.session.provider;
-    const provider = rawProvider === "claude" ? "claude" : rawProvider === "codex" ? "codex" : null;
-    if (!provider) return { ok: false, message: `${rawProvider} chats cannot change accounts.` };
-    const threadId = providerThreadIdForMove(managed);
-    if (!threadId) return { ok: false, message: "This chat has no provider thread to move yet." };
-    const from = resolveSessionInstance(managed);
-    let to: ProviderInstance | null = null;
-    try {
-      to = getMachineProviderInstanceStore().get(alternate.instanceId);
-    } catch {
-      to = null;
-    }
-    if (!from || !to || to.provider !== provider) {
-      return { ok: false, message: `ADE could not find the ${alternate.label} account.` };
-    }
-    // Stop the runtime first, so nothing writes the thread while it is copied.
-    // The kept resume pointer still serves the old account if the copy fails.
-    teardownRuntime(managed, "paused_run");
-    const moved = await moveProviderThread({
-      provider,
-      threadId,
-      fromConfigHome: from.configHome,
-      toConfigHome: to.configHome,
-    });
-    if (!moved.ok) return { ok: false, message: moved.message };
+    const movedChat = await moveChatToAccount(managed, alternate.instanceId, { requireThread: true });
+    if (!movedChat.ok) return movedChat;
+    const { from, to } = movedChat;
+    const provider = to.provider;
 
     const leftAtLimit = usageLimitMovedFrom.get(managed.session.id) ?? new Set<string>();
     leftAtLimit.add(from.id);
     usageLimitMovedFrom.set(managed.session.id, leftAtLimit);
-    managed.session.instanceId = to.id;
-    persistChatState(managed);
     logger.info("agent_chat.usage_limit_moved_account", {
       sessionId: managed.session.id,
       provider,
@@ -19210,6 +19250,74 @@ export function createAgentChatService(args: {
       };
     }
     return handOffUsageLimitChat(managed, alternate);
+  };
+
+  /**
+   * The user's own account switch: same chat, same thread, next turn on the
+   * other login. Refused while a turn runs, so the thread is never copied
+   * mid-write.
+   */
+  const switchAccount = async ({
+    sessionId,
+    instanceId,
+  }: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
+    const normalizedSessionId = sessionId.trim();
+    const targetId = instanceId.trim();
+    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    if (!targetId) throw new Error("Account id is required.");
+    const managed = ensureManagedSession(normalizedSessionId);
+    if (resolveHandoffBlockedReason(managed)
+      || accountSwitchesInFlight.has(normalizedSessionId)
+      || pendingUsageLimitMoves.has(normalizedSessionId)
+      || usageLimitMoveInFlight.has(normalizedSessionId)
+      || usageLimitHandoffInFlight.has(normalizedSessionId)) {
+      return { ok: false, reason: "busy", message: "Wait for this turn to finish." };
+    }
+    // A saved key or custom provider pays for these turns, not the account.
+    if (managed.session.presetId?.trim() || managed.session.credentialId?.trim()) {
+      return { ok: false, reason: "failed", message: "This chat runs on a saved key or custom provider, not an account." };
+    }
+    if (resolveSessionInstance(managed)?.id === targetId) {
+      return { ok: true, instanceId: targetId };
+    }
+    let target: ProviderInstance | null = null;
+    try {
+      target = getMachineProviderInstanceStore().get(targetId);
+    } catch {
+      target = null;
+    }
+    if (target && !target.signedIn) {
+      return { ok: false, reason: "signed_out", message: "That account is signed out." };
+    }
+    const switching = (async (): Promise<AgentChatSwitchAccountResult> => {
+      const moved = await moveChatToAccount(managed, targetId);
+      if (!moved.ok) return { ok: false, reason: "failed", message: moved.message };
+      const { from, to } = moved;
+      logger.info("agent_chat.account_switched", {
+        sessionId: normalizedSessionId,
+        provider: to.provider,
+        fromInstanceId: from.id,
+        toInstanceId: to.id,
+      });
+      // A limit on the old account no longer holds this chat.
+      await autoResume.cancelForSession(normalizedSessionId, "account_switch");
+      setUsageLimitResume(managed, null);
+      if (to.provider === "claude") dismissClaudeSessionQuota(managed);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        severity: "info",
+        message: `Switched to ${to.account?.email?.trim() || to.label || to.id}.`,
+      });
+      onAccountSwitched?.({ provider: to.provider });
+      return { ok: true, instanceId: to.id };
+    })();
+    accountSwitchesInFlight.set(normalizedSessionId, switching);
+    try {
+      return await switching;
+    } finally {
+      accountSwitchesInFlight.delete(normalizedSessionId);
+    }
   };
 
   /**
@@ -50964,6 +51072,8 @@ export function createAgentChatService(args: {
     const args = await materializePastedTextPrompt(expandedArgs);
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
+    // A send during an account switch runs on the account the chat lands on.
+    await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
     await prepareSessionLaunch(managed);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
     // steering, so they don't report queued:false as a delivered message.
@@ -62621,6 +62731,7 @@ export function createAgentChatService(args: {
     cancelScheduledWork,
     resumeUsageLimitNow,
     continueUsageLimitOnAlternate,
+    switchAccount,
     setScheduledWorkPaused,
     refreshScheduledWork,
     readTranscript,

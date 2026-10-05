@@ -2183,6 +2183,8 @@ export type AgentChatEvent =
        * See `AgentChatUsageLimitResume`.
        */
       usageLimitResume?: AgentChatUsageLimitResume | null;
+      /** The chat moved to this provider account (a user switch or a usage-limit move). */
+      instanceId?: string;
       spawnKind?: AgentChatSpawnKind;
       subagentTakeoverPromptShownAt?: string | null;
       /**
@@ -4761,6 +4763,21 @@ export type AgentChatContinueUsageLimitOnAlternateResult =
   | {
       ok: false;
       reason: AgentChatContinueUsageLimitOnAlternateRefusal;
+      /** Ready-to-render sentence; clients show it as-is. */
+      message: string;
+    };
+
+/** Move a chat to another account of its provider, keeping its thread. */
+export type AgentChatSwitchAccountArgs = {
+  sessionId: string;
+  instanceId: string;
+};
+
+export type AgentChatSwitchAccountResult =
+  | { ok: true; instanceId: string }
+  | {
+      ok: false;
+      reason: "busy" | "signed_out" | "failed";
       /** Ready-to-render sentence; clients show it as-is. */
       message: string;
     };

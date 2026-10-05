@@ -537,6 +537,8 @@ import type {
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateArgs,
   AgentChatContinueUsageLimitOnAlternateResult,
+  AgentChatSwitchAccountArgs,
+  AgentChatSwitchAccountResult,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
@@ -9067,6 +9069,14 @@ export function registerIpc({
     ): Promise<AgentChatContinueUsageLimitOnAlternateResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.continueUsageLimitOnAlternate(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.agentChatSwitchAccount,
+    async (_event, arg: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.switchAccount(arg);
     },
   );
 
