@@ -828,7 +828,8 @@ instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
 deleting a merged PR's branch was reachable only from a mapped PR it was a
 corner of the product, and it is now an offer on every merged row.
 `prs.setChatWatch` (turning PR Watch / Ship on, switching it, or off for a
-chat) is in the set too: it is a person's choice, at most a few per PR. Which
+chat) is in the set too: a deliberate choice, at most a few per PR — a person
+in the menu, or an agent arming its own watch through the same action. Which
 mode was picked is deliberately not a property — the product question is
 adoption, and the ledger row already answers it. The watch's own wakes, holds,
 and stops are background mechanics with no person behind them, so they stay in

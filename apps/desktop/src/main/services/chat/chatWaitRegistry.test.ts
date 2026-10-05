@@ -26,7 +26,13 @@ function harness(initial: Record<string, Summary>) {
     messageSession: async (args) => { sent.push(args); },
     whenReady: async () => {},
   });
-  return { registry, summaries, sent, readSummary };
+  // `arm` reads each target once (the fake read waits on a timer).
+  const arm = async (args: Parameters<typeof registry.arm>[0]) => {
+    const armed = registry.arm(args);
+    await vi.advanceTimersByTimeAsync(150);
+    return armed;
+  };
+  return { registry, arm, summaries, sent, readSummary };
 }
 
 describe("chatWaitRegistry", () => {
@@ -38,8 +44,8 @@ describe("chatWaitRegistry", () => {
   });
 
   it("wakes the caller once even when the target's events overlap a check in flight", async () => {
-    const { registry, summaries, sent } = harness({ caller: { status: "active" }, worker: { status: "active" } });
-    await registry.arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    const { registry, arm, summaries, sent } = harness({ caller: { status: "active" }, worker: { status: "active" } });
+    await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
     await vi.advanceTimersByTimeAsync(400);
     expect(sent).toHaveLength(0);
 
@@ -57,19 +63,21 @@ describe("chatWaitRegistry", () => {
   });
 
   it("does not fire a wait cancelled while its targets were being read", async () => {
-    const { registry, summaries, sent } = harness({ caller: { status: "active" }, worker: { status: "active" } });
-    const waiter = await registry.arm({ callerSessionId: "caller", targetSessionIds: ["worker"] });
+    const { registry, arm, summaries, sent } = harness({ caller: { status: "active" }, worker: { status: "active" } });
+    const waiter = await arm({ callerSessionId: "caller", targetSessionIds: ["worker"] });
     summaries.set("worker", { status: "idle" });
     registry.signal("worker");
-    await vi.advanceTimersByTimeAsync(300); // debounce passed, read in flight
+    // The arm's check fires 250 ms after arming and its read takes 100 ms:
+    // cancel lands while that read is in flight.
+    await vi.advanceTimersByTimeAsync(230);
     expect(await registry.cancel({ waiterId: waiter.id })).toEqual({ cancelled: true });
     await vi.advanceTimersByTimeAsync(2_000);
     expect(sent).toEqual([]);
   });
 
   it("treats a failed read as not yet, and sends a queued prompt once the target is really done", async () => {
-    const { registry, summaries, sent } = harness({ b: { status: "idle" }, a: new Error("summary read failed") });
-    await registry.arm({ targetSessionIds: ["a"], sendToSessionId: "b", text: "start the review" });
+    const { registry, arm, summaries, sent } = harness({ b: { status: "idle" }, a: new Error("summary read failed") });
+    await arm({ targetSessionIds: ["a"], sendToSessionId: "b", text: "start the review" });
     await vi.advanceTimersByTimeAsync(2_000);
     expect(sent).toEqual([]);
 

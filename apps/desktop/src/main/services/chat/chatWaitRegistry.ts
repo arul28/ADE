@@ -228,6 +228,10 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       if (targets.length === 0) throw new Error("Name at least one chat to wait on.");
       for (const target of targets) {
         if (!deps.sessionExists(target)) throw new Error(`No chat or terminal '${target}' in this project.`);
+        // A plain shell has no state to wait on; refuse it rather than hang.
+        if ((await deps.readSummary(target).catch(() => ({}))) === null) {
+          throw new Error(`'${target}' is not a chat or an agent CLI session, so it has nothing to wait for.`);
+        }
       }
       const sendTo = args.sendToSessionId?.trim() || null;
       const text = args.text?.trim() || "";
@@ -245,7 +249,12 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         mode: args.mode === "any" ? "any" : "all",
         waitFor: args.waitFor ?? "idle",
         action: sendTo
-          ? { kind: "send", sessionId: sendTo, text, ...(args.sendMetadata ? { metadata: args.sendMetadata } : {}) }
+          ? {
+            kind: "send",
+            sessionId: sendTo,
+            text,
+            ...(args.sendMetadata && typeof args.sendMetadata === "object" ? { metadata: args.sendMetadata } : {}),
+          }
           : { kind: "wake" },
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(now + minutes * 60_000).toISOString(),

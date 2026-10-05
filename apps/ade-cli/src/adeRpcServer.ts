@@ -5345,7 +5345,11 @@ async function runTool(args: {
     // its arguments from these raw ones.
     const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
-      : safeObject(toolArgs.args);
+      : domain === "chat" && action === "armWait"
+        // A send wait's provenance is derived by the host (bound agents, in
+        // the chat scoping below) and never accepted from any caller.
+        ? (({ sendMetadata: _callerProvenance, ...waitArgs }) => waitArgs)(safeObject(toolArgs.args))
+        : safeObject(toolArgs.args);
     // `inputOrigin` names the desktop a person is talking from, and show
     // requests follow it. Only a user client may say where that person is.
     const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs

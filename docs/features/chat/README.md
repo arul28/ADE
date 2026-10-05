@@ -1068,8 +1068,9 @@ come):
   the CTO tool `waitForChats`) return at once. When all (or any) of the target
   chats reach the state, ADE wakes the caller with one line per chat (title,
   status, status note); after the timeout (24 h by default) it wakes the caller
-  with where they are instead. Targets that no longer exist count as finished;
-  a summary read that fails counts as "not yet", never as a match. Waiters
+  with where they are instead. A deleted target counts as idle or terminal,
+  never as active or awaiting input; a summary read that fails counts as "not
+  yet", never as a match. A plain shell cannot be waited on (it has no state). Waiters
   persist in the project database (`agent-chat:waiters:v1`), re-arm on start,
   and re-check on each target's events with a 15 s backstop. Checks run one at
   a time, so a waiter fires once, and one cancelled mid-check never fires.
