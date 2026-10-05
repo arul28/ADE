@@ -434,6 +434,13 @@ export function permissionCeilingClamp(
   return { requested, level: ceiling, patch: permissionFieldsForLevel(fields.provider, ceiling) };
 }
 
+/** A permission level from untrusted JSON (a wire claim, a state file), or null. */
+export function readPermissionLevel(value: unknown): PermissionLevel | null {
+  return typeof value === "string" && (PERMISSION_LEVELS as readonly string[]).includes(value)
+    ? value as PermissionLevel
+    : null;
+}
+
 /** The more cautious of two optional ceilings; null when neither applies. */
 export function lowerPermissionCeiling(
   a: PermissionLevel | null,

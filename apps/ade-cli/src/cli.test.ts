@@ -1966,6 +1966,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "list"])).toEqual({
       kind: "execute",
       label: "projects list",
+      // The list `--all-machines` merges; `projects add` below must not carry it.
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     });

@@ -1,4 +1,9 @@
 import {
+  configureExternalChatStore,
+  rememberExternalChat,
+  setExternalParentRouter,
+} from "./externalChats";
+import {
   AgentChatEventEnvelope,
   PendingInputRequest,
   SESSION_STALE_AFTER_MS,
@@ -1148,6 +1153,37 @@ describe("createAgentChatService", () => {
       expect(takeover.spawnKind).toBe("peer");
       expect(takeover.subagentTakeoverPromptShownAt).toBeTruthy();
       expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
+    });
+
+    it("keeps a subagent whose parent lives in another project or on another machine", async () => {
+      // The brain installs a router and records where such a parent lives; a
+      // child of it is not an orphan, or it would stop waking its parent.
+      configureExternalChatStore(null);
+      const restoreRouter = setExternalParentRouter({ route: () => true });
+      try {
+        rememberExternalChat("remote:device-a:parent-a", {
+          scope: null,
+          machineKey: "machine-a",
+          machineName: "Mac mini",
+          permissionLevel: "full-auto",
+        });
+        const { service } = createService();
+        const child = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          orchestrationParentSessionId: "remote:device-a:parent-a",
+          spawnKind: "subagent",
+        });
+
+        const summary = await service.getSessionSummary(child.id);
+        expect(summary?.spawnKind).toBe("subagent");
+        expect(summary?.orchestrationParentSessionId).toBe("remote:device-a:parent-a");
+        expect(summary?.subagentTakeoverPromptShownAt ?? null).toBeNull();
+      } finally {
+        restoreRouter();
+        configureExternalChatStore(null);
+      }
     });
 
     it("dismissing takeover on an orphan converts ownership and stays dismissed", async () => {

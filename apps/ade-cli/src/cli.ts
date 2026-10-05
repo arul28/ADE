@@ -10,6 +10,16 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  MACHINE_ROW_KEY,
+  createMachineRemoteConnection,
+  executePlanAcrossMachines,
+  extractMachineTargeting,
+  formatMachineFanOut,
+  formatMachinesRoster,
+  isMachineFanOutResult,
+  withMachineColumns,
+} from "./cliMachineTargeting";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -418,7 +428,7 @@ type SyncWebPairingCliOutput = {
   relayEnabled: boolean;
 };
 
-type GlobalOptions = {
+export type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
   role: "cto" | "agent" | "external" | "evaluator";
@@ -428,6 +438,18 @@ type GlobalOptions = {
   pretty: boolean;
   text: boolean;
   timeoutMs: number;
+  /**
+   * Run the command on another machine on the account (`--machine <name>`).
+   * Read out of the command's own arguments by `extractMachineTargeting`, only
+   * for the commands that support it.
+   */
+  machine?: string | null;
+  /** `--all-machines`: run a list command on every machine and merge the rows. */
+  allMachines?: boolean;
+  /** The project on the other machine, by id, display name, or root path. */
+  machineProject?: string | null;
+  /** `--clone`: set the repository up on that machine when it is missing. */
+  machineClone?: boolean;
 };
 
 async function withAdeDefaultRole<T>(
@@ -444,7 +466,7 @@ async function withAdeDefaultRole<T>(
   }
 }
 
-type ParsedCli = {
+export type ParsedCli = {
   options: GlobalOptions;
   command: string[];
 };
@@ -472,6 +494,7 @@ export type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "machines-roster"
   | "account-machine-rename"
   | "account-machine-remove"
   | "account-machine-reconnect"
@@ -631,6 +654,13 @@ export type CliPlan =
        * and prints the full launch timeline once the action returns.
        */
       progressNotice?: string;
+      /**
+       * The list this plan returns, so `--all-machines` can merge it across
+       * the account's machines (see `cliMachineTargeting.ts`).
+       */
+      machineList?: "chats" | "lanes" | "projects";
+      /** `--machine a,b` starts this plan once per machine (`chat create`). */
+      machineFanOut?: boolean;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -737,7 +767,7 @@ export type CliPlan =
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
   | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
 
-type CliConnection = {
+export type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
   projectRoot: string;
   workspaceRoot: string;
@@ -1270,6 +1300,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines list --projects --text          Agent-safe roster with each machine's projects
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
@@ -1969,6 +2000,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --lane <lane> --text            List chat sessions (archived chats hidden)
     $ ade chat list --include-archived --text       Also list archived chats ('ade archive list' for all archived items)
     $ ade chat list --personal --text               List machine personal chats (no project required)
+    $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
+    $ ade chat list --all-machines --text           Every machine in one table, with a machine column
+    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+                                                    Start a child on another machine; it wakes you when done.
+                                                    --project <name|path|id> picks the project there, --clone
+                                                    sets a missing GitHub repo up, "a,b" starts one per machine.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -4970,6 +5007,7 @@ function buildLanePlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "lanes list",
+      machineList: "lanes",
       steps: [actionCallStep("result", "list_lanes", input)],
       visualizer: visual || !noVisual ? "lanes" : undefined,
     };
@@ -8919,6 +8957,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat list",
+      machineList: "chats",
       steps: [
         actionStep(
           "result",
@@ -9248,6 +9287,7 @@ function buildChatPlan(args: string[]): CliPlan {
         return {
           kind: "execute",
           label: "chat create",
+          machineFanOut: true,
           steps: [
             { ...createStep, key: "session" },
             {
@@ -9276,7 +9316,7 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", steps: [createStep] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, steps: [createStep] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -9327,7 +9367,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -19269,6 +19309,8 @@ async function initializeConnection(
 
 function isMachineRuntimeScopedMethod(method: string): boolean {
   return (
+    method === "machines.call" ||
+    method === "machines.list" ||
     method === "ade/initialize" ||
     method === "ade/initialized" ||
     method === "ping" ||
@@ -19304,8 +19346,22 @@ export function automaticProjectRegistrationParams(rootPath: string): {
 function buildMachinesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") {
+    const includeProjects = readFlag(args, ["--projects", "--with-projects"]);
     if (firstStandalonePositional(args)) {
       throw new CliUsageError("machines list does not accept a machine selector.");
+    }
+    // An agent's shell reads the agent-safe roster: names, presence, platform
+    // and projects, with no device ids, routes or tokens. The account
+    // directory itself (`account.listMachines`) stays the person's.
+    if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
+      return {
+        kind: "execute",
+        label: "machines roster",
+        formatter: "machines-roster",
+        machineOnly: true,
+        machineAutoStart: true,
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+      };
     }
     return {
       kind: "execute",
@@ -19643,6 +19699,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects list",
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     };
@@ -19792,6 +19849,8 @@ async function createConnection(
     needsLiveRuntime?: string;
   } = {},
 ): Promise<CliConnection> {
+  const remoteMachine = options.machine?.trim() || null;
+  if (remoteMachine) return await createMachineRemoteConnection(options, remoteMachine);
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
@@ -22704,9 +22763,59 @@ async function runServe(
     });
   };
 
-  const createHandler = () =>
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
+  const getAgentMachineBridge = () => {
+    agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
+      ({ createAgentMachineBridge }) => createAgentMachineBridge({
+        appVersion: VERSION,
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        logger: headlessProjectLogger,
+      }),
+    );
+    return agentMachineBridge;
+  };
+  const agentMachineBridgeProxy: import("./multiProjectRpcServer").MultiProjectRpcHandlerOptions["agentMachineBridge"] = embedded
+    ? null
+    : {
+      call: async (input) => (await getAgentMachineBridge()).call(input),
+      listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
+    };
+
+  // Children reporting to parents outside their own scope: another project,
+  // the personal scope, or another machine. The brain owns the outbox; each
+  // project's chat service hands such completions to its router.
+  let crossScopeChats: import("./services/chat/crossScopeChats").CrossScopeChats | null = null;
+  if (!embedded) {
+    const [{ createCrossScopeChats }, externalChats] = await Promise.all([
+      import("./services/chat/crossScopeChats"),
+      import("../../desktop/src/main/services/chat/externalChats"),
+    ]);
+    const crossMachineStateDir = path.join(layout.adeDir, "cross-machine");
+    externalChats.configureExternalChatStore(path.join(crossMachineStateDir, "external-chats.json"));
+    crossScopeChats = createCrossScopeChats({
+      projectRegistry,
+      scopeRegistry: {
+        get: (projectId) => scopeRegistry.get(projectId),
+        getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+      },
+      personalChatScope,
+      deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
+      stateDir: crossMachineStateDir,
+      logger: headlessProjectLogger,
+    });
+    externalChats.setExternalParentRouter(crossScopeChats.router);
+    crossScopeChats.start();
+  }
+
+  const createHandler = (context?: { peerDeviceId: string | null }) =>
     createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
+      peerDeviceId: context?.peerDeviceId ?? null,
+      agentMachineBridge: agentMachineBridgeProxy,
+      crossScopeChats,
       projectRegistry,
       scopeRegistry,
       personalChatScope,
@@ -24142,6 +24251,15 @@ function renderLaneGraph(result: unknown): string {
     isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
   const lanes = lanesRaw.filter(isRecord);
   if (lanes.length === 0) return "ADE lanes\n(no lanes)";
+  if (lanes.some((lane) => MACHINE_ROW_KEY in lane)) {
+    // `--all-machines`: lanes on different machines have no shared graph.
+    const table = withMachineColumns(["lane", "name", "branch"], lanes, (lane) => [
+      lane.id,
+      lane.name,
+      lane.branchRef ?? lane.branch,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE lanes\n(no lanes)", { fullColumns: ["lane"] });
+  }
 
   const byParent = new Map<string, JsonObject[]>();
   const byId = new Map<string, JsonObject>();
@@ -26245,23 +26363,20 @@ function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   const hasCliRows = sessions.some((session) => session.kind === "cli");
   if (!hasCliRows) {
-    return renderTable(
-      ["session", "provider", "lane", "title"],
-      sessions.map((session) => [
-        session.id ?? session.sessionId,
-        session.provider ?? session.modelId,
-        session.laneId,
-        session.title,
-      ]),
-      "ADE chats\n(no sessions)",
-      { fullColumns: ["session"] },
-    );
+    const table = withMachineColumns(["session", "provider", "lane", "title"], sessions, (session) => [
+      session.id ?? session.sessionId,
+      session.provider ?? session.modelId,
+      session.laneId,
+      session.title,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session"] });
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
   // a chat's; its parent column is what an agent polling its children needs.
-  return renderTable(
+  const table = withMachineColumns(
     ["session", "provider", "lane", "title", "kind", "parent"],
-    sessions.map((session) => {
+    sessions,
+    (session) => {
       const cli = session.kind === "cli";
       const exitCode = typeof session.exitCode === "number" ? ` (exit ${session.exitCode})` : "";
       return [
@@ -26272,10 +26387,9 @@ function formatChatList(value: unknown): string {
         cli ? `cli · ${String(session.status ?? "unknown")}${exitCode}` : "chat",
         cli ? session.parentSessionId : session.orchestrationParentSessionId,
       ];
-    }),
-    "ADE chats\n(no sessions)",
-    { fullColumns: ["session", "parent"] },
+    },
   );
+  return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session", "parent"] });
 }
 
 function formatChatSummary(value: unknown): string {
@@ -28106,9 +28220,10 @@ function formatProjectsList(value: unknown): string {
     : isRecord(value) && value.projectId
       ? [value]
       : firstArray(value, ["projects", "items"]);
-  return renderTable(
+  const table = withMachineColumns(
     ["project", "name", "path", "visibility", "git origin", "last opened"],
-    projects.map((project) => [
+    projects,
+    (project) => [
       project.projectId,
       project.displayName,
       project.rootPath,
@@ -28117,10 +28232,11 @@ function formatProjectsList(value: unknown): string {
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()
         : "",
-    ]),
-    "ADE projects\n(no projects registered)",
-    { fullColumns: ["project"] },
+    ],
+    // A projects row is a project; it has no other project to name.
+    { projectColumn: false },
   );
+  return renderTable(table.headers, table.rows, "ADE projects\n(no projects registered)", { fullColumns: ["project"] });
 }
 
 function formatLinearQuickView(value: unknown): string {
@@ -28572,6 +28688,8 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "machines-roster":
+      return formatMachinesRoster(value);
     case "account-machine-rename": {
       const machine = parseAccountMachine(value);
       if (!machine) return "Machine renamed.";
@@ -30010,6 +30128,8 @@ async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
+  const acrossMachines = await executePlanAcrossMachines(plan, options);
+  if (acrossMachines) return acrossMachines.value;
   let connection: CliConnection;
   const baseConnectionOptions =
     plan.machineOnly
@@ -30365,6 +30485,7 @@ function formatOutput(
   formatter?: FormatterId,
 ): string {
   if (options.text) {
+    if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
     return `${formatTextOutput(value, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
@@ -30498,7 +30619,24 @@ async function runResetCommand(
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = parseCliArgs(argv);
+  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  if (!parsed.options.machine) return await runParsedCli(parsed);
+  // This shell's lane is a lane on THIS machine. Plan builders that default
+  // to it would name a lane the other machine has never heard of; there the
+  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
+  // target pick, as `ade chat launch` does with a new lane. Only for this run.
+  const laneId = process.env.ADE_LANE_ID;
+  delete process.env.ADE_LANE_ID;
+  try {
+    return await runParsedCli(parsed);
+  } finally {
+    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
+  }
+}
+
+async function runParsedCli(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   const primary = parsed.command[0]?.toLowerCase();
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
@@ -31042,4 +31180,13 @@ export {
   startHeadlessRpcTcpServer,
   summarizeExecution,
   unwrapToolResult,
+  CliExecutionError,
+  connectMachineRuntimeDaemon,
+  executePlan,
+  getGitRemote,
+  isMachineRuntimeScopedMethod,
+  resolveMachineRuntimeSocketPath,
+  sessionIdFromCreateChatValue,
+  withProjectId,
+  SocketJsonRpcClient,
 };

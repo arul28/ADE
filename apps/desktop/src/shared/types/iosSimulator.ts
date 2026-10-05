@@ -62,6 +62,13 @@ export type IosSimulatorShutdownArgs = {
    * un-evictable.
    */
   ignoreOwnership?: boolean | null;
+  /**
+   * End the session only if THIS chat still holds it; otherwise release
+   * nothing (`released: false`, with `previousSession` naming who holds it
+   * now, or null when nobody does). For a person freeing the device from a
+   * session they saw, which may have changed hands while they decided.
+   */
+  expectedChatSessionId?: string | null;
 };
 
 export type IosSimulatorShutdownResult = {
@@ -70,6 +77,11 @@ export type IosSimulatorShutdownResult = {
 };
 
 export type IosSimulatorStatus = {
+  /**
+   * Set when the active session belongs to an agent on another machine
+   * (`ade apple … --machine`), so this machine's panel can say who is driving.
+   */
+  remoteHolder?: { machineName: string | null } | null;
   platform: NodeJS.Platform;
   supported: boolean;
   tools: IosSimulatorToolStatus[];

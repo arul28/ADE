@@ -20,6 +20,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
+- `apps/ade-cli/src/services/account/machineBridge.ts`,
+  `agentMachineBridge.ts` — brain-to-brain connection pools (one per caller
+  class: CTO, agents) and the agents' `machines.call` forwarding. The host's
+  paired channel passes the authenticated peer device into each runtime handler
+  (`SyncRuntimeRpcHandlerContext`), which binds an `ade-agent-remote` caller's
+  per-request claim to it. See
+  [Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md).
+
 - `apps/desktop/src/main/services/remoteRuntime/` — paired transport
   (`syncRuntimeTransport.ts`), loopback preview forwarding
   (`syncPortForwardClient.ts`), paired credential and endpoint history

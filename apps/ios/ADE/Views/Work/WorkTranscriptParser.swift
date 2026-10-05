@@ -1207,7 +1207,9 @@ private func workSpawnCompletionEvent(
     parentToolUseId: nil,
     status: status,
     summary: summary,
-    label: optionalString(completion["childTitle"]),
+    label: optionalString(completion["childTitle"]).map { title in
+      spawnCompletionDisplayLabel(title: title, machineName: optionalString(completion["childMachineName"]))
+    },
     model: nil,
     reasoningEffort: nil,
     turnId: optionalString(completion["childTurnId"]) ?? fallbackTurnId

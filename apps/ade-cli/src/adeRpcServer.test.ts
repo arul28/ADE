@@ -8366,8 +8366,7 @@ describe("CTO remote action policy", () => {
       action: "get",
       argsList: ["all", "provider_api_key", "openai"],
     });
-    expect(secretDenied.error).toBeDefined();
-    expect(JSON.stringify(secretDenied.error)).toMatch(/returns secrets, so the CTO can't run it/);
+    expect(secretDenied.error).toMatchObject({ code: JsonRpcErrorCode.policyDenied });
     expect(getSecret).not.toHaveBeenCalled();
   });
 });

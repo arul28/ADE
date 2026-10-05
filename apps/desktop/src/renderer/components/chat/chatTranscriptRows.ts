@@ -414,6 +414,8 @@ export type SpawnWakeDividerRenderEvent = {
   spawnKind: AgentChatSpawnKind;
   status: "completed" | "failed" | "stopped";
   summary: string | null;
+  /** Set when the child ran on another machine than this chat. */
+  childMachineName?: string;
   turnId?: string;
 };
 
@@ -2614,6 +2616,7 @@ export function appendCollapsedChatTranscriptEvent(
             spawnKind,
             status,
             summary: completion.summary?.trim() || null,
+            ...(completion.childMachineName?.trim() ? { childMachineName: completion.childMachineName.trim() } : {}),
             ...(event.turnId ? { turnId: event.turnId } : {}),
           },
         });

@@ -3203,6 +3203,16 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
   }
 }
 
+/// A finished child's label in its parent: its title, plus where it ran when
+/// that is another machine ("Fix tests · on Mac mini"). Shared by the live
+/// decoder and the replay parser so both read the same.
+func spawnCompletionDisplayLabel(title: String, machineName: String?) -> String {
+  guard let machine = machineName?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else {
+    return title
+  }
+  return "\(title) · on \(machine)"
+}
+
 private struct AgentChatSpawnCompletionPayload: Decodable {
   var childSessionId: String
   var childTitle: String
@@ -3210,6 +3220,12 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
   var childTurnId: String?
   var status: AgentChatSubagentStatus
   var summary: String?
+  /// Set when the child ran on another machine than the parent.
+  var childMachineName: String?
+
+  var displayLabel: String {
+    spawnCompletionDisplayLabel(title: childTitle, machineName: childMachineName)
+  }
 
   func event(fallbackTurnId: String?) -> AgentChatEvent {
     let resolvedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3229,7 +3245,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
       status: status,
       summary: resolvedSummary.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackSummary,
       usage: nil,
-      label: childTitle,
+      label: displayLabel,
       model: nil,
       reasoningEffort: nil,
       turnId: childTurnId ?? fallbackTurnId,
