@@ -368,6 +368,7 @@ export type DesktopSeatAdapter = {
     platform: NodeJS.Platform;
     onHealthChanged: (health: MacDesktopDriverHealth) => void;
     onDriverLost: (reason: string) => void;
+    liveLaneIds?: () => string[];
   }) => MacDesktopDriverClient) | null;
   /** macOS needs Screen Recording + Accessibility; Windows has no grants. */
   readonly permissionsSupported: boolean;

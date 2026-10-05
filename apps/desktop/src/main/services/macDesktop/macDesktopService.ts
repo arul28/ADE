@@ -249,6 +249,7 @@ export type MacDesktopServiceDeps = {
     platform: NodeJS.Platform;
     onHealthChanged: (health: import("../../../shared/types/macDesktop").MacDesktopDriverHealth) => void;
     onDriverLost: (reason: string) => void;
+    liveLaneIds?: () => string[];
   }) => MacDesktopDriverClient) | null;
 };
 

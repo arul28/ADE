@@ -60,6 +60,8 @@ export type MacDesktopDriverLifecycleDeps = {
     platform: NodeJS.Platform;
     onHealthChanged: (health: MacDesktopDriverHealth) => void;
     onDriverLost: (reason: string) => void;
+    /** This service's live lanes; a driver shared across projects reconciles against them all. */
+    liveLaneIds: () => string[];
   }) => MacDesktopDriverClient) | null;
   assertSupported: () => void;
   serviceError: (code: string, message: string) => Error;
@@ -213,7 +215,7 @@ export function createMacDesktopDriverLifecycle(
       const onHealthChanged = (health: MacDesktopDriverHealth) => deps.emit({ type: "driver-health", health });
       const createProvider = deps.createProvider ?? createMacVirtualDisplayProvider;
       const client = deps.createDriverClient
-        ? deps.createDriverClient({ logger: deps.logger, platform: deps.platform, onHealthChanged, onDriverLost })
+        ? deps.createDriverClient({ logger: deps.logger, platform: deps.platform, onHealthChanged, onDriverLost, liveLaneIds: deps.laneIds })
         : createMacDesktopDriverClient({
           logger: deps.logger,
           platform: deps.platform,
