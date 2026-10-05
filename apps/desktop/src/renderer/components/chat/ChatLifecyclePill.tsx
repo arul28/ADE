@@ -7,21 +7,13 @@ import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { unsettleSession, wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
 import { noticeTone, type NoticeTone } from "../ui/notice";
-import { NOTICE_FLOAT_SURFACE } from "../ui/notice/noticeTones";
+import { COMPOSER_STATUS_CHIP_ACTION_CLASS, COMPOSER_STATUS_CHIP_CLASS } from "./ChatComposerStatusStrip";
 
 /**
- * Compact lifecycle pill that floats over the transcript above the composer.
- * This is a status pill, not a banner: its type scales with the chat font, so
- * it keeps its own size logic and paints only its colours from the shared
- * notice tones.
+ * Settled / snoozed status as a chip in the composer status strip. Settled
+ * shows only its title and action; what sending does lives in the tooltip.
+ * Snoozed keeps its deadline, which is the whole story of a snoozed row.
  */
-const PILL_BASE_CLASS =
-  "pointer-events-auto inline-flex min-w-0 max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border px-2.5 py-1 font-sans backdrop-blur-xl";
-// Hover and keyboard focus share one fill (keyboard users never see hover),
-// read from the tone's soft-hover token the pill sets on itself.
-const BUTTON_BASE_CLASS =
-  "ml-0.5 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium transition-colors hover:bg-[var(--lifecycle-pill-hover)] hover:text-fg focus-visible:bg-[var(--lifecycle-pill-hover)] focus-visible:text-fg disabled:pointer-events-none disabled:opacity-40";
-
 type LifecycleVariant = "settled" | "snoozed";
 
 const VARIANT_CHROME: Record<LifecycleVariant, {
@@ -96,32 +88,20 @@ export function ChatLifecyclePill({
       data-testid="chat-lifecycle-banner"
       data-lifecycle-variant={variant}
       data-notice-tone={chrome.tone}
-      className={cn(PILL_BASE_CLASS, className)}
-      style={{
-        ...NOTICE_FLOAT_SURFACE,
-        borderColor: tokens.edge,
-        ["--lifecycle-pill-hover" as string]: tokens.softHover,
-      }}
+      title={detail}
+      className={cn(COMPOSER_STATUS_CHIP_CLASS, className)}
     >
-      <Icon size={12} weight="fill" aria-hidden className="shrink-0" style={{ color: tokens.color }} />
-      <span
-        className="shrink-0 text-[length:calc(var(--chat-font-size)*10.5/14)] font-semibold"
-        style={{ color: tokens.text }}
-      >
-        {title}
-      </span>
-      <span aria-hidden className="shrink-0 text-[10px] text-muted-fg">·</span>
-      <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg">
-        {detail}
-      </span>
+      <Icon size={11} weight="fill" aria-hidden className="shrink-0" style={{ color: tokens.color }} />
+      <span className="shrink-0 font-medium" style={{ color: tokens.text }}>{title}</span>
+      {snoozed ? <span className="min-w-0 truncate text-fg/45">{detail}</span> : null}
       <button
         type="button"
         data-testid={snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle"}
-        className={BUTTON_BASE_CLASS}
-        style={{ color: tokens.text }}
+        className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
+        title={snoozed ? undefined : "Sending a message also reopens this chat"}
         onClick={() => {
           // Both route through the shared Work-tab lifecycle actions rather than
-          // calling `window.ade.sessions` directly, so this pill, the snooze
+          // calling `window.ade.sessions` directly, so this chip, the snooze
           // header chip, and the sidebar menu use the same write and failure path.
           void (snoozed ? wakeSessionNow(session, runtimePin) : unsettleSession(session, runtimePin));
         }}

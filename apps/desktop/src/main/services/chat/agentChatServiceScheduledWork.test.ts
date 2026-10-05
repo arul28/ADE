@@ -2193,8 +2193,15 @@ describe("createAgentChatService", () => {
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
           && event.event.kind === "wakeup");
-      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId, wakeupId]);
-      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "scheduled", "cancelled"]);
+      // The Stop snapshot repeats the wakeup the tool call already reported:
+      // no second row. The cancel patches the last event, so the reason and
+      // the provider task id a reader already saw survive into it.
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId]);
+      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "cancelled"]);
+      expect(scheduledEvents.at(-1)?.event).toMatchObject({
+        reason: "CI was still running",
+        sourceTaskId: "wakeup-provider-1",
+      });
 
       const snapshots = deriveScheduledWorkSnapshots(events);
       expect(snapshots).toHaveLength(1);
@@ -2207,7 +2214,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules", async () => {
+    it("reconciles missing provider wakeups and loops without cancelling ADE-local schedules, and settles a fired one as done", async () => {
       const sdkSessionId = "sdk-provider-snapshot-reconcile";
       const sdkHandle = {
         send: vi.fn().mockResolvedValue(undefined),
@@ -2257,6 +2264,17 @@ describe("createAgentChatService", () => {
             providerSessionId: sdkSessionId,
             providerScheduleId: "provider-loop-id",
           }),
+          // Gone from Claude's inventory after its fire time: Claude delivered
+          // it. It must settle as done, never read as cancelled.
+          storedWakeup(session.id, {
+            id: "provider-fired-wakeup",
+            prompt: "Check the deploy.",
+            durable: true,
+            provider: "claude",
+            providerSessionId: sdkSessionId,
+            providerScheduleId: "provider-fired-wakeup-id",
+            fireAt: Date.now() - 10_000,
+          }),
           storedWakeup(session.id, {
             id: "ade-local-wakeup",
             prompt: "Run ADE-local work.",
@@ -2300,6 +2318,7 @@ describe("createAgentChatService", () => {
       });
       expect(scheduledWork.readState()?.schedules).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "provider-wakeup", status: "cancelled" }),
+        expect.objectContaining({ id: "provider-fired-wakeup", status: "done", lastFiredAt: expect.any(Number) }),
         expect.objectContaining({ id: "provider-loop", status: "scheduled" }),
         expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
         expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),

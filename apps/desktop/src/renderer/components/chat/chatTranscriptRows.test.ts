@@ -5,6 +5,13 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
+  applyWakeChains,
+  deriveWakeChains,
+  deriveWakeTurnIds,
+  foldScheduledWorkRows,
+  moveScheduledWorkToTurnEnds,
+} from "./chatScheduledWorkRows";
+import {
   applyChatTranscriptTurnFolds,
   buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
@@ -5187,5 +5194,165 @@ describe("command row identity", () => {
         itemId: "exec-1",
       },
     });
+  });
+});
+
+describe("scheduled work presentation (wake loops)", () => {
+  const SESSION = "session-wake-loop";
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 5, 1, minute, 0)).toISOString();
+  let sequence = 0;
+  const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: SESSION,
+    timestamp: at(minute),
+    sequence: ++sequence,
+    event,
+  });
+  const scheduled = (minute: number, turnId: string, id: string, reason: string, dueMinute: number) =>
+    envelope(minute, {
+      type: "scheduled_work_update",
+      id,
+      kind: "wakeup",
+      status: "scheduled",
+      origin: "schedule_wakeup",
+      reason,
+      prompt: "/ship 557",
+      nextRunAt: at(dueMinute),
+      turnId,
+    });
+  const settled = (minute: number, turnId: string, id: string, status: "cancelled" | "completed") =>
+    envelope(minute, {
+      type: "scheduled_work_update",
+      id,
+      kind: "wakeup",
+      status,
+      origin: "schedule_wakeup",
+      title: status === "cancelled" ? "Wakeup cancelled" : "Scheduled wakeup",
+      ...(status === "completed" ? { firedAt: at(minute - 1) } : {}),
+      turnId,
+    });
+  const text = (minute: number, turnId: string, body: string) =>
+    envelope(minute, { type: "text", text: body, turnId });
+  const done = (minute: number, turnId: string) =>
+    envelope(minute, { type: "done", turnId, status: "completed" });
+
+  /**
+   * A /ship deploy watch: the user starts it (turn A), then the agent wakes
+   * itself three times (B, C, D) and stops scheduling; the user replies (E).
+   * Turn A also schedules a wake-up and drops it before it is due.
+   */
+  function wakeLoopEvents(): AgentChatEventEnvelope[] {
+    sequence = 0;
+    return [
+      envelope(0, { type: "user_message", text: "/ship 557", turnId: "A" }),
+      text(1, "A", "Watching the deploy."),
+      scheduled(1, "A", "w-dropped", "superseded check", 30),
+      settled(2, "A", "w-dropped", "cancelled"),
+      scheduled(2, "A", "w1", "deploy-watch 1: pending", 5),
+      // The provider's end-of-turn inventory repeats w1 with fewer fields.
+      envelope(2, {
+        type: "scheduled_work_update",
+        id: "w1",
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        title: "/ship 557",
+        sourceTaskId: "provider-task-1",
+        turnId: "A",
+      }),
+      done(3, "A"),
+      text(6, "B", "Check 2: still queued."),
+      scheduled(6, "B", "w2", "deploy-watch 2: queued", 10),
+      // An older brain recorded a fired wake-up as cancelled, after its due time.
+      settled(6, "B", "w1", "cancelled"),
+      done(7, "B"),
+      text(11, "C", "Check 3: still queued."),
+      scheduled(11, "C", "w3", "deploy-watch 3: queued", 15),
+      settled(11, "C", "w2", "completed"),
+      done(12, "C"),
+      text(16, "D", "Check 4: deploy finished."),
+      settled(16, "D", "w3", "completed"),
+      done(17, "D"),
+      envelope(20, { type: "user_message", text: "thanks", turnId: "E" }),
+      text(21, "E", "You're welcome."),
+      done(22, "E"),
+    ];
+  }
+
+  function present(events: AgentChatEventEnvelope[]) {
+    const grouped = groupEvents(events).filter((row) => row.event.type !== "work_log_group");
+    const { rows, byTurnEndKey } = moveScheduledWorkToTurnEnds(foldScheduledWorkRows(grouped));
+    return { rows: mergeAdjacentActivityBundleRows(rows), byTurnEndKey };
+  }
+
+  const doneKey = (rows: ChatTranscriptGroupedEnvelope[], turnId: string) =>
+    rows.find((row) => row.event.type === "done" && row.event.turnId === turnId)?.key ?? null;
+  const textsIn = (rows: ChatTranscriptGroupedEnvelope[]) =>
+    rows.flatMap((row) => (row.event.type === "text" ? [row.event.text] : []));
+
+  it("keeps one wake-up per schedule on the turn-end line of the turn that created it", () => {
+    const { rows, byTurnEndKey } = present(wakeLoopEvents());
+
+    expect(rows.some((row) => row.event.type === "activity_bundle")).toBe(false);
+    const onTurnEnd = (turnId: string) =>
+      (byTurnEndKey.get(doneKey(rows, turnId) ?? "") ?? []).map((item) => item.event);
+
+    // One entry per schedule, however many updates it got and in which turns.
+    expect(onTurnEnd("A").map((event) => event.id)).toEqual(["w-dropped", "w1"]);
+    expect(onTurnEnd("A")).toEqual([
+      expect.objectContaining({ id: "w-dropped", status: "cancelled" }),
+      // The inventory repeat kept the reason; the late "cancel" reads as fired.
+      expect.objectContaining({ id: "w1", status: "completed", reason: "deploy-watch 1: pending", firedAt: at(5) }),
+    ]);
+    expect(onTurnEnd("B")).toEqual([expect.objectContaining({ id: "w2", status: "completed" })]);
+    expect(onTurnEnd("C")).toEqual([expect.objectContaining({ id: "w3", status: "completed" })]);
+    expect(onTurnEnd("D")).toEqual([]);
+  });
+
+  it("folds every self-paced check but the latest under the line that scheduled the first", () => {
+    const { rows, byTurnEndKey } = present(wakeLoopEvents());
+
+    const chains = deriveWakeChains(rows, byTurnEndKey);
+    expect(chains).toHaveLength(1);
+    expect(chains[0]).toMatchObject({ checkCount: 2, anchorTurnEndKey: doneKey(rows, "A") });
+    expect([...chains[0]!.hiddenTurnIds]).toEqual(["B", "C"]);
+    // Wake turns lose their own fold row; the user's turns keep theirs.
+    expect([...deriveWakeTurnIds(rows, byTurnEndKey)]).toEqual(["B", "C", "D"]);
+
+    const closed = applyWakeChains(rows, chains, new Set());
+    expect(textsIn(closed)).toEqual([
+      "Watching the deploy.",
+      "Check 4: deploy finished.",
+      "You're welcome.",
+    ]);
+    // Anchored on turn A's line, so no row of its own.
+    expect(closed.some((row) => row.event.type === "wake_chain")).toBe(false);
+
+    const open = applyWakeChains(rows, chains, new Set([chains[0]!.chainId]));
+    expect(textsIn(open)).toContain("Check 2: still queued.");
+    expect(textsIn(open)).toContain("Check 3: still queued.");
+  });
+
+  it("does not chain a turn the user started, even right after a wake-up", () => {
+    sequence = 0;
+    const events = [
+      envelope(0, { type: "user_message", text: "watch it", turnId: "A" }),
+      scheduled(1, "A", "w1", "check", 5),
+      done(1, "A"),
+      envelope(3, { type: "user_message", text: "check sooner", turnId: "B" }),
+      text(4, "B", "Checking sooner."),
+      scheduled(4, "B", "w2", "check", 6),
+      done(4, "B"),
+      text(7, "C", "Still queued."),
+      done(7, "C"),
+    ];
+    const { rows, byTurnEndKey } = present(events);
+
+    // B is the user's turn: it breaks the run, so C is a run of one and nothing folds.
+    expect(deriveWakeChains(rows, byTurnEndKey)).toEqual([]);
+    expect([...deriveWakeTurnIds(rows, byTurnEndKey)]).toEqual(["C"]);
+    expect(textsIn(applyWakeChains(rows, deriveWakeChains(rows, byTurnEndKey), new Set()))).toEqual([
+      "Checking sooner.",
+      "Still queued.",
+    ]);
   });
 });

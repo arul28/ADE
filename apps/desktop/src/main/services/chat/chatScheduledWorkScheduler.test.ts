@@ -708,6 +708,44 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("settles a one-shot Claude delivered without a claim as done and cancels the ADE backstop", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const transitions: string[] = [];
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      onTransition: (schedule, status) => { transitions.push(`${schedule.id}:${status}`); },
+    });
+    await scheduler.upsert(wakeup({ fireAt: START, durable: true, provider: "claude" }));
+    await scheduler.upsert(wakeup({
+      id: "cron-1",
+      kind: "cron",
+      cron: "*/5 * * * *",
+      fireAt: START + 300_000,
+      durable: true,
+      provider: "claude",
+    }));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await scheduler.markFired("wake-1")).toMatchObject({ status: "done", lastFiredAt: START });
+    // Recurring work is never settled this way: its next occurrence stays armed.
+    expect(await scheduler.markFired("cron-1")).toMatchObject({ status: "scheduled" });
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules.find((schedule) => schedule.id === "wake-1")?.status).toBe("done");
+    // The transcript learns the wake-up fired (`Woke at …`), not that it was cancelled.
+    expect(transitions).toContain("wake-1:done");
+    expect(transitions).not.toContain("wake-1:cancelled");
+    scheduler.dispose();
+  });
+
   it("does not let a native Claude turn claim provider-neutral scheduled work", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

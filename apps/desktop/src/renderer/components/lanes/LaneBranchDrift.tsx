@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { GitBranch, Warning } from "@phosphor-icons/react";
+import { GitBranch, Warning, X } from "@phosphor-icons/react";
 
-import type { LaneBranchDrift, LaneBranchDriftResolution } from "../../../shared/types";
+import type { LaneBranchDrift, LaneBranchDriftResolution, LaneLifecycleEvent } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { Banner, type NoticeAction } from "../ui/notice";
+import { COMPOSER_STATUS_CHIP_ACTION_CLASS, COMPOSER_STATUS_CHIP_CLASS } from "../chat/ChatComposerStatusStrip";
 
 // ---------------------------------------------------------------------------
 // Drift state
@@ -75,6 +75,135 @@ function useLaneBranchDriftArmed(laneId: string | null | undefined): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Branches ADE adopted on its own
+// ---------------------------------------------------------------------------
+
+/** How long the `Now on X · Switch back` chip stays after ADE adopts a branch. */
+const ADOPTION_NOTICE_MS = 10 * 60_000;
+
+type BranchAdoption = { previousBranchRef: string; branchRef: string; at: number };
+
+const recentAdoptions = new Map<string, BranchAdoption>();
+const adoptionListeners = new Set<() => void>();
+let adoptionFeedDispose: (() => void) | null = null;
+
+function emitAdoptionChange(): void {
+  for (const listener of [...adoptionListeners]) listener();
+}
+
+/**
+ * One app-wide subscription, started by the first strip that mounts, so an
+ * adoption that lands while another chat is open is still shown on return.
+ */
+function ensureAdoptionFeed(): void {
+  if (adoptionFeedDispose || typeof window === "undefined" || !window.ade?.lanes?.onLifecycleEvent) return;
+  adoptionFeedDispose = window.ade.lanes.onLifecycleEvent((event: LaneLifecycleEvent) => {
+    if (event.type !== "lane-branch-updated" || !event.previousBranchRef || !event.branchRef) return;
+    if (event.adoptedByAgent) {
+      recentAdoptions.set(event.laneId, {
+        previousBranchRef: event.previousBranchRef,
+        branchRef: event.branchRef,
+        at: Date.now(),
+      });
+    } else {
+      recentAdoptions.delete(event.laneId);
+    }
+    emitAdoptionChange();
+  });
+}
+
+function dismissAdoption(laneId: string): void {
+  if (recentAdoptions.delete(laneId)) emitAdoptionChange();
+}
+
+function subscribeAdoptions(listener: () => void): () => void {
+  ensureAdoptionFeed();
+  adoptionListeners.add(listener);
+  return () => { adoptionListeners.delete(listener); };
+}
+
+function useRecentBranchAdoption(laneId: string | null | undefined, branchRef: string | null): BranchAdoption | null {
+  const getSnapshot = useCallback(() => (laneId ? recentAdoptions.get(laneId) ?? null : null), [laneId]);
+  const adoption = useSyncExternalStore(subscribeAdoptions, getSnapshot, getSnapshot);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!adoption) return undefined;
+    const remaining = adoption.at + ADOPTION_NOTICE_MS - Date.now();
+    if (remaining <= 0) return undefined;
+    const id = window.setTimeout(() => setTick((tick) => tick + 1), remaining);
+    return () => window.clearTimeout(id);
+  }, [adoption]);
+  if (!adoption || Date.now() - adoption.at > ADOPTION_NOTICE_MS) return null;
+  // A later switch (back, or to a third branch) ends the notice.
+  if (branchRef && branchRef !== adoption.branchRef) return null;
+  return adoption;
+}
+
+/**
+ * `⎇ Now on X · Switch back ×` after ADE moved the lane to the branch its agent
+ * switched to. The lane's name stays; its PRs stay linked to the chat.
+ */
+function LaneBranchAdoptedChip({ laneId, adoption }: { laneId: string; adoption: BranchAdoption }) {
+  const refreshLanes = useAppStore((state) => state.refreshLanes);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [forceable, setForceable] = useState(false);
+  const switchBack = async (acknowledgeActiveWork: boolean) => {
+    setPending(true);
+    setError(null);
+    setForceable(false);
+    try {
+      await window.ade.lanes.switchBranch({
+        laneId,
+        branchName: adoption.previousBranchRef,
+        mode: "existing",
+        ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
+      });
+      dismissAdoption(laneId);
+      await refreshLanes({ includeStatus: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      if (isActiveWorkRefusal(message)) setForceable(true);
+    } finally {
+      setPending(false);
+    }
+  };
+  const detail = `The agent switched this lane to ${adoption.branchRef}, so ADE moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`;
+  return (
+    <div
+      data-testid="lane-branch-adopted-chip"
+      role="status"
+      aria-label={detail}
+      title={error ?? detail}
+      className={COMPOSER_STATUS_CHIP_CLASS}
+    >
+      <GitBranch size={11} weight="bold" className="shrink-0 text-sky-300/80" aria-hidden />
+      <span className="shrink-0 text-fg/55">Now on</span>
+      <span className="min-w-0 truncate font-mono text-fg/80">{adoption.branchRef}</span>
+      {error ? <Warning size={11} weight="fill" className="shrink-0 text-red-400/85" aria-hidden /> : null}
+      <button
+        type="button"
+        className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
+        disabled={pending}
+        title={`Check out ${adoption.previousBranchRef} again`}
+        onClick={() => { void switchBack(forceable); }}
+      >
+        {pending ? "Switching…" : forceable ? "Switch anyway" : "Switch back"}
+      </button>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full text-fg/40 transition-colors hover:bg-white/[0.08] hover:text-fg/80"
+        onClick={() => dismissAdoption(laneId)}
+      >
+        <X size={9} weight="bold" aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Header chip
 // ---------------------------------------------------------------------------
 
@@ -116,8 +245,24 @@ export function LaneBranchDriftStrip({
 }: {
   laneId: string | null | undefined;
 }) {
-  const drift = useLaneBranchDrift(laneId);
+  const storeDrift = useLaneBranchDrift(laneId);
   const armed = useLaneBranchDriftArmed(laneId);
+  // The lane list's status can be minutes old. Once something is about to act
+  // on the branch, read HEAD now so a fresh switch is caught before it acts.
+  const [freshDrift, setFreshDrift] = useState<{ laneId: string; drift: LaneBranchDrift | null } | null>(null);
+  useEffect(() => {
+    const readDrift = window.ade?.lanes?.getBranchDrift;
+    if (!laneId || !armed || typeof readDrift !== "function") return undefined;
+    let cancelled = false;
+    void Promise.resolve(readDrift({ laneId }))
+      .then((drift) => { if (!cancelled) setFreshDrift({ laneId, drift }); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [armed, laneId, storeDrift?.headBranchRef]);
+  const drift = freshDrift && freshDrift.laneId === laneId ? freshDrift.drift : storeDrift;
+  const laneBranchRef = useAppStore((state) =>
+    laneId ? state.lanes.find((lane) => lane.id === laneId)?.branchRef ?? null : null);
+  const adoption = useRecentBranchAdoption(laneId, laneBranchRef);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
   const [forceable, setForceable] = useState<LaneBranchDriftResolution | null>(null);
@@ -149,6 +294,7 @@ export function LaneBranchDriftStrip({
         ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
       });
       disarmLaneBranchDriftWarning(laneId);
+      setFreshDrift(null);
       await refreshLanes({ includeStatus: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -165,51 +311,54 @@ export function LaneBranchDriftStrip({
 
   const message = useMemo(() => {
     if (!drift) return "";
-    return `HEAD is ${drift.headBranchRef}. A PR from this lane would target the wrong branch.`;
+    return `This lane's worktree is on ${drift.headBranchRef}, not ${drift.expectedBranchRef}. Lane diffs and PR actions still use ${drift.expectedBranchRef}.`;
   }, [drift]);
 
-  if (!visible || !drift) return null;
+  if (!visible || !drift) {
+    return adoption && laneId ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} /> : null;
+  }
 
   const busy = pending != null;
-  const actions: NoticeAction[] = [];
-  if (forceable) {
-    actions.push({
-      label: "Switch anyway",
-      onClick: () => { void resolve(forceable, true); },
-      disabled: busy,
-      busy: pending === forceable,
-    });
-  }
-  actions.push(
-    {
-      label: "Switch back",
-      variant: forceable ? "secondary" : "primary",
-      onClick: () => { void resolve("switch-back"); },
-      disabled: busy,
-      busy: pending === "switch-back",
-    },
-    {
-      label: `Keep ${drift.headBranchRef}`,
-      variant: "secondary",
-      onClick: () => { void resolve("keep-head"); },
-      disabled: busy,
-      busy: pending === "keep-head",
-    },
-  );
-
   return (
-    <Banner
-      layout="inline"
-      testId="lane-branch-drift-strip"
-      style={{ margin: "6px 8px", flexShrink: 0 }}
-      model={{
-        id: `lane-branch-drift:${laneId}`,
-        tone: "warning",
-        icon: <GitBranch size={13} weight="bold" />,
-        title: error ? error : message,
-        ariaLabel: message,
-        actions,
-      }}
-    />
+    <div
+      data-testid="lane-branch-drift-strip"
+      role="status"
+      aria-label={message}
+      title={error ?? message}
+      className={cn(COMPOSER_STATUS_CHIP_CLASS, "border-amber-200/20 bg-amber-300/[0.06]")}
+    >
+      <GitBranch size={11} weight="bold" className="shrink-0 text-amber-300/80" aria-hidden />
+      <span className="shrink-0 text-amber-100/75">On</span>
+      <span className="min-w-0 truncate font-mono text-amber-50/85">{drift.headBranchRef}</span>
+      {error ? <Warning size={11} weight="fill" className="shrink-0 text-red-400/85" aria-hidden /> : null}
+      {forceable ? (
+        <button
+          type="button"
+          className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
+          disabled={busy}
+          onClick={() => { void resolve(forceable, true); }}
+        >
+          Switch anyway
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
+        disabled={busy}
+        title={`Check out ${drift.expectedBranchRef} again`}
+        onClick={() => { void resolve("switch-back"); }}
+      >
+        {pending === "switch-back" ? "Switching…" : "Switch back"}
+      </button>
+      <button
+        type="button"
+        className={COMPOSER_STATUS_CHIP_ACTION_CLASS}
+        disabled={busy}
+        title={`Make ${drift.headBranchRef} this lane's branch`}
+        onClick={() => { void resolve("keep-head"); }}
+      >
+        {pending === "keep-head" ? "Keeping…" : "Keep"}
+      </button>
+    </div>
   );
 }

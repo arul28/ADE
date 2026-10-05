@@ -590,13 +590,13 @@ Shared types and IPC:
 - `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
   the optional `SessionSnoozeChip` for a chat surface header, mounted by
   `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
-  once by the compact `ChatLifecyclePill` pill floating above the composer,
-  rather than repeated in the header. Both surfaces read the same local
+  once by the `ChatLifecyclePill` chip in the composer status strip
+  (`ChatComposerStatusStrip`), rather than repeated in the header. Both surfaces read the same local
   per-project session cache, with a root cross-machine snapshot fallback for a
   foreign chat, and the same canonical helpers as the Work sidebar; the snooze
   menu calls `wakeSessionNow`, while the banner offers Un-settle. A bounded
   render-only deadline timer repaints an open foreign/local snapshot when its
-  snooze expires. The slot above the composer also hosts lane branch drift
+  snooze expires. The same strip also hosts the lane branch-drift chip
   (`LaneBranchDriftStrip`).
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — snooze duration grammar shared
   by the `ade session snooze` planner in `cli.ts` and `ade code`'s

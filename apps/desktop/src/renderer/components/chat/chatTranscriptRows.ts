@@ -472,6 +472,25 @@ export type TurnFoldRenderEvent = {
   failedJobCount?: number;
 };
 
+/**
+ * The one row a run of self-paced wake-up checks folds into (every check but
+ * the latest). Presentation only, produced after the turn fold by
+ * `applyWakeChains`. Row key: `wake-chain:${firstTurnId}`.
+ */
+export type WakeChainRenderEvent = {
+  type: "wake_chain";
+  chainId: string;
+  checkCount: number;
+  firstAt: string;
+  lastAt: string;
+};
+
+/** Presentation only: marks where rows that arrived while the reader was away begin. */
+export type NewSinceDividerRenderEvent = {
+  type: "new_since_divider";
+  sinceMs: number;
+};
+
 export type TurnDiagnosticsEvent = Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
 export type TurnRecoveryReceiptEvent = Extract<AgentChatEvent, { type: "turn_recovery" | "codex_turn_recovery" }>;
 
@@ -603,7 +622,9 @@ export type ChatTranscriptGroupedEnvelope = {
     | SubagentStoppedGroupEvent
     | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | TurnFoldRenderEvent;
+    | TurnFoldRenderEvent
+    | WakeChainRenderEvent
+    | NewSinceDividerRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `imageViewSiblings`. */

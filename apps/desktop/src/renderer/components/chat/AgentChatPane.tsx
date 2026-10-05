@@ -166,7 +166,7 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
-import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
+import { ChatComposerStatusStrip } from "./ChatComposerStatusStrip";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -5086,13 +5086,13 @@ export function AgentChatPane({
     () => selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text"),
     [selectedEventsForDisplay],
   );
+  // When this chat was last on screen here, read once per open: the thread
+  // draws a `New since …` divider above what arrived after it.
   const [wakeAwayWindow, setWakeAwayWindow] = useState<{
     sessionId: string;
     lastViewedAtMs: number;
     openedAtMs: number;
-    dismissed: boolean;
   } | null>(null);
-  const [wakeJumpRequest, setWakeJumpRequest] = useState<{ key: string; requestId: number } | null>(null);
   const promptHistoryJumpSequenceRef = useRef(0);
   const [promptHistoryJumpRequest, setPromptHistoryJumpRequest] = useState<{
     eventKey: string;
@@ -5126,7 +5126,7 @@ export function AgentChatPane({
     } catch {
       // Renderer storage is best-effort; a blocked localStorage must not hide chat.
     }
-    setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs, dismissed: false });
+    setWakeAwayWindow({ sessionId: selectedSessionId, lastViewedAtMs, openedAtMs });
     try {
       window.localStorage.setItem(storageKey, String(openedAtMs));
     } catch {
@@ -5140,26 +5140,9 @@ export function AgentChatPane({
       }
     };
   }, [selectedSessionId]);
-  const unattendedWakeTurns = useMemo(() => {
-    if (!selectedSessionId || wakeAwayWindow?.sessionId !== selectedSessionId || wakeAwayWindow.dismissed) return [];
-    return selectedEventsForDisplay.flatMap((envelope) => {
-      const event = envelope.event;
-      if (event.type !== "user_message" || !event.metadata?.scheduledWake || !event.turnId) return [];
-      const wake = event.metadata.scheduledWake;
-      const firedAtMs = Date.parse(wake.firedAt);
-      if (
-        !Number.isFinite(firedAtMs)
-        || firedAtMs <= wakeAwayWindow.lastViewedAtMs
-        || firedAtMs > wakeAwayWindow.openedAtMs
-      ) return [];
-      return [{
-        scheduleId: wake.scheduleId,
-        turnId: event.turnId,
-        reason: wake.reason?.trim() || null,
-        firedAtMs,
-      }];
-    }).sort((left, right) => left.firedAtMs - right.firedAtMs);
-  }, [selectedEventsForDisplay, selectedSessionId, wakeAwayWindow]);
+  const unreadSince = wakeAwayWindow && wakeAwayWindow.sessionId === selectedSessionId
+    ? { sinceMs: wakeAwayWindow.lastViewedAtMs, openedAtMs: wakeAwayWindow.openedAtMs }
+    : null;
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -15960,25 +15943,16 @@ export function AgentChatPane({
       />
   );
 
-  const firstUnattendedWake = unattendedWakeTurns[0] ?? null;
-  const awayDigestCard = firstUnattendedWake ? (
-    <ChatAwayDigestCard
-      count={unattendedWakeTurns.length}
-      firstReason={firstUnattendedWake.reason}
-      onReview={() => setWakeJumpRequest((current) => ({
-        key: `scheduled-wake:${firstUnattendedWake.scheduleId}:${firstUnattendedWake.turnId}`,
-        requestId: (current?.requestId ?? 0) + 1,
-      }))}
-      onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
-    />
-  ) : null;
-  const appPanelLifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
-    <ChatLifecyclePill
-      sessionId={composerSessionId}
-      runtimePin={renderedChatRuntimePin}
-      className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
-    />
-  ) : null;
+  // Settled / snoozed and branch drift, side by side on the composer's top
+  // edge instead of stacked cards over the thread.
+  const composerStatusStrip = (
+    <ChatComposerStatusStrip
+      className={layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]"}
+    >
+      {lifecyclePill}
+      <LaneBranchDriftStrip laneId={laneId} />
+    </ChatComposerStatusStrip>
+  );
   /**
    * The turn's time-lapse of the lane's macOS screen, when there was one.
    *
@@ -15995,14 +15969,12 @@ export function AgentChatPane({
       workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
+  const composerNoticeOverlay = macDesktopTimeLapseCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
-      {awayDigestCard}
-      {lifecyclePill}
     </div>
   ) : null;
 
@@ -16149,7 +16121,7 @@ export function AgentChatPane({
         );
       })}
       {authStickyBar}
-      <LaneBranchDriftStrip laneId={laneId} />
+      {composerStatusStrip}
       {takeoverBanner}
       {stalledTurnBanner}
       {steeringPendingInput ? (
@@ -16565,7 +16537,7 @@ export function AgentChatPane({
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
                         onStopSubagent={listStopSubagent}
                         mosaic={subagentView ? undefined : mosaicContext}
-                        scrollToRowKeyRequest={subagentView ? null : wakeJumpRequest}
+                        unreadSince={subagentView ? null : unreadSince}
                         scrollToPromptHistoryRequest={subagentView ? null : promptHistoryJumpRequest}
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
@@ -16586,13 +16558,7 @@ export function AgentChatPane({
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
-                        <LaneBranchDriftStrip laneId={laneId} />
-                        {awayDigestCard ? (
-                          <div data-testid="chat-app-panel-notice-stack" className="flex flex-col items-center gap-1.5 px-3 py-1.5">
-                            {awayDigestCard}
-                            {appPanelLifecyclePill}
-                          </div>
-                        ) : appPanelLifecyclePill}
+                        {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {usageLimitPill}

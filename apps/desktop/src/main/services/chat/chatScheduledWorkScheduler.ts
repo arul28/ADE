@@ -115,6 +115,11 @@ export type ChatScheduledWorkScheduler = {
   dispose(): void;
   upsert(schedule: ChatScheduledWorkUpsert): Promise<ChatScheduledWorkRecord>;
   cancel(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
+  /**
+   * Settles a one-shot the provider already delivered on its own (it left the
+   * provider's inventory after its fire time) as `done`, not `cancelled`.
+   */
+  markFired(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
   setSchedulePaused(scheduleId: string, paused: boolean): Promise<ChatScheduledWorkRecord | null>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   refreshGlobalPause(): Promise<void>;
@@ -648,6 +653,23 @@ export function createChatScheduledWorkScheduler(
         await persist();
         await emitTransition(schedule, "cancelled");
       }
+      return cloneSchedule(schedule);
+    },
+
+    async markFired(scheduleId): Promise<ChatScheduledWorkRecord | null> {
+      await start();
+      const schedule = schedules.get(scheduleId);
+      if (!schedule) return null;
+      if (schedule.kind === "cron" || isTerminal(schedule) || inFlight.has(scheduleId)) {
+        return cloneSchedule(schedule);
+      }
+      clearTimer(scheduleId);
+      if (schedule.lastFiredAt == null) schedule.lastFiredAt = schedule.fireAt ?? now();
+      delete schedule.activeTurnId;
+      markTerminal(schedule, "done");
+      pruneTerminalHistory();
+      await persist();
+      await emitTransition(schedule, "done");
       return cloneSchedule(schedule);
     },
 

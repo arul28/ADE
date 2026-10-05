@@ -756,16 +756,34 @@ implements a two-layer transform:
      ended session a job still marked `running` shows no duration and
      no Stop.
 
-     **Scheduled work.** An activity bundle's wake-up, cron, loop, or
-     remote-trigger item (`scheduled_work_update` other than
-     `background_task`) renders as one compact `ScheduledWorkLine` in the
-     same idiom: `⏰ Wakes in 20m · <reason>`, `Woke at 14:30` once it
-     fired, or `⟳ Cron · every 30m · next 14:30`. A bundle holding only
-     scheduled work stacks those lines with no card around them. Task lists
-     are never bundled; they are the chat's one `task_list` row. Clicking a line opens
-     the chat actions pane. The fold keeps a line visible when its
-     schedule was still pending at turn end and folds it otherwise; the
-     `Woke on schedule` divider before the woken turn is unchanged.
+     **Scheduled work.** A wake-up, cron, loop, or remote trigger
+     (`scheduled_work_update` other than `background_task`) is one entry per
+     schedule id across the whole transcript (`foldScheduledWorkRows` in
+     `chatScheduledWorkRows.ts`): later updates, from the provider's
+     inventory snapshot, the fire, or a cancel, patch the entry where the
+     schedule was created instead of adding rows in later turns. A one-shot
+     `cancelled` at or after its fire time reads as fired, so transcripts
+     from older brains (which recorded fired wake-ups as cancelled) tell the
+     truth. Once the turn ends, its schedules move onto its turn-end line
+     (`moveScheduledWorkToTurnEnds`) as small chips in the line's own mono
+     type: `⏰ wakes in 2m` (amber while pending), `woke at 9:50 PM`, or
+     `⟳ cron · every 30m`, with the reason in the tooltip. A pending wake-up
+     more than a minute past due reads `was due 9:29`, never `wakes now`.
+     Clicking a chip opens the chat actions pane. A turn still running keeps
+     its schedule as a `ScheduledWorkLine` row until its `done` arrives.
+     Task lists are never bundled; they are the chat's one `task_list` row.
+
+     **Self-paced wake loops.** A turn the agent started from its own
+     wake-up (no user message, after a turn that scheduled one, or opened by
+     a `Woke on schedule` divider) is a wake turn (`deriveWakeTurnIds`). A
+     wake turn has no `Worked for …` fold row: the `ran 2.2s ›` time on its
+     turn-end line opens the fold, and its tool count stays on that line. A
+     run of consecutive wake turns folds every check but the latest
+     (`deriveWakeChains` / `applyWakeChains`): `+3 more checks ›` sits at the
+     end of the turn-end line just above them, so they open directly below
+     it, and the open state shares the turn folds' memory. A turn the user
+     started ends the run. When that line is not drawn, the chain falls back
+     to a slim `3 earlier checks` row (`wake_chain`).
    - `ade_card` collapses per `cardId` into ONE permanent chronological row
      keyed `ade-card:<cardId>`. A repeat emit mutates that row in place — a new
      object under the same key, merged over the previous payload, so an update

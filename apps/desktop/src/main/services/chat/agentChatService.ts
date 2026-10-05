@@ -1447,6 +1447,10 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+// Claude fires one-shots on minute boundaries and may run a little ahead of
+// the stored fire time; a one-shot gone from its inventory this close to due
+// was delivered, not dropped.
+const CLAUDE_NATIVE_FIRE_EARLY_TOLERANCE_MS = 30_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
 const PI_WORKER_EXIT_WAIT_MS = 5_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
@@ -2554,6 +2558,8 @@ type ClaudeRuntime = {
    */
   workflowAgentsByTask: Map<string, Map<string, ClaudeWorkflowAgentEmitState>>;
   scheduledWorkSignatures: Map<string, string>;
+  /** Last emitted scheduled-work event per id; later partial updates patch it. */
+  scheduledWorkLastEvents: Map<string, Extract<AgentChatEvent, { type: "scheduled_work_update" }>>;
   /**
    * Claude Code TaskCreate/TaskUpdate tracker. The harness assigns ordinal
    * task ids ("1", "2", …) in the TaskCreate tool *result*, which this
@@ -20253,6 +20259,7 @@ export function createAgentChatService(args: {
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
     noteMacDesktopTurnBoundary(managed, normalizedEvent);
+    noteLaneBranchTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
     }
@@ -20311,6 +20318,62 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  };
+
+  /**
+   * The lane's recorded branch when each chat's current turn began, or null
+   * when the worktree was already on another branch then. Read at turn end to
+   * tell a branch switch this turn's agent made from one made before it.
+   */
+  const laneBranchAtTurnStart = new Map<string, string | null>();
+
+  /**
+   * An agent that checks out a new branch in its lane (a follow-up PR, `/ship`)
+   * moves the lane with it: at turn end ADE adopts the branch without asking
+   * (`adoptAgentBranchSwitch`). A switch made before the turn, in the primary
+   * checkout, or away from unmerged commits stays a question in the drift chip.
+   */
+  const noteLaneBranchTurnBoundary = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+  ): void => {
+    const laneId = managed.session.laneId;
+    if (!laneId || typeof laneService.adoptAgentBranchSwitch !== "function") return;
+    const sessionId = managed.session.id;
+    if (event.type === "status" && event.turnStatus === "started") {
+      laneBranchAtTurnStart.set(sessionId, null);
+      void (async () => {
+        const drift = await laneService.getBranchDrift({ laneId });
+        if (drift) return;
+        const lane = (await laneService.getSummary(laneId))?.branchRef ?? null;
+        if (laneBranchAtTurnStart.has(sessionId)) laneBranchAtTurnStart.set(sessionId, lane);
+      })().catch(() => undefined);
+      return;
+    }
+    if (event.type !== "done") return;
+    const branchAtTurnStart = laneBranchAtTurnStart.get(sessionId) ?? null;
+    laneBranchAtTurnStart.delete(sessionId);
+    if (!branchAtTurnStart) return;
+    void laneService.adoptAgentBranchSwitch({ laneId, branchAtTurnStart })
+      .then((result) => {
+        if (result.adopted) {
+          logger.info("lane.agent_branch_adopted", {
+            laneId,
+            sessionId,
+            previousBranchRef: result.previousBranchRef,
+            branchRef: result.branchRef,
+          });
+        } else if (result.reason !== "no_drift") {
+          logger.info("lane.agent_branch_not_adopted", { laneId, sessionId, reason: result.reason });
+        }
+      })
+      .catch((error: unknown) => {
+        logger.warn("lane.agent_branch_adopt_failed", {
+          laneId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
 
   const applyClaudeActiveGoal = (
@@ -21172,9 +21235,31 @@ export function createAgentChatService(args: {
     return namespaceSplit.split(/[.:/]/).filter(Boolean).pop() ?? namespaceSplit;
   };
 
+  // Provider bookkeeping (which tool call or task reported it, the one-shot's
+  // internal cron string) is not a change a reader can see.
   const scheduledWorkSignature = (event: ScheduledWorkEvent): string => {
-    const { turnId: _turnId, ...stable } = event;
-    return JSON.stringify(stable);
+    const { turnId: _turnId, sourceTaskId: _taskId, sourceToolUseId: _toolUseId, cron, recurring, ...stable } = event;
+    return JSON.stringify(event.kind === "cron" ? { ...stable, cron, recurring } : stable);
+  };
+
+  const isPendingScheduledWorkStatus = (status: ScheduledWorkEvent["status"]): boolean =>
+    status === "scheduled" || status === "paused" || status === "running";
+
+  // Inventory snapshots and cancellations carry fewer fields than the tool
+  // call that created the schedule. Patch the last event so a later update
+  // never drops the reason or fire time a reader already saw.
+  const patchScheduledWorkEvent = (
+    previous: ScheduledWorkEvent | undefined,
+    event: ScheduledWorkEvent,
+  ): ScheduledWorkEvent => {
+    if (!previous) return event;
+    const defined = Object.fromEntries(
+      Object.entries(event).filter(([, value]) => value !== undefined),
+    ) as ScheduledWorkEvent;
+    const patched: ScheduledWorkEvent = { ...previous, ...defined };
+    if (!event.turnId) delete patched.turnId;
+    if (!isPendingScheduledWorkStatus(patched.status) && event.nextRunAt === undefined) delete patched.nextRunAt;
+    return patched;
   };
 
   const emitClaudeScheduledWorkUpdate = (
@@ -21184,11 +21269,11 @@ export function createAgentChatService(args: {
   ): void => {
     const id = event.id.trim();
     if (!id) return;
-    const normalized: ScheduledWorkEvent = {
+    const normalized: ScheduledWorkEvent = patchScheduledWorkEvent(runtime.scheduledWorkLastEvents.get(id), {
       ...event,
       id,
       kind: runtime.scheduledWorkKindById.get(id) ?? event.kind,
-    };
+    });
     runtime.scheduledWorkKindById.set(id, normalized.kind);
     if (normalized.sourceToolUseId?.trim()) {
       runtime.scheduledWorkIdByToolUseId.set(normalized.sourceToolUseId.trim(), id);
@@ -21196,6 +21281,7 @@ export function createAgentChatService(args: {
     if (normalized.sourceTaskId?.trim()) {
       runtime.scheduledWorkIdByTaskId.set(normalized.sourceTaskId.trim(), id);
     }
+    runtime.scheduledWorkLastEvents.set(id, normalized);
     const signature = scheduledWorkSignature(normalized);
     if (runtime.scheduledWorkSignatures.get(id) === signature) return;
     runtime.scheduledWorkSignatures.set(id, signature);
@@ -22143,7 +22229,9 @@ export function createAgentChatService(args: {
         kind,
         status: "scheduled",
         origin: kind === "loop" ? "loop" : kind === "cron" ? "cron" : "schedule_wakeup",
-        title: durableSchedule?.prompt ?? prompt ?? (recurring ? "Cron scheduled" : "Wakeup scheduled"),
+        title: durableSchedule?.reason ?? durableSchedule?.prompt ?? prompt ?? (recurring ? "Cron scheduled" : "Wakeup scheduled"),
+        ...(durableSchedule?.reason ? { reason: durableSchedule.reason } : {}),
+        ...(durableSchedule?.fireAt != null ? { nextRunAt: new Date(durableSchedule.fireAt).toISOString() } : {}),
         cron: cronSchedule,
         prompt: durableSchedule?.prompt ?? prompt,
         recurring,
@@ -22192,7 +22280,14 @@ export function createAgentChatService(args: {
           && schedule.providerSessionId === providerSessionId
           && !providerCronIds.has(schedule.providerScheduleId ?? schedule.id)
         ) {
-          await scheduledWorkScheduler.cancel(schedule.id);
+          // A one-shot leaves Claude's inventory when it fires. Gone after its
+          // fire time means Claude delivered it (usually the turn that just
+          // ended), so it settles as fired; gone before then means it was dropped.
+          const deliveredByProvider = schedule.kind !== "cron"
+            && schedule.fireAt != null
+            && schedule.fireAt <= Date.now() + CLAUDE_NATIVE_FIRE_EARLY_TOLERANCE_MS;
+          if (deliveredByProvider) await scheduledWorkScheduler.markFired(schedule.id);
+          else await scheduledWorkScheduler.cancel(schedule.id);
         }
       }
     }
@@ -38767,6 +38862,7 @@ export function createAgentChatService(args: {
     }
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
+    runtime.scheduledWorkLastEvents.clear();
     // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
@@ -39926,6 +40022,7 @@ export function createAgentChatService(args: {
       subagentEffortById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
+      scheduledWorkLastEvents: new Map(),
       taskTodos: { seeded: false, byId: new Map() },
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),

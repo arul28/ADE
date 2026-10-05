@@ -315,18 +315,30 @@ that could not work without it.
 - Ambient lifecycle affordances. `AgentChatPane` passes the selected session id
   to `WorkSurfaceHeader` as `snoozeSessionId`, which mounts the optional
   `SessionSnoozeChip` from `renderer/components/work/SessionLifecycleChips.tsx`.
-  Settled state is rendered once as the compact `ChatLifecyclePill` pill
-  floating above the composer; it is not duplicated in the header. The snooze
+  Settled and snoozed state is one chip (`ChatLifecyclePill`) in the
+  composer status strip, `ChatComposerStatusStrip`: a single row of 22px
+  chips on the composer's top edge that sit side by side and scroll sideways
+  instead of stacking over the thread. Settled reads only `Settled ·
+  Un-settle`; what sending does is in the tooltip. It is not duplicated in
+  the header. The snooze
   menu calls `wakeSessionNow`, and the banner's Un-settle action uses the shared
   lifecycle action path. Both read the same local per-project session cache,
   with a root cross-machine snapshot fallback for a foreign chat, and the same
   canonical helpers as the Work sidebar, so the visible state stays consistent.
-  The slot remains above the composer by design: `AgentChatPane` also renders
-  `<LaneBranchDriftStrip laneId={laneId} />` there and arms it
+  The branch-drift chip shares that strip: `AgentChatPane` renders
+  `<LaneBranchDriftStrip laneId={laneId} />` inside it and arms it
   (`armLaneBranchDriftWarning`) on submit so a turn about to run against a
   worktree whose HEAD wandered off the lane's branch warns first. See
   [Terminals and sessions](../terminals-and-sessions/README.md) and
   [Lanes › Branch drift](../lanes/README.md#branch-drift).
+
+- **New since you left.** `AgentChatPane` reads when this chat was last on
+  screen on this machine (`ade.chat.lastViewed.v1:<sessionId>` in local
+  storage) once per open and passes it to the message list as
+  `unreadSince`. The list draws one `New since 9:12 PM` divider above the
+  first row that arrived between that time and the open; rows that stream in
+  while the chat is open never move it. It replaced the floating
+  "While you were away" card, which counted only scheduled wake-ups.
 
 ### New-lane launches
 

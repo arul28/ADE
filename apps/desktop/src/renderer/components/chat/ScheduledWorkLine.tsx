@@ -1,18 +1,23 @@
 import React, { useEffect, useState } from "react";
-import { Alarm, ArrowsClockwise, CaretRight } from "@phosphor-icons/react";
+import { Alarm, ArrowsClockwise, CaretDown, CaretRight } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { describeCron } from "../automations/cronDescribe";
 import type { AgentChatEvent } from "../../../shared/types";
+import type { ChatActivityBundleItem, WakeChainRenderEvent } from "./chatTranscriptRows";
 
 type ScheduledWorkEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
 
 const PENDING_STATUSES: ReadonlySet<string> = new Set(["scheduled", "paused", "running"]);
 
-/** `in 20m`, `in 1h 5m`, `in 2d`, or `now`; null for an unparseable time. */
+/**
+ * `in 20m`, `in 1h 5m`, `in 2d`, `now`, or `overdue` once the fire time is
+ * more than a minute gone; null for an unparseable time.
+ */
 function formatRelativeIn(value: string | null | undefined, nowMs: number): string | null {
   const at = value ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(at)) return null;
   const minutes = Math.round((at - nowMs) / 60_000);
+  if (minutes < -1) return "overdue";
   if (minutes <= 0) return "now";
   if (minutes < 60) return `in ${minutes}m`;
   if (minutes < 60 * 24) {
@@ -52,7 +57,10 @@ export function describeScheduledWorkLine(
     if (event.status === "paused") head = `${noun} paused`;
     else if (pending) {
       const when = formatRelativeIn(event.nextRunAt, nowMs);
-      head = when ? (when === "now" ? "Wakes now" : `Wakes ${when}`) : "Wake-up scheduled";
+      if (!when) head = "Wake-up scheduled";
+      else if (when === "now") head = "Wakes now";
+      else if (when === "overdue") head = `Was due ${formatClock(event.nextRunAt)}`;
+      else head = `Wakes ${when}`;
     } else if (event.status === "fired" || event.status === "completed") {
       const clock = formatClock(event.firedAt ?? event.lastRunAt ?? event.nextRunAt);
       head = clock ? `Woke at ${clock}` : "Woke";
@@ -130,6 +138,131 @@ export function ScheduledWorkLine({
       )}
     >
       {content}
+    </button>
+  );
+}
+
+/** `5 earlier checks · 8:53 PM – 9:25 PM`. Pure so the wording is testable. */
+export function describeWakeChainRow(event: WakeChainRenderEvent): { head: string; span: string | null } {
+  const head = `${event.checkCount} earlier ${event.checkCount === 1 ? "check" : "checks"}`;
+  const first = formatClock(event.firstAt);
+  const last = formatClock(event.lastAt);
+  const span = first && last ? (first === last ? first : `${first} – ${last}`) : first ?? last;
+  return { head, span };
+}
+
+/**
+ * One row for the earlier turns of a self-paced wake-up loop. The latest check
+ * stays in the thread below it; opening the row shows the earlier ones.
+ */
+export function WakeChainRow({
+  event,
+  open,
+  onToggle,
+}: {
+  event: WakeChainRenderEvent;
+  open: boolean;
+  onToggle?: (chainId: string) => void;
+}) {
+  const line = describeWakeChainRow(event);
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={`${line.head}. ${open ? "Hide" : "Show"} the earlier wake-up checks`}
+      onClick={() => onToggle?.(event.chainId)}
+      data-wake-chain={event.chainId}
+      // Same size and tone as the turn fold row (`Worked for …`) it sits beside.
+      className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] tabular-nums text-fg/50 outline-none transition-colors hover:text-fg/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/40"
+    >
+      <Alarm size={11} weight="bold" className="shrink-0 text-amber-200/55" aria-hidden />
+      <span className="shrink-0">{line.head}</span>
+      {line.span ? (
+        <span className="min-w-0 truncate text-fg/40">
+          <span className="text-fg/25" aria-hidden>· </span>{line.span}
+        </span>
+      ) : null}
+      {open
+        ? <CaretDown size={9} weight="bold" className="shrink-0" aria-hidden />
+        : <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden />}
+    </button>
+  );
+}
+
+/**
+ * The schedules a finished turn left behind, as small chips at the end of its
+ * turn-end line: `⏰ Wakes in 2m`, `⏰ Woke at 9:50 PM`, `⟳ Cron · every 30m`.
+ * The reason rides the tooltip; a click opens the schedule in chat actions.
+ */
+export function ScheduledWorkChips({
+  items,
+  onOpen,
+}: {
+  items: readonly ChatActivityBundleItem[];
+  onOpen?: (item: ChatActivityBundleItem) => void;
+}) {
+  const live = items.some((item) => PENDING_STATUSES.has(item.event.status) && Boolean(item.event.nextRunAt));
+  const nowMs = useMinuteClock(live);
+  return (
+    // The turn-end line's own type: `ran 7.3s · 09:48 PM · … · ⏰ woke at 09:50 PM`.
+    <span className="inline-flex min-w-0 items-center gap-2 font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)]">
+      {items.map((item) => {
+        const line = describeScheduledWorkLine(item.event, nowMs);
+        const head = line.head.charAt(0).toLowerCase() + line.head.slice(1);
+        const Icon = line.kind === "wake" ? Alarm : ArrowsClockwise;
+        return (
+          <button
+            key={item.event.id}
+            type="button"
+            onClick={onOpen ? () => onOpen(item) : undefined}
+            data-scheduled-work={item.event.id}
+            data-scheduled-work-status={item.event.status}
+            title={line.detail ? `${line.head} · ${line.detail}` : line.head}
+            aria-label={line.detail ? `${line.head}: ${line.detail}` : line.head}
+            className={cn(
+              "inline-flex min-w-0 shrink items-center gap-1 rounded font-mono tabular-nums outline-none transition-colors hover:text-fg/85 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/40",
+              line.pending ? "text-fg/60" : "text-fg/40",
+            )}
+          >
+            <Icon size={11} weight="bold" className={cn("shrink-0", line.pending ? "text-amber-300/80" : "text-fg/35")} aria-hidden />
+            <span className="truncate">{head}</span>
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
+/**
+ * `+3 checks ›` at the end of the turn-end line right above the folded checks;
+ * opening it shows them directly below that line.
+ */
+export function WakeChainChip({
+  chainId,
+  checkCount,
+  open,
+  onToggle,
+}: {
+  chainId: string;
+  checkCount: number;
+  open: boolean;
+  onToggle?: (chainId: string) => void;
+}) {
+  const label = `${checkCount} more ${checkCount === 1 ? "check" : "checks"}`;
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={`${open ? "Hide" : "Show"} ${label}`}
+      onClick={() => onToggle?.(chainId)}
+      data-wake-chain={chainId}
+      className="inline-flex shrink-0 items-center gap-1 rounded font-mono tabular-nums text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 outline-none transition-colors hover:text-fg/85 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/40"
+    >
+      <span className="text-fg/25" aria-hidden>·</span>
+      <span>+{label}</span>
+      {open
+        ? <CaretDown size={9} weight="bold" className="shrink-0" aria-hidden />
+        : <CaretRight size={9} weight="bold" className="shrink-0" aria-hidden />}
     </button>
   );
 }
