@@ -857,6 +857,11 @@ export type DevServerRecord = {
   detectedAt: string;
 };
 
+/** One dev server per (lane, port): two lanes may serve the same port. */
+export function devServerKey(laneId: string | null | undefined, port: number): string {
+  return `${laneId ?? ""}:${port}`;
+}
+
 export type DevServersArgs = {
   laneId?: string | null;
 };

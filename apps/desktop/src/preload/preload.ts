@@ -79,7 +79,12 @@ import {
   type WorkToolShowAck,
   type WorkToolShowRequest,
 } from "../shared/types/workToolShow";
-import { DEV_SERVER_EVENT, type DevServerEvent, type DevServerRecord } from "../shared/types/builtInBrowser";
+import {
+  DEV_SERVER_EVENT,
+  devServerKey,
+  type DevServerEvent,
+  type DevServerRecord,
+} from "../shared/types/builtInBrowser";
 import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
@@ -2183,7 +2188,7 @@ async function listDevServersForPin(
   ]);
   const byKey = new Map<string, DevServerRecord>();
   for (const server of [...runtimeServers, ...localServers]) {
-    const key = `${server.source.laneId ?? ""}:${server.port}`;
+    const key = devServerKey(server.source.laneId, server.port);
     if (!byKey.has(key)) byKey.set(key, server);
   }
   return {
@@ -2224,7 +2229,7 @@ const desktopClientId: string = (() => {
  */
 async function sessionInputOriginFor(pin: OpenProjectBinding | null | undefined): Promise<SessionInputOrigin> {
   const remote = await resolveRemoteBindingForPin(pin);
-  return { clientId: desktopClientId, machineLabel: null, local: !remote };
+  return { clientId: desktopClientId, local: !remote };
 }
 
 /** How a paired machine takes attachments; see `agentChat.getAttachmentStagingMode`. */

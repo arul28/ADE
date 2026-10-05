@@ -7593,8 +7593,9 @@ export function createPtyService({
     write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
-      // Enter in a CLI chat is a message sent: remember which desktop sent it.
-      if (inputOrigin && /[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
+      // Enter in a CLI chat is a message sent: remember which desktop sent it
+      // (or that nobody can tell, when it came without a stamp).
+      if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
       try {
         markPtyUserInput(entry, data);
         claimAgentShellForUser(entry, data);

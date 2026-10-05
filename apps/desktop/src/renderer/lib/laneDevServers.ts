@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DevServerRecord, OpenProjectBinding } from "../../shared/types";
+import { pinKey } from "../state/projectMachines";
 
 /**
  * The dev servers a lane is running, as seen from any machine.
@@ -75,12 +76,8 @@ function syncRecheck(): void {
   }
 }
 
-function machineKey(pin: OpenProjectBinding | null): string {
-  return pin ? `${pin.kind}:${pin.key}` : "bound";
-}
-
 function entryKey(pin: OpenProjectBinding | null, laneId: string): string {
-  return `${machineKey(pin)}|${laneId}`;
+  return `${pinKey(pin)}|${laneId}`;
 }
 
 function sameServers(left: DevServerRecord[], right: DevServerRecord[]): boolean {
@@ -126,7 +123,7 @@ function scheduleRefresh(key: string, pin: OpenProjectBinding | null, laneId: st
 }
 
 function retainMachine(pin: OpenProjectBinding | null): () => void {
-  const key = machineKey(pin);
+  const key = pinKey(pin);
   const existing = machines.get(key);
   if (existing) {
     existing.refCount += 1;
@@ -166,7 +163,7 @@ export function useLaneDevServers(
   enabled = true,
 ): DevServerRecord[] {
   const [servers, setServers] = useState<DevServerRecord[]>(EMPTY);
-  const pinKey = machineKey(runtimePin);
+  const machine = pinKey(runtimePin);
   useEffect(() => {
     if (!enabled || !laneId) {
       setServers(EMPTY);
@@ -201,8 +198,8 @@ export function useLaneDevServers(
         syncRecheck();
       }, IDLE_ENTRY_TTL_MS);
     };
-    // `pinKey` stands for `runtimePin`: a new object for the same machine must not resubscribe.
+    // `machine` stands for `runtimePin`: a new object for the same machine must not resubscribe.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, laneId, pinKey]);
+  }, [enabled, laneId, machine]);
   return servers;
 }

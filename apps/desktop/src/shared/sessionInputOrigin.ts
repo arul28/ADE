@@ -13,8 +13,6 @@
 export type SessionInputOrigin = {
   /** Stable per desktop install; every window of one desktop shares it. */
   clientId: string;
-  /** The desktop's machine name, for "opened on MacBook Pro" messages. */
-  machineLabel: string | null;
   /**
    * The desktop runs on the same machine as the runtime (it reached the
    * runtime without going through a paired connection). Only such a desktop
@@ -24,7 +22,6 @@ export type SessionInputOrigin = {
 };
 
 const MAX_ID_CHARS = 128;
-const MAX_LABEL_CHARS = 200;
 
 /** Validates a stamp from the wire; anything malformed reads as "unknown". */
 export function parseSessionInputOrigin(value: unknown): SessionInputOrigin | null {
@@ -32,8 +29,7 @@ export function parseSessionInputOrigin(value: unknown): SessionInputOrigin | nu
   const record = value as Record<string, unknown>;
   const clientId = typeof record.clientId === "string" ? record.clientId.trim() : "";
   if (!clientId || clientId.length > MAX_ID_CHARS) return null;
-  const label = typeof record.machineLabel === "string" ? record.machineLabel.trim().slice(0, MAX_LABEL_CHARS) : "";
-  return { clientId, machineLabel: label || null, local: record.local === true };
+  return { clientId, local: record.local === true };
 }
 
 /** A request with no target is for every desktop; one with a target only for that desktop. */

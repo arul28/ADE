@@ -1354,20 +1354,22 @@ screen of the person talking to the chat, not on both.
 
 - **Every message names its desktop.** Preload stamps `chat.sendMessage`,
   `chat.steer` and a CLI chat's Enter (`pty.write` with a newline) with
-  `inputOrigin: { clientId, machineLabel, local }` (`shared/sessionInputOrigin.ts`).
+  `inputOrigin: { clientId, local }` (`shared/sessionInputOrigin.ts`).
   `clientId` is one id per desktop install (`window.ade.app.desktopClientId`,
   kept in the renderer origin's storage, so every window of that desktop
   shares it). `local` says whether the runtime is on the same machine, which
   only the preload's routing knows. The runtime keeps the last stamp per
   session in memory (`main/services/chat/sessionInputOrigins.ts`). A message
-  sent without a stamp (CLI, phone) leaves the last one in place.
+  sent without a stamp (the phone, the CLI, another agent) resets it to
+  unknown. Only a user client may supply a stamp; the runtime strips one from
+  an agent's call.
 - **Requests carry `targetClientId`.** `ade ui show` and the agent-driven
   floating offers (`work_tool_show_request`), forwarded browser opens
   (`built_in_browser_remote_request`) and Apple drawer reveals
   (`drawer-open-requested`) name the sending desktop. A desktop acts on a
   request only when the target is empty or is its own id
   (`renderer/lib/desktopClient.ts`). An `ade ui show` that the target does not
-  answer within 2.5 s goes out again with no target. It keeps the same request
+  answer within 4 s goes out again with no target. It keeps the same request
   id, so the target ignores the repeat if it was only slow.
 - **Unknown means everywhere.** After a runtime restart, or for a chat nobody
   has messaged from a desktop, requests carry no target and every desktop

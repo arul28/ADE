@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+
 /**
  * Which local TCP ports are listening, and which process owns each one.
  *
@@ -135,8 +137,9 @@ export async function scanListeningProcesses(input: {
   if (platform === "win32") {
     let raw: string;
     try {
+      // Never PATH's `powershell.exe`: this runs on agent activity.
       raw = await run(
-        "powershell.exe",
+        resolveTrustedWindowsTool("powershell"),
         ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENER_QUERY],
         WINDOWS_SCAN_TIMEOUT_MS,
       );

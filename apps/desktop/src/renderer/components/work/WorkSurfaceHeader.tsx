@@ -202,7 +202,7 @@ function useWorkSurfaceHeaderParts({
     />
   ) : null;
   // Beside the Tools toggle on Work surfaces: lit while the lane serves a page.
-  const toolsToggle = onToggleToolsPane ? (
+  const toolButtons = onToggleToolsPane ? (
     <>
       {laneId ? <WorkHeaderDevServerButton laneId={laneId} runtimePin={runtimePin} /> : null}
       <WorkHeaderToolsToggle open={toolsPaneOpen} onToggle={onToggleToolsPane} />
@@ -212,7 +212,7 @@ function useWorkSurfaceHeaderParts({
     ...(tileDragProps ?? {}),
     title: tileDragProps ? "Drag to rearrange or out of the grid" : undefined,
   };
-  return { tileDragging: Boolean(tileDragProps), titleDragProps, generatingTitle, gitToolbar, toolsToggle };
+  return { tileDragging: Boolean(tileDragProps), titleDragProps, generatingTitle, gitToolbar, toolButtons };
 }
 
 /**
@@ -239,7 +239,7 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
     onContextMenu,
     testId,
   } = props;
-  const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolsToggle } = useWorkSurfaceHeaderParts(props);
+  const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolButtons } = useWorkSurfaceHeaderParts(props);
   const namingLane = useLaneNamePending(laneId);
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
@@ -268,10 +268,10 @@ export function WorkSurfaceHeader(props: WorkSurfaceHeaderProps) {
         <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2">
           {gitToolbar}
           {trailingActions}
-          {actionsToggle || toolsToggle ? (
+          {actionsToggle || toolButtons ? (
             <div className="flex items-center gap-3">
               {actionsToggle}
-              {toolsToggle}
+              {toolButtons}
             </div>
           ) : null}
         </div>
@@ -299,7 +299,7 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     onContextMenu,
     testId,
   } = props;
-  const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolsToggle } = useWorkSurfaceHeaderParts(props);
+  const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolButtons } = useWorkSurfaceHeaderParts(props);
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, "relative", className)} data-testid={testId} onContextMenu={onContextMenu}>
       <div className="relative z-10 flex w-full items-center">
@@ -318,11 +318,11 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}
           {trailingActions}
-          {gitToolbar || actionsToggle || toolsToggle ? (
+          {gitToolbar || actionsToggle || toolButtons ? (
             <div className="flex items-center gap-3">
               {gitToolbar}
               {actionsToggle}
-              {toolsToggle}
+              {toolButtons}
             </div>
           ) : null}
         </div>

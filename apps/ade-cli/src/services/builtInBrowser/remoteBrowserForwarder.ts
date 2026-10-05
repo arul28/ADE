@@ -17,17 +17,14 @@ import {
 /**
  * `ade browser open` reaching the screen the user is actually looking at.
  *
- * Two cases. When a desktop runs on this machine, it takes every call (an agent
- * drives the tab it opened through this machine's bridge), and a request to
- * show the user (`--panel`) is ALSO sent to the desktop that sent the chat its
- * last message, if that is another machine (a MacBook connected to this Mac
- * Studio), or to every connected desktop when nobody can tell. The rest of this
- * comment is the other case:
+ * With a desktop on this machine, that desktop takes every call: an agent
+ * drives the tab it opened through this machine's bridge. A request to show
+ * the user (`--panel`) is also sent to the desktop that sent the chat its last
+ * message when that is another machine (a MacBook connected to this Mac
+ * Studio), or to every connected desktop when nobody can tell.
  *
- * `ade browser open` on a machine that has no desktop attached.
- *
- * The built-in browser is a `WebContentsView` owned by an Electron main
- * process, so a box running only `ade serve` has no browser to open — the
+ * Without a desktop on this machine: the built-in browser is a
+ * `WebContentsView` owned by an Electron main process, so a box running only `ade serve` has no browser to open — the
  * bridge socket simply isn't listening. But a desktop somewhere else may hold a
  * remote pin on this machine's lane, and that desktop can already reach this
  * machine's loopback ports over a port-forward. So instead of failing, the
@@ -159,25 +156,26 @@ export function createRemoteBrowserForwarder(args: {
       const record = isRecord(input) ? input : {};
       const chatSessionId = stringOrNull(record.chatSessionId);
       const origin = chatSessionId ? args.resolveOrigin?.(chatSessionId) ?? null : null;
-      const userIsElsewhere = Boolean(origin && !origin.local);
+      // The desktop the user talks from, when that is not this machine's.
+      const remoteTargetId = origin && !origin.local ? origin.clientId : null;
       // "Show the user" (`--panel`, or a person's own call). An agent opening
       // a tab for itself to drive is not that and stays on this machine.
       const showToUser = record.openPanel === true;
       // This machine's desktop takes the call either way: an agent drives the
       // tab it opened through this machine's bridge. It reveals its panel only
       // when the user is at this machine, or nobody can tell where they are.
-      const localInput = showToUser && userIsElsewhere ? { ...record, openPanel: false } : input;
+      const localInput = showToUser && remoteTargetId ? { ...record, openPanel: false } : input;
       let result: unknown;
       try {
         result = await call(localInput);
       } catch (error) {
         if (!(error instanceof DesktopBridgeUnavailableError)) throw error;
-        return await forwardToUser(input, userIsElsewhere ? origin!.clientId : null);
+        return await forwardToUser(input, remoteTargetId);
       }
-      if (showToUser && (userIsElsewhere || !origin)) {
+      if (showToUser && (remoteTargetId || !origin)) {
         // Also put it on the other screen: the one the user is talking from,
         // or every connected one when nobody can tell.
-        void forwardToUser(input, userIsElsewhere ? origin!.clientId : null).catch(() => {});
+        void forwardToUser(input, remoteTargetId).catch(() => {});
       }
       return result;
     },

@@ -1,4 +1,5 @@
 import net from "node:net";
+import { loopbackDialFailureReason } from "../../../../desktop/src/main/services/remoteRuntime/forwardFailurePage";
 import type {
   PairedRuntimeForwardClosePayload,
   PairedRuntimeForwardDataPayload,
@@ -248,26 +249,6 @@ function loopbackConnectOptions(port: number, order: LoopbackFamilyOrder): net.N
       else callback(null, addresses[0]!.address, addresses[0]!.family);
     }) as net.LookupFunction,
   };
-}
-
-/**
- * Close reason for a forward whose dial failed, in words a person can act on.
- * A refused dual-stack dial surfaces as an `AggregateError` with an empty
- * message, which used to collapse into "Remote TCP connection failed."
- */
-function forwardDialFailureReason(error: unknown, port: number): string {
-  const codes = new Set<string>();
-  const collect = (value: unknown) => {
-    const code = (value as { code?: unknown } | null)?.code;
-    if (typeof code === "string") codes.add(code);
-  };
-  collect(error);
-  for (const inner of (error as { errors?: unknown[] } | null)?.errors ?? []) collect(inner);
-  if (codes.has("ECONNREFUSED")) {
-    return `Nothing is listening on port ${port} (tried 127.0.0.1 and ::1).`;
-  }
-  const message = error instanceof Error ? error.message.trim() : "";
-  return message || `Could not connect to port ${port} (tried 127.0.0.1 and ::1).`;
 }
 
 function allowedForwardPort(value: unknown): number | null {
@@ -703,7 +684,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
         forwardId,
         forward.connected
           ? error.message || "Remote TCP connection failed."
-          : forwardDialFailureReason(error, port),
+          : loopbackDialFailureReason(error, port),
         true,
       );
     });

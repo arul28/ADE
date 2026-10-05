@@ -1,4 +1,5 @@
 import type { OpenProjectBinding } from "../../shared/types";
+import { pinKey } from "../state/projectMachines";
 
 /**
  * A clicked `localhost` link waiting for the Browser pane to mount.
@@ -32,10 +33,6 @@ const HOLD_CAP = 8;
 
 let nextId = 1;
 let holds: Held[] = [];
-
-function pinKey(pin: OpenProjectBinding | null): string {
-  return pin ? `${pin.kind}:${pin.key}` : "bound";
-}
 
 export function holdBrowserLinkOpen(
   link: PendingBrowserLinkOpen,

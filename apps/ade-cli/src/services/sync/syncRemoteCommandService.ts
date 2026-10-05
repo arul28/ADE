@@ -387,6 +387,7 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -5279,8 +5280,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sendArgs = parseAgentChatSendArgs(payload);
+    // A phone or web message: no desktop is the one being talked from now.
+    noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
-      parseAgentChatSendArgs(payload),
+      sendArgs,
       { awaitDispatch: false, routeActiveToSteer: true },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };

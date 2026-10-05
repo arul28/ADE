@@ -560,11 +560,8 @@ export function useWorkToolStatuses(args: {
   // The lane's dev servers, read from the lane's machine, so an empty Browser
   // still says something is ready to open.
   const devServers = useLaneDevServers(laneId, runtimePin, enabled && !offline);
-  const devServerPortsKey = devServers.map((server) => server.port).join(",");
-  const devServerPorts = useMemo(
-    () => (devServerPortsKey ? devServerPortsKey.split(",").map(Number) : []),
-    [devServerPortsKey],
-  );
+  // The store keeps the array's identity until a port or URL changes.
+  const devServerPorts = useMemo(() => devServers.map((server) => server.port), [devServers]);
 
   /*
     The lane's Apple device, for the card's one line. Polled here rather than

@@ -66,6 +66,8 @@ import {
   type OpenBuiltInBrowserDetail,
 } from "../../lib/openExternal";
 import { takeHeldBrowserLinkOpens } from "../../lib/pendingBrowserLinkOpens";
+import { useLaneDevServers } from "../../lib/laneDevServers";
+import { pinKey } from "../../state/projectMachines";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { showToast } from "../app/toast/toastStore";
 import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
@@ -1211,14 +1213,14 @@ export function ChatBuiltInBrowserPanel({
 
   useEffect(() => {
     if (!remotePin) return undefined;
-    const paneKey = `${remotePin.kind}:${remotePin.key}`;
+    const paneKey = pinKey(remotePin);
     const handleOpen = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
       const url = event.detail?.url;
       if (event.defaultPrevented || !url || !parseLoopbackUrl(url)) return;
       // A null pin is the window's machine. Only take links meant for this pane's machine.
       const linkBinding = event.detail.runtimePin ?? activeProjectBinding ?? null;
-      if (!linkBinding || `${linkBinding.kind}:${linkBinding.key}` !== paneKey) return;
+      if (!linkBinding || pinKey(linkBinding) !== paneKey) return;
       event.preventDefault();
       openLinkInNewTab(url);
     };
@@ -2210,30 +2212,22 @@ export function ChatBuiltInBrowserPanel({
     };
   }, [deviceMenuOpen]);
 
+  /*
+    The lane's servers as the shared store sees them, from the lane's machine.
+    Only its identity is used here: it changes when that machine says a server
+    started or stopped, which is the cue to re-read the full list below. For a
+    lane on another machine that is the only way the chips can change.
+  */
+  const laneDevServers = useLaneDevServers(contextLaneId, browserRuntimePin, Boolean(contextLaneId));
+
   /**
    * The real dev servers, asked for rather than guessed at.
    *
-   * The service knows which ports are listening and which command opened them,
-   * so the launchpad can say "npm run dev · :5173" instead of offering a
-   * hardcoded `localhost:3000` that is usually nothing. An older main process
-   * has no such list, so the port probe below stays as the fallback.
+   * The lane's machine knows which ports are listening and which command
+   * opened them, so the launchpad can say "npm run dev · :5173" instead of
+   * offering a hardcoded `localhost:3000` that is usually nothing. An older
+   * build has no such list, so the port probe below stays as the fallback.
    */
-  /*
-    Re-read when the lane's machine says a server started or stopped. For a
-    lane on another machine this is the only way the chips can change: that
-    machine's terminals and agents never reach this computer's registry.
-  */
-  const [devServerTick, setDevServerTick] = useState(0);
-  useEffect(() => {
-    const subscribe = window.ade?.workTools?.onDevServer;
-    if (!subscribe) return undefined;
-    return subscribe((event) => {
-      const laneId = event.server.source.laneId;
-      if (contextLaneId && laneId && laneId !== contextLaneId) return;
-      setDevServerTick((tick) => tick + 1);
-    }, runtimePinRef.current);
-  }, [contextLaneId, remotePin]);
-
   useEffect(() => {
     const api = getBrowserApi();
     if (!api?.getDevServers) return undefined;
@@ -2258,14 +2252,15 @@ export function ChatBuiltInBrowserPanel({
     return () => {
       cancelled = true;
     };
-  }, [contextLaneId, devServerTick, remotePin]);
+  }, [contextLaneId, laneDevServers, remotePin]);
 
   /*
     The port probe, as a fallback rather than an alternative.
 
-    `getDevServers` only knows the servers ADE's own PTYs started, so a `npm run
-    dev` the human launched in iTerm before opening ADE made the launchpad claim
-    there was nothing to open while :5173 was serving. An empty answer is now
+    `getDevServers` knows what ADE terminals and agents printed and what runs
+    from a lane's worktree, so a `npm run dev` the human launched in iTerm from
+    some other folder made the launchpad claim there was nothing to open while
+    :5173 was serving. An empty answer is now
     treated the same as no answer at all: probe the usual ports, and label what
     comes back "localhost:5173" — the honest thing to say about a port nobody
     can name a command for.

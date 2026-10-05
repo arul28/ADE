@@ -19,6 +19,26 @@ export const FORWARD_FAILURE_SNIFF_BYTES = 16;
 /** The page reloads itself, so a server that comes up a moment later just appears. */
 const RETRY_SECONDS = 3;
 
+/**
+ * Why a dial to a loopback port failed, in words a person can act on. Both
+ * loopbacks are always tried. A refused dual-stack dial surfaces as an
+ * `AggregateError` with an empty message, so the code is read, not the text.
+ */
+export function loopbackDialFailureReason(error: unknown, port: number): string {
+  const codes = new Set<string>();
+  const collect = (value: unknown) => {
+    const code = (value as { code?: unknown } | null)?.code;
+    if (typeof code === "string") codes.add(code);
+  };
+  collect(error);
+  for (const inner of (error as { errors?: unknown[] } | null)?.errors ?? []) collect(inner);
+  if (codes.has("ECONNREFUSED")) {
+    return `Nothing is listening on port ${port} (tried 127.0.0.1 and ::1).`;
+  }
+  const message = error instanceof Error ? error.message.trim() : "";
+  return message || `Could not connect to port ${port} (tried 127.0.0.1 and ::1).`;
+}
+
 export function looksLikeHttpRequest(firstBytes: Buffer | null | undefined): boolean {
   if (!firstBytes || firstBytes.byteLength === 0) return false;
   return HTTP_METHOD_PREFIX.test(firstBytes.subarray(0, FORWARD_FAILURE_SNIFF_BYTES).toString("latin1"));

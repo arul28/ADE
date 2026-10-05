@@ -11,12 +11,17 @@ import { parseSessionInputOrigin, type SessionInputOrigin } from "../../../share
 const MAX_SESSIONS = 512;
 const origins = new Map<string, SessionInputOrigin>();
 
-/** Record the stamp a message carried. A message without one changes nothing. */
+/**
+ * Record the stamp a message carried. A message without one (the phone, the
+ * CLI, another agent) makes the sender unknown again, so requests go to every
+ * desktop rather than to a laptop whose lid may be closed.
+ */
 export function noteSessionInputOrigin(sessionId: string | null | undefined, value: unknown): void {
   const id = sessionId?.trim();
-  const origin = parseSessionInputOrigin(value);
-  if (!id || !origin) return;
+  if (!id) return;
   origins.delete(id);
+  const origin = parseSessionInputOrigin(value);
+  if (!origin) return;
   origins.set(id, origin);
   if (origins.size > MAX_SESSIONS) {
     const oldest = origins.keys().next().value;

@@ -1839,9 +1839,6 @@ export async function createAdeRuntime(args: {
     // printed, plus what the listener scan finds. Published on the runtime
     // stream so a desktop on another machine lights up its Browser the same
     // way one on this machine does.
-    const devServerProjectRoot = path.resolve(projectRoot);
-    const isThisProjectsDevServer = (record: DevServerRecord): boolean =>
-      record.source.projectRoot != null && path.resolve(record.source.projectRoot) === devServerProjectRoot;
     const devServerWatcher = chatOnlyRuntime
       ? null
       : createDevServerWatcher({
@@ -1854,7 +1851,7 @@ export async function createAdeRuntime(args: {
       });
     if (devServerWatcher) {
       const publishDevServer = (kind: DevServerEvent["kind"]) => (record: DevServerRecord) => {
-        if (!isThisProjectsDevServer(record)) return;
+        if (!devServerWatcher.ownsRecord(record)) return;
         pushEvent("runtime", { type: DEV_SERVER_EVENT, event: { kind, server: record } satisfies DevServerEvent });
       };
       const stopDetected = devServerRegistry.onDetected(publishDevServer("detected"));
@@ -1901,7 +1898,7 @@ export async function createAdeRuntime(args: {
           list: async (args) => {
             // Someone is looking at a Browser: make the answer current first.
             await devServerWatcher.refresh();
-            return devServerRegistry.list(args).filter(isThisProjectsDevServer);
+            return devServerRegistry.list(args).filter(devServerWatcher.ownsRecord);
           },
           probePort: (port) => probeLocalhostPort(port),
         }

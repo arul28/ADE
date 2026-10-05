@@ -3,7 +3,9 @@ import path from "node:path";
 
 import type { Logger } from "../logging/logger";
 import type { DevServerRegistry } from "./devServerRegistry";
-import { onAgentShellActivity } from "./devServerRegistry";
+import { onAgentShellActivity } from "./agentShellOutput";
+import { isPathInside, pathComparisonKey, pathKey, pathsEqual } from "../shared/pathCompare";
+import { devServerKey, type DevServerRecord } from "../../../shared/types/builtInBrowser";
 import {
   scanListeningProcesses,
   type ProcessLocation,
@@ -52,7 +54,8 @@ const NON_PAGE_COMMANDS = /^(postgres|mysqld|redis-server|mongod|ssh|sshd)$/i;
 
 export type DevServerLaneRoot = { laneId: string; root: string };
 
-type ScanResult = NonNullable<Awaited<ReturnType<typeof scanListeningProcesses>>>;
+/** The machine's listeners, and when the OS was asked: newer records are not in it. */
+type ScanResult = NonNullable<Awaited<ReturnType<typeof scanListeningProcesses>>> & { takenAt: number };
 
 /**
  * One scan for the whole process. A brain hosts several projects, each with
@@ -74,7 +77,7 @@ function scanMachine(platform: NodeJS.Platform, run: RunText | undefined): Promi
         if (!livePids.has(pid)) sharedLocationCache.delete(pid);
       }
       for (const [pid, location] of result.locations) sharedLocationCache.set(pid, location);
-      return result;
+      return { ...result, takenAt: now };
     })
     .catch(() => null);
   sharedScan = { at: now, promise };
@@ -82,8 +85,13 @@ function scanMachine(platform: NodeJS.Platform, run: RunText | undefined): Promi
 }
 
 export type DevServerWatcher = {
-  /** Look now if the last look is stale. Resolves when the registry is current. */
+  /**
+   * Look now, unless a look happened moments ago. Resolves once that look (or
+   * the one already running) has updated the registry.
+   */
   refresh(): Promise<void>;
+  /** The record belongs to this watcher's project, so its starts and stops are published here. */
+  ownsRecord(record: DevServerRecord): boolean;
   dispose(): void;
 };
 
@@ -99,36 +107,35 @@ function realPathOrResolved(value: string): string {
   }
 }
 
-function normalizeRoot(value: string, platform: NodeJS.Platform): string {
-  const resolved = realPathOrResolved(value);
-  const trimmed = resolved.endsWith(path.sep) ? resolved.slice(0, -1) : resolved;
-  return platform === "win32" ? trimmed.toLowerCase() : trimmed;
+/**
+ * The command line names `root` itself or a path inside it: the match must end
+ * at a separator, a quote, a space or the end, so `C:\code\app` does not
+ * claim a process running from `C:\code\app-v2`.
+ */
+function commandLineNamesPath(commandLine: string, root: string): boolean {
+  for (let index = commandLine.indexOf(root); index >= 0; index = commandLine.indexOf(root, index + 1)) {
+    const next = commandLine.charAt(index + root.length);
+    if (next === "" || next === "\\" || next === "/" || next === "\"" || next === " ") return true;
+  }
+  return false;
 }
 
-function isWithin(child: string, root: string, separator: string): boolean {
-  return child === root || child.startsWith(`${root}${separator}`);
-}
-
-/** The lane whose worktree a process runs from; the deepest root wins. */
+/** The lane whose worktree a process runs from; roots arrive deepest first. */
 function laneForLocation(
   location: ProcessLocation | undefined,
   roots: Array<{ laneId: string; root: string }>,
   platform: NodeJS.Platform,
 ): string | null {
   if (!location) return null;
-  const separator = platform === "win32" ? "\\" : "/";
   if (location.cwd) {
-    const cwd = normalizeRoot(location.cwd, platform);
-    for (const entry of roots) {
-      if (isWithin(cwd, entry.root, separator)) return entry.laneId;
-    }
-    return null;
+    return roots.find((entry) => isPathInside(location.cwd, entry.root, platform))?.laneId ?? null;
   }
   if (location.commandLine) {
-    const commandLine = platform === "win32" ? location.commandLine.toLowerCase() : location.commandLine;
-    for (const entry of roots) {
-      if (commandLine.includes(entry.root)) return entry.laneId;
-    }
+    // Windows exposes no other process's cwd; a dev server's command line
+    // names its worktree (`node C:\…\lane\node_modules\vite\bin\vite.js`).
+    const unified = platform === "win32" ? location.commandLine.replace(/\//g, "\\") : location.commandLine;
+    const commandLine = pathComparisonKey(unified, platform);
+    return roots.find((entry) => commandLineNamesPath(commandLine, pathKey(entry.root, platform)))?.laneId ?? null;
   }
   return null;
 }
@@ -149,13 +156,15 @@ export function createDevServerWatcher(args: {
   let inFlight: Promise<void> | null = null;
   let disposed = false;
   let shellTimers: Array<ReturnType<typeof setTimeout>> = [];
+  const ownsRecord = (record: DevServerRecord): boolean =>
+    pathsEqual(record.source.projectRoot, args.projectRoot, platform);
 
   const scan = async (): Promise<void> => {
     const result = await scanMachine(platform, args.run);
     if (!result || disposed) return;
     const roots = (await args.listLaneRoots().catch(() => []))
       .filter((entry) => entry.laneId && entry.root)
-      .map((entry) => ({ laneId: entry.laneId, root: normalizeRoot(entry.root, platform) }))
+      .map((entry) => ({ laneId: entry.laneId, root: realPathOrResolved(entry.root) }))
       .sort((left, right) => right.root.length - left.root.length);
 
     const listeningPorts = new Set(result.sockets.map((socket) => socket.port));
@@ -166,14 +175,12 @@ export function createDevServerWatcher(args: {
       if (socket.command && NON_PAGE_COMMANDS.test(socket.command)) continue;
       const laneId = laneForLocation(result.locations.get(socket.pid), roots, platform);
       if (!laneId) continue;
-      found.set(`${laneId}:${socket.port}`, { laneId, port: socket.port });
+      found.set(devServerKey(laneId, socket.port), { laneId, port: socket.port });
     }
 
     // This project's records only; another project's watcher owns the rest.
-    const projectRoot = normalizeRoot(args.projectRoot, platform);
-    const known = args.registry.list().filter((record) =>
-      record.source.projectRoot != null && normalizeRoot(record.source.projectRoot, platform) === projectRoot);
-    const knownKeys = new Set(known.map((record) => `${record.source.laneId ?? ""}:${record.port}`));
+    const known = args.registry.list().filter(ownsRecord);
+    const knownKeys = new Set(known.map((record) => devServerKey(record.source.laneId, record.port)));
     for (const [key, entry] of found) {
       if (knownKeys.has(key)) continue;
       args.registry.record({
@@ -184,9 +191,12 @@ export function createDevServerWatcher(args: {
       });
       args.logger?.info("dev_servers.listener_detected", { laneId: entry.laneId, port: entry.port });
     }
-    // A record whose port nothing listens on any more is a stopped server.
+    // A record whose port nothing listens on any more is a stopped server. A
+    // record newer than the snapshot (another project's watcher may have taken
+    // it) is not judged by it.
     for (const record of known) {
       if (listeningPorts.has(record.port)) continue;
+      if (Date.parse(record.detectedAt) >= result.takenAt) continue;
       args.registry.forget(record.source.laneId, record.port);
     }
   };
@@ -210,6 +220,8 @@ export function createDevServerWatcher(args: {
 
   const unsubscribeShell = onAgentShellActivity((activity) => {
     if (!activity.finished || disposed) return;
+    // Another project's chat: its own watcher looks.
+    if (activity.projectRoot && !pathsEqual(activity.projectRoot, args.projectRoot, platform)) return;
     for (const timer of shellTimers) clearTimeout(timer);
     shellTimers = AFTER_SHELL_DELAYS_MS.map((delay) => {
       const timer = setTimeout(() => {
@@ -222,6 +234,7 @@ export function createDevServerWatcher(args: {
 
   return {
     refresh,
+    ownsRecord,
     dispose() {
       disposed = true;
       unsubscribeShell();

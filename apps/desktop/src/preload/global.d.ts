@@ -3329,7 +3329,7 @@ declare global {
           args?: BuiltInBrowserSetZoomArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserZoomResult>;
-        /** Dev servers sniffed from terminal output; feature-detect before use. */
+        /** The lane machine's running dev servers (see `workTools.listDevServers`); feature-detect before use. */
         getDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
         findInPage: (
           args: BuiltInBrowserFindInPageArgs,

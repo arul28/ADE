@@ -3502,9 +3502,12 @@ function scopeWorkToolsAdeActionArgs(
     return workToolsArgs;
   }
   if (action === "listDevServers") {
-    // A bound agent sees its own lane's servers, the same rule as getLaneState.
+    // Same rule as getLaneState: an agent sees its own lane's servers, and an
+    // agent with no resolvable lane sees none.
+    if (isUserClient) return workToolsArgs;
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
-    return sessionLaneId && !isUserClient ? { ...workToolsArgs, laneId: sessionLaneId } : workToolsArgs;
+    if (!sessionLaneId) scopeAccessDenied("work_tools reads need a resolvable lane for this caller", method);
+    return { ...workToolsArgs, laneId: sessionLaneId };
   }
   if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
@@ -5299,6 +5302,12 @@ async function runTool(args: {
     if (domain === "terminal" && action === "write" && "fromUser" in scopedObjectArgs && !isUserClientSession(session)) {
       const { fromUser: _notTheUser, ...agentWrite } = scopedObjectArgs;
       scopedObjectArgs = agentWrite;
+    }
+    // `inputOrigin` names the desktop a person is talking from, and show
+    // requests follow it. Only a user client may say where that person is.
+    if ("inputOrigin" in scopedObjectArgs && !isUserClientSession(session)) {
+      const { inputOrigin: _notADesktop, ...agentArgs } = scopedObjectArgs;
+      scopedObjectArgs = agentArgs;
     }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;

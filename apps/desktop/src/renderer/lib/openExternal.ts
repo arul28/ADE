@@ -162,13 +162,13 @@ export function openUrlInAdeBrowser(
   if (remoteMachine) {
     // The event just revealed the Browser pane; let it open the link once it
     // mounts, so the URL bar shows the address that was clicked.
-    holdBrowserLinkOpen({ url: normalized, runtimePin }, (link) => {
+    holdBrowserLinkOpen({ url: normalized, runtimePin: runtimePin ?? remoteMachine }, (link) => {
       navigateUrlInAdeBrowser(
         link.url,
         { newTab: true },
         // This computer's browser would load this computer's port: never fall back to it.
         { fallbackToExternal: false },
-        link.runtimePin ?? remoteMachine,
+        link.runtimePin,
       );
     });
     return;

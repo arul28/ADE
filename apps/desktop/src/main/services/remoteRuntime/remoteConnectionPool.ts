@@ -44,7 +44,7 @@ import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
-import { buildForwardFailureResponse, looksLikeHttpRequest } from "./forwardFailurePage";
+import { buildForwardFailureResponse, looksLikeHttpRequest, loopbackDialFailureReason } from "./forwardFailurePage";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
 import {
   resolveRemoteAttachmentUploadRoute,
@@ -753,53 +753,45 @@ export class RemoteConnectionPool {
         // A dev server bound only to `[::1]` (Node resolves `localhost` to
         // IPv6 first on macOS) refuses the IPv4 dial. Try the other loopback
         // before giving up, the same way the paired transport does.
-        const fallbackHost = isIpv4LoopbackHost(remoteHost) ? "::1" : null;
-        const dial = (
-          host: string,
-          onDone: (error: Error | undefined, stream: ClientChannel) => void,
-        ) => ssh.forwardOut(LOCAL_FORWARD_HOST, 0, host, remotePort, onDone);
-        const onDialed = (
-          error: Error | undefined,
-          stream: ClientChannel,
-          triedFallback: boolean,
-        ): void => {
-          if (error && fallbackHost && !triedFallback) {
-            dial(fallbackHost, (nextError, nextStream) => onDialed(nextError, nextStream, true));
-            return;
-          }
-          if (error) {
-            // The browser's request is already buffered on this paused
-            // socket; when it is HTTP, answer with a readable page rather
-            // than an empty response.
-            const firstBytes = socket.read() as Buffer | null;
-            if (looksLikeHttpRequest(firstBytes)) {
-              socket.end(buildForwardFailureResponse({
-                remotePort,
-                machineLabel: activeEntry.result.target.name?.trim() || null,
-                reason: fallbackHost
-                  ? `Nothing is listening on port ${remotePort} (tried 127.0.0.1 and ::1).`
-                  : error.message,
-              }));
+        const hosts = isIpv4LoopbackHost(remoteHost) ? [remoteHost, "::1"] : [remoteHost];
+        const dial = (index: number): void => {
+          ssh.forwardOut(LOCAL_FORWARD_HOST, 0, hosts[index]!, remotePort, (error, stream: ClientChannel) => {
+            if (error && index + 1 < hosts.length) {
+              dial(index + 1);
               return;
             }
-            destroyAcceptedSocket(socket, error);
-            return;
-          }
-          const closeBoth = () => {
-            try {
-              socket.destroy();
-            } catch {}
-            try {
-              stream.destroy();
-            } catch {}
-          };
-          socket.once("error", closeBoth);
-          stream.once("error", closeBoth);
-          socket.once("close", closeBoth);
-          stream.once("close", closeBoth);
-          socket.pipe(stream).pipe(socket);
+            if (error) {
+              // The browser's request is already buffered on this paused
+              // socket; when it is HTTP, answer with a readable page rather
+              // than an empty response.
+              const firstBytes = socket.read() as Buffer | null;
+              if (looksLikeHttpRequest(firstBytes)) {
+                socket.end(buildForwardFailureResponse({
+                  remotePort,
+                  machineLabel: activeEntry.result.target.name?.trim() || null,
+                  reason: loopbackDialFailureReason(error, remotePort),
+                }));
+                return;
+              }
+              destroyAcceptedSocket(socket, error);
+              return;
+            }
+            const closeBoth = () => {
+              try {
+                socket.destroy();
+              } catch {}
+              try {
+                stream.destroy();
+              } catch {}
+            };
+            socket.once("error", closeBoth);
+            stream.once("error", closeBoth);
+            socket.once("close", closeBoth);
+            stream.once("close", closeBoth);
+            socket.pipe(stream).pipe(socket);
+          });
         };
-        dial(remoteHost, (error, stream) => onDialed(error, stream, false));
+        dial(0);
       });
 
       return await new Promise<LocalPortForwardEntry>((resolve, reject) => {

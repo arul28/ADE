@@ -43,9 +43,11 @@ export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
 /**
  * A request first goes only to the desktop that sent the chat's last message.
  * If that desktop has not answered by now (its lid is closed, it disconnected),
- * the same request goes to every desktop instead.
+ * the same request goes to every desktop instead. Longer than the renderer's
+ * own wait for a surface to reach the screen (3 s), so a slow but present
+ * target answers before anyone else opens it.
  */
-export const WORK_TOOL_SHOW_RETARGET_MS = 2_500;
+export const WORK_TOOL_SHOW_RETARGET_MS = 4_000;
 
 /**
  * One automatic float offer per chat and device in this window. An agent taps

@@ -20,6 +20,7 @@ import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { pinKey } from "../../state/projectMachines";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { useChatWorkspacePaths } from "./chatWorkspacePaths";
 
@@ -138,7 +139,7 @@ const portProbeCache = new Map<string, PortProbeCacheEntry>();
 const portProbeInFlight = new Map<string, Promise<boolean>>();
 
 function portProbeKey(port: number, pin: OpenProjectBinding | null): string {
-  return `${pin ? `${pin.kind}:${pin.key}` : "bound"}:${port}`;
+  return `${pinKey(pin)}:${port}`;
 }
 
 function isCacheEntryFresh(entry: PortProbeCacheEntry, nowMs: number): boolean {

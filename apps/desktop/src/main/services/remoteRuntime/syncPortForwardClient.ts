@@ -227,12 +227,7 @@ export class SyncPortForwardClient {
    */
   private answerRemoteRefusal(active: ActiveSocket, reason: string | null): void {
     if (active.firstBytes) {
-      this.closeActiveSocket(
-        active,
-        false,
-        undefined,
-        looksLikeHttpRequest(active.firstBytes) ? this.failureResponse(active, reason) : null,
-      );
+      this.closeWithFailurePage(active, reason);
       return;
     }
     if (active.pendingFailure) return;
@@ -241,12 +236,16 @@ export class SyncPortForwardClient {
     active.pendingFailure = { reason, timer };
   }
 
-  private failureResponse(active: ActiveSocket, reason: string | null): Buffer {
-    return buildForwardFailureResponse({
-      remotePort: active.remotePort,
-      machineLabel: this.options.machineLabel ?? null,
-      reason,
-    });
+  /** Close a refused forward: with the failure page for an HTTP client, plainly otherwise. */
+  private closeWithFailurePage(active: ActiveSocket, reason: string | null): void {
+    const page = looksLikeHttpRequest(active.firstBytes)
+      ? buildForwardFailureResponse({
+        remotePort: active.remotePort,
+        machineLabel: this.options.machineLabel ?? null,
+        reason,
+      })
+      : null;
+    this.closeActiveSocket(active, false, undefined, page);
   }
 
   private async createForward(
@@ -455,13 +454,7 @@ export class SyncPortForwardClient {
     if (!active.firstBytes && data.byteLength > 0) {
       active.firstBytes = Buffer.from(data.subarray(0, FORWARD_FAILURE_SNIFF_BYTES));
       if (active.pendingFailure) {
-        const { reason } = active.pendingFailure;
-        this.closeActiveSocket(
-          active,
-          false,
-          undefined,
-          looksLikeHttpRequest(active.firstBytes) ? this.failureResponse(active, reason) : null,
-        );
+        this.closeWithFailurePage(active, active.pendingFailure.reason);
         return;
       }
     }
