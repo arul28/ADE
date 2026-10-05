@@ -1345,3 +1345,42 @@ describe("projectConfigService - automation execution", () => {
     );
   });
 });
+
+describe("projectConfigService - reads", () => {
+  it("revalidates paths the config names on every read and rewrites test suites only when the file changes", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-reads-");
+    const localPath = path.join(adeDir, "local.yaml");
+    const writeLocal = (dependencyCwd: string) => fs.writeFileSync(localPath, YAML.stringify({
+      version: 1,
+      testSuites: [],
+      laneOverlayPolicies: [],
+      automations: [],
+      laneEnvInit: { dependencies: [{ command: ["npm", "install"], cwd: dependencyCwd }] },
+    }), "utf8");
+    writeLocal("packages/app");
+    const db = makeDb();
+    const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: "project-1", db, logger: makeLogger() });
+    const suiteRewrites = () => db.run.mock.calls.filter(([sql]: [string]) => sql === "BEGIN IMMEDIATE").length;
+
+    expect(service.get().validation.ok).toBe(false);
+    expect(() => service.getEffective()).toThrow();
+
+    // The folder appears (a checkout, a scaffold) without the config changing.
+    fs.mkdirSync(path.join(root, "packages", "app"), { recursive: true });
+    expect(service.get().validation.ok).toBe(true);
+    expect(service.getEffective().laneEnvInit?.dependencies?.[0]?.cwd).toBe("packages/app");
+    expect(suiteRewrites()).toBe(1);
+
+    // Unchanged file: the next reads write nothing to the shared database.
+    service.get();
+    service.get();
+    expect(suiteRewrites()).toBe(1);
+
+    // An edit outside ADE is picked up and persisted.
+    fs.mkdirSync(path.join(root, "packages", "web"), { recursive: true });
+    writeLocal("packages/web");
+    fs.utimesSync(localPath, new Date(), new Date(Date.now() + 5_000));
+    expect(service.getEffective().laneEnvInit?.dependencies?.[0]?.cwd).toBe("packages/web");
+    expect(suiteRewrites()).toBe(2);
+  });
+});

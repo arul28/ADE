@@ -291,7 +291,7 @@ App Control keeps one session per lane. Proof goes through this broker in two wa
 - `ade app-control proof --caption "…"` files an observation screenshot under the `ade-app-control` backend.
 - `ade app-control record start --caption "…"` … `record stop` records the app's own window (macOS window capture; the CDP screencast on Windows and Linux). A captioned recording is filed when it stops, with provenance `ade-recorder`, under the lane, the chat and the lane's primary PR.
 
-`ade app-control show [--floating]` (or `ade ui show app-control|floating-app-control`) shows the session to the user, and the web client and phone can watch it live over the sync socket.
+`ade app-control show [--floating]` (or `ade ui show app-control|floating-app-control`) shows the session to the user, and the web client and phone can watch it live over the sync socket. A lane's CDP screencast streams only while a window, a sync viewer or a recording shows that lane, so an agent driving an app in the background costs no frames; see [`app-control.md`](./app-control.md#frames-follow-demand).
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 

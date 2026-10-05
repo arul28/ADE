@@ -4028,8 +4028,27 @@ describe("local runtime connection pool", () => {
       payload: { type: "file_change" },
     }, "epoch-local-1");
 
+    // The lanes this desktop shows go first: subscribing with frames and no
+    // declaration reads as a client from before demand, which streams every lane.
+    const methods = call.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("appControl.setFrameDemand")).toBeLessThan(methods.indexOf("runtimeEvents.subscribe"));
+    expect(call).toHaveBeenCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: [] },
+      expect.anything(),
+    );
+    pool.setAppControlFrameLanes(["lane-1"]);
+    expect(call).toHaveBeenLastCalledWith(
+      "appControl.setFrameDemand",
+      { projectId: "project-1", laneIds: ["lane-1"] },
+      expect.anything(),
+    );
+
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
+    const callsAfterCleanup = call.mock.calls.length;
+    pool.setAppControlFrameLanes(["lane-2"]);
+    expect(call.mock.calls.length).toBe(callsAfterCleanup);
   });
 });
 

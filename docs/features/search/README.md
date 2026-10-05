@@ -193,7 +193,10 @@ and returns the set of session ids whose terms changed, which then drives a
 re-index of just those chat meta docs. Rebuilding rather than appending is what
 removes the ordering dependency: a chat indexed before the first PR sweep would
 otherwise never receive its PR terms, and unlinking a PR would leave stale
-`#123` terms on the chat document forever.
+`#123` terms on the chat document forever. A sweep enqueues every PR at once, so
+the PR list and its term sync are read once per pass rather than once per PR;
+the memo is dropped at the start of every drain pass, and a failed read is
+retried by the next PR.
 
 ### Deterministic ranking tiers
 

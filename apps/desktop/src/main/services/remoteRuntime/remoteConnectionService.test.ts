@@ -441,6 +441,50 @@ describe("RemoteConnectionService", () => {
     });
   });
 
+  it("broadcasts connection changes, not every successful call or an unchanged project list", async () => {
+    const remote = target("quiet-status", null);
+    const project = {
+      projectId: "p1",
+      rootPath: "/srv/repo",
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => connectResult(remote)),
+      callActionForTarget: vi.fn(async () => ({ ok: true })),
+      // A fresh decode each read, as a real round trip returns.
+      projectsForTarget: vi.fn(async () => [{ ...project }]),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(remote.id, { explicit: true });
+    await service.projects(remote.id);
+    const snapshots: unknown[] = [];
+    service.onSnapshotChanged((snapshot) => snapshots.push(snapshot));
+
+    // Each success re-stamps lastAttemptedAt; windows answered every broadcast
+    // with reads of other machines, which were calls themselves.
+    await service.callAction(remote.id, "p1", { domain: "lane", action: "list", args: {} });
+    await service.callAction(remote.id, "p1", { domain: "lane", action: "list", args: {} });
+    await service.projects(remote.id);
+    expect(snapshots).toHaveLength(0);
+
+    (pool.callActionForTarget as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("Remote runtime connection was interrupted."),
+    );
+    await expect(service.callAction(remote.id, "p1", { domain: "lane", action: "list", args: {} })).rejects.toThrow();
+    expect(snapshots).toHaveLength(1);
+    expect(service.snapshot().connections[0]?.state).toBe("error");
+  });
+
   it("caps legacy connection error text at 500 characters", async () => {
     const remote = target("verbose-error", null);
     const registry = {

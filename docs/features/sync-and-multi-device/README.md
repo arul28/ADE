@@ -1279,7 +1279,10 @@ Runtime support files outside `services/sync/`:
   10,000 events / 16 MB total / 1 MB per event by default, emits live
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
-  reset stale cursors when a daemon restarts or history was evicted. One
+  reset stale cursors when a daemon restarts or history was evicted. Transient
+  events (App Control screencast frames) reach live subscribers but are never
+  retained, and because their ids are never kept `gap` is judged against the
+  newest id lost to eviction rather than the oldest retained id. One
   `drain()` is one RPC reply, so it has a byte budget (1 MiB by default,
   `DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES`) as well as a count cap. It always
   returns at least one event and sets `hasMore` when the budget stops it. A
@@ -1289,21 +1292,21 @@ Runtime support files outside `services/sync/`:
   reply, and the host closed a remote desktop's RPC channel on every poll.
 - `apps/ade-cli/src/runtimeEventVolume.ts` — the one predicate for "this
   runtime event carries a video frame, not a state change"
-  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events). App
-  Control's screencast is a CDP `Page.screencastFrame` pass-through at up to
-  1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at monitor
-  refresh, pushed whenever a session is attached whether or not anything is
-  watching. On a local socket that is merely wasteful; over a paired sync
-  transport it is fatal, because runtime RPC rides `rpc_data`, a **required**
-  send the host buffers rather than drops, so the peer was closed with 4001
-  "Required sync response backpressured" the moment `bufferedAmount` passed
-  16 MiB — roughly every ten seconds for a desktop bound to a remote runtime
-  with the Work tab open. The frames were not even rendered, since App Control
-  is reported unavailable for a remote project. Frames are therefore **opt-in
-  per subscription**: a subscriber that can actually paint them (a desktop on
-  its own local runtime) asks for them, and nobody else pays. Skipping is the
-  only correct response to a frame nobody asked for — a queued stale frame is
-  worse than none, because the next one is already better.
+  (`isHighVolumeRuntimeEvent`, currently App Control's `frame` events) plus
+  `runtimeEventFrameLaneId`, which keeps each lane's newest skipped frame
+  apart. App Control's screencast is a CDP `Page.screencastFrame` pass-through
+  at up to 1600x1000, quality 78, `everyNthFrame: 1` — 80–350 KB per frame at
+  monitor refresh. The screencast streams only while something shows or
+  records the lane: `appControl.setFrameDemand` records each source's lanes, a
+  frame is transient in the event buffer (live-delivered, never retained), and
+  a frame for a client that is behind is skipped rather than queued, with the
+  newest skipped frame of each lane following when the socket drains. Over a
+  paired sync transport this matters most, because runtime RPC rides
+  `rpc_data`, a **required** send the host buffers rather than drops, so a
+  queued frame could close the peer with 4001 "Required sync response
+  backpressured". Frames are therefore also **opt-in per subscription**: only
+  a desktop on its own local runtime asks for them, and a remote binding never
+  does, so nobody pays for frames it cannot paint.
 - `apps/ade-cli/src/services/sync/syncStatusEventPublisher.ts` — coalescing
   publisher for `sync-status` runtime events. Every status transition was
   pushed straight onto the runtime event buffer carrying a full ~5 KB
@@ -1579,6 +1582,15 @@ Cross-machine Work union:
   `isThisMachine` decides whether the amber elsewhere glyph appears. Thus a
   remote-bound tab still labels every remotely owned lane, including those in
   its primary list rather than the foreign union.
+  A connection snapshot forces a status read of other machines only when the
+  reachable machines or their projects (id, root, origin) change. The module
+  keeps a content signature of those fields, so a snapshot that changes nothing
+  it reads — a re-stamped timestamp, or an error on a machine that stays down —
+  does not start a read; the main process likewise broadcasts a connection
+  snapshot only when something other than `lastAttemptedAt` changes, comparing
+  structured fields by content. The store republishes a machine slice's sync
+  stamps at most every 10 s when a read has no other news, so a stamp-only
+  change does not re-render every surface that lists machines.
   `requestCrossMachineLanesForMachine(machineId)` is the module's one
   on-demand escape from the slow foreign lane cadence, for a surface that is
   about to route work at a machine and needs its lane catalog now. It forgets

@@ -300,6 +300,47 @@ describe("startJsonRpcServer", () => {
     stop();
   });
 
+  it("skips droppable notifications for a peer that is behind and sends each key's newest one on drain", () => {
+    class BackloggedTransport extends MemoryTransport {
+      queuedBytes = 0;
+      readonly drainCallbacks: Array<() => void> = [];
+      pendingWriteBytes(): number {
+        return this.queuedBytes;
+      }
+      onDrain(callback: () => void): void {
+        this.drainCallbacks.push(callback);
+      }
+      drain(): void {
+        this.queuedBytes = 0;
+        for (const callback of this.drainCallbacks) callback();
+      }
+    }
+    const transport = new BackloggedTransport();
+    const stop = startJsonRpcServer(async () => ({}), transport, { nonFatal: true });
+    const sent = () => transport.writes.map((write) => {
+      const body = JSON.parse(write.slice(write.indexOf("\r\n\r\n") + 4)) as { params: { frame?: string; status?: string } };
+      return body.params.frame ?? body.params.status;
+    });
+
+    transport.queuedBytes = 2 * 1024 * 1024;
+    stop.notify("runtime/event", { frame: "lane-a 1" }, { droppable: true, supersedeKey: "a" });
+    stop.notify("runtime/event", { frame: "lane-a 2" }, { droppable: true, supersedeKey: "a" });
+    stop.notify("runtime/event", { frame: "lane-b 1" }, { droppable: true, supersedeKey: "b" });
+    stop.notify("runtime/event", { status: "turn done" });
+    // A state change is never dropped; frames wait.
+    expect(sent()).toEqual(["turn done"]);
+
+    transport.drain();
+    // The newest skipped frame of each lane, so a still app ends on its real picture.
+    expect(sent()).toEqual(["turn done", "lane-a 2", "lane-b 1"]);
+
+    stop.notify("runtime/event", { frame: "lane-a 3" }, { droppable: true, supersedeKey: "a" });
+    transport.drain();
+    // Nothing skipped since, so a later drain replays nothing stale.
+    expect(sent()).toEqual(["turn done", "lane-a 2", "lane-b 1", "lane-a 3"]);
+    stop();
+  });
+
   it("contains notify write failures and closes only the affected transport", () => {
     const transport = new MemoryTransport();
     const onError = vi.fn();
