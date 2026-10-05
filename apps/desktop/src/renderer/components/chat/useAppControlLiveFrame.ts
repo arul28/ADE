@@ -84,9 +84,10 @@ export function useAppControlLiveFrame(
     return () => window.clearInterval(timer);
   }, [active]);
 
-  // On the web client, live frames cross the relay only while a view that
-  // shows them is mounted. The desktop has no such hold.
-  useEffect(() => window.ade?.appControl?.holdFrames?.(), []);
+  // Live frames reach this view only while it holds its lane: over the relay
+  // on the web client, over IPC from main on the desktop.
+  const holdLaneId = seed?.laneId ?? null;
+  useEffect(() => window.ade?.appControl?.holdFrames?.(holdLaneId), [holdLaneId]);
 
   // The pump must not outlive the panel: an unmount mid-frame would otherwise
   // leave one scheduled callback writing into a detached `<img>`.

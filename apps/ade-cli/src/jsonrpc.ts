@@ -14,7 +14,20 @@ export type JsonRpcTransport = {
   onData(callback: (chunk: Buffer) => void): void;
   write(data: string): void;
   close(): void;
+  /** Bytes written but not yet taken by the peer, when the transport knows. */
+  pendingWriteBytes?(): number;
 };
+
+export type JsonRpcNotifyOptions = {
+  /**
+   * The notification may be skipped when the peer is behind: the next one
+   * supersedes it, as a newer screencast frame supersedes an older one.
+   */
+  droppable?: boolean;
+};
+
+/** Queue depth past which a droppable notification is skipped, not queued. */
+export const JSON_RPC_DROPPABLE_NOTIFY_PENDING_LIMIT_BYTES = 1024 * 1024;
 
 export type JsonRpcRequest = {
   jsonrpc?: string;
@@ -547,7 +560,7 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 const MAX_BATCH_SIZE = 100;
 
 export type JsonRpcServerHandle = (() => void) & {
-  notify: (method: string, params?: unknown) => void;
+  notify: (method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void;
   waitForIdle: () => Promise<void>;
 };
 
@@ -691,8 +704,14 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
     closeTransport();
   }) as JsonRpcServerHandle;
 
-  stop.notify = (method: string, params?: unknown): void => {
+  stop.notify = (method: string, params?: unknown, notifyOptions?: JsonRpcNotifyOptions): void => {
     if (stopped) return;
+    if (
+      notifyOptions?.droppable
+      && (transport.pendingWriteBytes?.() ?? 0) > JSON_RPC_DROPPABLE_NOTIFY_PENDING_LIMIT_BYTES
+    ) {
+      return;
+    }
     try {
       writeMessage({
         jsonrpc: "2.0",

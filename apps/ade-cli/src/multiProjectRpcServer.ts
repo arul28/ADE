@@ -44,6 +44,7 @@ import {
   JsonRpcError,
   JsonRpcErrorCode,
   type JsonRpcHandler,
+  type JsonRpcNotifyOptions,
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
@@ -129,7 +130,7 @@ type HandlerEntry = {
 };
 
 type RuntimeEventCategory = BufferedEvent["category"];
-type JsonRpcNotifier = (method: string, params?: unknown) => void;
+type JsonRpcNotifier = (method: string, params?: unknown, options?: JsonRpcNotifyOptions) => void;
 type RuntimeEventSubscription = {
   id: string;
   /**
@@ -1176,13 +1177,16 @@ export function createMultiProjectRpcRequestHandler(
     event: BufferedEvent,
     eventEpoch: string,
   ): void => {
-    notifier?.("runtime/event", {
+    const params = {
       subscriptionId,
       projectId,
       scope: projectId == null ? "personal" : "project",
       event,
       eventEpoch,
-    });
+    };
+    // A frame is skipped for a client that is behind; the next one replaces it.
+    if (isHighVolumeRuntimeEvent(event)) notifier?.("runtime/event", params, { droppable: true });
+    else notifier?.("runtime/event", params);
   };
 
   const getProjectHandler = async (

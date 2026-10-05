@@ -316,12 +316,13 @@ function AppControlMiniPlayerBox({
    */
   const shownForSeed = visible || pip.active;
   const connectedTargetId = session.status === "connected" ? session.cdpTargetId : null;
-  // Web client: frames cross the relay only while a view shows them. The
-  // feed's own listener is status-only, so the player holds them while shown.
+  // Frames reach a view only while it holds its lane (over the relay on the
+  // web client, over IPC on the desktop). The feed's own listener is
+  // status-only, so the player holds them while shown.
   useEffect(() => {
     if (!shownForSeed) return undefined;
-    return window.ade?.appControl?.holdFrames?.();
-  }, [shownForSeed]);
+    return window.ade?.appControl?.holdFrames?.(laneId);
+  }, [laneId, shownForSeed]);
   useEffect(() => {
     const read = window.ade?.appControl?.getLatestFrame;
     if (!shownForSeed || !connectedTargetId || typeof read !== "function") return undefined;

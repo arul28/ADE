@@ -4002,6 +4002,43 @@ const resolveMacDesktopStreamUrl = async (
   }
 };
 
+/**
+ * Lanes whose screencast frames a mounted viewer is painting, refcounted. Main
+ * sends this window frames for these lanes only, so a lane an agent drives in
+ * the background costs this renderer nothing. Main sends none until a viewer
+ * holds a lane; the viewer reads its first picture with `getLatestFrame`.
+ * A hold without a lane keys `*` and admits every lane's frames.
+ */
+const APP_CONTROL_ALL_LANES_HOLD = "*";
+const appControlFrameHoldCounts = new Map<string, number>();
+let appControlFrameSyncQueued = false;
+
+function syncAppControlFrameSubscriptions(): void {
+  if (appControlFrameSyncQueued) return;
+  appControlFrameSyncQueued = true;
+  queueMicrotask(() => {
+    appControlFrameSyncQueued = false;
+    void ipcRenderer
+      .invoke(IPC.appControlFrameSubscriptions, { laneIds: [...appControlFrameHoldCounts.keys()] })
+      .catch(() => {});
+  });
+}
+
+function holdAppControlFrames(laneId?: string | null): () => void {
+  const key = (typeof laneId === "string" ? laneId.trim() : "") || APP_CONTROL_ALL_LANES_HOLD;
+  appControlFrameHoldCounts.set(key, (appControlFrameHoldCounts.get(key) ?? 0) + 1);
+  syncAppControlFrameSubscriptions();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (appControlFrameHoldCounts.get(key) ?? 1) - 1;
+    if (remaining > 0) appControlFrameHoldCounts.set(key, remaining);
+    else appControlFrameHoldCounts.delete(key);
+    syncAppControlFrameSubscriptions();
+  };
+}
+
 function subscribeAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
   pin?: OpenProjectBinding | null,
@@ -9530,6 +9567,8 @@ const adeBridge = {
       callAppControlActionOr(pin, "getLatestFrame", { args }, () =>
         ipcRenderer.invoke(IPC.appControlGetLatestFrame, args),
       ),
+    // Frames reach this window only for lanes a showing viewer holds.
+    holdFrames: (laneId?: string | null): (() => void) => holdAppControlFrames(laneId),
     // One still of the lane's app, filed as proof.
     captureProof: async (
       args: AppControlCaptureProofArgs,

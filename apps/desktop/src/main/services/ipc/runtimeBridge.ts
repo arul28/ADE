@@ -71,6 +71,7 @@ import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineSto
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
+import { shouldSendAppControlFrameToWebContents } from "../appControl/appControlFrameSubscriptions";
 import { forgetRemoteTunnelOrigins, recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { getOrCreateLocalAccountMachineIdentity } from "../account/localMachineIdentity";
@@ -620,6 +621,21 @@ export function registerRuntimeBridge({
     events: batch.events.filter((event) => isRemoteRuntimeEventCategory(event.category)),
   });
 
+  /**
+   * The lane of an App Control screencast frame, or `undefined` when the event
+   * is anything else. Frames are gated per window like `pty_data`.
+   */
+  const appControlFrameLaneIdOf = (
+    event: RemoteRuntimeBufferedEvent,
+  ): string | null | undefined => {
+    if (event.payload.type !== "app_control_event") return undefined;
+    const inner = isObjectRecord(event.payload.event) ? event.payload.event : null;
+    if (inner?.type !== "frame") return undefined;
+    if (typeof inner.laneId === "string") return inner.laneId;
+    const frame = isObjectRecord(inner.frame) ? inner.frame : null;
+    return typeof frame?.laneId === "string" ? frame.laneId : null;
+  };
+
   const shouldForwardRuntimeEvent = (
     sender: WebContents,
     event: RemoteRuntimeBufferedEvent,
@@ -627,6 +643,10 @@ export function registerRuntimeBridge({
     // Only categories the renderer knows; an older runtime may still emit
     // one this build dropped.
     if (!isRemoteRuntimeEventCategory(event.category)) return false;
+    const appControlFrameLaneId = appControlFrameLaneIdOf(event);
+    if (appControlFrameLaneId !== undefined) {
+      return shouldSendAppControlFrameToWebContents(sender, appControlFrameLaneId);
+    }
     if (event.category !== "pty") return true;
     if (event.payload.type !== "pty_data") return true;
     const ptyEvent = isObjectRecord(event.payload.event)

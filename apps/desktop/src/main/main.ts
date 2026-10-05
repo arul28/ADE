@@ -1,5 +1,5 @@
 import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage, type WebContents } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -143,6 +143,11 @@ import {
   setPtyDataSubscriptionsForSender,
   shouldSendPtyDataToWebContents,
 } from "./services/pty/ptyDataSubscriptions";
+import {
+  normalizeAppControlFrameLaneIds,
+  setAppControlFrameLanesForSender,
+  shouldSendAppControlFrameToWebContents,
+} from "./services/appControl/appControlFrameSubscriptions";
 import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
@@ -1743,6 +1748,13 @@ app.whenReady().then(async () => {
     );
   });
 
+  ipcMain.handle(IPC.appControlFrameSubscriptions, (event, arg: { laneIds?: unknown } | undefined) => {
+    setAppControlFrameLanesForSender(
+      event.sender,
+      normalizeAppControlFrameLaneIds(arg?.laneIds),
+    );
+  });
+
   const broadcastPtyData = (payload: PtyDataEvent) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!shouldSendPtyDataToWebContents(win.webContents, payload.ptyId)) continue;
@@ -2627,12 +2639,14 @@ app.whenReady().then(async () => {
     projectRoot: string,
     channel: string,
     payload: unknown,
+    shouldSendTo?: (webContents: WebContents) => boolean,
   ): void => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     for (const win of BrowserWindow.getAllWindows()) {
       const isActiveInWindow = windowProjectRoots.get(win.id) === normalizedRoot;
       const isOpenTabInWindow = windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true;
       if (!isActiveInWindow && !isOpenTabInWindow) continue;
+      if (shouldSendTo && !shouldSendTo(win.webContents)) continue;
       try {
         win.webContents.send(channel, payload);
       } catch {
@@ -5088,7 +5102,17 @@ app.whenReady().then(async () => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
         }
-        emitProjectEvent(projectRoot, IPC.appControlEvent, payload);
+        emitProjectEvent(
+          projectRoot,
+          IPC.appControlEvent,
+          payload,
+          payload.type === "frame"
+            ? (webContents) => shouldSendAppControlFrameToWebContents(
+              webContents,
+              payload.laneId ?? payload.frame.laneId,
+            )
+            : undefined,
+        );
       },
       // Recording: macOS records the app's window with the desktop helper
       // (the service's default); Windows/Linux use this desktop's encoder.
