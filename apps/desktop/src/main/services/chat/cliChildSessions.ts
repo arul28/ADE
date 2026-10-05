@@ -180,6 +180,8 @@ export type CliChildLineage = {
   /** Provider id (`codex`, `claude`, `cursor`, …), which is what the card's logo keys on. */
   provider: string;
   model: string | null;
+  /** The effort the child launched with, when its launch config recorded one. */
+  reasoningEffort: string | null;
 };
 
 export type CliChildRow = Pick<
@@ -207,7 +209,8 @@ export function cliChildLineageFromRow(row: CliChildRow | null | undefined): Cli
     || providerFromTool(row.toolType ?? null)
     || toolType;
   const model = row.resumeMetadata?.launch?.model?.trim() || null;
-  return { parentSessionId, spawnKind, provider, model };
+  const reasoningEffort = row.resumeMetadata?.launch?.reasoningEffort?.trim() || null;
+  return { parentSessionId, spawnKind, provider, model, reasoningEffort };
 }
 
 export type CliChildResultStatus = "completed" | "failed" | "stopped";

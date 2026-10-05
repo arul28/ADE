@@ -602,7 +602,17 @@ implements a two-layer transform:
      badge: a green check (finished), a red X (failed), or a neutral
      square (stopped). The status line reads `ran for 1m · 12 tools ·
      34k tokens`, prefixed `failed` or `stopped · <who stopped it>`, and
-     the report follows as plain text, clamped to three lines. Reports are
+     the report follows as plain text, clamped to three lines. Both status
+     lines name the agent's own model and effort (`Claude Opus 5.5 · Low`)
+     when it reported them, never the parent's: Claude reports a native
+     child's effort only through its PostToolUse and SubagentStop hooks
+     (`effort.level`), which `noteClaudeSubagentEffort` turns into a
+     `subagent_progress` row (a progress row never renames the agent), and
+     the result reads it from `subagentEffortById` because terminal paths
+     delete the active entry first. Opening a subagent's thread swaps the
+     composer's model chip and effort to the agent's own, locked; a Claude
+     native subagent with no report shows the session effort, which it
+     shares. Reports are
      markdown, so the card reads them through `subagentSummaryPlainText`
      (`shared/chatSubagents.ts`): headings, list, quote, and table markers,
      rules, and fence lines drop; emphasis, code spans, and links keep their

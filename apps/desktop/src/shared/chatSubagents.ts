@@ -6,6 +6,7 @@ import {
   type AgentChatSubagentTranscriptMessage,
   type AgentChatWorkflowProgress,
 } from "./types/chat";
+import { modelMentionEffortLabel } from "./modelMentions";
 import { resolveModelDescriptor } from "./modelRegistry";
 
 export type SubagentSnapshot = {
@@ -224,6 +225,8 @@ export const SUBAGENT_MODEL_INHERITED_SUFFIX = "inherited";
 export type SubagentModelAttribution = {
   label: string;
   inherited: boolean;
+  /** The effort the child reported ("Medium"); null when it reported none. */
+  effortLabel?: string | null;
 };
 
 /** Pretty-print a reported subagent model id. Does not invent a parent fallback. */
@@ -241,19 +244,24 @@ export function formatSubagentModelLabel(model: string | null | undefined): stri
 export function subagentModelAttribution(args: {
   snapshotModel?: string | null;
   sessionModelLabel?: string | null;
+  /** The effort the child reported. A parent's effort is never shown as the child's. */
+  reasoningEffort?: string | null;
 }): SubagentModelAttribution | null {
+  const effort = textField(args.reasoningEffort);
+  const effortLabel = effort ? modelMentionEffortLabel(effort) : null;
   const reported = formatSubagentModelLabel(args.snapshotModel);
-  if (reported) return { label: reported, inherited: false };
+  if (reported) return { label: reported, inherited: false, ...(effortLabel ? { effortLabel } : {}) };
   const session = formatSubagentModelLabel(args.sessionModelLabel);
   if (!session) return null;
-  return { label: session, inherited: true };
+  return { label: session, inherited: true, ...(effortLabel ? { effortLabel } : {}) };
 }
 
 export function formatSubagentModelChip(attribution: SubagentModelAttribution | null): string | null {
   if (!attribution) return null;
+  const effort = attribution.effortLabel ? ` · ${attribution.effortLabel}` : "";
   return attribution.inherited
-    ? `${attribution.label} · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
-    : attribution.label;
+    ? `${attribution.label}${effort} · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
+    : `${attribution.label}${effort}`;
 }
 
 export function chatInfoHeaderModelAttribution(args: {

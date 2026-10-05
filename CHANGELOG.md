@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.89] - 2026-10-04
+
+### Desktop
+
+- Cross-machine orchestration for agents and the `ade` CLI (`--machine`, `--all-machines`) (#1451).
+- The ADE browser follows a remote machine's localhost and dev servers (#1452).
+- Accurate cost tracking with spend breakdowns, branch diff scope, and mermaid in chat (#1450).
+- Lane status and Fold for busy lanes; Manual sort fix (#1448, #1449).
+- Per-turn Claude cost, subagent model and effort on cards, and trustworthy router data (#1453).
+
+### iOS
+
+- Manage each connected machine's AI accounts from the phone (#1447).
+- Clearer quiet shelves in Work (#1448).
+
 ## [1.2.88] - 2026-10-03
 
 ### Desktop
@@ -2292,7 +2307,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.89...HEAD
+[1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89
 [1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88
 [1.2.87]: https://github.com/arul28/ADE/compare/v1.2.86...v1.2.87
 [1.2.86]: https://github.com/arul28/ADE/compare/v1.2.85...v1.2.86

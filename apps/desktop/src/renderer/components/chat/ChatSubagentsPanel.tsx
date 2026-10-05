@@ -856,6 +856,7 @@ function SubagentRow({
   const modelAttribution = subagentModelAttribution({
     snapshotModel: snapshot.model,
     sessionModelLabel,
+    reasoningEffort: snapshot.reasoningEffort,
   });
   const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
@@ -958,6 +959,7 @@ function SubagentRow({
           {modelAttribution ? (
             <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-fg/45">
               {modelAttribution.label}
+              {modelAttribution.effortLabel ? ` · ${modelAttribution.effortLabel}` : null}
               {modelAttribution.inherited ? (
                 <span className="text-fg/28"> · inherited</span>
               ) : null}
