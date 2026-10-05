@@ -534,7 +534,7 @@ Shared types and IPC:
   exported helpers; nothing here reads or writes a canonical phase.
 - `apps/desktop/src/renderer/components/terminals/sessionLifecycleActions.ts` —
   one place for the Work tab's snooze / wake / settle-override writes, so the
-  sidebar row menu, the row context menu, and the chat header snooze affordance can never
+  sidebar row menu, the row context menu, and the composer lifecycle chip can never
   disagree about what an action does or the copy it confirms with. Snooze
   computes the deadline client-side and hands it over as a concrete ISO instant
   (expiry is derived from it everywhere, so no scheduler is involved) and offers
@@ -587,14 +587,13 @@ Shared types and IPC:
   immediately; any other entry earns a fresh delay. It renders icon-led facts,
   supports clickable PR/parent-thread rows, cancels on scroll/resize, clamps to
   the viewport, and uses a reduced-motion-aware fade/slide.
-- `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
-  the optional `SessionSnoozeChip` for a chat surface header, mounted by
-  `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
-  once by the `ChatLifecyclePill` chip in the composer status strip
-  (`StatusStrip` (`ui/notice/StatusChip.tsx`)), rather than repeated in the header. Both surfaces read the same local
+- `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` —
+  the lifecycle read behind the `ChatLifecyclePill` chip in the composer status
+  strip (`StatusStrip` (`ui/notice/StatusChip.tsx`)), which shows settled and
+  snoozed state once; the chat header carries no lifecycle chip. It reads the same local
   per-project session cache, with a root cross-machine snapshot fallback for a
-  foreign chat, and the same canonical helpers as the Work sidebar; the snooze
-  menu calls `wakeSessionNow`, while the banner offers Un-settle. A bounded
+  foreign chat, and the same canonical helpers as the Work sidebar; the chip's Wake now calls
+  `wakeSessionNow`, and Un-settle clears a settle. A bounded
   render-only deadline timer repaints an open foreign/local snapshot when its
   snooze expires. The same strip also hosts the lane branch-drift chip
   (`LaneBranchComposerChip`).
@@ -1410,7 +1409,7 @@ Renderer surfaces:
     the left, then the git toolbar, trailing actions, the optional
     `actionsToggle`, and the Tools toggle on the right.
   - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip
-    and no gradient. The thread title is centered. The snooze chip, Claude cache badge, trailing actions, git
+    and no gradient. The thread title is centered. The Claude cache badge, trailing actions, git
     toolbar, `actionsToggle` (the chat progress icon), and Tools toggle are
     in the right cluster.
   - `prBadgeOnly` hides the create-PR button. The PR badge still shows when

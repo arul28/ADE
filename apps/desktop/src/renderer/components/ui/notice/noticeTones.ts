@@ -78,7 +78,10 @@ export const NOTICE_FLOAT_SURFACE = {
   boxShadow: "var(--shadow-float)",
 } as const;
 
-/** The in-flow variant (docked / inline banners): same card, no lift. */
+/**
+ * The in-flow variant (docked / inline banners): same card, no lift. A host
+ * that floats banners over content sets `--notice-docked-bg` to an opaque mix.
+ */
 export const NOTICE_DOCKED_SURFACE = {
-  background: "color-mix(in srgb, var(--color-card) 72%, transparent)",
+  background: "var(--notice-docked-bg, color-mix(in srgb, var(--color-card) 72%, transparent))",
 } as const;

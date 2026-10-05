@@ -4,7 +4,7 @@ import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ChatChromeTintContext } from "./chatAppearance";
 import { chatSurfaceVars } from "./chatSurfaceTheme";
-import { ChatComposerOverlayInsetContext, createChatComposerOverlayInset, findOccupiedComposerJumpSlot } from "./chatComposerOverlayInset";
+import { ChatComposerOverlayContext, createChatComposerOverlay } from "./chatComposerOverlayInset";
 
 export type ChatSurfaceShellLayoutVariant = "standard" | "mobile";
 
@@ -50,7 +50,7 @@ export function ChatSurfaceShell({
   /**
    * Float the footer over the bottom of the body instead of stacking it below,
    * so the transcript scrolls behind the composer. The body reads the footer's
-   * height from `ChatComposerOverlayInsetContext` to keep its last row clear.
+   * height from `ChatComposerOverlayContext` to keep its last row clear.
    */
   overlayFooter?: boolean;
   containerRef?: Ref<HTMLElement>;
@@ -86,38 +86,33 @@ export function ChatSurfaceShell({
     : undefined;
 
   const fill = canvasFill ?? "var(--chat-canvas-bg)";
-  const [overlayInset] = useState(createChatComposerOverlayInset);
+  const [overlay] = useState(createChatComposerOverlay);
   const footerRef = useRef<HTMLDivElement | null>(null);
   const footerOverlaid = overlayFooter && footer != null;
   useLayoutEffect(() => {
     const el = footerRef.current;
     if (!footerOverlaid || !el) {
-      overlayInset.set(0);
-      overlayInset.jumpSlot.set(null);
+      overlay.footer.set(null);
+      overlay.inset.set(0);
       return;
     }
-    // A chip appearing or leaving changes the stack's height, so the same
-    // observation also says whether Jump to Latest docks in the chip row.
-    const publish = (height: number) => {
-      overlayInset.set(height);
-      overlayInset.jumpSlot.set(findOccupiedComposerJumpSlot(el));
-    };
+    overlay.footer.set(el);
     if (typeof ResizeObserver === "undefined") {
-      publish(el.offsetHeight);
-      return;
+      overlay.inset.set(el.offsetHeight);
+      return () => overlay.footer.set(null);
     }
     // The first observation lands before the first paint, so the transcript
     // never paints a frame with its last row under the composer.
     const ro = new ResizeObserver((entries) => {
       const box = entries[0]?.borderBoxSize?.[0];
-      publish(box ? box.blockSize : el.offsetHeight);
+      overlay.inset.set(box ? box.blockSize : el.offsetHeight);
     });
     ro.observe(el);
     return () => {
       ro.disconnect();
-      overlayInset.jumpSlot.set(null);
+      overlay.footer.set(null);
     };
-  }, [footerOverlaid, overlayInset]);
+  }, [footerOverlaid, overlay]);
   const inner = (
     <>
       {header ? (
@@ -131,9 +126,9 @@ export function ChatSurfaceShell({
           bodyClassName,
         )}
       >
-        <ChatComposerOverlayInsetContext.Provider value={overlayFooter ? overlayInset : null}>
+        <ChatComposerOverlayContext.Provider value={overlayFooter ? overlay : null}>
           {children}
-        </ChatComposerOverlayInsetContext.Provider>
+        </ChatComposerOverlayContext.Provider>
       </div>
       {footer ? (
         <div

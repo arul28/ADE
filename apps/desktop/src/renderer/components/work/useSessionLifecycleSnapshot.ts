@@ -33,7 +33,7 @@ export function useSessionLifecycleSnapshot(
   }, [cached, crossMachineLanesByMachineId, sessionId]);
 
   // A snooze is represented by a persisted deadline, not a scheduler event.
-  // Arm one deadline timer here so an open chat header/composer re-renders when
+  // Arm one deadline timer here so an open chat composer re-renders when
   // the row becomes live even if the session cache object never changes.
   const [lifecycleEpoch, setLifecycleEpoch] = useState(0);
   useEffect(() => {

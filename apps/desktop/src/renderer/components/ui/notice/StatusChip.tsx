@@ -13,6 +13,7 @@ export function StatusStrip({ children, className }: { children: ReactNode; clas
   return (
     <div
       data-testid="chat-composer-status-strip"
+      data-status-strip=""
       className={cn(
         "flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto px-1 pb-1.5 [scrollbar-width:none] empty:hidden [&::-webkit-scrollbar]:hidden",
         className,
@@ -70,6 +71,9 @@ export function StatusChip({
     <div
       data-testid={testId}
       data-notice-tone={tone}
+      // A host that floats chips over content backs them with an opaque plate
+      // under `--status-chip-fill` (index.css, composer overlay).
+      data-overlay-plate=""
       {...dataAttributes}
       role="status"
       aria-label={tooltip}

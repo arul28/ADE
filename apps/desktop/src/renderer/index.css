@@ -3375,17 +3375,21 @@ button, [role="button"] {
    between them leave the thread underneath selectable and clickable. */
 [data-chat-composer-overlay] {
   pointer-events: none;
+  /* Docked banners in the stack float over transcript text, so their card is
+     mixed over the canvas instead of over transparency (noticeTones.ts). */
+  --notice-docked-bg: color-mix(in srgb, var(--color-card) 72%, var(--chat-canvas-bg));
 }
 [data-chat-composer-overlay] [data-chat-composer-dock] > * {
   pointer-events: auto;
 }
 [data-chat-composer-overlay] [data-chat-composer-chip-row],
-[data-chat-composer-overlay] [data-testid="chat-composer-status-strip"] {
+[data-chat-composer-overlay] [data-status-strip] {
   pointer-events: none;
 }
-/* Status chips float over transcript text there, so each gets an opaque plate
-   under its tint instead of reading through to the words behind it. */
-[data-chat-composer-overlay] [data-notice-tone] {
+/* Status chips (and the docked Jump to Latest pill) float over transcript text
+   there, so each gets an opaque plate under its tint instead of reading
+   through to the words behind it. */
+[data-chat-composer-overlay] [data-overlay-plate] {
   background-color: var(--chat-canvas-bg);
   background-image: linear-gradient(var(--status-chip-fill), var(--status-chip-fill));
 }
