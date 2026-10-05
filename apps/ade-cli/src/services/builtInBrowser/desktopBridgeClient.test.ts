@@ -533,6 +533,40 @@ describe("remote browser forwarder", () => {
     expect(typeof result.requestId).toBe("string");
   });
 
+  /**
+   * An isolated sign-in exists only in this machine's desktop. Any other
+   * desktop would open the page in the user's own sign-in, so an isolated open
+   * is refused rather than forwarded, and never mirrored to the user's screen.
+   */
+  it("never sends an isolated open to another desktop", async () => {
+    const events: Record<string, unknown>[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => { events.push(payload); },
+      logger: forwarderLogger,
+      ackTimeoutMs: 10,
+    });
+
+    const headless = withRemoteBrowserForwarding(makeBridge(), forwarder);
+    await expect(headless.navigate({
+      url: "http://localhost:3000/login",
+      profile: "viewer",
+      chatSessionId: "chat-1",
+    } as never)).rejects.toThrow(/isolated tab.*not forwarded/);
+
+    const localNavigate = vi.fn(async () => ({ targetTabId: "tab-1" }));
+    const withDesktop = withRemoteBrowserForwarding(makeBridge({ navigate: localNavigate }), forwarder);
+    await withDesktop.navigate({
+      url: "http://localhost:3000/login",
+      isolated: true,
+      openPanel: true,
+      chatSessionId: "chat-1",
+    } as never);
+
+    // The mirror to the user's screen is sent before `navigate` resolves.
+    expect(localNavigate).toHaveBeenCalledTimes(1);
+    expect(events).toHaveLength(0);
+  });
+
   it("stops waiting when no desktop answers, instead of failing the command", async () => {
     const forwarder = createRemoteBrowserForwarder({
       emitEvent: () => {},

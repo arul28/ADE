@@ -155,18 +155,30 @@ describe("SceneFrame", () => {
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running"),
       );
-      return rerender;
+      const settle = () => act(() => { postSceneMessage(frame, "settled"); });
+      return { rerender, settle };
     }
 
-    it("swaps the live frame for a still once the turn ends", async () => {
+    /**
+     * `ready` only means first paint; an author may call it before a single
+     * animation has played. A turn that ended right after used to freeze a
+     * half-drawn view. The freeze waits for the settle and shows ITS still.
+     */
+    it("waits for the scene to settle, then swaps the frame for that still", async () => {
       stubShellRect({});
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const rerender = await renderRunningScene(snapshot);
+      const { rerender, settle } = await renderRunningScene(snapshot);
 
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
+      await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("running");
+
+      settle();
       await waitFor(() => expect(screen.getByTestId("chat-scene-snapshot")).toBeTruthy());
       expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
       expect(screen.getByTestId("chat-scene").getAttribute("data-scene-status")).toBe("frozen");
+      expect(snapshot).toHaveBeenCalledTimes(1);
       expect(snapshot).toHaveBeenCalledWith({ x: 0, y: 0, width: 400, height: 200 });
     });
 
@@ -178,8 +190,9 @@ describe("SceneFrame", () => {
     it("refuses to snapshot a scene that is only partly on screen", async () => {
       stubShellRect({ top: -120, y: -120, bottom: 80 });
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const rerender = await renderRunningScene(snapshot);
+      const { rerender, settle } = await renderRunningScene(snapshot);
 
+      settle();
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() =>
         expect(screen.getByTestId("chat-scene-frame")).toBeTruthy(),
@@ -198,8 +211,9 @@ describe("SceneFrame", () => {
     it("keeps waiting when a scroll leaves the scene still partly off screen", async () => {
       stubShellRect({ top: -120, y: -120, bottom: 80 });
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const rerender = await renderRunningScene(snapshot);
+      const { rerender, settle } = await renderRunningScene(snapshot);
 
+      settle();
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
 
@@ -220,8 +234,9 @@ describe("SceneFrame", () => {
     it("gives up after the deadline on a scene that can never be fully visible", async () => {
       stubShellRect({ top: -120, y: -120, bottom: 80 });
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const rerender = await renderRunningScene(snapshot);
+      const { rerender, settle } = await renderRunningScene(snapshot);
 
+      settle();
       vi.useFakeTimers();
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       // No scroll, no new intersection: the deadline timer is the only thing
@@ -239,10 +254,12 @@ describe("SceneFrame", () => {
     it("captures on the retry once the whole scene is back on screen", async () => {
       stubShellRect({ top: -120, y: -120, bottom: 80 });
       const snapshot = vi.fn(async () => "data:image/png;base64,AAAA");
-      const rerender = await renderRunningScene(snapshot);
+      const { rerender, settle } = await renderRunningScene(snapshot);
 
+      settle();
       rerender(<SceneFrame source={'<div id="n">3</div>'} live={false} scopeKey={null} />);
       await waitFor(() => expect(screen.getByTestId("chat-scene-frame")).toBeTruthy());
+      expect(snapshot).not.toHaveBeenCalled();
 
       stubShellRect({});
       window.dispatchEvent(new Event("scroll"));

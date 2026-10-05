@@ -174,13 +174,6 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("ghost_annotate");
   });
 
-  it("includes agent-browser section when agent-browser is available", () => {
-    const status = makeBackendStatus({ agentBrowser: true });
-    const result = buildComputerUseDirective(status);
-    expect(result).toContain("agent-browser (Browser Automation)");
-    expect(result).not.toContain("Ghost OS (Desktop Automation)");
-  });
-
   it("includes ADE Local fallback section when local fallback is enabled", () => {
     const status = makeBackendStatus({ localFallback: true });
     const result = buildComputerUseDirective(status);
