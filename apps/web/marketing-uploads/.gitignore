@@ -1,0 +1,5 @@
+# Raw uploads stay local; the compressed copies go into public/.
+*
+!.gitignore
+!README.md
+!*/
