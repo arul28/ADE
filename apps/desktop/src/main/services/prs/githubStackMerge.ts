@@ -1,9 +1,10 @@
 import { githubApiFailure } from "../github/githubApiFailure";
 import { asString, getErrorMessage, isRecord } from "../shared/utils";
 import type { GitHubRepoRef } from "../../../shared/types/git";
-import type { GitHubPrStack, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";
+import type { GitHubPrStack, LandHeadChange, LandPrArgs, LandResult, MergeMethod } from "../../../shared/types/prs";
 import { openStackEntriesThrough } from "./githubStackStore";
 import { formatMergeError } from "./resolverUtils";
+import { formatHeadChangeMessage, type PrHeadChangeDetector } from "./prHeadChange";
 
 /**
  * Merging a PR that is in a GitHub Stack. GitHub supports this only through the
@@ -68,6 +69,7 @@ export type GithubStackMergeDeps = {
   refreshOne: (prId: string) => Promise<unknown>;
   invalidateGithubSnapshotCache: () => void;
   delay: (ms: number) => Promise<void>;
+  headChange: PrHeadChangeDetector;
 };
 
 export function createGithubStackMerge(deps: GithubStackMergeDeps) {
@@ -173,6 +175,25 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       logger.warn("prs.stack_reconcile_before_merge_failed", { stackNumber, error: getErrorMessage(error) });
     }
 
+    // The head moved past what the user looked at: nothing merges, and the
+    // result says what landed so the user can merge again against it.
+    const finishHeadChanged = (rawMsg: string, headChanged: LandHeadChange): LandResult => {
+      finishOperation("failed", { error: rawMsg, stackNumber });
+      return { ...base, error: formatHeadChangeMessage(headChanged), stackPrNumbers, headChanged };
+    };
+    const headMoved = async (rawMsg: string): Promise<LandResult | null> => {
+      const headChanged = await deps.headChange.afterMergeRefusal(repo, prNumber, args.expectedHeadSha, rawMsg);
+      return headChanged ? finishHeadChanged(rawMsg, headChanged) : null;
+    };
+
+    const headChangedBefore = await deps.headChange.detect(repo, prNumber, args.expectedHeadSha);
+    if (headChangedBefore) {
+      return finishHeadChanged(
+        `PR head is ${headChangedBefore.currentHeadSha}, expected ${headChangedBefore.expectedHeadSha}`,
+        headChangedBefore,
+      );
+    }
+
     const body: Record<string, unknown> = { merge_method: args.method, merge_action: "default" };
     if (args.expectedHeadSha?.trim()) body.sha = args.expectedHeadSha.trim();
     if (args.bypassRules) body.bypass_rules = true;
@@ -192,6 +213,8 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       const running = failure?.status === 409 ? parseAsyncMergeResult(failure.body) : null;
       if (!running?.uuid) {
         const rawMsg = getErrorMessage(error);
+        const moved = await headMoved(rawMsg);
+        if (moved) return moved;
         finishOperation("failed", { error: rawMsg, stackNumber });
         return { ...base, error: formatMergeError(rawMsg, args.expectedHeadSha), stackPrNumbers };
       }
@@ -234,6 +257,8 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
       }
       if (final.status === "failed") {
         const message = final.message ?? "GitHub could not merge the stack.";
+        const moved = await headMoved(message);
+        if (moved) return moved;
         finishOperation("failed", { ...meta, error: message });
         return { ...base, error: message, stackPrNumbers };
       }

@@ -5,12 +5,14 @@ import {
   X,
   CaretDown, CaretRight,
   TreeStructure,
+  GitCommit,
+  GitMerge,
 } from "@phosphor-icons/react";
 import { Banner, type BannerModel } from "../../ui/notice";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
-  LaneSummary, MergeMethod, LandResult,
+  LaneSummary, MergeMethod, LandResult, LandHeadChange,
   FilePatch,
   PrSnapshotHydration,
   PrGithubCoords,
@@ -33,7 +35,7 @@ import {
   prOpenFindings,
 } from "../shared/prChatActions";
 import { readLastMergeMethod } from "../shared/prMergeRailUtils";
-import { formatError } from "../shared/prFormatters";
+import { formatError, formatTimeAgoCompact } from "../shared/prFormatters";
 import type { PrActionsContext } from "../shared/PrActionsMenu";
 import { PrChecksTab } from "./PrChecksTab";
 import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
@@ -49,7 +51,7 @@ import {
   summarizePipelineStates,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { navigateToAppTarget } from "../../../lib/openExternal";
+import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { PrRuntimePinProvider } from "../state/prMachines";
 import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
@@ -644,6 +646,9 @@ export function PrDetailPane({
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  // The merge that produced `actionResult`, so a merge refused for a moved
+  // head can be sent again against the new head in one click.
+  const [lastMergeRequest, setLastMergeRequest] = React.useState<MergeRequest | null>(null);
   // A stack merge that answered "still merging" finishes in the background.
   // When the PR shows as merged, the banner says so instead of spinning on.
   React.useEffect(() => {
@@ -1187,16 +1192,9 @@ export function PrDetailPane({
   }, [loadDetail, onRefresh, pr.id]);
 
   // ---- Actions ----
-  const handleMerge = (
-    method: MergeMethod,
-    options?: {
-      bypassRules?: boolean;
-      commitTitle?: string;
-      commitBody?: string;
-      expectedHeadSha?: string;
-    },
-  ) => {
+  const handleMerge = (method: MergeMethod, options?: MergeRequestOptions) => {
     setActionResult(null);
+    setLastMergeRequest({ method, options: options ?? {} });
     if (mergeBlockedReason) {
       setActionError(mergeBlockedReason);
       return Promise.resolve();
@@ -1517,7 +1515,17 @@ export function PrDetailPane({
         <Banner
           layout="inline"
           style={{ margin: "8px 20px 0", flexShrink: 0 }}
-          model={mergeResultBannerModel(actionResult, () => setActionResult(null))}
+          model={mergeResultBannerModel(actionResult, {
+            onDismiss: () => setActionResult(null),
+            pr,
+            busy: actionBusy,
+            onMergeAgain: (currentHeadSha) => {
+              if (!lastMergeRequest) return;
+              void handleMerge(lastMergeRequest.method, { ...lastMergeRequest.options, expectedHeadSha: currentHeadSha });
+            },
+            canMergeAgain: Boolean(lastMergeRequest) && !mergeBlockedReason,
+            bypassing: Boolean(lastMergeRequest?.options.bypassRules),
+          })}
         />
       ) : null}
 
@@ -1807,7 +1815,94 @@ function FilesTab({
 }
 
 /** The banner for a merge result. A stack merge GitHub queued or still runs is not a failure. */
-function mergeResultBannerModel(result: LandResult, onDismiss: () => void): BannerModel {
+type MergeRequestOptions = {
+  bypassRules?: boolean;
+  commitTitle?: string;
+  commitBody?: string;
+  expectedHeadSha?: string;
+};
+
+type MergeRequest = { method: MergeMethod; options: MergeRequestOptions };
+
+type MergeResultBannerHandlers = {
+  onDismiss: () => void;
+  pr: PrWithConflicts;
+  busy: boolean;
+  canMergeAgain: boolean;
+  bypassing: boolean;
+  onMergeAgain: (currentHeadSha: string) => void;
+};
+
+const HEAD_CHANGE_VISIBLE_COMMITS = 4;
+
+/** The commits that landed after the user loaded the PR, newest first. */
+function HeadChangeCommitList({ change, pr }: { change: LandHeadChange; pr: PrWithConflicts }) {
+  const commits = [...change.newCommits].reverse();
+  const shown = commits.slice(0, HEAD_CHANGE_VISIBLE_COMMITS);
+  const hidden = change.totalNewCommits - shown.length;
+  if (shown.length === 0) return null;
+  return (
+    <ul
+      data-testid="pr-merge-head-change-commits"
+      style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 3 }}
+    >
+      {shown.map((commit) => (
+        <li key={commit.sha} style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0, fontSize: 12 }}>
+          <a
+            href={`${pr.githubUrl}/commits/${commit.sha}`}
+            onClick={(event) => {
+              event.preventDefault();
+              openLinkFromUi(`${pr.githubUrl}/commits/${commit.sha}`, event);
+            }}
+            style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted, textDecoration: "none", flexShrink: 0 }}
+          >
+            {commit.sha.slice(0, 7)}
+          </a>
+          <span style={{ color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+            {commit.title || "(no message)"}
+          </span>
+          <span style={{ color: COLORS.textMuted, fontSize: 11, flexShrink: 0 }}>
+            {[commit.author, commit.committedAt ? formatTimeAgoCompact(commit.committedAt) : null].filter(Boolean).join(" · ")}
+          </span>
+        </li>
+      ))}
+      {hidden > 0 ? (
+        <li style={{ fontSize: 11, color: COLORS.textMuted }}>+{hidden} more</li>
+      ) : null}
+    </ul>
+  );
+}
+
+function headChangeBannerModel(result: LandResult, change: LandHeadChange, handlers: MergeResultBannerHandlers): BannerModel {
+  const compareUrl = `https://github.com/${handlers.pr.repoOwner}/${handlers.pr.repoName}/compare/${change.expectedHeadSha}...${change.currentHeadSha}`;
+  return {
+    id: "pr-merge-result",
+    tone: "warning",
+    icon: <GitCommit size={16} weight="bold" />,
+    // The host words the refusal (new commits vs a force-push).
+    title: result.error ?? `PR #${result.prNumber} changed after you loaded it. Nothing was merged.`,
+    detail: "Look over what landed, then merge again.",
+    extra: <HeadChangeCommitList change={change} pr={handlers.pr} />,
+    actions: [
+      ...(handlers.canMergeAgain
+        ? [{
+            label: handlers.bypassing ? "Override & merge with these" : "Merge with these",
+            variant: "solid" as const,
+            icon: <GitMerge size={12} weight="bold" />,
+            busy: handlers.busy,
+            onClick: () => handlers.onMergeAgain(change.currentHeadSha),
+          }]
+        : []),
+      // Only the new commits, not the whole PR diff.
+      { label: "See what changed", variant: "secondary" as const, href: compareUrl },
+    ],
+    dismiss: { onDismiss: handlers.onDismiss, label: "Dismiss merge result" },
+  };
+}
+
+function mergeResultBannerModel(result: LandResult, handlers: MergeResultBannerHandlers): BannerModel {
+  const { onDismiss } = handlers;
+  if (!result.success && result.headChanged) return headChangeBannerModel(result, result.headChanged, handlers);
   const inFlight = !result.success && (result.mergeStatus === "pending" || result.mergeStatus === "enqueued");
   const stack = result.stackPrNumbers ?? [];
   let title: string;

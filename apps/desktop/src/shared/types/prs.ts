@@ -625,6 +625,26 @@ export type LandResult = {
   mergeStatus?: "merged" | "enqueued" | "pending";
   /** For a GitHub Stack merge: every PR in the stack that this merge covers. */
   stackPrNumbers?: number[];
+  /**
+   * Set when the merge was refused because the PR head moved past the
+   * `expectedHeadSha` the caller sent. Nothing was merged; the caller can show
+   * the new commits and merge again against `currentHeadSha`.
+   */
+  headChanged?: LandHeadChange;
+};
+
+export type LandHeadChange = {
+  expectedHeadSha: string;
+  currentHeadSha: string;
+  /**
+   * `appended`: the old head is an ancestor of the new one. `rewritten`: it is
+   * not (a force-push or rebase). `unknown`: GitHub could not compare them.
+   */
+  history: "appended" | "rewritten" | "unknown";
+  /** Commits on the new head that the old head did not have, oldest first. Capped. */
+  newCommits: Array<{ sha: string; title: string; author: string | null; committedAt: string | null }>;
+  /** How many new commits there are in total (may exceed `newCommits.length`). */
+  totalNewCommits: number;
 };
 
 export type PrCreationStrategy = "pr_target" | "lane_base";

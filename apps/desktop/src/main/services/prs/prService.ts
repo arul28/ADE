@@ -39,6 +39,7 @@ import type {
   IntegrationStepResolution,
   IntegrationCleanupState,
   IntegrationWorkflowDisplayState,
+  LandHeadChange,
   LandResult,
   LandPrArgs,
   MergeMethod,
@@ -179,6 +180,7 @@ import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
+import { createPrHeadChangeDetector, formatHeadChangeMessage } from "./prHeadChange";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
   deriveGithubSnapshotLaneLink,
@@ -8386,6 +8388,14 @@ export function createPrService({
     return { branchDeleted: cleanup.branchDeleted, laneArchived: cleanup.laneArchived };
   };
 
+  const headChange = createPrHeadChangeDetector({
+    githubService,
+    logger,
+    fetchPr,
+    getRowForRepoPr,
+    refreshOne,
+  });
+
   const githubStackMerge = createGithubStackMerge({
     githubService,
     // Declared further down; read at call time.
@@ -8404,6 +8414,7 @@ export function createPrService({
     refreshOne,
     invalidateGithubSnapshotCache,
     delay,
+    headChange,
   });
 
   const land = async (args: LandPrArgs): Promise<LandResult> => {
@@ -8446,6 +8457,12 @@ export function createPrService({
     }
 
     const formatMergeError = (rawMsg: string): string => formatMergeErrorMessage(rawMsg, args.expectedHeadSha);
+    // The head moved past what the user looked at: nothing merges, and the
+    // result says what landed so the user can merge again against it.
+    const finishHeadChanged = (rawMsg: string, headChanged: LandHeadChange): LandResult => ({
+      ...finishFailure(rawMsg, formatHeadChangeMessage(headChanged)),
+      headChanged,
+    });
 
     try {
       const latestPull = await fetchPr(repo, prNumber, { waitForKnownMergeability: true });
@@ -8460,12 +8477,23 @@ export function createPrService({
       if (latestState !== "open") {
         return finishFailure(`PR is ${latestState}`, `PR is ${latestState}; only open PRs can be merged.`);
       }
+      const headChanged = await headChange.detect(repo, prNumber, args.expectedHeadSha, asString(latestPull?.head?.sha));
+      if (headChanged) {
+        return finishHeadChanged(`PR head is ${headChanged.currentHeadSha}, expected ${headChanged.expectedHeadSha}`, headChanged);
+      }
       if (mergeConflictsFromPull(latestPull) === true) {
         return finishFailure("PR has merge conflicts", "PR has merge conflicts. Rebase or resolve conflicts before merging.");
       }
     } catch (error) {
       return finishFailure(getErrorMessage(error), `Unable to verify mergeability before merging: ${getErrorMessage(error)}`);
     }
+
+    // The head can still move between the check above and the merge call;
+    // GitHub then refuses with "Head branch was modified".
+    const headMovedDuringMerge = async (rawMsg: string): Promise<LandResult | null> => {
+      const headChanged = await headChange.afterMergeRefusal(repo, prNumber, args.expectedHeadSha, rawMsg);
+      return headChanged ? finishHeadChanged(rawMsg, headChanged) : null;
+    };
 
     try {
       // `commit_title`/`commit_message` only apply to merge/squash commits, not
@@ -8502,6 +8530,8 @@ export function createPrService({
       };
     } catch (error) {
       const rawMsg = error instanceof Error ? error.message : String(error);
+      const headMoved = await headMovedDuringMerge(rawMsg);
+      if (headMoved) return headMoved;
       const userMsg = formatMergeError(rawMsg);
 
       if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
@@ -8529,6 +8559,8 @@ export function createPrService({
             error: null,
           };
         }
+        const adminHeadMoved = await headMovedDuringMerge(adminAttempt.error);
+        if (adminHeadMoved) return adminHeadMoved;
         return finishFailure(adminAttempt.error, formatMergeError(adminAttempt.error));
       }
 
