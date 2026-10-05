@@ -60,7 +60,12 @@ function readVisibilityCached(
     ? existing
     : { reader, value: false, checkedAtMs: 0, inFlight: null };
   visibilityCache.set(key, entry);
-  if (entry.inFlight) return entry.inFlight;
+  if (entry.inFlight) {
+    if (!force) return entry.inFlight;
+    // A forced read follows a change (a key saved, a project switched); the
+    // read in flight may have started before it, so read again once it settles.
+    return entry.inFlight.then(() => readVisibilityCached(args));
+  }
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
 

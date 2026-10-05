@@ -89,14 +89,6 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   // routes cleanly to the remote machine's credential store.
   const isRemoteRuntime = useAppStore((s) => s.projectBinding?.kind === "remote");
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
-  const announcedConnectedRef = useRef<boolean | null>(null);
-  const linearConnected = connection ? connection.connected === true : null;
-  useEffect(() => {
-    if (linearConnected === null) return;
-    const previous = announcedConnectedRef.current;
-    announcedConnectedRef.current = linearConnected;
-    if (previous !== null && previous !== linearConnected) announceLinearConnectionChanged();
-  }, [linearConnected]);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
@@ -296,6 +288,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           setOauthSessionIdState(null);
           setOauthStartingState(false);
           setConnection(session.connection ?? null);
+          announceLinearConnectionChanged();
           setError(null);
           if (session.connection?.connected) void loadProjects();
           else void loadStatus();
@@ -354,6 +347,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         return;
       }
       setConnection(status);
+      announceLinearConnectionChanged();
       if (status.connected) {
         void loadProjects(requestId);
         setTokenInput("");
@@ -418,6 +412,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     try {
       const status = await window.ade.cto.clearLinearToken();
       setConnection(status);
+      announceLinearConnectionChanged();
       setProjects([]);
       setTokenInput("");
       setError(null);

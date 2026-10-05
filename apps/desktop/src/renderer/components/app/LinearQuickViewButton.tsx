@@ -91,7 +91,13 @@ function readLinearVisibilityCached({
       : { reader, value: false, checkedAtMs: 0, inFlight: null };
   linearVisibilityCacheByProject.set(projectRoot, entry);
 
-  if (entry.inFlight) return entry.inFlight;
+  if (entry.inFlight) {
+    if (!force) return entry.inFlight;
+    // A forced read follows a change (a key saved, a connection made); the read
+    // in flight may have started before it, so read again once it settles.
+    const retry = () => readLinearVisibilityCached({ projectRoot, reader, force });
+    return entry.inFlight.then(retry, retry);
+  }
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) {
     return Promise.resolve(entry.value);

@@ -2772,7 +2772,8 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
   }
 
   const Ctor = await loadWebglAddonCtor();
-  if (!Ctor) return false;
+  // Teardown during the import has already given back this runtime's slot.
+  if (!Ctor || runtime.disposed) return false;
 
   try {
     const addon = new Ctor();
