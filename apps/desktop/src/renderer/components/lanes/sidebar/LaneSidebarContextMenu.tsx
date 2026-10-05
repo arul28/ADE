@@ -9,16 +9,15 @@ const noop = () => {};
 
 /**
  * Right-click menu for a sidebar row. Same groups as every other lane menu,
- * minus the split/tab entries the Lanes tab no longer has. When the clicked
- * lane is part of a multi-selection, "Manage N lanes" acts on all of them.
+ * minus the split/tab entries the Lanes tab no longer has. A row inside a
+ * multi-selection opens `LaneSidebarBulkContextMenu` instead, so this menu
+ * always acts on its one lane.
  */
 export function LaneSidebarContextMenu({
   menu,
   lanesById,
-  selectedLaneIds,
   onClose,
   onManage,
-  onBatchManage,
   selectLane,
   onAppearanceChanged,
   onStartChatInLane,
@@ -27,11 +26,8 @@ export function LaneSidebarContextMenu({
 }: {
   menu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
-  /** Lanes the batch entry acts on (the multi-selection, or empty). */
-  selectedLaneIds: string[];
   onClose: () => void;
   onManage: (laneId: string) => void;
-  onBatchManage: (laneIds: string[]) => void;
   selectLane: (laneId: string) => void;
   onAppearanceChanged: () => void | Promise<void>;
   onStartChatInLane: (laneId: string) => void;
@@ -52,11 +48,7 @@ export function LaneSidebarContextMenu({
     laneId: menu.laneId,
     lane,
     lanesById,
-    // A multi-selection acts on all of it no matter which row opened the menu:
-    // after a Shift-click the user may right-click the anchor (which is the
-    // single-selected row) or any other row, and the batch entry must still be
-    // there. One lane alone is just "Manage Lane".
-    visibleLaneIds: selectedLaneIds.length > 1 ? selectedLaneIds : [],
+    visibleLaneIds: [],
     isRemoteProject,
     runtimePin,
     onClose,
@@ -65,7 +57,7 @@ export function LaneSidebarContextMenu({
     onRemoveFromSplit: noop,
     onCloseOtherSplits: noop,
     onSelectAll: noop,
-    onBatchManage,
+    onBatchManage: noop,
     onAppearanceChanged,
     onStartChatInLane,
     ...(onOpenHistory ? { onOpenHistory } : {}),

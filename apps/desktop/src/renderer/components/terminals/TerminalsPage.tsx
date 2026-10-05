@@ -316,7 +316,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const orderedIds = visibleSessionIds?.length ? visibleSessionIds : selectableSessions.map((session) => session.id);
 
       if (useRange) {
-        const anchorId = selectionAnchorId ?? id;
+        // The anchor can leave the screen (its lane folded into Working, its
+        // section collapsed). Fall back to the open row, then to the clicked
+        // row, so a shift-click always selects instead of opening.
+        const anchorId = [selectionAnchorId, work.selectedSessionId, id]
+          .find((candidate) => candidate != null && orderedIds.includes(candidate)) ?? id;
         const anchorIndex = orderedIds.indexOf(anchorId);
         const nextIndex = orderedIds.indexOf(id);
         if (anchorIndex >= 0 && nextIndex >= 0) {
@@ -329,7 +333,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       }
 
-      if (useToggle) {
+      if (useToggle || useRange) {
         setSelectedSessionIds((prev) => {
           const next = new Set(prev);
           if (next.has(id)) next.delete(id);
@@ -1351,6 +1355,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [work]);
 
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+  const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
 
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
@@ -2023,6 +2028,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         menu={bulkMenu}
         sessions={selectedSessionsInSidebarOrder}
         lanes={work.lanes}
+        localSessionIds={localSessionIds}
         resolvePin={resolveSessionRuntimePin}
         onClose={() => setBulkMenu(null)}
         pinnedSessionIds={work.pinnedSessionIds}

@@ -43,6 +43,12 @@ type SessionBulkContextMenuProps = {
   sessions: TerminalSessionSummary[];
   /** The tab's own lanes. Lanes on other machines are not in here. */
   lanes: LaneSummary[];
+  /**
+   * Sessions in the tab's own roster — the rows the sidebar draws as local.
+   * Their lanes are the ones the Lanes tab can manage. The runtime pin is not
+   * used for this: it can name a machine for a row the sidebar shows as local.
+   */
+  localSessionIds: ReadonlySet<string>;
   resolvePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
   onClose: () => void;
   pinnedSessionIds: string[];
@@ -71,6 +77,7 @@ export function SessionBulkContextMenu({
   menu,
   sessions,
   lanes,
+  localSessionIds,
   resolvePin,
   onClose,
   pinnedSessionIds,
@@ -118,7 +125,7 @@ export function SessionBulkContextMenu({
     const laneIds: string[] = [];
     const otherMachineLanes = new Set<string>();
     for (const { session, pin } of targets) {
-      if (pin || !lanesById.has(session.laneId)) {
+      if (!localSessionIds.has(session.id) || !lanesById.has(session.laneId)) {
         otherMachineLanes.add(`${pin?.key ?? ""}:${session.laneId}`);
       } else if (!laneIds.includes(session.laneId)) {
         laneIds.push(session.laneId);
@@ -176,14 +183,21 @@ export function SessionBulkContextMenu({
         {
           kind: "label",
           key: "lanes-foreign",
-          label: `${otherMachineLanes.size} on other machines left out`,
+          label: otherMachineLanes.size === 1
+            ? "1 lane not available in this tab"
+            : `${otherMachineLanes.size} lanes not available in this tab`,
         },
       );
     }
 
     let lanesLabel = "Lanes";
     if (singleLane) lanesLabel = `Lane · ${singleLane.name}`;
-    else if (laneIds.length > 1) lanesLabel = `${laneIds.length} lanes`;
+    // Only name the batch when every selected lane is actionable; a mixed
+    // selection keeps the neutral label and lets the rows' "x of y" hints say
+    // which are left out (primary lanes never manage).
+    else if (laneIds.length > 1 && manageableLaneIds.length === laneIds.length) {
+      lanesLabel = `Manage ${laneIds.length} lanes`;
+    }
 
     return [
       { kind: "label", key: "count", label: `${total} selected` },
@@ -333,6 +347,7 @@ export function SessionBulkContextMenu({
     gridSessionIds,
     gridableSessionIds,
     lanes,
+    localSessionIds,
     onClearSelection,
     onCopySessionIds,
     onDelete,

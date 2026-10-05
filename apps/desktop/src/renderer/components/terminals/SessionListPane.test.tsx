@@ -3316,6 +3316,40 @@ describe("SessionListPane quiet-shelf defaults", () => {
     fireEvent.click(screen.getByRole("button", { name: "Snoozed (1)" }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("shelf-open:lane-shelf:snoozed");
   });
+
+  it("folds the open lane into the collapsed Working shelf like any other busy lane", () => {
+    const running = makeSession({
+      id: "session-default-working",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Working chat",
+    });
+    const props: Partial<ComponentProps<typeof SessionListPane>> = {
+      lanes: [makeLane()],
+      runningFiltered: [running],
+      allSessionsUnfiltered: [running],
+      sessionsGroupedByLane: new Map([["lane-known", [running]]]),
+      workFoldBusyLanes: true,
+      selectedSessionId: running.id,
+      workCollapsedSectionIds: [],
+    };
+    const { container, rerender } = renderPane(props);
+
+    // The shelf is shut by default, and the open lane folds into it: the chat
+    // is open in the main pane, but its card is not pinned above the shelf.
+    expect(container.querySelector('[data-section-id="lane-shelf:working"]')).toBeTruthy();
+    expect(container.querySelector('[data-section-id="lane-known"]')).toBeNull();
+    expect(container.querySelector(`[data-session-id="${running.id}"]`)).toBeNull();
+
+    rerender(paneElement({
+      ...props,
+      workCollapsedSectionIds: ["shelf-open:lane-shelf:working"],
+    }));
+    // Expanding the shelf brings the lane back, still filed under Working.
+    expect(
+      container.querySelector(`[data-testid="shelf-body-working"] [data-session-id="${running.id}"]`),
+    ).toBeTruthy();
+  });
 });
 
 describe("SessionListPane header chevrons", () => {
