@@ -815,6 +815,28 @@ version check passes and a `targetTurnId` is present. Either response feeds
 thread id; ADE's git-backed per-file restore plan runs the same way in both
 cases.
 
+The per-file restore writes a file back as it was at the turn's starting commit
+(`git restore --source=<beforeSha> --staged --worktree`). The index is restored
+too: the plan only restores a file that was clean when the turn began, so
+anything staged for it was staged by the turn, and leaving it would let the next
+commit carry the work the rewind undid. A file the turn created is deleted and
+unstaged (`git rm --cached`).
+That is only safe for a file nothing else had changed, so the plan leaves three
+kinds of file as they are and reports them in `skippedFiles`, which the
+confirmation dialog lists under **Left as they are**:
+
+- `dirty_before_turn` — the file already had uncommitted changes when the turn
+  started. Each `turn_diff_summary` records these as `dirtyAtStart`, taken from
+  the working-tree snapshot ADE captures before the turn.
+- `other_chat` — another chat in the same lane and worktree recorded a diff
+  summary touching the file after the selected message.
+- `unknown_start_state` — the summary was written before `dirtyAtStart`
+  existed (or the pre-turn snapshot failed), so safety cannot be shown.
+
+While another chat in the worktree has a turn running, its changes are not
+known yet, so the rewind refuses with the chat's name rather than guess. After
+a rewind that skipped files, the transcript gets a notice naming them.
+
 What is version-gated today is exactly this fork-before-turn rewind. `thread/rollback`
 is retained only for pre-0.156 servers (`<= 0.144`, or a turn without a usable
 id); 0.156 removed it upstream. Separately, 0.145 removes `mcpToolCall`

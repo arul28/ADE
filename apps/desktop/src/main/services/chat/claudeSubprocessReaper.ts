@@ -6,6 +6,7 @@ import type { Readable, Writable } from "node:stream";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTree, resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { signalProcessGroup } from "../shared/utils";
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;
@@ -245,7 +246,7 @@ export function createClaudeSubprocessReaper(args: {
   ): boolean => {
     if (groupLeader) {
       try {
-        processKill(-pid, signal);
+        signalProcessGroup(pid, signal, processKill);
         return true;
       } catch {
         // The group is already gone, or this pid never led one. Fall through

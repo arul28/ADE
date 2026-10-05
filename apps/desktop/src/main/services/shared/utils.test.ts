@@ -38,6 +38,7 @@ import {
   looksSensitiveValue,
   sanitizeStructuredData,
   signalChildProcessTree,
+  signalProcessGroup,
   terminateChildProcessTree,
 } from "./utils";
 
@@ -702,6 +703,25 @@ describe("sanitizeStructuredData", () => {
     const items = config.items as unknown[];
     expect((items[0] as Record<string, unknown>).token).toBe("[REDACTED]");
     expect(items[1]).toBe("normal text");
+  });
+});
+
+describe("signalProcessGroup", () => {
+  it.each([
+    { pid: 1, why: "-1 is every process the user owns" },
+    { pid: 0, why: "-0 is the caller's own group" },
+    { pid: -5, why: "a negative pid is already a group" },
+    { pid: 12.5, why: "not a pid" },
+  ])("refuses pid $pid ($why) without signalling anything", ({ pid }) => {
+    const kill = vi.fn();
+    expect(() => signalProcessGroup(pid, "SIGTERM", kill)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("signals the group a real pid leads", () => {
+    const kill = vi.fn();
+    signalProcessGroup(4242, "SIGKILL", kill);
+    expect(kill).toHaveBeenCalledWith(-4242, "SIGKILL");
   });
 });
 

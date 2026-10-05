@@ -1579,6 +1579,100 @@ describe("SessionListPane", () => {
       expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 
+    it("floats a foreign lane back to the front of the inbox when it leaves the Working shelf", () => {
+      const foldLane = makeLane({
+        id: "lane-fold",
+        name: "Fold Lane",
+        branchRef: "feature/fold",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      });
+      const activeLane = makeLane({
+        id: "lane-active",
+        name: "Active Lane",
+        branchRef: "feature/active",
+        // Created newer, so this is the natural order while both are in the inbox.
+        createdAt: "2026-04-03T00:00:00.000Z",
+      });
+      const foldRunning = makeSession({
+        id: "fold-run-1",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work one",
+      });
+      const foldRunningTwo = makeSession({
+        id: "fold-run-2",
+        laneId: "lane-fold",
+        laneName: "Fold Lane",
+        title: "Fold work two",
+      });
+      const activeNeeds = makeSession({
+        id: "active-needs",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active asks",
+        pendingInputItemId: "ask-active",
+      });
+      const activeRunning = makeSession({
+        id: "active-run",
+        laneId: "lane-active",
+        laneName: "Active Lane",
+        title: "Active work",
+      });
+      const seed = (foldSessions: TerminalSessionSummary[]) => {
+        seedStudioMachine(
+          [foldLane, activeLane],
+          [...foldSessions, activeNeeds, activeRunning],
+        );
+      };
+      seed([foldRunning, foldRunningTwo]);
+
+      const props: Partial<ComponentProps<typeof SessionListPane>> = {
+        lanes: [],
+        runningFiltered: [],
+        awaitingInputFiltered: [],
+        allSessionsUnfiltered: [],
+        sessionsGroupedByLane: new Map(),
+        workFoldBusyLanes: true,
+        workCollapsedSectionIds: ["shelf-open:lane-shelf:working"],
+      };
+      const { rerender } = render(paneElement(props));
+
+      const foreignOrder = () => Array.from(
+        document.querySelectorAll<HTMLElement>('[data-section-id^="target-studio:"]'),
+      ).map((element) => element.getAttribute("data-section-id"));
+      const inWorkingShelf = (compositeId: string) => Boolean(
+        document.querySelector(
+          `[data-testid="shelf-body-working"] [data-section-id="${compositeId}"]`,
+        ),
+      );
+
+      // Fold Lane is all-busy, so it starts on the Working shelf while Active
+      // Lane (holding a raised hand) stays in the inbox.
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(true);
+
+      // A raised hand returns Fold Lane from the shelf.
+      act(() => {
+        seed([{ ...foldRunning, pendingInputItemId: "ask-fold" }, foldRunningTwo]);
+      });
+      rerender(paneElement(props));
+
+      expect(inWorkingShelf("target-studio:lane-fold")).toBe(false);
+      // It leads the active foreign rows despite sorting older, because it just
+      // came back out of the Working shelf.
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-fold",
+        "target-studio:lane-active",
+      ]);
+
+      // Manual sort is the user's own order: the returned lane does not float,
+      // or every drag of it would be undone.
+      rerender(paneElement({ ...props, workLaneSortMode: "manual" }));
+      expect(foreignOrder()).toEqual([
+        "target-studio:lane-active",
+        "target-studio:lane-fold",
+      ]);
+    });
+
     it("nests a foreign parent and child shell as one headerless unit", () => {
       const parent = makeSession({
         id: "foreign-chat-parent",

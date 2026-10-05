@@ -1966,6 +1966,8 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["projects", "list"])).toEqual({
       kind: "execute",
       label: "projects list",
+      // The list `--all-machines` merges; `projects add` below must not carry it.
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     });
@@ -14522,14 +14524,14 @@ describe("ADE CLI", () => {
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
-    const firstStepArgs = (argv: string[]): Record<string, unknown> => {
+    const firstStepArgs = (argv: string[], domain = "built_in_browser"): Record<string, unknown> => {
       const plan = buildCliPlan(argv);
       expect(plan.kind).toBe("execute");
       if (plan.kind !== "execute") throw new Error("expected execute plan");
       const params = plan.steps[0]?.params as
         | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
         | undefined;
-      expect(params?.arguments?.domain).toBe("built_in_browser");
+      expect(params?.arguments?.domain).toBe(domain);
       return {
         action: params?.arguments?.action,
         ...(params?.arguments?.args ?? {}),
@@ -14653,12 +14655,12 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["browser", "record", "pause", "--tab", "tab-1"]))
       .toThrow(/Unknown browser record command/);
 
-    // Scope is never an argument here: `scopeBuiltInBrowserAdeActionArgs` drops
-    // any caller `laneId` and the desktop bridge substitutes the capability's
-    // lane, so the command deliberately sends no target of its own.
-    expect(firstStepArgs(["browser", "dev-servers"])).toEqual({ action: "getDevServers" });
+    // Dev servers are the runtime's list, answered with no desktop attached.
+    // Scope is never an argument: the daemon pins an agent to its own lane,
+    // so the command deliberately sends no target of its own.
+    expect(firstStepArgs(["browser", "dev-servers"], "work_tools")).toEqual({ action: "listDevServers" });
     for (const alias of ["dev-server", "devservers", "servers", "localhost"]) {
-      expect(firstStepArgs(["browser", alias])).toMatchObject({ action: "getDevServers" });
+      expect(firstStepArgs(["browser", alias], "work_tools")).toMatchObject({ action: "listDevServers" });
     }
   }));
 
@@ -15612,6 +15614,8 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "stats", "--preset", "decade"])).toThrow(
       /--preset must be one of today, 7d, 30d, year, all/i,
     );
+    expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "abc"])).toThrow(/--limit must be a positive whole number/);
+    expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "0"])).toThrow(/--limit must be a positive whole number/);
     expect(() => buildCliPlan(["usage", "stats", "--since", "yesterday"])).toThrow(
       /--since must be an ISO timestamp/i,
     );
@@ -15658,6 +15662,38 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "turns", "--group-by", "lane"]))
       .toThrow("usage turns --group-by must be one of provider, provider_model, provider_account_model.");
     expect(() => buildCliPlan(["usage", "turns", "--recent", "500"])).toThrow(/--recent must be a number from 0 to 200/i);
+  });
+
+  it.each([
+    {
+      argv: ["usage", "prices", "set", "local-x", "--input", "1", "--output", "4"],
+      change: { model: "local-x", price: { input: 1, output: 4 } },
+    },
+    {
+      argv: ["usage", "prices", "set", "--input=1", "--output", "4", "--cache-read", "0.1", "local-x"],
+      change: { model: "local-x", price: { input: 1, output: 4, cacheRead: 0.1 } },
+    },
+    {
+      argv: ["usage", "prices", "set", "my-preview", "--map-to", "claude-opus-5-5"],
+      change: { model: "my-preview", mapTo: "claude-opus-5-5" },
+    },
+    { argv: ["usage", "prices", "set", "--unmap", "my-preview"], change: { model: "my-preview", mapTo: null } },
+    { argv: ["usage", "prices", "set", "local-x", "--automatic"], change: { model: "local-x", price: null } },
+  ])("usage prices set takes the model id wherever it sits among the flags: $argv", ({ argv, change }) => {
+    const plan = buildCliPlan(argv);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "setModelPriceOverride", args: change },
+    });
+  });
+
+  it("usage prices set refuses a change with no model or no rate", () => {
+    expect(() => buildCliPlan(["usage", "prices", "set", "--input", "1", "--output", "4"])).toThrow(/needs a model id/);
+    expect(() => buildCliPlan(["usage", "prices", "set", "local-x", "--input", "1"])).toThrow(/both --input and --output/);
+    expect(() => buildCliPlan(["usage", "prices", "set", "local-x"])).toThrow(/needs --input\/--output/);
   });
 
   it("usage budget get routes to the budget.getConfig action", () => {

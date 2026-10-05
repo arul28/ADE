@@ -23,6 +23,9 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- `cross-machine-agents.md` — agents and the CLI on other machines:
+  `--machine`, `--all-machines`, children that wake parents across machines and
+  projects, remote device drive with proof filed back.
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
   bounded context capsule, destination setup, route binding, and
   idempotent recovery used by **Continue on another machine**.

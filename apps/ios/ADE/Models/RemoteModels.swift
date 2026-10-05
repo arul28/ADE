@@ -571,6 +571,14 @@ enum LaneIcon: String, Codable, Equatable {
   case bolt
   case shield
   case tag
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LaneIcon(rawValue: raw) ?? .unknown
+  }
 }
 
 struct LaneSummary: Codable, Identifiable, Equatable {
@@ -844,11 +852,25 @@ struct FileChange: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
   var kind: String
+  /// A rename's source path (branch diffs).
+  var oldPath: String? = nil
+  /// Line counts, sent with branch diffs (`git.getBranchChanges`).
+  var additions: Int? = nil
+  var deletions: Int? = nil
 }
 
 struct DiffChanges: Codable, Equatable {
   var unstaged: [FileChange]
   var staged: [FileChange]
+}
+
+/// Everything a lane changed since its base: commits, uncommitted and untracked.
+struct BranchDiffChanges: Codable, Equatable {
+  var baseRef: String
+  var mergeBase: String
+  var files: [FileChange]
+  var additions: Int
+  var deletions: Int
 }
 
 struct DiffSide: Codable, Equatable {
@@ -2185,6 +2207,14 @@ enum AgentChatFileChangeKind: String, Codable, Equatable {
   case create
   case modify
   case delete
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatFileChangeKind(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTurnStatus: String, Codable, Equatable {
@@ -2192,6 +2222,14 @@ enum AgentChatTurnStatus: String, Codable, Equatable {
   case completed
   case interrupted
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTurnStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatActivityKind: String, Codable, Equatable {
@@ -2286,6 +2324,14 @@ enum AgentChatApprovalRequestKind: String, Codable, Equatable {
   case command
   case fileChange = "file_change"
   case toolCall = "tool_call"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatApprovalRequestKind(rawValue: raw) ?? .unknown
+  }
 }
 
 /// Resolve what an `approval_request` is actually asking for, and write the
@@ -2378,6 +2424,14 @@ enum AgentChatSubagentStatus: String, Codable, Equatable {
   case completed
   case failed
   case stopped
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatSubagentStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatTodoStatus: String, Codable, Equatable {
@@ -2385,17 +2439,41 @@ enum AgentChatTodoStatus: String, Codable, Equatable {
   case inProgress = "in_progress"
   case completed
   case failed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatTodoStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatAutoApprovalReviewStatus(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case manual
   case auto
   case adeFallback = "ade_fallback"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactTrigger(rawValue: raw) ?? .unknown
+  }
 }
 
 /// Codex `thread/goal` (desktop `CodexThreadGoal`). Every field is optional and
@@ -2463,6 +2541,14 @@ struct AgentChatClaudeGoal: Codable, Equatable {
 enum AgentChatContextCompactState: String, Codable, Equatable {
   case started
   case completed
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatContextCompactState(rawValue: raw) ?? .unknown
+  }
 }
 
 enum AgentChatInputAnswerValue: Equatable {
@@ -3169,6 +3255,16 @@ struct PromptStashEntry: Codable, Equatable, Identifiable {
   }
 }
 
+/// A finished child's label in its parent: its title, plus where it ran when
+/// that is another machine ("Fix tests · on Mac mini"). Shared by the live
+/// decoder and the replay parser so both read the same.
+func spawnCompletionDisplayLabel(title: String, machineName: String?) -> String {
+  guard let machine = machineName?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else {
+    return title
+  }
+  return "\(title) · on \(machine)"
+}
+
 private struct AgentChatSpawnCompletionPayload: Decodable {
   var childSessionId: String
   var childTitle: String
@@ -3176,6 +3272,12 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
   var childTurnId: String?
   var status: AgentChatSubagentStatus
   var summary: String?
+  /// Set when the child ran on another machine than the parent.
+  var childMachineName: String?
+
+  var displayLabel: String {
+    spawnCompletionDisplayLabel(title: childTitle, machineName: childMachineName)
+  }
 
   func event(fallbackTurnId: String?) -> AgentChatEvent {
     let resolvedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3184,6 +3286,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
     case .completed: fallbackSummary = "Subagent turn finished."
     case .failed: fallbackSummary = "Turn failed."
     case .stopped: fallbackSummary = "Stopped before finishing."
+    case .unknown: fallbackSummary = "Subagent turn ended."
     }
     return .subagentResult(
       taskId: "chat:\(childSessionId)",
@@ -3194,7 +3297,7 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
       status: status,
       summary: resolvedSummary.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackSummary,
       usage: nil,
-      label: childTitle,
+      label: displayLabel,
       model: nil,
       reasoningEffort: nil,
       turnId: childTurnId ?? fallbackTurnId,
@@ -5468,6 +5571,14 @@ enum PrReviewDecisionValue: String, Codable, Equatable {
   case approved
   case changesRequested = "changes_requested"
   case reviewRequired = "review_required"
+  /// A value from a newer host. Decoding falls back here rather than
+  /// failing the payload that carries it.
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PrReviewDecisionValue(rawValue: raw) ?? .unknown
+  }
 }
 
 struct PrStatus: Codable, Equatable {
@@ -7043,6 +7154,70 @@ struct MobileAdeUsageProviderSummary: Codable, Equatable, Identifiable {
   var scopeSupported: Bool?
   var adeOriginatedTokens: Int?
   var externalTokens: Int?
+  /// `rangeCostUsd` split by token type and speed premium. Hosts predating the
+  /// split omit it, and the page hides the split rather than show zeros.
+  var costSplit: MobileAdeUsageCostSplit?
+}
+
+/// Where a cost's dollars went (`AdeUsageCostSplit`): the five type fields sum
+/// to the cost; the two premiums are inside them, not on top.
+struct MobileAdeUsageCostSplit: Codable, Equatable {
+  var input: Double
+  var cacheRead: Double
+  var cacheWrite: Double
+  var output: Double
+  var other: Double
+  var fastPremium: Double
+  var ultrafastPremium: Double
+
+  static let zero = MobileAdeUsageCostSplit(input: 0, cacheRead: 0, cacheWrite: 0, output: 0, other: 0, fastPremium: 0, ultrafastPremium: 0)
+
+  var total: Double { input + cacheRead + cacheWrite + output + other }
+  var premium: Double { fastPremium + ultrafastPremium }
+
+  static func + (lhs: MobileAdeUsageCostSplit, rhs: MobileAdeUsageCostSplit) -> MobileAdeUsageCostSplit {
+    MobileAdeUsageCostSplit(
+      input: lhs.input + rhs.input,
+      cacheRead: lhs.cacheRead + rhs.cacheRead,
+      cacheWrite: lhs.cacheWrite + rhs.cacheWrite,
+      output: lhs.output + rhs.output,
+      other: lhs.other + rhs.other,
+      fastPremium: lhs.fastPremium + rhs.fastPremium,
+      ultrafastPremium: lhs.ultrafastPremium + rhs.ultrafastPremium
+    )
+  }
+
+  init(input: Double, cacheRead: Double, cacheWrite: Double, output: Double, other: Double, fastPremium: Double, ultrafastPremium: Double) {
+    self.input = input
+    self.cacheRead = cacheRead
+    self.cacheWrite = cacheWrite
+    self.output = output
+    self.other = other
+    self.fastPremium = fastPremium
+    self.ultrafastPremium = ultrafastPremium
+  }
+
+  /// Every field optional on the wire: a missing one is zero.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    func value(_ key: CodingKeys) -> Double { max(0, (try? container.decodeIfPresent(Double.self, forKey: key)) ?? 0) }
+    input = value(.input)
+    cacheRead = value(.cacheRead)
+    cacheWrite = value(.cacheWrite)
+    output = value(.output)
+    other = value(.other)
+    fastPremium = value(.fastPremium)
+    ultrafastPremium = value(.ultrafastPremium)
+  }
+}
+
+struct MobileAdeUsageModelSummary: Codable, Equatable, Identifiable {
+  var id: String { "\(provider):\(model)" }
+  var provider: String
+  var model: String
+  var totalTokens: Int?
+  var costUsd: Double?
+  var costSplit: MobileAdeUsageCostSplit?
 }
 
 struct MobileAdeUsageStats: Decodable, Equatable {
@@ -7057,6 +7232,8 @@ struct MobileAdeUsageStats: Decodable, Equatable {
   var githubActivity: MobileAdeUsageGithubActivity?
   var localActivity: MobileAdeUsageLocalActivity?
   var providers: [MobileAdeUsageProviderSummary]?
+  /// Per-model totals, for the breakdown's Models view and its detail screen.
+  var models: [MobileAdeUsageModelSummary]?
   /// When the loaded copy of the public rate list was fetched. Null/absent
   /// means none is loaded, so every cost came from the built-in table.
   var pricingUpdatedAt: String?
@@ -7065,7 +7242,7 @@ struct MobileAdeUsageStats: Decodable, Equatable {
 extension MobileAdeUsageStats {
   private enum CodingKeys: String, CodingKey {
     case generatedAt, scope, summary, clients, daily, freshness
-    case githubActivity, localActivity, providers, pricingUpdatedAt
+    case githubActivity, localActivity, providers, models, pricingUpdatedAt
   }
 
   init(from decoder: Decoder) throws {
@@ -7082,7 +7259,95 @@ extension MobileAdeUsageStats {
     // Lossy-decode the providers array so one malformed provider entry can't drop
     // the whole stats payload (mirrors ExternalSessionSummary's sessions decode).
     providers = (try? container.decode(ADELossyArray<MobileAdeUsageProviderSummary>.self, forKey: .providers))?.wrappedValue
+    models = (try? container.decode(ADELossyArray<MobileAdeUsageModelSummary>.self, forKey: .models))?.wrappedValue
   }
+}
+
+/// `usage.getCostBreakdown`: ADE chat spend by chat, lane, or account, from
+/// the host's per-turn ledger.
+struct MobileAdeUsageCostBreakdownRow: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var label: String
+  var detail: String?
+  var laneId: String?
+  var sessionId: String?
+  var provider: String?
+  var accountKind: String?
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownTotals: Codable, Equatable {
+  var turns: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdownOther: Codable, Equatable {
+  var count: Int
+  var totalTokens: Int
+  var costUsd: Double
+  var billedUsd: Double
+  var planValueUsd: Double
+}
+
+struct MobileAdeUsageCostBreakdown: Decodable, Equatable {
+  var by: String
+  var available: Bool
+  var rows: [MobileAdeUsageCostBreakdownRow]
+  var other: MobileAdeUsageCostBreakdownOther?
+  var totals: MobileAdeUsageCostBreakdownTotals
+
+  private enum CodingKeys: String, CodingKey { case by, available, rows, other, totals }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    by = try container.decode(String.self, forKey: .by)
+    available = try container.decodeIfPresent(Bool.self, forKey: .available) ?? false
+    rows = (try? container.decode(ADELossyArray<MobileAdeUsageCostBreakdownRow>.self, forKey: .rows))?.wrappedValue ?? []
+    other = try? container.decodeIfPresent(MobileAdeUsageCostBreakdownOther.self, forKey: .other)
+    totals = try container.decode(MobileAdeUsageCostBreakdownTotals.self, forKey: .totals)
+  }
+}
+
+/// `usage.getModelDetail`: one model's cost, cache hit rate, trend, split and price.
+struct MobileAdeUsageModelDetailDay: Codable, Equatable, Identifiable {
+  var id: String { date }
+  var date: String
+  var costUsd: Double
+  var totalTokens: Int
+}
+
+struct MobileAdeUsageModelPrice: Codable, Equatable {
+  var input: Double
+  var output: Double
+  var cacheRead: Double?
+  var cacheWrite: Double?
+  /// "custom" | "list" | "fallback".
+  var source: String?
+  var unpriced: Bool?
+}
+
+struct MobileAdeUsageModelDetail: Decodable, Equatable {
+  var provider: String
+  var model: String
+  var costUsd: Double
+  var totalTokens: Int
+  var costPerMillionUsd: Double?
+  var cacheHitRate: Double?
+  var costSplit: MobileAdeUsageCostSplit?
+  var daily: [MobileAdeUsageModelDetailDay]
+  var price: MobileAdeUsageModelPrice
+  var modelIds: [String]
+  var mapTo: String?
+  /// Model ids mapped onto this one; an older host omits it.
+  var mappedFrom: [String]?
 }
 
 // MARK: - Live provider quota

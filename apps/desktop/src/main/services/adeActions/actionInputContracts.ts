@@ -230,6 +230,32 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
       example: "ade usage stats --preset 30d --scope account --text",
     },
+    getCostBreakdown: {
+      description:
+        "Rank ADE chat spend by chat, lane, or account from the per-turn ledger: API-equivalent value, dollars billed to API keys, and plan value covered by subscriptions. Chats and lanes are the open project's; accounts are the machine's. The ledger keeps three months.",
+      input:
+        "object { by: \"chat\" | \"lane\" | \"account\", preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, laneId?: string (with by: chat, one lane's chats), limit?: number (max 200) }",
+      example: "ade usage stats --by lane --preset 30d --text",
+    },
+    getModelDetail: {
+      description:
+        "One model's cost, tokens, cost per million tokens, cache hit rate, daily trend, cost split by token type and speed, and the price ADE bills it at (custom, list, or fallback).",
+      input:
+        "object { provider: string, model: string (as the stats name it), preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\" }",
+      example: "ade usage stats --model claude-opus-5-5 --text",
+    },
+    getModelPriceOverrides: {
+      description: "The token prices and \"Map to\" model mappings set on this machine.",
+      input: "object {}",
+      example: "ade usage prices --text",
+    },
+    setModelPriceOverride: {
+      description:
+        "Set or clear this machine's price for a model (USD per million tokens), or map a model id onto another model so its usage counts and prices as that model. Re-prices history in the background.",
+      input:
+        "object { model: string, price?: { input: number, output: number, cacheRead?: number, cacheWrite?: number } | null (null = automatic), mapTo?: string | null (null = no mapping) }",
+      example: "ade usage prices set my-preview-model --map-to claude-opus-5-5",
+    },
     getTurnUsageSummary: {
       description:
         "Read this machine's per-turn usage ledger: tokens, cache hit ratio, provider cost, and API-list-price cost by provider, account, and model, plus what one percent of each subscription window has cost in ADE turns.",

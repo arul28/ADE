@@ -87,6 +87,30 @@ function isValidPid(pid: number | null | undefined): pid is number {
   return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
 }
 
+/**
+ * POSIX `kill(-pid, signal)` for the process group `pid` leads.
+ *
+ * `-1` is not a group: `kill(-1, …)` signals every process this user may
+ * signal — the desktop, the brain, every agent, every terminal — and `-0` is
+ * the caller's own group. A pid of 1 or 0 only reaches here from a test fake,
+ * a stale ledger, or a parse bug, and each of those has ended every process
+ * the developer owned elsewhere. So a pid below 2 (or not an integer) is
+ * refused with the same ESRCH a group that already exited throws, which every
+ * caller already handles by falling back to signalling the pid itself.
+ */
+export function signalProcessGroup(
+  pid: number,
+  signal: NodeJS.Signals | 0,
+  kill: (pid: number, signal: NodeJS.Signals | 0) => unknown = process.kill.bind(process),
+): void {
+  if (!Number.isInteger(pid) || pid < 2) {
+    const error = new Error(`Refusing to signal process group ${pid}`) as NodeJS.ErrnoException;
+    error.code = "ESRCH";
+    throw error;
+  }
+  kill(-pid, signal);
+}
+
 export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "stdin" | "stdout" | "stderr"> | null | undefined): void {
   if (!child) return;
   try {
@@ -175,7 +199,7 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
 
   if (isValidPid(pid)) {
     try {
-      process.kill(-pid, signal);
+      signalProcessGroup(pid, signal);
       return true;
     } catch {
       // fall through to direct child signaling

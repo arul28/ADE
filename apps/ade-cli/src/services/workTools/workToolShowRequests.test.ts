@@ -67,6 +67,36 @@ describe("workToolShowRequests", () => {
     expect(service.acknowledgeShow({ requestId, status: "shown" })).toEqual({ ok: false });
   });
 
+  it.each([
+    ["does not answer", "silent"],
+    ["can only hold it", "held"],
+  ] as const)("goes to the desktop the user talks from, then to every desktop when that one %s", async (_label, targetAnswer) => {
+    const { service, emitted } = setup({
+      resolveTargetClientId: () => "macbook",
+      retargetMs: 300,
+    });
+    const pending = service.show({ surface: "browser", chatSessionId: "chat-1" });
+    expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook"]);
+    const requestId = emitted[0]!.requestId;
+
+    if (targetAnswer === "held") {
+      // No waiting for the retarget: the desktop said it cannot show it now.
+      service.acknowledgeShow({ requestId, status: "held", desktopLabel: "MacBook" });
+      expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook", null]);
+      // The held answer must not settle before another desktop could answer.
+      await vi.advanceTimersByTimeAsync(200);
+    } else {
+      await vi.advanceTimersByTimeAsync(299);
+      expect(emitted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(emitted.map((request) => request.targetClientId)).toEqual(["macbook", null]);
+    }
+    // The same request: a slow target that already saw it ignores the repeat.
+    expect(emitted[1]!.requestId).toBe(requestId);
+    service.acknowledgeShow({ requestId, status: "shown", desktopLabel: "Studio" });
+    await expect(pending).resolves.toMatchObject({ status: "shown", desktopLabel: "Studio" });
+  });
+
   it("says the surface was opened when the desktop acted but could not confirm it is on screen", async () => {
     const { service, emitted } = setup();
     const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });

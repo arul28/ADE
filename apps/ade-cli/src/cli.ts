@@ -10,6 +10,16 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  MACHINE_ROW_KEY,
+  createMachineRemoteConnection,
+  executePlanAcrossMachines,
+  extractMachineTargeting,
+  formatMachineFanOut,
+  formatMachinesRoster,
+  isMachineFanOutResult,
+  withMachineColumns,
+} from "./cliMachineTargeting";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -168,11 +178,14 @@ import {
   IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
+  ADE_USAGE_COST_BREAKDOWN_BY,
+  isAdeUsageCostBreakdownBy,
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
   isAdeUsageRangePreset,
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
+import { parseCostSplit, sumCostSplitsOrNull } from "../../desktop/src/shared/usageCostSplit";
 import {
   ADE_TURN_USAGE_GROUP_BY,
   ADE_TURN_USAGE_MAX_DAYS,
@@ -415,7 +428,7 @@ type SyncWebPairingCliOutput = {
   relayEnabled: boolean;
 };
 
-type GlobalOptions = {
+export type GlobalOptions = {
   projectRoot: string | null;
   workspaceRoot: string | null;
   role: "cto" | "agent" | "external" | "evaluator";
@@ -425,6 +438,18 @@ type GlobalOptions = {
   pretty: boolean;
   text: boolean;
   timeoutMs: number;
+  /**
+   * Run the command on another machine on the account (`--machine <name>`).
+   * Read out of the command's own arguments by `extractMachineTargeting`, only
+   * for the commands that support it.
+   */
+  machine?: string | null;
+  /** `--all-machines`: run a list command on every machine and merge the rows. */
+  allMachines?: boolean;
+  /** The project on the other machine, by id, display name, or root path. */
+  machineProject?: string | null;
+  /** `--clone`: set the repository up on that machine when it is missing. */
+  machineClone?: boolean;
 };
 
 async function withAdeDefaultRole<T>(
@@ -441,7 +466,7 @@ async function withAdeDefaultRole<T>(
   }
 }
 
-type ParsedCli = {
+export type ParsedCli = {
   options: GlobalOptions;
   command: string[];
 };
@@ -469,6 +494,7 @@ export type FormatterId =
   | "account-auth"
   | "account-token"
   | "account-machines"
+  | "machines-roster"
   | "account-machine-rename"
   | "account-machine-remove"
   | "account-machine-reconnect"
@@ -567,6 +593,10 @@ export type FormatterId =
   | "sync-pin"
   | "sync-devices"
   | "usage-snapshot"
+  | "usage-stats"
+  | "usage-cost-breakdown"
+  | "usage-model-detail"
+  | "usage-prices"
   | "router-efficiency"
   | "update-status";
 
@@ -624,6 +654,13 @@ export type CliPlan =
        * and prints the full launch timeline once the action returns.
        */
       progressNotice?: string;
+      /**
+       * The list this plan returns, so `--all-machines` can merge it across
+       * the account's machines (see `cliMachineTargeting.ts`).
+       */
+      machineList?: "chats" | "lanes" | "projects";
+      /** `--machine a,b` starts this plan once per machine (`chat create`). */
+      machineFanOut?: boolean;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -730,7 +767,7 @@ export type CliPlan =
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
   | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
 
-type CliConnection = {
+export type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
   projectRoot: string;
   workspaceRoot: string;
@@ -1263,6 +1300,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
+    $ ade machines list --projects --text          Agent-safe roster with each machine's projects
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
@@ -1966,6 +2004,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --lane <lane> --text            List chat sessions (archived chats hidden)
     $ ade chat list --include-archived --text       Also list archived chats ('ade archive list' for all archived items)
     $ ade chat list --personal --text               List machine personal chats (no project required)
+    $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
+    $ ade chat list --all-machines --text           Every machine in one table, with a machine column
+    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+                                                    Start a child on another machine; it wakes you when done.
+                                                    --project <name|path|id> picks the project there, --clone
+                                                    sets a missing GitHub repo up, "a,b" starts one per machine.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -2707,13 +2751,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
-    $ ade --socket browser dev-servers --text      Dev servers ADE saw start in its terminals
+    $ ade --socket browser dev-servers --text      Dev servers running in this lane
     $ ade --socket browser actions --text          List built_in_browser actions
 
-  "dev-servers" reports what ADE passively noticed in its own terminal output
-  (a "Local: http://localhost:5173" ready line), scoped to the calling chat's
-  lane. An empty list means nothing printed a line ADE recognised, not that
-  nothing is listening — start the server in an ADE shell, or just open the URL.
+  "dev-servers" lists the dev servers this machine's runtime knows for the
+  calling chat's lane: ready lines ("Local: http://localhost:5173") printed in
+  ADE terminals or in an agent's own shell, plus listening ports whose process
+  runs from the lane's worktree (a server started in the background shows up a
+  few seconds after the command that started it returns). It needs no desktop.
+  ADE never connects to a port to find it.
 
   No desktop on this machine
 
@@ -2969,6 +3015,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
     $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
+    $ ade usage stats --by lane --preset 30d --text  ADE chat spend by chat, lane, or account
+    $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
+    $ ade usage prices --text                       Custom model prices and Map to mappings
+    $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
+    $ ade --role cto usage prices set local-x --input 1 --output 4      Price a model per 1M tokens
     $ ade --role cto usage refresh --text           Refresh live provider quota only
     $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
@@ -4980,6 +5031,7 @@ function buildLanePlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "lanes list",
+      machineList: "lanes",
       steps: [actionCallStep("result", "list_lanes", input)],
       visualizer: visual || !noVisual ? "lanes" : undefined,
     };
@@ -7036,10 +7088,13 @@ function buildDiffPlan(args: string[]): CliPlan {
       laneId ?? readValue(args, ["--lane", "--lane-id"]),
       "laneId",
     );
+    // `--mode branch`: everything the lane changed since its base, not only
+    // what is uncommitted.
+    const branch = readValue(args, ["--mode"]) === "branch" || readFlag(args, ["--branch"]);
     return {
       kind: "execute",
       label: "diff changes",
-      steps: [actionArgsListStep("result", "diff", "getChanges", [id])],
+      steps: [actionArgsListStep("result", "diff", branch ? "getBranchChanges" : "getChanges", [id])],
     };
   }
   if (sub === "file") {
@@ -8958,6 +9013,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat list",
+      machineList: "chats",
       steps: [
         actionStep(
           "result",
@@ -9287,6 +9343,7 @@ function buildChatPlan(args: string[]): CliPlan {
         return {
           kind: "execute",
           label: "chat create",
+          machineFanOut: true,
           steps: [
             { ...createStep, key: "session" },
             {
@@ -9315,7 +9372,7 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", steps: [createStep] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, steps: [createStep] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -9366,7 +9423,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -13731,10 +13788,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   }
   // The launchpad chips the Browser pane renders, as a list. An agent that just
-  // ran `npm run dev` in an ADE shell reads the port from here instead of
-  // guessing it or grepping the terminal. Scope is not an argument: the daemon
-  // drops any caller-supplied `laneId` and the desktop bridge substitutes the
-  // actor capability's lane, so this always answers for the calling chat.
+  // ran `npm run dev` reads the port from here instead of guessing it or
+  // grepping the terminal. Served by the runtime, which hosts the lane's
+  // terminals and agents, so it answers with no desktop attached. Scope is not
+  // an argument for an agent: the daemon pins `laneId` to the calling chat's lane.
   if (
     sub === "dev-servers" ||
     sub === "dev-server" ||
@@ -13748,8 +13805,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       steps: [
         actionStep(
           "result",
-          "built_in_browser",
-          "getDevServers",
+          "work_tools",
+          "listDevServers",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -15173,6 +15230,53 @@ function buildUsagePlan(args: string[]): CliPlan {
     if (until != null && Number.isNaN(Date.parse(until))) {
       throw new CliUsageError("usage stats --until must be an ISO timestamp.");
     }
+    // `--by chat|lane|account` ranks ADE chat spend from the per-turn ledger
+    // instead of printing the page summary.
+    const by = readValue(args, ["--by"]);
+    if (by != null) {
+      if (!isAdeUsageCostBreakdownBy(by)) {
+        throw new CliUsageError(`usage stats --by must be one of ${ADE_USAGE_COST_BREAKDOWN_BY.join(", ")}.`);
+      }
+      const laneId = readValue(args, ["--lane"]);
+      const limit = readValue(args, ["--limit"]);
+      if (limit != null && !(Number.isInteger(Number(limit)) && Number(limit) > 0)) {
+        throw new CliUsageError("usage stats --limit must be a positive whole number.");
+      }
+      return {
+        kind: "execute",
+        label: "usage cost breakdown",
+        steps: [
+          actionStep("result", "usage", "getCostBreakdown", {
+            by,
+            ...(preset != null ? { preset } : {}),
+            ...(since != null ? { since } : {}),
+            ...(until != null ? { until } : {}),
+            ...(laneId != null ? { laneId } : {}),
+            ...(limit != null ? { limit: Number(limit) } : {}),
+          }),
+        ],
+      };
+    }
+    // `--model <name>` prints one model's detail: trend, cache hit rate, price.
+    const model = readValue(args, ["--model"]);
+    if (model != null) {
+      const provider = readValue(args, ["--provider"]);
+      if (!provider) throw new CliUsageError("usage stats --model needs --provider (claude, codex, ...).");
+      return {
+        kind: "execute",
+        label: "usage model detail",
+        steps: [
+          actionStep("result", "usage", "getModelDetail", {
+            provider,
+            model,
+            ...(preset != null ? { preset } : {}),
+            ...(isAdeUsageScope(scope) ? { scope } : {}),
+            ...(since != null ? { since } : {}),
+            ...(until != null ? { until } : {}),
+          }),
+        ],
+      };
+    }
     // Only meaningful for --scope account: it bypasses the fan-out's rate
     // floor, which exists so a page that reads on every update cannot loop.
     const force = readFlag(args, ["--force", "--refresh"]);
@@ -15216,6 +15320,51 @@ function buildUsagePlan(args: string[]): CliPlan {
         }),
       ],
     };
+  }
+  // Prices the user set, and "Map to" mappings. `set <model>` with
+  // `--input/--output` (USD per million tokens), `--map-to <model>`, or
+  // `--automatic` to go back to the list price.
+  if (sub === "prices" || sub === "price") {
+    const mode = firstPositional(args) ?? "list";
+    if (mode === "list" || mode === "get") {
+      return { kind: "execute", label: "usage prices", steps: [actionStep("result", "usage", "getModelPriceOverrides", {})] };
+    }
+    if (mode === "set") {
+      // Value flags come out first, so the model id is the one positional left.
+      const input = readValue(args, ["--input"]);
+      const output = readValue(args, ["--output"]);
+      const cacheRead = readValue(args, ["--cache-read"]);
+      const cacheWrite = readValue(args, ["--cache-write"]);
+      const mapTo = readValue(args, ["--map-to"]);
+      const automatic = readFlag(args, ["--automatic", "--clear"]);
+      const unmap = readFlag(args, ["--unmap"]);
+      const model = firstPositional(args);
+      if (!model) throw new CliUsageError("usage prices set needs a model id.");
+      const rate = (value: string | null, flag: string): number | undefined => {
+        if (value == null) return undefined;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) throw new CliUsageError(`usage prices ${flag} must be a number of USD per million tokens.`);
+        return parsed;
+      };
+      const change: Record<string, unknown> = { model };
+      if (automatic) change.price = null;
+      else if (input != null || output != null) {
+        if (input == null || output == null) throw new CliUsageError("usage prices set needs both --input and --output.");
+        change.price = {
+          input: rate(input, "--input"),
+          output: rate(output, "--output"),
+          ...(cacheRead != null ? { cacheRead: rate(cacheRead, "--cache-read") } : {}),
+          ...(cacheWrite != null ? { cacheWrite: rate(cacheWrite, "--cache-write") } : {}),
+        };
+      }
+      if (mapTo != null) change.mapTo = mapTo.trim() || null;
+      if (unmap) change.mapTo = null;
+      if (!("price" in change) && !("mapTo" in change)) {
+        throw new CliUsageError("usage prices set needs --input/--output, --map-to, --unmap, or --automatic.");
+      }
+      return { kind: "execute", label: "usage prices", steps: [actionStep("result", "usage", "setModelPriceOverride", change)] };
+    }
+    throw new CliUsageError("usage prices takes list or set.");
   }
   if (sub === "refresh" || sub === "poll") {
     const history = args.includes("--history");
@@ -19310,6 +19459,8 @@ async function initializeConnection(
 
 function isMachineRuntimeScopedMethod(method: string): boolean {
   return (
+    method === "machines.call" ||
+    method === "machines.list" ||
     method === "ade/initialize" ||
     method === "ade/initialized" ||
     method === "ping" ||
@@ -19345,8 +19496,22 @@ export function automaticProjectRegistrationParams(rootPath: string): {
 function buildMachinesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") {
+    const includeProjects = readFlag(args, ["--projects", "--with-projects"]);
     if (firstStandalonePositional(args)) {
       throw new CliUsageError("machines list does not accept a machine selector.");
+    }
+    // An agent's shell reads the agent-safe roster: names, presence, platform
+    // and projects, with no device ids, routes or tokens. The account
+    // directory itself (`account.listMachines`) stays the person's.
+    if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
+      return {
+        kind: "execute",
+        label: "machines roster",
+        formatter: "machines-roster",
+        machineOnly: true,
+        machineAutoStart: true,
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+      };
     }
     return {
       kind: "execute",
@@ -19684,6 +19849,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "projects list",
+      machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
     };
@@ -19833,6 +19999,8 @@ async function createConnection(
     needsLiveRuntime?: string;
   } = {},
 ): Promise<CliConnection> {
+  const remoteMachine = options.machine?.trim() || null;
+  if (remoteMachine) return await createMachineRemoteConnection(options, remoteMachine);
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
@@ -22745,9 +22913,59 @@ async function runServe(
     });
   };
 
-  const createHandler = () =>
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
+  const getAgentMachineBridge = () => {
+    agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
+      ({ createAgentMachineBridge }) => createAgentMachineBridge({
+        appVersion: VERSION,
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        logger: headlessProjectLogger,
+      }),
+    );
+    return agentMachineBridge;
+  };
+  const agentMachineBridgeProxy: import("./multiProjectRpcServer").MultiProjectRpcHandlerOptions["agentMachineBridge"] = embedded
+    ? null
+    : {
+      call: async (input) => (await getAgentMachineBridge()).call(input),
+      listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
+    };
+
+  // Children reporting to parents outside their own scope: another project,
+  // the personal scope, or another machine. The brain owns the outbox; each
+  // project's chat service hands such completions to its router.
+  let crossScopeChats: import("./services/chat/crossScopeChats").CrossScopeChats | null = null;
+  if (!embedded) {
+    const [{ createCrossScopeChats }, externalChats] = await Promise.all([
+      import("./services/chat/crossScopeChats"),
+      import("../../desktop/src/main/services/chat/externalChats"),
+    ]);
+    const crossMachineStateDir = path.join(layout.adeDir, "cross-machine");
+    externalChats.configureExternalChatStore(path.join(crossMachineStateDir, "external-chats.json"));
+    crossScopeChats = createCrossScopeChats({
+      projectRegistry,
+      scopeRegistry: {
+        get: (projectId) => scopeRegistry.get(projectId),
+        getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+      },
+      personalChatScope,
+      deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
+      stateDir: crossMachineStateDir,
+      logger: headlessProjectLogger,
+    });
+    externalChats.setExternalParentRouter(crossScopeChats.router);
+    crossScopeChats.start();
+  }
+
+  const createHandler = (context?: { peerDeviceId: string | null }) =>
     createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
+      peerDeviceId: context?.peerDeviceId ?? null,
+      agentMachineBridge: agentMachineBridgeProxy,
+      crossScopeChats,
       projectRegistry,
       scopeRegistry,
       personalChatScope,
@@ -24183,6 +24401,15 @@ function renderLaneGraph(result: unknown): string {
     isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
   const lanes = lanesRaw.filter(isRecord);
   if (lanes.length === 0) return "ADE lanes\n(no lanes)";
+  if (lanes.some((lane) => MACHINE_ROW_KEY in lane)) {
+    // `--all-machines`: lanes on different machines have no shared graph.
+    const table = withMachineColumns(["lane", "name", "branch"], lanes, (lane) => [
+      lane.id,
+      lane.name,
+      lane.branchRef ?? lane.branch,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE lanes\n(no lanes)", { fullColumns: ["lane"] });
+  }
 
   const byParent = new Map<string, JsonObject[]>();
   const byId = new Map<string, JsonObject>();
@@ -24503,6 +24730,150 @@ type UsageAccountTextLine = {
   url: string | null;
   machines: string;
 };
+
+function usdText(value: unknown): string {
+  const amount = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return amount >= 100 ? `$${Math.round(amount).toLocaleString("en-US")}` : `$${amount.toFixed(2)}`;
+}
+
+function tokensText(value: unknown): string {
+  const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+/** The `AdeUsageCostSplit` lines: by token type, then the speed premium. */
+function costSplitLines(split: unknown): string[] {
+  if (!isRecord(split)) return [];
+  const n = (key: string) => (typeof split[key] === "number" ? split[key] as number : 0);
+  const types = [["input", "Input"], ["cacheRead", "Cache read"], ["cacheWrite", "Cache write"], ["output", "Output"], ["other", "Other"]] as const;
+  const typeText = types.filter(([key]) => n(key) > 0).map(([key, label]) => `${label} ${usdText(n(key))}`).join(" · ");
+  const premium = n("fastPremium") + n("ultrafastPremium");
+  const total = types.reduce((sum, [key]) => sum + n(key), 0);
+  const lines = typeText ? [`By type   ${typeText}`] : [];
+  if (total > 0) {
+    lines.push(premium > 0
+      ? `By speed  Standard ${usdText(total - premium)} · Fast premium ${usdText(n("fastPremium"))} · Ultrafast premium ${usdText(n("ultrafastPremium"))}`
+      : "By speed  All standard");
+  }
+  return lines;
+}
+
+/** `ade usage stats --text`: the spend summary the Usage page leads with. */
+export function formatUsageStats(value: unknown): string {
+  const stats = isRecord(value) ? value : {};
+  const summary = isRecord(stats.summary) ? stats.summary : {};
+  const range = isRecord(stats.range) ? stats.range : {};
+  const providers = Array.isArray(stats.providers) ? stats.providers.filter(isRecord) : [];
+  const models = Array.isArray(stats.models) ? stats.models.filter(isRecord) : [];
+  const lines = [
+    `Spend · ${asString(range.preset) ?? "range"} · ${asString(stats.scope) ?? "machine"}`,
+    `${usdText(summary.observedProviderCostRangeUsd)}  API-equivalent · ${tokensText(summary.observedProviderTokens)} tokens`,
+  ];
+  // The page total's split is the providers' splits added up, and only when
+  // every provider with a cost brought one; a partial split would mislead.
+  const total = sumCostSplitsOrNull(
+    providers.filter((provider) => Number(provider.rangeCostUsd) > 0).map((provider) => parseCostSplit(provider.costSplit)),
+  );
+  if (total) lines.push(...costSplitLines(total));
+  lines.push("", renderTable(
+    ["provider", "cost", "tokens", "premium"],
+    providers.map((provider) => {
+      const split = isRecord(provider.costSplit) ? provider.costSplit : {};
+      const premium = (Number(split.fastPremium) || 0) + (Number(split.ultrafastPremium) || 0);
+      return [asString(provider.provider) ?? "", usdText(provider.rangeCostUsd), tokensText(provider.totalTokens), premium > 0 ? usdText(premium) : "-"];
+    }),
+    "No provider usage in this range.",
+  ));
+  const topModels = [...models].sort((a, b) => (Number(b.costUsd) || 0) - (Number(a.costUsd) || 0)).slice(0, 10);
+  if (topModels.length) {
+    lines.push("", renderTable(
+      ["model", "provider", "cost", "tokens", "$/1M"],
+      topModels.map((model) => {
+        const tokens = Number(model.totalTokens) || 0;
+        const cost = Number(model.costUsd) || 0;
+        return [asString(model.model) ?? "", asString(model.provider) ?? "", usdText(cost), tokensText(tokens), tokens > 0 ? `$${((cost / tokens) * 1e6).toFixed(2)}` : "-"];
+      }),
+      "",
+    ));
+  }
+  const notes = Array.isArray(stats.sourceNotes) ? stats.sourceNotes.map((note) => asString(note)).filter(Boolean) : [];
+  if (notes.length) lines.push("", ...notes.map((note) => `· ${note}`));
+  lines.push("", "Costs are at public list prices. Plan value is not your bill.");
+  return lines.join("\n");
+}
+
+/** `ade usage stats --by chat|lane|account --text`. */
+export function formatUsageCostBreakdown(value: unknown): string {
+  const breakdown = isRecord(value) ? value : {};
+  if (breakdown.available === false) return "This host keeps no per-turn ledger, so ADE chat spend is not available.";
+  const rows = Array.isArray(breakdown.rows) ? breakdown.rows.filter(isRecord) : [];
+  const totals = isRecord(breakdown.totals) ? breakdown.totals : {};
+  const by = asString(breakdown.by) ?? "chat";
+  const table = renderTable(
+    [by, by === "account" ? "kind" : "detail", "value", "billed", "plan value", "tokens", "turns"],
+    rows.map((row) => [
+      asString(row.label) ?? "",
+      by === "account" ? asString(row.accountKind) ?? "" : asString(row.detail) ?? "",
+      usdText(row.costUsd),
+      usdText(row.billedUsd),
+      usdText(row.planValueUsd),
+      tokensText(row.totalTokens),
+      String(row.turns ?? 0),
+    ]),
+    "No ADE chat turns in this range.",
+  );
+  const other = isRecord(breakdown.other) ? breakdown.other : null;
+  return [
+    `ADE chat spend by ${by} · ${usdText(totals.costUsd)} API-equivalent · billed ${usdText(totals.billedUsd)} · plan value ${usdText(totals.planValueUsd)}`,
+    "",
+    table,
+    ...(other ? [`Other (${String(other.count)}): ${usdText(other.costUsd)}`] : []),
+    "",
+    "From ADE's per-turn ledger: chats ADE ran on this machine, kept for three months.",
+  ].join("\n");
+}
+
+/** `ade usage stats --model <m> --provider <p> --text`. */
+export function formatUsageModelDetail(value: unknown): string {
+  const detail = isRecord(value) ? value : {};
+  const price = isRecord(detail.price) ? detail.price : {};
+  const hit = typeof detail.cacheHitRate === "number" ? `${Math.round(detail.cacheHitRate * 100)}%` : "-";
+  const perM = typeof detail.costPerMillionUsd === "number" ? `$${detail.costPerMillionUsd.toFixed(2)}/1M` : "-";
+  const priceText = price.unpriced === true
+    ? "unpriced (set one with ade usage prices set)"
+    : `${asString(price.source) ?? "list"} · $${Number(price.input) || 0} in / $${Number(price.output) || 0} out per 1M`;
+  const daily = Array.isArray(detail.daily) ? detail.daily.filter(isRecord) : [];
+  return [
+    `${asString(detail.model) ?? ""} · ${asString(detail.provider) ?? ""}`,
+    `${usdText(detail.costUsd)} · ${tokensText(detail.totalTokens)} tokens · ${perM} · ${hit} cache hit`,
+    ...costSplitLines(detail.costSplit),
+    `Price     ${priceText}`,
+    ...(asString(detail.mapTo) ? [`Maps to   ${asString(detail.mapTo)}`] : []),
+    ...(Array.isArray(detail.mappedFrom) && detail.mappedFrom.length ? [`Also here ${detail.mappedFrom.map(String).join(", ")}`] : []),
+    "",
+    renderTable(["day", "cost", "tokens"], daily.map((day) => [asString(day.date) ?? "", usdText(day.costUsd), tokensText(day.totalTokens)]), "No usage in this range."),
+  ].join("\n");
+}
+
+/** `ade usage prices --text`. */
+export function formatUsagePrices(value: unknown): string {
+  const overrides = isRecord(value) ? value : {};
+  const prices = isRecord(overrides.prices) ? overrides.prices : {};
+  const aliases = isRecord(overrides.aliases) ? overrides.aliases : {};
+  const priceRows = Object.entries(prices).filter(([, price]) => isRecord(price)).map(([model, price]) => {
+    const record = price as Record<string, unknown>;
+    const opt = (key: string) => (typeof record[key] === "number" ? `$${record[key]}` : "= input");
+    return [model, `$${record.input}`, `$${record.output}`, opt("cacheRead"), opt("cacheWrite")];
+  });
+  return [
+    renderTable(["model", "input /1M", "output /1M", "cache read", "cache write"], priceRows, "No custom prices. Every model is priced from models.dev."),
+    "",
+    renderTable(["model", "counts as"], Object.entries(aliases).map(([from, to]) => [from, String(to)]), "No models mapped."),
+  ].join("\n");
+}
 
 /**
  * `ade usage snapshot --text` (and the two refresh verbs, which return the same
@@ -25845,16 +26216,24 @@ function formatFilesSearch(value: unknown): string {
 
 function formatDiffSummary(value: unknown): string {
   const files = firstArray(value, ["files", "changes", "items"]);
-  return renderTable(
+  const table = renderTable(
     ["status", "file", "+", "-"],
     files.map((file) => [
-      file.status ?? file.changeType ?? file.type,
+      file.status ?? file.changeType ?? file.type ?? file.kind,
       file.path ?? file.filePath ?? file.newPath ?? file.oldPath,
       file.additions ?? file.added ?? "",
       file.deletions ?? file.deleted ?? "",
     ]),
     "ADE diff\n(no changed files)",
+    // Paths are what the next command takes; a shortened one is a wrong one.
+    { fullColumns: ["file"] },
   );
+  // A branch diff names what it compared with.
+  const record = isRecord(value) ? value : {};
+  const baseRef = asString(record.baseRef);
+  if (!baseRef) return table;
+  const mergeBase = asString(record.mergeBase) ?? "";
+  return `vs ${baseRef} (from ${mergeBase.slice(0, 9)}) · +${String(record.additions ?? 0)} -${String(record.deletions ?? 0)} · ${files.length} file${files.length === 1 ? "" : "s"}\n\n${table}`;
 }
 
 function formatSearchResults(value: unknown): string {
@@ -26134,23 +26513,20 @@ function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   const hasCliRows = sessions.some((session) => session.kind === "cli");
   if (!hasCliRows) {
-    return renderTable(
-      ["session", "provider", "lane", "title"],
-      sessions.map((session) => [
-        session.id ?? session.sessionId,
-        session.provider ?? session.modelId,
-        session.laneId,
-        session.title,
-      ]),
-      "ADE chats\n(no sessions)",
-      { fullColumns: ["session"] },
-    );
+    const table = withMachineColumns(["session", "provider", "lane", "title"], sessions, (session) => [
+      session.id ?? session.sessionId,
+      session.provider ?? session.modelId,
+      session.laneId,
+      session.title,
+    ]);
+    return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session"] });
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
   // a chat's; its parent column is what an agent polling its children needs.
-  return renderTable(
+  const table = withMachineColumns(
     ["session", "provider", "lane", "title", "kind", "parent"],
-    sessions.map((session) => {
+    sessions,
+    (session) => {
       const cli = session.kind === "cli";
       const exitCode = typeof session.exitCode === "number" ? ` (exit ${session.exitCode})` : "";
       return [
@@ -26161,10 +26537,9 @@ function formatChatList(value: unknown): string {
         cli ? `cli · ${String(session.status ?? "unknown")}${exitCode}` : "chat",
         cli ? session.parentSessionId : session.orchestrationParentSessionId,
       ];
-    }),
-    "ADE chats\n(no sessions)",
-    { fullColumns: ["session", "parent"] },
+    },
   );
+  return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session", "parent"] });
 }
 
 function formatChatSummary(value: unknown): string {
@@ -27995,9 +28370,10 @@ function formatProjectsList(value: unknown): string {
     : isRecord(value) && value.projectId
       ? [value]
       : firstArray(value, ["projects", "items"]);
-  return renderTable(
+  const table = withMachineColumns(
     ["project", "name", "path", "visibility", "git origin", "last opened"],
-    projects.map((project) => [
+    projects,
+    (project) => [
       project.projectId,
       project.displayName,
       project.rootPath,
@@ -28006,10 +28382,11 @@ function formatProjectsList(value: unknown): string {
       typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
         ? new Date(project.lastOpenedAt).toISOString()
         : "",
-    ]),
-    "ADE projects\n(no projects registered)",
-    { fullColumns: ["project"] },
+    ],
+    // A projects row is a project; it has no other project to name.
+    { projectColumn: false },
   );
+  return renderTable(table.headers, table.rows, "ADE projects\n(no projects registered)", { fullColumns: ["project"] });
 }
 
 function formatLinearQuickView(value: unknown): string {
@@ -28461,6 +28838,8 @@ function formatTextOutput(
     }
     case "account-machines":
       return formatAccountMachines(value);
+    case "machines-roster":
+      return formatMachinesRoster(value);
     case "account-machine-rename": {
       const machine = parseAccountMachine(value);
       if (!machine) return "Machine renamed.";
@@ -28703,6 +29082,14 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "usage-snapshot":
       return formatUsageSnapshot(value);
+    case "usage-stats":
+      return formatUsageStats(value);
+    case "usage-cost-breakdown":
+      return formatUsageCostBreakdown(value);
+    case "usage-model-detail":
+      return formatUsageModelDetail(value);
+    case "usage-prices":
+      return formatUsagePrices(value);
     case "router-efficiency":
       return formatRouterEfficiency(value);
     case "update-status":
@@ -28864,14 +29251,18 @@ function inferFormatter(
   if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
   if (label === "update status") return "update-status";
-  // All three verbs return the same `UsageSnapshot`; `usage stats` does not
-  // (it is the spend half) and keeps the generic renderer.
+  // All three verbs return the same `UsageSnapshot`; `usage stats` is the
+  // spend half and has its own renderers.
   if (
     label === "usage snapshot"
     || label === "usage refresh"
     || label === "usage history refresh"
   )
     return "usage-snapshot";
+  if (label === "usage stats") return "usage-stats";
+  if (label === "usage cost breakdown") return "usage-cost-breakdown";
+  if (label === "usage model detail") return "usage-model-detail";
+  if (label === "usage prices") return "usage-prices";
   if (label.endsWith("actions")) return "actions-list";
   const firstStep = plan.steps[0];
   const params = typeof firstStep?.params === "object" && firstStep.params != null
@@ -29887,6 +30278,8 @@ async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
+  const acrossMachines = await executePlanAcrossMachines(plan, options);
+  if (acrossMachines) return acrossMachines.value;
   let connection: CliConnection;
   const baseConnectionOptions =
     plan.machineOnly
@@ -30280,6 +30673,7 @@ function formatOutput(
   formatter?: FormatterId,
 ): string {
   if (options.text) {
+    if (isMachineFanOutResult(value)) return `${formatMachineFanOut(value)}\n`;
     return `${formatTextOutput(value, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
@@ -30413,7 +30807,24 @@ async function runResetCommand(
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = parseCliArgs(argv);
+  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  if (!parsed.options.machine) return await runParsedCli(parsed);
+  // This shell's lane is a lane on THIS machine. Plan builders that default
+  // to it would name a lane the other machine has never heard of; there the
+  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
+  // target pick, as `ade chat launch` does with a new lane. Only for this run.
+  const laneId = process.env.ADE_LANE_ID;
+  delete process.env.ADE_LANE_ID;
+  try {
+    return await runParsedCli(parsed);
+  } finally {
+    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
+  }
+}
+
+async function runParsedCli(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   const primary = parsed.command[0]?.toLowerCase();
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
@@ -30957,4 +31368,13 @@ export {
   startHeadlessRpcTcpServer,
   summarizeExecution,
   unwrapToolResult,
+  CliExecutionError,
+  connectMachineRuntimeDaemon,
+  executePlan,
+  getGitRemote,
+  isMachineRuntimeScopedMethod,
+  resolveMachineRuntimeSocketPath,
+  sessionIdFromCreateChatValue,
+  withProjectId,
+  SocketJsonRpcClient,
 };

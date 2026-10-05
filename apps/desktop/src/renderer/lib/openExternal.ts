@@ -1,14 +1,56 @@
-import type { AppNavigationTarget } from "../../shared/types/core";
+import type { AppNavigationTarget, OpenProjectBinding } from "../../shared/types/core";
 import type { BrowserLinkOpenMode } from "../../shared/types/config";
+import { parseLoopbackUrl } from "../../shared/remoteLoopbackUrl";
 import { completeBrowserUrl } from "./browserUrl";
 import { isMacRuntimeTarget } from "./platform";
 import { resolveLinkOpenTarget, type LinkOpenModifiers } from "./linkOpenTarget";
+import { holdBrowserLinkOpen } from "./pendingBrowserLinkOpens";
 
 export const ADE_OPEN_BUILT_IN_BROWSER_EVENT = "ade:open-built-in-browser";
 
 export type OpenBuiltInBrowserDetail = {
   url: string;
+  /**
+   * The machine the link came from (a chat's pin). Null means the window's
+   * own machine. A pane that opens the event uses it to decide what
+   * `localhost` means.
+   */
+  runtimePin?: OpenProjectBinding | null;
 };
+
+/** Where a link was clicked, for the cases where that changes what it means. */
+export type LinkOpenContext = {
+  /** The pin of the chat or terminal the link is in. Omit for the window's machine. */
+  runtimePin?: OpenProjectBinding | null;
+};
+
+/**
+ * The machine the active project tab is bound to. Kept here, not read from the
+ * app store, because this module is imported almost everywhere and the store
+ * is not. `App` keeps it current.
+ */
+let windowRuntimeBinding: OpenProjectBinding | null = null;
+
+export function setWindowRuntimeBinding(binding: OpenProjectBinding | null): void {
+  windowRuntimeBinding = binding;
+}
+
+/**
+ * The remote machine a loopback link belongs to, or null when it is not a
+ * loopback link or belongs to this computer.
+ *
+ * A chat on another machine that prints `http://localhost:4180` is talking
+ * about that machine's port 4180. Opening it here, in this computer's browser or
+ * the system browser, reaches this computer's port 4180, which is nothing.
+ */
+export function remoteMachineForLoopbackLink(
+  url: string,
+  context?: LinkOpenContext | null,
+): Extract<OpenProjectBinding, { kind: "remote" }> | null {
+  if (!parseLoopbackUrl(url)) return null;
+  const pin = context?.runtimePin ?? windowRuntimeBinding;
+  return pin?.kind === "remote" ? pin : null;
+}
 
 type BuiltInBrowserNavigationOptions = {
   newTab: boolean;
@@ -94,7 +136,10 @@ export function canOpenInAdeBrowser(url: string | undefined | null): boolean {
   }
 }
 
-export function openUrlInAdeBrowser(url: string | undefined | null): void {
+export function openUrlInAdeBrowser(
+  url: string | undefined | null,
+  context?: LinkOpenContext | null,
+): void {
   const normalized = normalizeBrowserUrlInput(url);
   if (!normalized || !canOpenInAdeBrowser(normalized)) {
     openExternalUrl(url);
@@ -106,19 +151,36 @@ export function openUrlInAdeBrowser(url: string | undefined | null): void {
     return;
   }
 
+  const runtimePin = context?.runtimePin ?? null;
   const openEvent = new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
-    detail: { url: normalized },
+    detail: { url: normalized, runtimePin },
     cancelable: true,
   });
   const handledBySurface = !window.dispatchEvent(openEvent);
   if (handledBySurface) return;
-  navigateUrlInAdeBrowser(normalized, { newTab: true });
+  const remoteMachine = remoteMachineForLoopbackLink(normalized, context);
+  if (remoteMachine) {
+    // The event just revealed the Browser pane; let it open the link once it
+    // mounts, so the URL bar shows the address that was clicked.
+    holdBrowserLinkOpen({ url: normalized, runtimePin: runtimePin ?? remoteMachine }, (link) => {
+      navigateUrlInAdeBrowser(
+        link.url,
+        { newTab: true },
+        // This computer's browser would load this computer's port: never fall back to it.
+        { fallbackToExternal: false },
+        link.runtimePin,
+      );
+    });
+    return;
+  }
+  navigateUrlInAdeBrowser(normalized, { newTab: true }, {}, runtimePin);
 }
 
 export function navigateUrlInAdeBrowser(
   url: string,
   options: BuiltInBrowserNavigationOptions,
   failureOptions: BuiltInBrowserNavigationFailureOptions = {},
+  runtimePin: OpenProjectBinding | null = null,
 ): void {
   const browser = typeof window !== "undefined" ? window.ade?.builtInBrowser : undefined;
   if (!browser) {
@@ -127,7 +189,10 @@ export function navigateUrlInAdeBrowser(
     return;
   }
 
-  void browser.navigate({ url, ...options }).catch(() => {
+  const navigation = runtimePin
+    ? browser.navigate({ url, ...options }, runtimePin)
+    : browser.navigate({ url, ...options });
+  void navigation.catch(() => {
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
   });
@@ -184,6 +249,7 @@ export function refreshLinkOpenMode(force = false): Promise<void> {
 export function openLinkFromUi(
   url: string | undefined | null,
   modifiers?: LinkOpenModifiers | null,
+  context?: LinkOpenContext | null,
 ): void {
   if (!url) return;
   // Normalize once, for both branches. A terminal link is often written the way
@@ -197,11 +263,17 @@ export function openLinkFromUi(
     modifiers,
     isMac: isMacRuntimeTarget(),
   });
-  if (target === "external" || !canOpenInAdeBrowser(normalized)) {
+  if (!canOpenInAdeBrowser(normalized)) {
     openExternalUrl(normalized);
     return;
   }
-  openUrlInAdeBrowser(normalized);
+  // Another machine's `localhost` only exists through ADE's tunnel, so it
+  // always opens in the ADE browser, whatever the link preference says.
+  if (target === "external" && !remoteMachineForLoopbackLink(normalized, context)) {
+    openExternalUrl(normalized);
+    return;
+  }
+  openUrlInAdeBrowser(normalized, context);
 }
 
 export function openExternalUrl(url: string | undefined | null): void {

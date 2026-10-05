@@ -245,7 +245,8 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
@@ -387,6 +388,7 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -5297,8 +5299,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sendArgs = parseAgentChatSendArgs(payload);
+    // A phone or web message: no desktop is the one being talked from now.
+    noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
-      parseAgentChatSendArgs(payload),
+      sendArgs,
       { awaitDispatch: false, routeActiveToSteer: true },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
@@ -6398,6 +6403,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
 function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("git.getChanges", { viewerAllowed: true }, async (payload) =>
     requireService(args.diffService, "Diff service not available.").getChanges(parseGetDiffChangesArgs(payload).laneId));
+  // Advertising this is how a client learns the host understands `mode:
+  // "branch"`: an older host reads an unknown mode as "unstaged" without
+  // complaint, so clients send it only after this command exists.
+  register("git.getBranchChanges", { viewerAllowed: true }, async (payload) =>
+    requireService(args.diffService, "Diff service not available.").getBranchChanges(parseGetDiffChangesArgs(payload).laneId));
   register("git.getFile", { viewerAllowed: true }, async (payload) => {
     const diffService = requireService(args.diffService, "Diff service not available.");
     const parsed = parseGetFileDiffArgs(payload);
@@ -7424,6 +7434,87 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     return await service.consumeResetCredit({
       accountId: requireString(payload.accountId, "usage.consumeResetCredit requires accountId."),
+    });
+  }, "runtime");
+
+  // A bound the caller sent and the host cannot read is an error, never a
+  // quietly different period.
+  const rejectInvalidUsageBounds = (action: string, since: string | null | undefined, until: string | null | undefined) => {
+    if (since && Number.isNaN(Date.parse(since))) throw new Error(`${action} since must be an ISO timestamp.`);
+    if (until && Number.isNaN(Date.parse(until))) throw new Error(`${action} until must be an ISO timestamp.`);
+  };
+
+  // Spend by chat / lane / account comes from this machine's per-turn ledger;
+  // chat titles and lane names come from the project, so it is project-scoped
+  // like `usage.getAdeStats`.
+  register("usage.getCostBreakdown", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const by = asTrimmedString(payload.by);
+    if (!isAdeUsageCostBreakdownBy(by)) {
+      throw new Error("usage.getCostBreakdown by must be chat, lane, or account.");
+    }
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getCostBreakdown preset must be today, 7d, 30d, year, or all.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getCostBreakdown", since, until);
+    const laneId = asTrimmedString(payload.laneId);
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit) ? payload.limit : undefined;
+    return await args.usageTrackingService.getCostBreakdown({
+      by: by as AdeUsageCostBreakdownBy,
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+      ...(laneId ? { laneId } : {}),
+      ...(limit != null ? { limit } : {}),
+      ...(payload.rankBy === "tokens" ? { rankBy: "tokens" as const } : {}),
+    });
+  });
+
+  register("usage.getModelDetail", { viewerAllowed: true }, async (payload) => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    const preset = asTrimmedString(payload.preset);
+    if (preset && !isAdeUsageRangePreset(preset)) {
+      throw new Error("usage.getModelDetail preset must be today, 7d, 30d, year, or all.");
+    }
+    const scope = asTrimmedString(payload.scope);
+    if (scope && !isAdeUsageScope(scope)) {
+      throw new Error("usage.getModelDetail scope must be account, machine, or project.");
+    }
+    const since = asTrimmedString(payload.since);
+    const until = asTrimmedString(payload.until);
+    rejectInvalidUsageBounds("usage.getModelDetail", since, until);
+    return args.usageTrackingService.getModelDetail({
+      provider: requireString(payload.provider, "usage.getModelDetail requires provider."),
+      model: requireString(payload.model, "usage.getModelDetail requires model."),
+      ...(isAdeUsageRangePreset(preset) ? { preset } : {}),
+      ...(isAdeUsageScope(scope) ? { scope } : {}),
+      ...(since ? { since } : {}),
+      ...(until ? { until } : {}),
+    });
+  });
+
+  register("usage.getModelPriceOverrides", { viewerAllowed: true }, async () => {
+    if (!args.usageTrackingService) throw new Error("Usage stats are not available in this runtime.");
+    return args.usageTrackingService.getModelPriceOverrides();
+  }, "runtime");
+
+  // Writes this machine's price list, so it is a controller action like
+  // spending a reset credit, never a viewer's.
+  register("usage.setModelPriceOverride", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
+    const service = args.usageTrackingService;
+    if (!service) throw new Error("Model prices are not available in this runtime.");
+    const price = payload.price == null ? payload.price as null | undefined : normalizePriceOverride(payload.price);
+    if (payload.price != null && !price) throw new Error("usage.setModelPriceOverride price needs input and output rates.");
+    const mapTo = payload.mapTo === null ? null : asTrimmedString(payload.mapTo);
+    const models = Array.isArray(payload.models) ? payload.models.filter((model): model is string => typeof model === "string") : [];
+    return service.setModelPriceOverride({
+      model: requireString(payload.model, "usage.setModelPriceOverride requires model."),
+      ...(models.length ? { models } : {}),
+      ...(price !== undefined ? { price } : {}),
+      ...(payload.mapTo !== undefined ? { mapTo: mapTo || null } : {}),
     });
   }, "runtime");
 

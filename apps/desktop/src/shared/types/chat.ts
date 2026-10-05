@@ -422,6 +422,11 @@ export type AgentChatSpawnCompletion = {
    * follows up. Omitted when the count is zero.
    */
   humanMessageCount?: number;
+  /**
+   * The machine the child ran on, when it is not the parent's. Shown on the
+   * parent's completion row ("· on Mac mini") with a read hint.
+   */
+  childMachineName?: string;
 };
 
 /**
@@ -2121,6 +2126,13 @@ export type AgentChatEvent =
       files: TurnDiffFile[];
       totalAdditions: number;
       totalDeletions: number;
+      /**
+       * Paths in `files` that already had uncommitted changes when the turn
+       * started. A file rewind must not restore these from `beforeSha`: that
+       * would erase work the turn did not make. Absent on summaries written
+       * before ADE recorded it, and when the pre-turn snapshot failed.
+       */
+      dirtyAtStart?: string[];
     }
   | {
       /**
@@ -3221,6 +3233,22 @@ export type AgentChatRewindFilesResult = {
   conversationRollback?: boolean;
   /** Links the SDK could not restore while otherwise completing the rewind. */
   skippedLinks?: number;
+  /**
+   * Files the turn changed that the rewind leaves as they are, because
+   * restoring them could erase work the turn did not make.
+   */
+  skippedFiles?: AgentChatRewindSkippedFile[];
+};
+
+export type AgentChatRewindSkippedFile = {
+  path: string;
+  /**
+   * `dirty_before_turn`: the file had uncommitted changes before the turn.
+   * `other_chat`: another chat in the same worktree changed it since.
+   * `unknown_start_state`: the turn was recorded before ADE kept its
+   * pre-turn state, so a restore cannot be shown to be safe.
+   */
+  reason: "dirty_before_turn" | "other_chat" | "unknown_start_state";
 };
 
 /**

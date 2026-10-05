@@ -26,6 +26,7 @@ import {
   takePendingWorkToolRequest,
 } from "./workToolRequests";
 import { holdRemoteBrowserOpen, remoteBrowserOpenMatchesOwner } from "../../lib/pendingRemoteBrowserOpens";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
@@ -1209,6 +1210,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     // remote machine — a null pin on a remote tab is still that tab's runtime.
     const unsubscribeRemoteRequests = window.ade?.builtInBrowser?.onRemoteRequest?.((request) => {
       if (!request.openPanel) return;
+      // Addressed to the desktop the user is talking from; another one leaves it.
+      if (!isAddressedToThisDesktop(request.targetClientId)) return;
       // The pane that navigates and acks is unmounted while Git (or another
       // tool) is showing, and the runtime event is not replayed. Hold the
       // request so the Browser panel can drain it on mount.
@@ -1829,6 +1832,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             toggleWorkLanePinned={work.toggleWorkLanePinned}
             workLaneSortMode={work.workLaneSortMode}
             setWorkLaneSortMode={work.setWorkLaneSortMode}
+            workFoldBusyLanes={work.workFoldBusyLanes}
+            setWorkFoldBusyLanes={work.setWorkFoldBusyLanes}
+            workSeenAtBySessionId={work.workSeenAtBySessionId}
             workLaneOrder={work.workLaneOrder}
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}

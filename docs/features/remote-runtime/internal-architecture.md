@@ -202,7 +202,7 @@ The sync command registry labels descriptors as `runtime` or `project` scope. Pr
 Besides SSH, a remote target can use the **paired** transport: after PIN + DPoP
 pairing, the full runtime JSON-RPC rides the sync WebSocket as newline-delimited
 frames inside `rpc_*` envelopes, and loopback TCP previews ride `fwd_*`
-envelopes (host-side connect restricted to `127.0.0.1`). Both are gated to
+envelopes (host-side connect restricted to loopback). Both are gated to
 desktop runtime-host peers: the host only opens the RPC channel / port-forward
 for a peer that authenticated with `kind: "paired"` **and** whose authoritative
 stored pairing record has `runtimeHostGranted: true`. The Share Machine link
@@ -217,6 +217,27 @@ with "Runtime channel is only available to desktop clients", and `hello_ok`
 advertises `features.rpcChannel`/`features.portForward` as `false`. The host also
 caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
 authenticated peer cannot exhaust file descriptors or memory.
+
+**A forward dials both loopbacks.** The host accepts `127.0.0.1`, `::1` and
+`localhost` as the forward host and dials the port on both `127.0.0.1` and
+`::1` on one socket (`autoSelectFamily` with a pinned lookup, so `localhost`
+never resolves anywhere else). The requested host only decides which one is
+tried first. Node on macOS resolves `localhost` to `::1` first, so Vite and
+Next often listen on `[::1]:<port>` only, and an IPv4-only dial used to fail.
+SSH forwards (`remoteConnectionPool.ts`) retry `::1` when `127.0.0.1` is
+refused, the same way.
+
+**A refused forward shows a page, not a blank.** The local listener accepts
+the browser's connection before the remote dial happens, so a failed dial
+used to close a socket that had sent nothing, and Chromium showed
+`ERR_EMPTY_RESPONSE` on a blank page. The host now closes with a reason a
+person can act on (`Nothing is listening on port 4180 (tried 127.0.0.1 and
+::1).`). When that close arrives before any remote byte and the browser's
+first bytes are an HTTP request line, `SyncPortForwardClient` answers with a
+small `502` page (`forwardFailurePage.ts`). The page names the machine and the
+port, gives the reason, and reloads every 3 seconds, so starting the server
+is enough. A client that is not speaking HTTP (TLS, a raw protocol) is closed
+as before. The SSH path writes the same page.
 
 **Forward flow control.** A large remote-to-local transfer (for example a
 49 MB dev-server bundle) can fill the local browser socket faster than the

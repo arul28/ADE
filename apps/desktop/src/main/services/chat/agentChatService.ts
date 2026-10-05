@@ -160,6 +160,7 @@ import {
   resolveSpawnEndedTurnId,
   spawnDeliveryFailedChildTurnId,
 } from "./spawnMissionOwnership";
+import { planCodexRewind, type CodexRewindFileRestore, type CodexRewindPlan } from "./codexRewindPlan";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -256,6 +257,13 @@ import { resolveLaneLaunchContext, type LaneLaunchContext } from "../lanes/laneL
 import { createChatLaunchDefaultsStore } from "./chatLaunchDefaults";
 import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
+import {
+  externalChatContext,
+  getExternalParentRouter,
+  spawnDeliveryKey,
+  type ExternalParentWake,
+  type ExternalWakeDeliveryResult,
+} from "./externalChats";
 import {
   lowerPermissionCeiling,
   permissionCeilingClamp,
@@ -364,6 +372,7 @@ import {
   readFileWithinRootSecure,
   redactSecrets,
   resolvePathWithinRoot,
+  signalProcessGroup,
   stableStringify,
 } from "../shared/utils";
 import {
@@ -1325,6 +1334,7 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
   type StaleRunSweepChatRow,
@@ -3814,7 +3824,7 @@ function isProcessGroupAlive(pid: number | null): boolean {
   if (process.platform === "win32") return false;
   if (pid == null || !Number.isInteger(pid) || pid <= 0) return false;
   try {
-    process.kill(-pid, 0);
+    signalProcessGroup(pid, 0);
     return true;
   } catch (error) {
     return isSignalPermissionError(error);
@@ -3832,7 +3842,7 @@ function signalChildProcessTree(
   const pid = child.pid ?? null;
   if (pid != null && Number.isInteger(pid) && pid > 0) {
     try {
-      process.kill(-pid, signal);
+      signalProcessGroup(pid, signal);
       return true;
     } catch {
       // Fall through to direct child signaling if the process group is gone.
@@ -10561,13 +10571,22 @@ export function createAgentChatService(args: {
             ADE_PROJECT_ROOT: projectRoot,
             ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
           }),
-      ...(managed.session.orchestrationParentSessionId?.trim()
-        && parentChatStillExists(managed.session.orchestrationParentSessionId.trim())
-        ? {
-            ADE_PARENT_CHAT_SESSION_ID: managed.session.orchestrationParentSessionId,
-            ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
-          }
-        : {}),
+      ...(() => {
+        const parentId = managed.session.orchestrationParentSessionId?.trim();
+        if (!parentId) return {};
+        if (parentChatStillExists(parentId)) {
+          return { ADE_PARENT_CHAT_SESSION_ID: parentId, ADE_SPAWN_KIND: managed.session.spawnKind ?? "" };
+        }
+        // A parent in another project or on another machine still hears back
+        // (through the brain), so the child is told who it reports to.
+        const external = externalChatContext(parentId);
+        if (!external) return {};
+        return {
+          ADE_PARENT_CHAT_SESSION_ID: parentId,
+          ADE_SPAWN_KIND: managed.session.spawnKind ?? "",
+          ...(external.machineName ? { ADE_PARENT_MACHINE: external.machineName } : {}),
+        };
+      })(),
     };
     // The daemon may itself run inside an agent shell that exported a token for
     // a different chat. Never let an inherited one stand in for this chat's.
@@ -16413,7 +16432,9 @@ export function createAgentChatService(args: {
       try {
         return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
       } catch {
-        return "ask";
+        // A chat in another project, the personal scope, or on another
+        // machine: the brain recorded its level when it asked for this child.
+        return externalChatContext(sessionId)?.permissionLevel ?? "ask";
       }
     };
     const parentId = args.parentSessionId?.trim();
@@ -16521,6 +16542,11 @@ export function createAgentChatService(args: {
         files: summary.files,
         totalAdditions: summary.totalAdditions,
         totalDeletions: summary.totalDeletions,
+        // What a later file rewind must leave alone. No snapshot means the
+        // start state is unknown, which the rewind treats as unsafe.
+        ...(beforeTree
+          ? { dirtyAtStart: summary.files.map((file) => file.path).filter((filePath) => beforeTree.has(filePath)) }
+          : {}),
       });
     } catch {
       // Silently ignore diff computation failures
@@ -19864,6 +19890,9 @@ export function createAgentChatService(args: {
     managedSessions.get(sessionId)?.activityDetector?.reset();
   };
 
+  // A server an agent's own shell starts lights the Browser on every machine.
+  const agentShellOutput = createAgentShellOutputObserver(projectRoot);
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -19890,6 +19919,7 @@ export function createAgentChatService(args: {
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     modelRouter?.observe(managed.session.id, normalizedEvent, managed.session);
     observeSessionActivity(managed, normalizedEvent);
+    agentShellOutput.observe({ sessionId: managed.session.id, laneId: managed.session.laneId ?? null }, normalizedEvent);
     codexVoice.observeChatEvent(managed, normalizedEvent);
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
@@ -40064,12 +40094,16 @@ export function createAgentChatService(args: {
     return Boolean(row && isChatToolType(row.toolType));
   };
 
+  /** A parent outside this service that the brain's router knows how to reach. */
+  const externalParentReachable = (parentSessionId: string): boolean =>
+    getExternalParentRouter() !== null && externalChatContext(parentSessionId) !== null;
+
   const spawnSelfReportOpts = (
     session: Pick<AgentChatSession, "orchestrationParentSessionId">,
   ): SpawnSelfReportGuidanceOpts => {
     const parentId = session.orchestrationParentSessionId?.trim();
     return {
-      parentReachable: !parentId || parentChatStillExists(parentId),
+      parentReachable: !parentId || parentChatStillExists(parentId) || externalParentReachable(parentId),
     };
   };
 
@@ -40199,6 +40233,9 @@ export function createAgentChatService(args: {
     if (!parentSessionId || parentSessionId === managed.session.id) return;
     if (managed.session.spawnKind !== "subagent") return;
     if (parentChatStillExists(parentSessionId)) return;
+    // A parent in another project or on another machine is not an orphan's
+    // parent: the brain's router still reaches it (`externalChats`).
+    if (externalParentReachable(parentSessionId)) return;
     applySpawnKindChange({
       sessionId: managed.session.id,
       spawnKind: "peer",
@@ -40257,6 +40294,8 @@ export function createAgentChatService(args: {
     routeQuietly?: boolean;
     onParentGone: (reason: string) => void;
     onDeliveryFailed: (lastError: unknown) => void;
+    /** The parent has the completion (now, or already from an earlier try). */
+    onDelivered?: () => void;
   };
 
   const parentWakes = createParentWakeBatcher({
@@ -40317,7 +40356,7 @@ export function createAgentChatService(args: {
       spawnCompletion,
     } = delivery;
     const childTurnId = spawnCompletion.childTurnId ?? "";
-    const deliveryKey = `${parentSessionId}:${childSessionId}:${childTurnId}`;
+    const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, childTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
     const parentShouldWake = spawnKind === "subagent" && delivery.routeQuietly !== true;
 
@@ -40344,7 +40383,10 @@ export function createAgentChatService(args: {
         try {
           const parent = ensureManagedSession(parentSessionId);
           if (parent.deleted) throw new Error("Parent session was deleted.");
-          if (parentAlreadyHasCompletion(parent)) return;
+          if (parentAlreadyHasCompletion(parent)) {
+            delivery.onDelivered?.();
+            return;
+          }
           // The CTO thread takes one line per child turn and nothing else. The
           // subagent_result card and the wake divider each restate the child's
           // closing summary, which is the transcript dump a coordinator thread
@@ -40425,6 +40467,7 @@ export function createAgentChatService(args: {
             status: resultStatus,
             routedTo: parentShouldWake ? "wake" : "quiet_notice",
           });
+          delivery.onDelivered?.();
           return;
         } catch (error) {
           lastError = error;
@@ -40466,7 +40509,11 @@ export function createAgentChatService(args: {
     // readable but cannot create new silent completion behavior.
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
 
-    if (!parentChatStillExists(parentSessionId)) {
+    // A parent outside this chat service (another project, the personal
+    // scope, another machine) is the brain's router's to reach, when one is
+    // installed. Without one it is gone, as before.
+    const parentIsExternal = !parentChatStillExists(parentSessionId);
+    if (parentIsExternal && !getExternalParentRouter()) {
       noteUnreachableParent(child, parentSessionId, "parent_missing");
       return;
     }
@@ -40493,7 +40540,7 @@ export function createAgentChatService(args: {
       source,
     });
     if (!resolvedTurnId) return;
-    const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
+    const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, resolvedTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
     // Subagent completions always wake the parent. Human messages no longer
@@ -40543,6 +40590,23 @@ export function createAgentChatService(args: {
     const stoppedByParent = resultStatus === "stopped"
       && child.stoppedByParentStopAt !== undefined
       && Date.now() - child.stoppedByParentStopAt < 2 * 60_000;
+    const wakeText = `Your subagent "${childTitle}" finished a turn — ${summary}`;
+    if (parentIsExternal) {
+      const routed = getExternalParentRouter()?.route({
+        parentSessionId,
+        childSessionId,
+        childTitle,
+        childProvider: child.session.provider,
+        spawnKind,
+        resultStatus,
+        summary,
+        spawnCompletion,
+        wakeText,
+        childProjectRoot: projectRoot,
+      }) ?? false;
+      if (!routed) noteUnreachableParent(child, parentSessionId, "parent_missing");
+      return;
+    }
     deliverChildCompletionToParent({
       parentSessionId,
       childSessionId,
@@ -40554,7 +40618,7 @@ export function createAgentChatService(args: {
       spawnCompletion,
       ...(stoppedByParent ? { routeQuietly: true } : {}),
       ctoPrNumber: readChildPullRequestNumber(child.session.completion, summary),
-      wakeText: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+      wakeText,
       onParentGone: (reason) => noteUnreachableParent(child, parentSessionId, reason),
       onDeliveryFailed: (lastError) => {
         if (child.deleted || childHasDeliveryFailureNotice(child, resolvedTurnId)) return;
@@ -40572,6 +40636,40 @@ export function createAgentChatService(args: {
           },
         });
       },
+    });
+  };
+
+  /**
+   * Deliver a child completion whose child lives elsewhere (another project,
+   * or another machine) into a parent in THIS service. The brain's router calls
+   * it after locating the parent. Resolves with what happened so the router's
+   * outbox can retry or give up; the parent transcript dedupes a repeat by
+   * `spawnCompletion.childTurnId`.
+   */
+  const deliverExternalChildCompletion = (
+    wake: Omit<ExternalParentWake, "childProjectRoot">,
+  ): Promise<ExternalWakeDeliveryResult> => {
+    if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // The same turn already being delivered answers nothing; let the outbox
+    // try again rather than wait on a callback that never comes.
+    const inFlightKey = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
+    if (spawnCompletionDeliveriesInFlight.has(inFlightKey)) return Promise.resolve("failed");
+    return new Promise((resolve) => {
+      deliverChildCompletionToParent({
+        parentSessionId: wake.parentSessionId,
+        childSessionId: wake.childSessionId,
+        childTitle: wake.childTitle,
+        childProvider: wake.childProvider,
+        spawnKind: wake.spawnKind,
+        resultStatus: wake.resultStatus,
+        summary: wake.summary,
+        spawnCompletion: wake.spawnCompletion,
+        ctoPrNumber: null,
+        wakeText: wake.wakeText,
+        onParentGone: () => resolve("parent_gone"),
+        onDeliveryFailed: () => resolve("failed"),
+        onDelivered: () => resolve("delivered"),
+      });
     });
   };
 
@@ -60892,11 +60990,6 @@ export function createAgentChatService(args: {
     };
   };
 
-  type CodexRewindFileRestore = {
-    path: string;
-    beforeSha: string;
-  };
-
   const isSafeRelativeGitPath = (value: string): boolean => {
     const normalized = value.trim().replace(/\\/g, "/");
     return Boolean(normalized)
@@ -60904,66 +60997,41 @@ export function createAgentChatService(args: {
       && !normalized.split("/").some((part) => part === "..");
   };
 
-  const buildCodexRewindPlan = (
-    managed: ManagedChatSession,
-    messageId: string,
-  ): {
-    targetFound: boolean;
-    targetTurnId: string | null;
-    hasLaterUserMessage: boolean;
-    filesChanged: string[];
-    insertions: number;
-    deletions: number;
-    restoreFiles: CodexRewindFileRestore[];
-  } => {
-    const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
-    let sawTargetMessage = false;
-    let targetTurnId: string | null = null;
-    let hasLaterUserMessage = false;
-    const restoreByPath = new Map<string, CodexRewindFileRestore>();
-    let insertions = 0;
-    let deletions = 0;
-
-    for (const envelope of envelopes) {
-      const event = envelope.event;
-      if (event.type === "user_message" && event.messageId === messageId) {
-        sawTargetMessage = true;
-        targetTurnId = event.turnId?.trim() || null;
-        continue;
-      }
-
-      if (!sawTargetMessage) continue;
-      if (event.type === "user_message") {
-        hasLaterUserMessage = true;
-      } else if (!targetTurnId) {
-        targetTurnId = "turnId" in event && typeof event.turnId === "string"
-          ? event.turnId.trim() || null
-          : null;
-      }
-
-      if (event.type !== "turn_diff_summary") continue;
-      insertions += Math.max(0, event.totalAdditions);
-      deletions += Math.max(0, event.totalDeletions);
-      for (const file of event.files) {
-        const filePath = file.path.trim();
-        if (!filePath || restoreByPath.has(filePath)) continue;
-        restoreByPath.set(filePath, {
-          path: filePath,
-          beforeSha: event.beforeSha,
-        });
+  /**
+   * The other chats that write into this chat's worktree: every chat in the
+   * lane (all of them, however many: a peer left out is a peer whose edits a
+   * rewind could overwrite), minus a personal chat that a loaded runtime shows
+   * working elsewhere, plus any loaded chat from another lane running in the
+   * same directory (a personal chat whose `requestedCwd` is this repository).
+   */
+  const listWorktreePeerChats = (managed: ManagedChatSession): Array<{ id: string; title: string | null; active: boolean }> => {
+    const peers = new Map<string, { id: string; title: string | null; active: boolean }>();
+    const laneId = managed.session.laneId?.trim();
+    if (laneId) {
+      for (const row of sessionService.list({ laneId, limit: null })) {
+        if (row.id === managed.session.id || !isChatToolType(row.toolType)) continue;
+        const peer = managedSessions.get(row.id);
+        if (peer && !pathsEqual(peer.laneWorktreePath, managed.laneWorktreePath)) continue;
+        peers.set(row.id, { id: row.id, title: row.title ?? null, active: peer?.session.status === "active" });
       }
     }
-
-    return {
-      targetFound: sawTargetMessage,
-      targetTurnId,
-      hasLaterUserMessage,
-      filesChanged: [...restoreByPath.keys()],
-      insertions,
-      deletions,
-      restoreFiles: [...restoreByPath.values()],
-    };
+    for (const [id, peer] of managedSessions) {
+      if (id === managed.session.id || peers.has(id) || !pathsEqual(peer.laneWorktreePath, managed.laneWorktreePath)) continue;
+      peers.set(id, { id, title: sessionService.get(id)?.title ?? null, active: peer.session.status === "active" });
+    }
+    return [...peers.values()];
   };
+
+  const buildCodexRewindPlan = (managed: ManagedChatSession, messageId: string): CodexRewindPlan =>
+    planCodexRewind({
+      envelopes: readFullTranscriptEnvelopesForSessionId(managed.session.id),
+      messageId,
+      peers: () => listWorktreePeerChats(managed).map((peer) => ({
+        title: peer.title,
+        active: peer.active,
+        envelopes: () => readFullTranscriptEnvelopesForSessionId(peer.id),
+      })),
+    });
 
   const restoreCodexRewindFilesFromGit = async (
     managed: ManagedChatSession,
@@ -60982,8 +61050,12 @@ export function createAgentChatService(args: {
       const objectSpec = `${file.beforeSha}:${file.path}`;
       const existsAtBefore = await runGit(["cat-file", "-e", objectSpec], { cwd, timeoutMs: 10_000 });
       if (existsAtBefore.exitCode === 0) {
-        const checkout = await runGit(["checkout", file.beforeSha, "--", file.path], { cwd, timeoutMs: 15_000 });
-        if (checkout.exitCode === 0) restored.push(file.path);
+        // Index and worktree both: the plan only restores a file that was
+        // clean when the turn began, so whatever is staged for it now the turn
+        // staged (Codex runs `git add`), and leaving it would let the next
+        // commit carry the work this rewind undid.
+        const restore = await runGit(["restore", `--source=${file.beforeSha}`, "--staged", "--worktree", "--", file.path], { cwd, timeoutMs: 15_000 });
+        if (restore.exitCode === 0) restored.push(file.path);
         continue;
       }
 
@@ -60999,7 +61071,9 @@ export function createAgentChatService(args: {
         const currentStat = fs.lstatSync(absolutePath);
         if (currentStat.isDirectory()) continue;
         fs.rmSync(absolutePath, { force: true });
-        restored.push(file.path);
+        // A file the turn created and staged would otherwise stay staged as added.
+        const unstage = await runGit(["rm", "--cached", "--quiet", "--ignore-unmatch", "--", file.path], { cwd, timeoutMs: 10_000 });
+        if (unstage.exitCode === 0) restored.push(file.path);
       } catch {
         // Keep going; the caller reports the successfully restored subset.
       }
@@ -61366,6 +61440,18 @@ export function createAgentChatService(args: {
           conversationRollback: true,
         };
       }
+      if (plan.busyPeerTitle) {
+        return {
+          canRewind: false,
+          error: `"${plan.busyPeerTitle}" is working in this worktree. Wait for it to finish before rewinding files.`,
+          filesChanged: [],
+          insertions: 0,
+          deletions: 0,
+          dryRun,
+          conversationRollback: true,
+        };
+      }
+      const skipped = plan.skippedFiles.length ? { skippedFiles: plan.skippedFiles } : {};
       if (dryRun) {
         return {
           canRewind: true,
@@ -61374,6 +61460,7 @@ export function createAgentChatService(args: {
           deletions: plan.deletions,
           dryRun,
           conversationRollback: true,
+          ...skipped,
         };
       }
 
@@ -61388,6 +61475,14 @@ export function createAgentChatService(args: {
           : "Codex context rolled back.",
         detail: restoredFiles.length ? restoredFiles.join("\n") : undefined,
       });
+      if (plan.skippedFiles.length) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `${plan.skippedFiles.length} file${plan.skippedFiles.length === 1 ? " was" : "s were"} left as ${plan.skippedFiles.length === 1 ? "it was" : "they were"}: restoring could have erased work this turn did not make.`,
+          detail: plan.skippedFiles.map((file) => file.path).join("\n"),
+        });
+      }
       void refreshHeadShaStartForManagedExecutionLane(managed).catch(() => undefined);
       return {
         canRewind: true,
@@ -61396,6 +61491,7 @@ export function createAgentChatService(args: {
         deletions: plan.deletions,
         dryRun,
         conversationRollback: true,
+        ...skipped,
       };
     }
     if (managed.runtime?.kind === "claude" && managed.runtime.busy && !dryRun) {
@@ -62709,6 +62805,59 @@ export function createAgentChatService(args: {
     isTranscriptPathActive,
     warmupModel,
     listSubagents,
+    deliverExternalChildCompletion,
+    /**
+     * The brain's wake router could not reach this child's parent elsewhere:
+     * it is gone, or every retry for a day failed. Leaves the same notice the
+     * child gets when a local parent is deleted, or the delivery-failed one.
+     */
+    noteExternalParentUnreachable: (input: {
+      childSessionId: string;
+      parentSessionId: string;
+      /** The parent's machine, when it is another one; named in the notice. */
+      parentMachineName?: string | null;
+      childTurnId: string | null;
+      reason: "parent_gone" | "gave_up" | "refused";
+    }): void => {
+      const child = managedSessions.get(input.childSessionId) ?? (() => {
+        try { return ensureManagedSession(input.childSessionId); } catch { return null; }
+      })();
+      if (!child || child.deleted) return;
+      if (input.reason === "parent_gone") {
+        noteUnreachableParent(child, input.parentSessionId, "parent_missing");
+        return;
+      }
+      const turnId = input.childTurnId ?? "";
+      if (turnId && childHasDeliveryFailureNotice(child, turnId)) return;
+      emitChatEvent(child, {
+        type: "system_notice",
+        noticeKind: "warning",
+        status: "spawn_completion_delivery_failed",
+        message: spawnCompletionDeliveryFailedNoticeMessage(),
+        detail: {
+          spawnCompletionDeliveryFailure: {
+            childTurnId: turnId,
+            parentSessionId: input.parentSessionId,
+            error: input.reason === "refused"
+              ? `${input.parentMachineName?.trim() || "The other machine"} didn't accept this chat's report, so the chat that started it won't hear back.`
+              : "The chat that started this one could not be reached for a day.",
+          },
+        },
+      });
+    },
+    /**
+     * The permission level a chat in this service runs at, or null when it is
+     * not one of this service's chats. The brain records it for a child it
+     * starts elsewhere (`rememberExternalChat`).
+     */
+    permissionLevelOf: (sessionId: string): PermissionLevel | null => {
+      if (!parentChatStillExists(sessionId)) return null;
+      try {
+        return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
+      } catch {
+        return null;
+      }
+    },
     getSessionCapabilities,
     resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({
       url,

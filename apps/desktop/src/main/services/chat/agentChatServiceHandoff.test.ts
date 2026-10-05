@@ -2076,6 +2076,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2108,8 +2109,8 @@ describe("createAgentChatService", () => {
       // A personal chat whose host named a `requestedCwd` runs in the user's
       // own repository while its lane still points at the synthetic scratch
       // worktree. Re-resolving the directory from the lane id ran
-      // `git checkout <sha> -- <path>` somewhere the user never asked about and
-      // reported success against it.
+      // `git restore --source=<sha> -- <path>` somewhere the user never asked
+      // about and reported success against it.
       const hostCwd = path.join(tmpRoot, "host-project");
       fs.mkdirSync(hostCwd, { recursive: true });
       const { service, sessionService } = createService();
@@ -2149,6 +2150,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];
@@ -2158,9 +2160,100 @@ describe("createAgentChatService", () => {
 
       await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
 
-      const checkout = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "checkout");
-      expect(checkout).toBeTruthy();
-      expect((checkout?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+      const restore = vi.mocked(runGit).mock.calls.find(([args]) => args[0] === "restore");
+      expect(restore).toBeTruthy();
+      expect((restore?.[1] as { cwd?: string })?.cwd).toBe(hostCwd);
+    });
+
+    it.each([
+      {
+        name: "restores a file that was clean at turn start, in the index too",
+        dirtyAtStart: [] as string[] | undefined,
+        peerTouches: false,
+        restored: ["src/a.ts"],
+        skipped: [] as Array<{ path: string; reason: string }>,
+      },
+      {
+        name: "leaves a file that already had uncommitted changes",
+        dirtyAtStart: ["src/a.ts"],
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "dirty_before_turn" }],
+      },
+      {
+        name: "leaves a file another chat in the worktree changed since",
+        dirtyAtStart: [],
+        peerTouches: true,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "other_chat" }],
+      },
+      {
+        name: "leaves every file of a summary recorded before ADE kept the start state",
+        dirtyAtStart: undefined,
+        peerTouches: false,
+        restored: [],
+        skipped: [{ path: "src/a.ts", reason: "unknown_start_state" }],
+      },
+    ])("Codex file rewind $name", async ({ dirtyAtStart, peerTouches, restored, skipped }) => {
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({ thread: { id: "source-thread-1" } }));
+      const { service, sessionService } = createService();
+      const source = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const peer = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5", modelId: "openai/gpt-5.5" });
+      const envelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: { type: "user_message", messageId: "user-1", text: "edit a", turnId: "turn-1" },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/a.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+            ...(dirtyAtStart ? { dirtyAtStart } : {}),
+          },
+        } as AgentChatEventEnvelope,
+        ...(peerTouches
+          ? [{
+              sessionId: peer.id,
+              timestamp: "2026-07-07T20:00:05.000Z",
+              event: {
+                type: "turn_diff_summary",
+                turnId: "peer-turn",
+                beforeSha: "before-sha",
+                afterSha: "before-sha",
+                files: [{ path: "src/a.ts", additions: 2, deletions: 0 }],
+                totalAdditions: 2,
+                totalDeletions: 0,
+                dirtyAtStart: [] as string[],
+              },
+            } as AgentChatEventEnvelope]
+          : []),
+      ];
+      for (const id of [source.id, peer.id]) {
+        fs.writeFileSync(String(sessionService.get(id)?.transcriptPath), "{}\n", "utf8");
+      }
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+      vi.mocked(runGit).mockImplementation(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+      const preview = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1", dryRun: true });
+      expect(preview.filesChanged).toEqual(restored);
+      expect(preview.skippedFiles ?? []).toEqual(skipped);
+
+      const result = await service.rewindFiles({ sessionId: source.id, userMessageId: "user-1" });
+      expect(result.filesChanged).toEqual(restored);
+      const writes = vi.mocked(runGit).mock.calls.map(([args]) => args).filter((args) => args[0] === "restore" || args[0] === "checkout");
+      // Index and worktree: the file was clean at turn start, so whatever is
+      // staged for it the turn staged, and the next commit must not carry it.
+      expect(writes).toEqual(restored.map((file) => ["restore", "--source=before-sha", "--staged", "--worktree", "--", file]));
     });
 
     it("does not recursively delete directories during Codex rewind", async () => {
@@ -2204,6 +2297,7 @@ describe("createAgentChatService", () => {
             files: [{ path: "src/generated", additions: 1, deletions: 0 }],
             totalAdditions: 1,
             totalDeletions: 0,
+            dirtyAtStart: [] as string[],
           },
         } as AgentChatEventEnvelope,
       ];

@@ -386,6 +386,19 @@ struct LaneDetailScreen: View {
       onCreateLaneFromChanges: {
         rescueLaneName = suggestedRescueLaneName
         showRescueSheet = true
+      },
+      loadBranchChanges: syncService.supportsBranchDiff
+        ? { try await syncService.fetchBranchChanges(laneId: laneId) }
+        : nil,
+      onOpenBranchDiff: { file in
+        selectedDiffRequest = LaneDiffRequest(
+          laneId: laneId,
+          path: file.path,
+          mode: "branch",
+          compareRef: nil,
+          compareTo: nil,
+          title: (file.path as NSString).lastPathComponent
+        )
       }
     )
     .padding(.horizontal, 16)

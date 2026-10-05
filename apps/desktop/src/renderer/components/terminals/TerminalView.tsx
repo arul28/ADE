@@ -322,7 +322,8 @@ function cleanTerminalLinkText(raw: string): string {
   return raw.replace(/[),.;:!?]+$/g, "");
 }
 
-function createTerminalLinkProvider(term: Terminal): ILinkProvider {
+/** `runtimePin`: the terminal's machine, whose `localhost` its links mean. */
+function createTerminalLinkProvider(term: Terminal, runtimePin: OpenProjectBinding | null): ILinkProvider {
   return {
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
       const lineIndex = Math.max(0, bufferLineNumber - 1);
@@ -349,7 +350,7 @@ function createTerminalLinkProvider(term: Terminal): ILinkProvider {
           decorations: { underline: true, pointerCursor: true },
           activate(event: MouseEvent) {
             event.preventDefault();
-            openLinkFromUi(text, event);
+            openLinkFromUi(text, event, { runtimePin });
           },
         });
       }
@@ -2881,7 +2882,7 @@ function createRuntime(args: {
   const fit = new FitAddon();
   term.loadAddon(fit);
   const linkProviderSub = typeof term.registerLinkProvider === "function"
-    ? term.registerLinkProvider(createTerminalLinkProvider(term))
+    ? term.registerLinkProvider(createTerminalLinkProvider(term, args.runtimePin))
     : null;
 
   const runtime: CachedRuntime = {

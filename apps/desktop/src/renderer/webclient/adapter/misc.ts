@@ -83,6 +83,7 @@ import type {
   CursorSdkAuthEvent,
   CursorSdkAuthStatus,
   CursorSdkLoginResult,
+  AdeUsagePriceOverrides,
 } from "../../../shared/types";
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
@@ -843,6 +844,9 @@ function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
     // show`; a desktop that has the chat open does.
     onShowRequest: () => () => {},
     acknowledgeShow: async () => ({ ok: false }),
+    // The web client has no browser to light up.
+    listDevServers: async () => ({ servers: [] }),
+    onDevServer: () => () => {},
   } as AdeNamespace<"workTools">;
 }
 
@@ -1131,6 +1135,13 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
     // reaches the host instead of replaying a cached read, and so a failure
     // surfaces rather than resolving to a fake null snapshot.
     refresh: () => call("usage.refreshQuota", {}, null, false),
+    getCostBreakdown: (args) => call("usage.getCostBreakdown", args, null),
+    getModelDetail: (args) => call("usage.getModelDetail", args, null),
+    getModelPriceOverrides: () => call("usage.getModelPriceOverrides", {}, null),
+    // A save writes the host's price list: never replayed from a cached read.
+    setModelPriceOverride: (args) => call<AdeUsagePriceOverrides>("usage.setModelPriceOverride", args, () => {
+      throw new Error("This host cannot save model prices yet.");
+    }, false),
     // refreshHistory is deliberately NOT mapped onto usage.refreshQuota: the
     // host keeps the cost-log rescan decoupled from quota polling, so aliasing
     // them would do unrelated work and still leave the stats stale. It needs

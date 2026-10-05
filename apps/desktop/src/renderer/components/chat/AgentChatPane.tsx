@@ -342,6 +342,7 @@ import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
+import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 import {
   DEVIN_CLOUD_DEFAULT_VERSION,
@@ -8224,6 +8225,7 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
+      if (!isAddressedToThisDesktop(event.targetClientId)) return;
       // Only for surfaces the user drove (point selection and inspection, or a
       // launch started from this drawer).
       openIosSimulatorDrawer();

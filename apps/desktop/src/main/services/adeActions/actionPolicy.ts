@@ -100,7 +100,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
   // after its own account fan-out; no agent has any reason to call it.
-  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups"] },
+  usage: { only: ["forceRefresh", "refreshHistory", "poll", "start", "stop", "applyAccountRollups", "setModelPriceOverride"] },
   analytics: { only: ["setEnabled", "flush"] },
   storage: { only: ["cleanup", "runMaintenanceNow"] },
   // Restoring brings a lane's worktree and services back up — the CTO's call,
@@ -473,7 +473,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
+  diff: ["getChanges", "getBranchChanges", "getLaneDiffStats", "listLaneDiffStats", "getFileDiff", "getFilePatch"],
   conflicts: [
     "applyProposal",
     "attachResolverSession",
@@ -937,6 +937,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getCostBreakdown",
+    "getModelDetail",
+    "getModelPriceOverrides",
     "getModelRoutes",
     "getRouterEfficiency",
     "getRouterShadowSummary",
@@ -947,6 +950,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "poll",
     "previewModelRoute",
     "refreshModelRegistry",
+    "setModelPriceOverride",
     "start",
     "stop",
   ],
@@ -983,7 +987,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // so phones and the hosted web client can mirror it. `show` is an agent
   // asking that desktop to put a surface of its own chat on screen, and
   // `acknowledgeShow` is the desktop's answer (user clients only).
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
+  // `listDevServers` and `probePort` let a Browser on another machine see this
+  // machine's dev servers; both only read.
+  work_tools: [
+    "getLaneState",
+    "setActiveTool",
+    "readObservationPreview",
+    "show",
+    "acknowledgeShow",
+    "listDevServers",
+    "probePort",
+  ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.

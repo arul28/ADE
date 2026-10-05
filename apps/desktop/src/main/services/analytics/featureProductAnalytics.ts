@@ -33,6 +33,8 @@ export type FeatureAnalyticsAction =
   | "start"
   | "stop"
   | "reset_credit_consumed"
+  | "model_price_changed"
+  | "model_mapping_changed"
   | "pending_input_dismissed"
   | "new_lane_launch"
   | "voice_conversation_started"
@@ -202,6 +204,20 @@ export function captureResetCreditAnalytics(args: {
     feature: "usage",
     action: "reset_credit_consumed",
   });
+}
+
+/**
+ * A price the user set (`enabled`) or cleared back to automatic (`disabled`)
+ * on the Usage page, or a "Map to" added or removed. Never the model id or
+ * the rates.
+ */
+export function captureModelPriceAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: Extract<FeatureAnalyticsAction, "model_price_changed" | "model_mapping_changed">;
+  outcome: Extract<FeatureAnalyticsOutcome, "enabled" | "disabled">;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "usage" });
 }
 
 export function capturePendingInputDismissedAnalytics(args: {

@@ -2568,7 +2568,7 @@ function renderEvent(
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
           <span className="inline-flex shrink-0 items-center gap-1.5">
             <Robot size={11} weight="duotone" className="text-violet-300/75" aria-hidden />
-            Subagent returned
+            Subagent returned{event.childMachineName ? ` · on ${event.childMachineName}` : ""}
           </span>
           <span className="h-px flex-1 bg-violet-300/[0.1]" />
         </div>
@@ -3402,6 +3402,9 @@ function renderEvent(
         >
           <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
           <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
+          {completion?.childMachineName ? (
+            <span className="shrink-0 text-slate-300/50">· on {completion.childMachineName}</span>
+          ) : null}
           {repeatCount ? (
             <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
           ) : null}

@@ -129,6 +129,7 @@ import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   ADE_OPEN_DEEPLINK_EVENT,
+  setWindowRuntimeBinding,
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
 } from "../../lib/openExternal";
@@ -676,6 +677,10 @@ function ProjectTabHost() {
   const webMode = isWebClientMode();
   const activeProject = useAppStore((s) => s.project);
   const activeProjectBinding = useAppStore((s) => s.projectBinding);
+  // A `localhost` link means the bound machine's port; link routing reads this.
+  React.useEffect(() => {
+    setWindowRuntimeBinding(activeProjectBinding ?? null);
+  }, [activeProjectBinding]);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);

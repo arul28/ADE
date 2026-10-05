@@ -11,6 +11,10 @@ import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/dem
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import {
+  createRemoteCallerCaptures,
+  type RemoteCallerCaptures,
+} from "./services/proof/remoteCallerCaptures";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
@@ -113,7 +117,8 @@ import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/
 import {
   ctoCallerInitializeParams,
   DESKTOP_CLIENT_NAMES,
-  isCtoRemoteClientName,
+  isRemoteBrainCallerClientName,
+  parseForeignCallerSessionId,
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -261,7 +266,7 @@ function withoutIncludeThreadComments(args: Record<string, unknown>): Record<str
  * request, or pass any other user-client gate.
  */
 function isUserClientSession(session: SessionState): boolean {
-  return !callerIdentityIsAgent(session.identity) && !isCtoRemoteClientName(session.clientName);
+  return !callerIdentityIsAgent(session.identity) && !isRemoteBrainCallerClientName(session.clientName);
 }
 
 /**
@@ -1508,6 +1513,7 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 ];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "read_remote_caller_capture",
   "list_ade_actions",
   "get_ade_action_status",
   "stream_events",
@@ -1887,14 +1893,15 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
 }
 
 /**
- * The brain's environment identity, unless the client disclaimed an identity
- * with a synthetic `<client>:<pid>` caller id. A dev brain started from an
- * agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it to an
- * unbound caller filed that caller's proof in the wrong chat and disabled its
- * lane inference.
+ * The brain's environment identity, unless the caller is not one of this
+ * brain's chats: a synthetic `<client>:<pid>` caller id (a process), or a
+ * caller from another machine (`remote:<device>:<chat>`). A dev brain started
+ * from an agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it
+ * to such a caller filed its proof in the wrong chat, disabled its lane
+ * inference, and would attribute another machine's calls to that agent.
  */
 function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
-  return isSyntheticCallerId(callerId)
+  return isSyntheticCallerId(callerId) || parseForeignCallerSessionId(callerId) !== null
     ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
     : envContext;
 }
@@ -2695,17 +2702,33 @@ export async function resolveIngestProvenance(
   };
 }
 
+const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
+
+function remoteCallerCapturesFor(runtime: AdeRuntime): RemoteCallerCaptures {
+  let registry = remoteCallerCaptureRegistries.get(runtime);
+  if (!registry) {
+    registry = createRemoteCallerCaptures();
+    remoteCallerCaptureRegistries.set(runtime, registry);
+  }
+  return registry;
+}
+
 /** Remember the file a capture action just wrote. Never fails the action. */
 async function rememberCaptureActionResult(
   runtime: AdeRuntime,
   domain: string,
   action: string,
   result: unknown,
+  session?: SessionState,
 ): Promise<void> {
   const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
   if (!capture || !isRecord(result)) return;
   const filePath = asOptionalTrimmedString(result[capture.field]);
   if (!filePath) return;
+  const foreignOwner = asOptionalTrimmedString(session?.identity.chatSessionId);
+  if (foreignOwner && parseForeignCallerSessionId(foreignOwner)) {
+    remoteCallerCapturesFor(runtime).remember(filePath, foreignOwner);
+  }
   try {
     await captureRegistryFor(runtime).remember(filePath, capture.source);
   } catch {
@@ -3381,7 +3404,7 @@ function scopeBuiltInBrowserAdeActionArgs(
   // Headless machines cannot mint an actor capability: the issuer asks the
   // desktop bridge for one, and on a box running only `ade serve` that socket
   // is not listening. Without this carve-out the capability gate denies the
-  // call before it ever reaches `forwardIfNoDesktop`, so the whole remote
+  // call before it ever reaches the forwarder's `route`, so the whole remote
   // forwarding path (publish `built_in_browser_remote_request`, wait for a
   // pinned desktop to ack) is unreachable. Only the three "put this URL on a
   // screen" methods are exempt — they are exactly the forwardable set. This is
@@ -3500,6 +3523,14 @@ function scopeWorkToolsAdeActionArgs(
       scopeAccessDenied("work_tools.setActiveTool is limited to user clients", method);
     }
     return workToolsArgs;
+  }
+  if (action === "listDevServers") {
+    // Same rule as getLaneState: an agent sees its own lane's servers, and an
+    // agent with no resolvable lane sees none.
+    if (isUserClient) return workToolsArgs;
+    const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+    if (!sessionLaneId) scopeAccessDenied("work_tools reads need a resolvable lane for this caller", method);
+    return { ...workToolsArgs, laneId: sessionLaneId };
   }
   if (action === "getLaneState" || action === "readObservationPreview") {
     const sessionLaneId = resolveChatSessionLaneId(runtime, session);
@@ -5180,7 +5211,7 @@ async function runTool(args: {
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
-    const ctoActionCaller = isCtoRemoteClientName(session.clientName);
+    const remoteBrainCaller = isRemoteBrainCallerClientName(session.clientName);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
@@ -5188,7 +5219,7 @@ async function runTool(args: {
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
-        .filter((action) => !ctoActionCaller || !isSecretBearingAdeAction(entry, action))
+        .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
           return {
@@ -5238,12 +5269,13 @@ async function runTool(args: {
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
-    if (isCtoRemoteClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
-      // The CTO's result lands in a model transcript. Its own tool refuses
-      // these first; this holds for a CTO on any ADE version.
+    if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
+      // A caller from another machine's brain is a model whose result lands in
+      // a transcript. The CTO's own tool refuses these first; this holds for
+      // any caller version.
       throw new JsonRpcError(
         JsonRpcErrorCode.policyDenied,
-        `${domain}.${action} returns secrets, so the CTO can't run it. Ask the user to read it in Settings.`,
+        `${domain}.${action} returns secrets, so it can't run from another machine. Ask the user to read it in Settings.`,
       );
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
@@ -5281,9 +5313,14 @@ async function runTool(args: {
     }
     // Stripped here, at the source, because the chat scoping below rebuilds
     // its arguments from these raw ones.
-    const baseObjectArgs = stampedChatAction
+    const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
       : safeObject(toolArgs.args);
+    // `inputOrigin` names the desktop a person is talking from, and show
+    // requests follow it. Only a user client may say where that person is.
+    const baseObjectArgs = agentCaller && "inputOrigin" in providedObjectArgs
+      ? (({ inputOrigin: _notADesktop, ...agentArgs }) => agentArgs)(providedObjectArgs)
+      : providedObjectArgs;
     const rawObjectArgs = domain === "chat" && agentCaller && THREAD_COMMENT_SEND_ACTIONS.has(action)
       ? withoutIncludeThreadComments(baseObjectArgs)
       : baseObjectArgs;
@@ -5733,7 +5770,7 @@ async function runTool(args: {
     if (domain === "built_in_browser" && (action === "startRecording" || action === "stopRecording")) {
       noteBrowserRecording(session, action === "startRecording");
     }
-    await rememberCaptureActionResult(runtime, domain, action, result);
+    await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
@@ -6609,6 +6646,26 @@ async function runTool(args: {
       toolArgs,
       proof,
     });
+  }
+
+  if (name === "read_remote_caller_capture") {
+    // A caller on another machine reading back a still or video one of ADE's
+    // capture actions just wrote here for it, to file it in its own drawer.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const requested = asOptionalTrimmedString(toolArgs.path);
+    const chunk = requested
+      ? remoteCallerCapturesFor(runtime).readChunk(owner, requested, asNumber(toolArgs.offset, 0))
+      : null;
+    if (!chunk) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "That file is not a capture this machine made for you in the last 15 minutes.",
+      );
+    }
+    return chunk;
   }
 
   if (name === "ingest_computer_use_artifacts") {

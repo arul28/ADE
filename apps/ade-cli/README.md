@@ -750,7 +750,7 @@ ade --socket browser authorize --text                             # ask the user
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
-ade --socket browser dev-servers --text                           # dev servers ADE saw start in its own terminals, scoped to this chat's lane
+ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed
 ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
                                                                   # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
 ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end

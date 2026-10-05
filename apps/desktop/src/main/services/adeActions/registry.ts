@@ -215,6 +215,7 @@ import {
   toRuntimeFileWatchArgs,
 } from "./actionArgs";
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
+import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 
 export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
 export type { AdeActionDomain } from "./domains";
@@ -780,9 +781,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     },
     sendMessage: async (args?: unknown) => {
-      const record = readObjectActionArg(args, "chat.sendMessage");
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = readSendText(record);
+      // Which desktop is talking to this chat: "show this" requests go there.
+      noteSessionInputOrigin(sessionId, inputOrigin);
       await agentChatService.sendMessage({
         ...withoutHostOnlyChatMetadata(record),
         sessionId,
@@ -809,9 +812,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       } as never);
     },
     steer: async (args?: unknown) => {
-      const record = readObjectActionArg(args, "chat.steer");
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.steer");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const text = readSendText(record);
+      noteSessionInputOrigin(sessionId, inputOrigin);
       if (typeof agentChatService.steer !== "function") {
         throw new Error("Chat steer is not available in this runtime.");
       }

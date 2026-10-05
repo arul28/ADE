@@ -235,14 +235,23 @@ function unwrapDocument(source: string): string {
  * not open a scene.
  */
 export function hasOpenSceneFence(markdown: string): boolean {
-  let openLanguage: string | null = null;
-  for (const line of String(markdown ?? "").split("\n")) {
-    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(line);
-    if (!fence) continue;
-    if (openLanguage === null) openLanguage = (fence[1] ?? "").trim().toLowerCase();
-    else if (!(fence[1] ?? "").trim().length) openLanguage = null;
-  }
-  return openLanguage === SCENE_FENCE_LANGUAGE;
+  return openFenceLanguage(markdown) === SCENE_FENCE_LANGUAGE;
+}
+
+/**
+ * The language of the fence a still-arriving document leaves open, or null
+ * when every fence is closed. A block that renders its fence as something
+ * other than code (a scene, a mermaid diagram) holds while its own language
+ * is open, so it never draws half a source.
+ */
+export function openFenceLanguage(markdown: string): string | null {
+  return openFence(markdown)?.language ?? null;
+}
+
+/** The fence a still-arriving document leaves open: its language and the body so far. */
+export function openFence(markdown: string): { language: string; body: string } | null {
+  const { open } = scanFences(markdown);
+  return open ? { language: open.language, body: open.body } : null;
 }
 
 /** One fence, as the scanner below located it. */
@@ -265,29 +274,41 @@ type FenceSpan = {
  * up both being true.
  */
 function readFenceSpans(markdown: string): FenceSpan[] {
+  return scanFences(markdown).spans;
+}
+
+/**
+ * The CommonMark fence rule both readers share: a fence opens on three or more
+ * backticks or tildes (indented at most three spaces) and closes only on a
+ * bare run of the SAME character at least as long. So a ~~~ line inside a ```
+ * block, or ``` inside a ```` block, is content, as the markdown renderer
+ * reads it.
+ */
+function scanFences(markdown: string): { spans: FenceSpan[]; open: FenceSpan | null } {
   const lines = String(markdown ?? "").split("\n");
   const spans: FenceSpan[] = [];
-  let openLanguage: string | null = null;
-  let openAt = 0;
+  let opener: { marker: string; language: string; at: number } | null = null;
   for (let i = 0; i < lines.length; i += 1) {
-    const fence = /^\s{0,3}(?:```|~~~)\s*([^\s`~]*)/.exec(lines[i]!);
-    if (!fence) continue;
-    const language = (fence[1] ?? "").trim().toLowerCase();
-    if (openLanguage === null) {
-      openLanguage = language;
-      openAt = i;
+    const line = lines[i]!;
+    if (opener === null) {
+      const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      const info = fence?.[2] ?? "";
+      // A backtick fence's info string may not contain a backtick (then the
+      // line is inline code, not a fence).
+      if (fence && !(fence[1]![0] === "`" && info.includes("`"))) {
+        opener = { marker: fence[1]!, language: (info.trim().split(/\s+/)[0] ?? "").toLowerCase(), at: i };
+      }
       continue;
     }
-    if (language.length) continue;
-    spans.push({
-      language: openLanguage,
-      startLine: openAt,
-      endLineExclusive: i + 1,
-      body: lines.slice(openAt + 1, i).join("\n"),
-    });
-    openLanguage = null;
+    const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+    if (!close || close[1]![0] !== opener.marker[0] || close[1]!.length < opener.marker.length) continue;
+    spans.push({ language: opener.language, startLine: opener.at, endLineExclusive: i + 1, body: lines.slice(opener.at + 1, i).join("\n") });
+    opener = null;
   }
-  return spans;
+  const open = opener
+    ? { language: opener.language, startLine: opener.at, endLineExclusive: lines.length, body: lines.slice(opener.at + 1).join("\n") }
+    : null;
+  return { spans, open };
 }
 
 /**

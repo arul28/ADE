@@ -937,3 +937,41 @@ describe("getSharedTurnUsageLedger", () => {
     expect(getSharedTurnUsageLedger(path.join(tmpRoot, "other"))).not.toBe(first);
   });
 });
+
+describe("repriceTurnForUserPrices", () => {
+  const originalAdeHome = process.env.ADE_HOME;
+  let adeHome = "";
+
+  afterEach(() => {
+    if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+    else process.env.ADE_HOME = originalAdeHome;
+    if (adeHome) fs.rmSync(adeHome, { recursive: true, force: true });
+  });
+
+  it("values a recorded turn at a price or mapping the user set after it ended, and leaves other turns as recorded", async () => {
+    adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-turn-reprice-"));
+    process.env.ADE_HOME = adeHome;
+    fs.writeFileSync(path.join(adeHome, "usage-price-overrides.json"), JSON.stringify({
+      version: 1,
+      prices: { "local-x": { input: 4, output: 8 } },
+      aliases: { "my-preview": "local-x" },
+    }));
+    vi.resetModules();
+    const { repriceTurnForUserPrices } = await import("./turnUsageLedger");
+    const turn = (model: string): AdeTurnUsageRecord => ({
+      v: 1, key: `s:${model}`, at: "2026-10-04T12:00:00.000Z", startedAt: null, sessionId: "s", turnId: model,
+      projectRoot: null, laneId: null, surface: null, parentSessionId: null, provider: "opencode", status: "completed",
+      requestedModel: model, servedModel: null, reasoningEffort: null, account: null, accountKey: "opencode",
+      inputTokens: 1_000_000, outputTokens: 500_000, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: null,
+      reasoningTokens: null, contextTokens: null, contextWindow: null, requestCount: null, subagentTokens: null,
+      costUsd: null, costSource: null, apiEquivalentUsd: 1, planUsage: null, factoryCreditsSessionTotal: null,
+      usageConfidence: null, durationMs: null, compactions: 0,
+    });
+
+    // 1M input at $4 plus 0.5M output at $8.
+    expect(repriceTurnForUserPrices(turn("Local-X")).apiEquivalentUsd).toBeCloseTo(8, 6);
+    expect(repriceTurnForUserPrices(turn("my-preview")).apiEquivalentUsd).toBeCloseTo(8, 6);
+    const untouched = turn("some-other-model");
+    expect(repriceTurnForUserPrices(untouched)).toBe(untouched);
+  });
+});

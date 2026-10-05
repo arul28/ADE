@@ -37,6 +37,7 @@ vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: (...args: unknown[]) => mockState.resolveCodexExecutable(...args),
 }));
 
+import { adeProviderUsageHomes } from "./providerUsageHomes";
 import {
   attachSharedUsageTrackingScope,
   claudePollAllowsKeychain,
@@ -3932,8 +3933,8 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
 
       const entries = await scanClaudeLogs([projectDir]);
       const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
-      expect(byId.get("msg-fast")?.fast).toBe(true);
-      expect(byId.get("msg-std")?.fast).toBeUndefined();
+      expect(byId.get("msg-fast")?.speed).toBe("fast");
+      expect(byId.get("msg-std")?.speed).toBeUndefined();
 
       // Fast mode is a 2× multiple on the model's standard rate.
       const standardCost = aggregateCosts([byId.get("msg-std")!], "claude").last30dCostUsd;
@@ -4145,7 +4146,119 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
   });
 });
 
+describe("adeProviderUsageHomes", () => {
+  it("hands each provider the account, preset and route homes that hold its history, and no other provider's", () => {
+    const adeDir = makeTmpDir();
+    const originalAdeHome = process.env.ADE_HOME;
+    try {
+      // The registry lives in the same ADE home; pointing ADE_HOME here keeps
+      // the developer's real accounts out of the result.
+      process.env.ADE_HOME = adeDir;
+      const home = (...segments: string[]) => path.join(adeDir, "provider-homes", ...segments);
+      const make = (dir: string, files: string[], dirs: string[]) => {
+        fs.mkdirSync(dir, { recursive: true });
+        for (const file of files) fs.writeFileSync(path.join(dir, file), "{}");
+        for (const sub of dirs) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+      };
+      make(home("claude", "work"), [".claude.json"], ["projects", "sessions"]);
+      make(home("claude", "removed-account"), [], ["projects"]);
+      make(home("codex", "second"), ["config.toml"], ["sessions"]);
+      make(home("preset", "keyed-claude"), [".claude.json"], ["projects"]);
+      make(home("route", "codex-route"), ["auth.json"], ["archived_sessions"]);
+      make(home("claude", "never-used"), [".claude.json"], []);
+
+      const homes = adeProviderUsageHomes(adeDir);
+
+      expect(homes.claude).toEqual([home("claude", "removed-account"), home("claude", "work"), home("preset", "keyed-claude")].sort());
+      expect(homes.codex).toEqual([home("codex", "second"), home("route", "codex-route")].sort());
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+      fs.rmSync(adeDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("scanCodexLogs", () => {
+  function codexRollout(lines: Array<Record<string, unknown>>): string {
+    return `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`;
+  }
+  function tokenCount(at: string, total: number): Record<string, unknown> {
+    return {
+      timestamp: at,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: { input_tokens: total, output_tokens: 0, total_tokens: total },
+          last_token_usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+        },
+      },
+    };
+  }
+  function tier(at: string, serviceTier: string): Record<string, unknown> {
+    return { timestamp: at, type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { service_tier: serviceTier } } };
+  }
+
+  it("prices each response at the service tier the thread was set to then", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "10", "04");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, "rollout-tiers.jsonl"), codexRollout([
+        { timestamp: "2026-10-04T12:00:00.000Z", type: "session_meta", payload: { id: "s-tiers", originator: "codex_cli_rs", model: "gpt-6-astra" } },
+        tier("2026-10-04T12:00:01.000Z", "default"),
+        tokenCount("2026-10-04T12:00:02.000Z", 100),
+        tier("2026-10-04T12:00:03.000Z", "priority"),
+        tokenCount("2026-10-04T12:00:04.000Z", 200),
+        tier("2026-10-04T12:00:05.000Z", "ultrafast"),
+        tokenCount("2026-10-04T12:00:06.000Z", 300),
+        tier("2026-10-04T12:00:07.000Z", "flex"),
+        tokenCount("2026-10-04T12:00:08.000Z", 400),
+      ]));
+
+      const entries = await scanCodexLogs();
+
+      expect(entries.map((entry) => entry.speed ?? "standard")).toEqual(["standard", "fast", "ultrafast", "standard"]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the account homes the usage service passes, not only the default home", async () => {
+    const defaultHome = makeTmpDir();
+    const accountHome = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    const originalExtra = process.env.ADE_USAGE_EXTRA_CODEX_HOMES;
+    try {
+      process.env.CODEX_HOME = defaultHome;
+      process.env.ADE_USAGE_EXTRA_CODEX_HOMES = accountHome;
+      for (const [home, id] of [[defaultHome, "s-default"], [accountHome, "s-account"]] as const) {
+        const dir = path.join(home, "sessions", "2026", "10", "04");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `rollout-${id}.jsonl`), codexRollout([
+          { timestamp: "2026-10-04T12:00:00.000Z", type: "session_meta", payload: { id, originator: "codex_cli_rs", model: "gpt-5.5" } },
+          tokenCount("2026-10-04T12:00:01.000Z", 100),
+        ]));
+      }
+
+      const entries = await scanCodexLogs();
+
+      expect(entries.map((entry) => entry.messageId.split(":")[1]).sort()).toEqual(["s-account", "s-default"]);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      if (originalExtra === undefined) delete process.env.ADE_USAGE_EXTRA_CODEX_HOMES;
+      else process.env.ADE_USAGE_EXTRA_CODEX_HOMES = originalExtra;
+      fs.rmSync(defaultHome, { recursive: true, force: true });
+      fs.rmSync(accountHome, { recursive: true, force: true });
+    }
+  });
+
   it("skips an oversized record and processes the following token record", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
@@ -7883,6 +7996,43 @@ describe("per-account quota attribution", () => {
     expect(skipped.windows.filter((window) => window.provider === "claude")).toHaveLength(4);
 
     service.dispose();
+  });
+
+  it("records a model price or mapping saved or cleared, never the model or the rates", async () => {
+    const originalAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = tempHome;
+    try {
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          ...scannerStubs(),
+        },
+      });
+
+      const saved = service.setModelPriceOverride({ model: "Local-X", models: ["local-x-2026"], price: { input: 1, output: 4 } });
+      expect(Object.keys(saved.prices).sort()).toEqual(["local-x", "local-x-2026"]);
+      service.setModelPriceOverride({ model: "local-x", price: null });
+      service.setModelPriceOverride({ model: "my-preview", mapTo: "claude-opus-5-5" });
+      expect(service.getModelPriceOverrides().aliases).toEqual({ "my-preview": "claude-opus-5-5" });
+      expect(fs.existsSync(path.join(tempHome, "usage-price-overrides.json"))).toBe(true);
+
+      const facts = analyticsEvents
+        .filter((event) => event.properties?.feature === "usage" && String(event.properties?.action).startsWith("model_"))
+        .map((event) => [event.properties?.action, event.properties?.outcome]);
+      expect(facts).toEqual([
+        ["model_price_changed", "enabled"],
+        ["model_price_changed", "disabled"],
+        ["model_mapping_changed", "enabled"],
+      ]);
+      expect(JSON.stringify(analyticsEvents)).not.toMatch(/local-x|my-preview|opus/i);
+    } finally {
+      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalAdeHome;
+    }
   });
 });
 
