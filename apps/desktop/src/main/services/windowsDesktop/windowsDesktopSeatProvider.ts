@@ -22,9 +22,8 @@ import {
   asNullableString,
   asRecord,
   createSeatProvider,
-  createSeatRequester,
   type DesktopSeatAdapter,
-  type SeatRequester,
+  type SeatProviderWindowsHooks,
 } from "../macDesktop/macDesktopSeatProvider";
 import { resolveWindowsDesktopDriverBinary } from "../native/nativeHelperPaths";
 import { createWindowsDesktopDriverClient } from "./windowsDesktopDriverClient";
@@ -35,7 +34,6 @@ import {
   macDesktopDisplayName,
   type WindowsDesktopPrivateUnavailableReason,
   type WindowsDesktopSeatMode,
-  type WindowsDesktopSetupArgs,
   type WindowsDesktopSetupResult,
   type WindowsDesktopStatus,
   type WindowsDesktopHostState,
@@ -165,11 +163,14 @@ function asSetupResult(raw: unknown, fallbackStatus: WindowsDesktopStatus): Wind
   };
 }
 
-/** The `windows.status` and `windows.setup` op hooks, bound to one requester. */
-function windowsSeatHooks(): {
-  status: (request: SeatRequester) => Promise<WindowsDesktopStatus>;
-  setup: (request: SeatRequester, args: WindowsDesktopSetupArgs) => Promise<WindowsDesktopSetupResult>;
-} {
+const WINDOW_ACTION_OPS: Record<MacDesktopWindowAction, (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS]> = {
+  focus: MAC_DESKTOP_DRIVER_OPS.windowFocus,
+  minimize: MAC_DESKTOP_DRIVER_OPS.windowMinimize,
+  close: MAC_DESKTOP_DRIVER_OPS.windowClose,
+};
+
+/** The Windows-only op hooks (`windows.status`, `windows.setup`, the window verbs). */
+function windowsSeatHooks(): SeatProviderWindowsHooks {
   let lastStatus: WindowsDesktopStatus = asWindowsDesktopStatus({});
   return {
     async status(request) {
@@ -182,6 +183,10 @@ function windowsSeatHooks(): {
       );
       return asSetupResult(reply, lastStatus);
     },
+    windowAction: (request, args) => request(WINDOW_ACTION_OPS[args.action], {
+      laneId: args.laneId,
+      windowId: args.windowId,
+    }),
   };
 }
 
@@ -191,8 +196,7 @@ function windowsSeatHooks(): {
  * without consent and parking needs no sign-in.
  */
 export function createWindowsSeatProvider(client: MacDesktopDriverClient): ReturnType<typeof createSeatProvider> {
-  const request = createSeatRequester(client);
-  const provider = createSeatProvider(client, {
+  return createSeatProvider(client, {
     id: "windows-child-session",
     createArgs: (args) => ({
       seatMode: args.seatMode,
@@ -203,16 +207,6 @@ export function createWindowsSeatProvider(client: MacDesktopDriverClient): Retur
     createTimeoutMs: (args) => (args.seatMode === "private" ? PRIVATE_SIGN_IN_TIMEOUT_MS : undefined),
     windows: windowsSeatHooks(),
   });
-  const windowOps: Record<MacDesktopWindowAction, (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS]> = {
-    focus: MAC_DESKTOP_DRIVER_OPS.windowFocus,
-    minimize: MAC_DESKTOP_DRIVER_OPS.windowMinimize,
-    close: MAC_DESKTOP_DRIVER_OPS.windowClose,
-  };
-  provider.windowAction = (args) => request(windowOps[args.action], {
-    laneId: args.laneId,
-    windowId: args.windowId,
-  });
-  return provider;
 }
 
 /**
@@ -244,6 +238,6 @@ export function createWindowsDesktopSeatAdapter(args: {
     // reports both as granted and never probes or prompts.
     permissionsSupported: false,
     // The pane and the CLI print this; "ADE · <lane>" read as a Mac display.
-    displayName: (laneName) => macDesktopDisplayName(laneName).replace(/^ADE\b/, "Windows Desktop"),
+    displayName: (laneName) => macDesktopDisplayName(laneName, "Windows Desktop"),
   };
 }

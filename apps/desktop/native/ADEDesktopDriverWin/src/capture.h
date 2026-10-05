@@ -3,12 +3,12 @@
 // Two sources, one frame type:
 //
 // * the whole desktop of this session (Mode A, the private screen): GDI
-//   `BitBlt` from the screen DC. The spike measured 25 ms for 1280x800 in a
-//   child session, and it is the one source that keeps working when the
-//   session's host window is hidden.
+//   `BitBlt` from the screen DC: about 25 ms for 1280x800 in a child
+//   session, and the one source that keeps working when the session's host
+//   window is hidden.
 // * one window (Mode B, the shared desktop): `PrintWindow` with
 //   `PW_RENDERFULLCONTENT`, which draws a window that sits off every monitor.
-//   22-32 ms per frame in the spike.
+//   About 22-32 ms per frame.
 //
 // Frames are top-down BGRA.
 

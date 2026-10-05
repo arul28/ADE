@@ -35,7 +35,9 @@ import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
+  hostDesktopTool,
   isAvailableWorkSidebarTab,
+  isDesktopWorkTool,
   isHostMismatchWorkTool,
   workToolContextLabel,
   workToolLabel,
@@ -112,12 +114,10 @@ function hideBuiltInBrowserView(projectRoot: string | null): void {
 
 /** The desktop tool this host offers in place of `tool`, or null. */
 function desktopToolTwin(tool: WorkSidebarTab, context: WorkToolContext): WorkSidebarTab | null {
-  const twin: WorkSidebarTab | null = tool === "mac-desktop"
-    ? "windows-desktop"
-    : tool === "windows-desktop" ? "mac-desktop" : null;
-  return twin && isAvailableWorkSidebarTab(twin, context) && !isHostMismatchWorkTool(twin, context)
-    && (twin === "windows-desktop" ? context.supportsWindowsDesktop === true : context.supportsMacDesktop === true)
-    ? twin
+  if (!isDesktopWorkTool(tool) || !context.hostPlatform) return null;
+  const hostTool = hostDesktopTool(context);
+  return hostTool !== tool && !isHostMismatchWorkTool(hostTool, context) && isAvailableWorkSidebarTab(hostTool, context)
+    ? hostTool
     : null;
 }
 

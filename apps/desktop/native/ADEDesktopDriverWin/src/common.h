@@ -140,4 +140,10 @@ std::wstring exePath();
 std::wstring lower(std::wstring s);
 std::string lowerA(std::string s);
 
+// The file name of a path: what follows its last `\` or `/`.
+inline std::wstring baseName(const std::wstring& path) {
+  const auto slash = path.find_last_of(L"\\/");
+  return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
 }  // namespace ade

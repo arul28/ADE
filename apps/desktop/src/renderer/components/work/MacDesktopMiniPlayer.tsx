@@ -1,4 +1,4 @@
-import { workToolDefinition } from "../terminals/workTools";
+import { desktopToolProductName, workToolDefinition, type DesktopWorkTool } from "../terminals/workTools";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   MacDesktopEventPayload,
@@ -49,10 +49,9 @@ import { readMacDesktopMiniPlayerChoice, writeMacDesktopMiniPlayerChoice } from 
  * and Close. At rest it is the picture and an 8px dot, red while the desktop
  * records. Its place and width are kept across restarts.
  *
- * It used to be one of the corner card's sources, which the owner found
- * wanting on 2026-09-23: it could not be moved, it could not be resized, and it
- * floated over a tools pane that was already showing the desktop. Its rules
- * are now its own (`macDesktopFloatState`).
+ * It is not one of the corner card's sources: as one it could not be moved or
+ * resized, and it floated over a tools pane that was already showing the
+ * desktop. Its rules are its own (`macDesktopFloatState`).
  *
  * The picture is the lane's one decoder when this player holds it (the pane
  * outranks it, see `macDesktopLiveViewLease`), and the last frame from
@@ -222,7 +221,7 @@ function leaseOf(lease: MacDesktopLeaseState | null | undefined): { id: string; 
   return lease?.holderId ? { id: lease.holderId, kind: lease.holder } : null;
 }
 
-type DesktopTool = "mac-desktop" | "windows-desktop";
+type DesktopTool = DesktopWorkTool;
 
 const FLOATING_ICONS: Record<DesktopTool, { Icon: NonNullable<ReturnType<typeof workToolDefinition>>["icon"]; color: string } | null> = {
   "mac-desktop": floatingIcon("mac-desktop"),
@@ -375,7 +374,7 @@ export function MacDesktopMiniPlayer({
     macDesktopControl: { leaseHolder: macScope.leaseHolderKind, recording: macScope.recording },
   }), [macScope.displayKey, macScope.leaseHolderKind, macScope.recording, storedFrame]);
 
-  const desktopName = desktopTool === "windows-desktop" ? "Windows Desktop" : "Mac Desktop";
+  const desktopName = desktopToolProductName(desktopTool);
   /** The Off state's Start: the same explicit start as the pane's Off card. */
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -529,7 +528,7 @@ function MacDesktopMiniPlayerBox({
       concealed={pip.active}
       attrPrefix="mac-mini"
       playerId={laneId}
-      ariaLabel={desktopTool === "windows-desktop" ? "Windows Desktop, floating" : "Mac Desktop, floating"}
+      ariaLabel={`${desktopToolProductName(desktopTool)}, floating`}
       recording={recording}
       capture={capture}
       onStartDrag={startDrag}
@@ -629,7 +628,7 @@ function MacDesktopMiniPlayerBox({
           className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
         >
           <p className="font-sans text-[12px] text-fg/85">
-            {desktopTool === "windows-desktop" ? "Windows Desktop is off" : "Mac Desktop is off"}
+            {`${desktopToolProductName(desktopTool)} is off`}
           </p>
           <button
             type="button"

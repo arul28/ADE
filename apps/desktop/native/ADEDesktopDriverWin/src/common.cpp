@@ -60,9 +60,7 @@ std::string describeAddress(DWORD64 address) {
   }
   wchar_t path[MAX_PATH] = {};
   GetModuleFileNameW(module, path, MAX_PATH);
-  std::wstring name = path;
-  const auto slash = name.find_last_of(L"\\/");
-  if (slash != std::wstring::npos) name = name.substr(slash + 1);
+  const std::wstring name = baseName(path);
   std::string label(name.begin(), name.end());
   const auto base = reinterpret_cast<const BYTE*>(module);
   const DWORD rva = static_cast<DWORD>(address - reinterpret_cast<DWORD64>(module));

@@ -9,6 +9,7 @@ import type {
   RuntimeActivityCounts,
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
+import { USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../../desktop/src/shared/types/macDesktop";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { stripHostOnlyChatMetadata } from "../../../../desktop/src/shared/chatAutoResume";
@@ -88,6 +89,21 @@ function requiredString(value: unknown, label: string): string {
 function requiredBoolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
   return value;
+}
+
+/**
+ * `personalChats.call` is an untrusted edge, so it never answers a card only
+ * the user may answer (the Mac Desktop input lease, the Windows shared seat).
+ * A personal chat has no lane and so never raises one; this keeps it that way.
+ */
+function refuseUserOnlyConsentCard(
+  service: { isUserOnlyPendingInput?: (args: { sessionId: string; itemId: string }) => boolean },
+  args: ObjectArgs,
+): void {
+  const itemId = typeof args.itemId === "string" ? args.itemId.trim() : "";
+  if (itemId && service.isUserOnlyPendingInput?.({ sessionId: readSessionId(args), itemId })) {
+    throw new Error(USER_ONLY_CONSENT_CARD_REFUSAL);
+  }
 }
 
 function readSessionId(args: ObjectArgs): string {
@@ -334,10 +350,12 @@ export class PersonalChatScope {
         break;
       case "respondToInput":
         await this.requirePersonalSession(service, readSessionId(args));
+        refuseUserOnlyConsentCard(service, args);
         result = await service.respondToInput(args as never);
         break;
       case "approve":
         await this.requirePersonalSession(service, readSessionId(args));
+        refuseUserOnlyConsentCard(service, args);
         result = await service.approveToolUse(args as never);
         break;
       case "pendingInputs": {

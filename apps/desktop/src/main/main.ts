@@ -1823,6 +1823,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  /** Windows: this desktop runs elevated, so the background service cannot reach it. */
+  let elevatedDesktop = false;
+  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
@@ -1831,12 +1834,17 @@ app.whenReady().then(async () => {
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
       // Windows: an elevated desktop's pipe refuses the background service.
+      // A lasting state, so the renderer docks a banner for it.
       onElevatedDesktop: () => {
-        if (!Notification.isSupported()) return;
-        new Notification({
-          title: "ADE is running as administrator",
-          body: "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.",
-        }).show();
+        elevatedDesktop = true;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win.isDestroyed()) continue;
+          try {
+            win.webContents.send(IPC.appElevatedDesktopChanged, true);
+          } catch {
+            // ignore
+          }
+        }
       },
     });
   } catch (error) {
@@ -4880,6 +4888,7 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),

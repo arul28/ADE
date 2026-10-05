@@ -48,7 +48,8 @@ import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunch
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
-import { FolderSimpleDashed } from "@phosphor-icons/react";
+import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
+import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
@@ -849,6 +850,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         }
       : null,
     { placement: "docked", priority: APP_BANNER_PRIORITY.project },
+  );
+
+  // Windows: an ADE started as administrator cannot be reached by its own
+  // background service. A lasting state, so a docked banner says so.
+  const [elevatedDesktop, setElevatedDesktop] = useState(false);
+  useEffect(() => {
+    const appApi = window.ade?.app;
+    if (typeof appApi?.getElevatedDesktop !== "function") return;
+    let cancelled = false;
+    void appApi.getElevatedDesktop().then((elevated) => {
+      if (!cancelled && elevated) setElevatedDesktop(true);
+    }).catch(() => {});
+    const unsubscribe = appApi.onElevatedDesktopChanged?.((elevated) => setElevatedDesktop(elevated));
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+  useAppBanner(
+    elevatedDesktop
+      ? {
+          id: "elevated-desktop",
+          tone: "warning",
+          icon: <ShieldWarning size={13} weight="bold" />,
+          title: ELEVATED_DESKTOP_TITLE,
+          detail: ELEVATED_DESKTOP_MESSAGE,
+        }
+      : null,
+    { placement: "docked", priority: APP_BANNER_PRIORITY.app },
   );
 
   const hasAnyAiProvider = useMemo(() => {

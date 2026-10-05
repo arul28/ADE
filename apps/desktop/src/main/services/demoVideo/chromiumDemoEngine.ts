@@ -40,7 +40,6 @@ import {
   DEMO_ANALYSIS_PIXEL_DELTA,
   DEMO_ANALYSIS_THUMBNAIL_LONG_SIDE,
   DEMO_POINTER_POLYGON,
-  DEMO_RAW_FILE_EXTENSION,
   DEMO_RAW_FILE_MAGIC,
   DEMO_RAW_FLAG_KEYFRAME,
   DEMO_RAW_KIND_H264_ACCESS_UNIT,
@@ -54,7 +53,7 @@ import {
   type DemoRenderResult,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
-import { type DemoMp4Info, demoRawStreamFromMp4, isDemoMp4Path, readDemoMp4 } from "./demoMp4Source";
+import { type DemoMp4Info, demoRawStreamFromMp4, isDemoEngineInputPath, isDemoMp4Path, readDemoMp4 } from "./demoMp4Source";
 import { DEMO_RAW_MAX_PAYLOAD_BYTES, hasDemoRawMagic } from "./demoRawFormat";
 
 const PARTITION = "ade-demo-engine";
@@ -977,11 +976,6 @@ async function renameIntoPlace(from: string, to: string): Promise<void> {
  */
 type ServedJob = { input: string; mp4: DemoMp4Info | null; streams: Set<Readable> };
 
-/** True for an input this engine reads: an `.aderaw` capture or an H.264 MP4. */
-function readsInput(inputPath: string): boolean {
-  return path.extname(inputPath).toLowerCase() === DEMO_RAW_FILE_EXTENSION || isDemoMp4Path(inputPath);
-}
-
 export type ChromiumDemoEngine = DemoEngine & { dispose(): void };
 
 export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemoEngine {
@@ -1044,6 +1038,7 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
     if (!mp4 && !(await hasDemoRawMagic(job.input))) {
       throw new Error(`The recording ${path.basename(job.input)} is missing or is not an ADE raw capture.`);
     }
+    // Before any window opens: a movie with no frames has nothing to render.
     if (mp4 && !mp4.frames) throw new Error("The recording has no frames.");
     const size = (await fs.promises.stat(job.input)).size;
     const token = randomBytes(18).toString("base64url");
@@ -1205,7 +1200,7 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
 
   return {
     id: "chromium",
-    canRead: readsInput,
+    canRead: isDemoEngineInputPath,
     analyze,
     render,
     dispose() {

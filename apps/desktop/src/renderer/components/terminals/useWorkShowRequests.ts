@@ -21,6 +21,7 @@ import {
 import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
 import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../work/appControlCardGrants";
 import { useMacDesktopSupport } from "./useMacDesktopSupport";
+import { hostDesktopTool, type DesktopWorkTool } from "./workTools";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -40,7 +41,7 @@ function showPaneTool({
   setWorkSidebarTool,
 }: {
   chatSessionId: string;
-  tool: "ios" | "mac-desktop" | "windows-desktop" | "app-control";
+  tool: "ios" | DesktopWorkTool | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
   setWorkSidebarTool: (tool: WorkSidebarTab) => void;
@@ -100,8 +101,8 @@ export function useWorkShowRequests({
   /*
    * Built from the SESSION in front, never from `activeLaneId`: on the
    * new-chat screen that falls back to the composer's draft lane, so a lane's
-   * simulator read as "belonging" to a new chat that had not started anywhere
-   * (the owner's 2026-09-23 report). No session, no surface: the player hides
+   * simulator would read as "belonging" to a new chat that has not started
+   * anywhere. No session, no surface: the player hides
    * without closing.
    */
   const appleMiniPlayerSurface = useMemo<AppleMiniPlayerSurface | null>(() => (
@@ -114,13 +115,13 @@ export function useWorkShowRequests({
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
   /*
    * `mac-desktop` is the surface name on every host; the pane tool that shows
-   * it is Windows Desktop on a Windows host. The capability read is the cached
-   * one the tools pane already made, so this costs no extra round trip.
+   * it is the host's own (`hostDesktopTool`, the rule the tools pane uses).
+   * This hook runs above `NativeToolFeedsProvider`, so it takes the platform
+   * from the same cached capability read rather than from the provider's
+   * context; it costs no extra round trip.
    */
   const desktopSupport = useMacDesktopSupport({ runtimePin, enabled: active });
-  const desktopTool: "mac-desktop" | "windows-desktop" = desktopSupport?.platform === "win32"
-    ? "windows-desktop"
-    : "mac-desktop";
+  const desktopTool = hostDesktopTool({ hostPlatform: desktopSupport?.platform ?? null });
   const macDesktopToolOpening = workSidebarVisible && workSidebarTool === desktopTool;
   const appControlToolOpening = workSidebarVisible && workSidebarTool === "app-control";
   const showWorkSurface = useCallback((

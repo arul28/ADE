@@ -11,6 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
+import { desktopProductName } from "../../../shared/types/macDesktop";
 
 /**
  * The Work tools pane's catalogue.
@@ -25,9 +26,8 @@ export type WorkToolDefinition = {
   label: string;
   /**
    * Name on the tools tab strip. Omitted means the card label is also the tab
-   * name, which is now true of every tool: the Apple card used to read
-   * "Simulator" while its tab read "Apple", and one tool with two names is one
-   * name too many (spec §0).
+   * name, which is true of every tool: one tool with two names is one name too
+   * many.
    */
   tabLabel?: string;
   /**
@@ -108,9 +108,8 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     id: "ios",
     /*
      * One name everywhere: card, tab, palette, settings, docs, CLI, phone and
-     * web (§B1). Round 2 called it "Apple", which named the company rather
-     * than the work and sat under a generic phone glyph that could equally
-     * have been the browser's. The subtitle is the device and what it is doing
+     * web. Not "Apple", which names the company rather than the work. The
+     * subtitle is the device and what it is doing
      * (`appleToolCardSubtitle`), which is the part worth reading twice.
      */
     label: "Apple Development",
@@ -213,6 +212,16 @@ export type WorkToolContext = {
   /** The host's own words for a `false` Windows answer. */
   windowsDesktopUnsupportedReason?: string | null;
   /**
+   * The lane's runtime host's platform, from the same `macDesktop.getStatus`
+   * read; `null` while it has not answered.
+   *
+   * Separate from the `supports*` flags on purpose: "this host is the wrong
+   * platform" hides a tool, while "this host is the right platform but cannot
+   * run it right now" (a driver missing from the install, no Xcode) keeps the
+   * card, disabled, with the host's reason.
+   */
+  hostPlatform?: NodeJS.Platform | null;
+  /**
    * The host's own words for a `false` above, e.g. the driver is missing from
    * this install. Shown in place of the generic "isn't a Mac" line, which is
    * wrong on a Mac whose driver did not ship.
@@ -270,6 +279,8 @@ const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"
 
 /** Shown on the picker when the bound runtime reports `supported: false`. */
 export const IOS_RUNTIME_UNSUPPORTED_REASON = "The runtime for this project is not a Mac";
+/** The same `false` from a host that is a Mac: it has no usable simulators. */
+export const IOS_MAC_UNSUPPORTED_REASON = "Apple simulators aren't available on this Mac. Install Xcode to use them.";
 
 /** True when this surface may only watch the tool's live view, never drive it. */
 export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
@@ -302,34 +313,64 @@ export function workToolAvailability(
     return { available: false, reason: reason || "This lane's host isn't a Mac" };
   }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
-  if (id === "ios" && !context.supportsIosSimulator) {
-    return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
-  }
   // The HOST's platform, not this one. The reason says so, because "macOS only"
-  // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
+  // on a Mac desktop watching a Linux runtime reads as a bug in ADE — and "not
+  // a Mac" on a Mac without simulators is just as wrong.
+  if (id === "ios" && !context.supportsIosSimulator) {
+    return {
+      available: false,
+      reason: context.hostPlatform === "darwin" ? IOS_MAC_UNSUPPORTED_REASON : IOS_RUNTIME_UNSUPPORTED_REASON,
+    };
+  }
 
   return AVAILABLE;
 }
 
 /**
- * True when the lane's host can never run this tool: Mac Desktop and Apple
- * Development on a Windows host, Windows Desktop on a Mac. Such a card is not
- * shown at all, because a disabled card for something this machine can never
- * do is noise. Only an answered `false` hides a tool; an unanswered
- * capability keeps it, so nothing disappears and comes back a beat later.
- * Cloud lanes are not host mismatches: their card stays and says why.
+ * True when the lane's host is the wrong platform for this tool: Mac Desktop
+ * and Apple Development on a non-Mac host, Windows Desktop on a non-Windows
+ * host. Such a card is not shown at all, because a disabled card for something
+ * this machine can never do is noise.
+ *
+ * Only the host PLATFORM hides a tool. A Mac whose desktop driver is missing,
+ * or that has no Xcode, keeps its card — disabled, with the host's own reason —
+ * because that is something the user can fix. An unanswered platform keeps
+ * every card, so nothing disappears and comes back a beat later. Cloud lanes
+ * are not host mismatches: their card stays and says why.
  */
 export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
   if (context.cloudLane) return false;
-  if (id === "windows-desktop") return context.supportsWindowsDesktop === false;
-  if (id === "mac-desktop") return context.supportsMacDesktop === false;
-  if (id === "ios") return !context.isWebClient && context.supportsIosSimulator === false;
+  const platform = context.hostPlatform ?? null;
+  if (!platform) return false;
+  if (id === "windows-desktop") return platform !== "win32";
+  if (id === "mac-desktop" || id === "ios") return platform !== "darwin";
   return false;
 }
 
 /** The tool cards this host can show, in catalogue order. */
 export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WORK_TOOL_DEFINITIONS {
   return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context));
+}
+
+/** The lane-screen tools: one per host platform, never both. */
+export type DesktopWorkTool = "mac-desktop" | "windows-desktop";
+
+export function isDesktopWorkTool(id: WorkSidebarTab | string | null | undefined): id is DesktopWorkTool {
+  return id === "mac-desktop" || id === "windows-desktop";
+}
+
+/**
+ * The lane-screen tool this host offers. A Windows host offers Windows
+ * Desktop; any other host — and a host that has not answered yet — offers Mac
+ * Desktop, which is what every surface showed before the platform was known.
+ */
+export function hostDesktopTool(context: Pick<WorkToolContext, "hostPlatform">): DesktopWorkTool {
+  return context.hostPlatform === "win32" ? "windows-desktop" : "mac-desktop";
+}
+
+/** "Mac Desktop" or "Windows Desktop", from the one shared naming rule. */
+export function desktopToolProductName(tool: DesktopWorkTool): string {
+  return desktopProductName(tool === "windows-desktop" ? "win32" : "darwin");
 }
 
 export function isAvailableWorkSidebarTab(

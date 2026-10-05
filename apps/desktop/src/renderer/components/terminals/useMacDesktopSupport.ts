@@ -34,6 +34,33 @@ export type MacDesktopSupport = {
   platform: NodeJS.Platform;
 };
 
+/**
+ * The desktop-tool half of a `WorkToolContext`, from one support read: which
+ * lane-screen tool this host has (`hostPlatform`), and whether it can run now.
+ * The Work tools pane and the command palette both build theirs here, so they
+ * agree about which desktop tool exists.
+ */
+export function desktopToolContext(support: MacDesktopSupport | null): {
+  supportsMacDesktop: boolean | null;
+  macDesktopUnsupportedReason: string | null;
+  supportsWindowsDesktop: boolean | null;
+  windowsDesktopUnsupportedReason: string | null;
+  hostPlatform: NodeJS.Platform | null;
+} {
+  return {
+    supportsMacDesktop: support ? support.platform === "darwin" && support.supported : null,
+    macDesktopUnsupportedReason: support?.platform === "darwin" ? support.reason : "This lane’s host isn’t a Mac",
+    // The same read answers both seats: a Windows host that can host a screen
+    // shows Windows Desktop, a Mac host shows Mac Desktop, and only one is
+    // available at a time because one platform answers.
+    supportsWindowsDesktop: support ? support.platform === "win32" && support.supported : null,
+    windowsDesktopUnsupportedReason: support?.platform === "win32" ? support.reason : "This lane's host isn't Windows",
+    // Which tools exist on this host at all; `supports*` says whether the ones
+    // that exist can run right now.
+    hostPlatform: support?.platform ?? null,
+  };
+}
+
 const cache = new Map<string, MacDesktopSupport>();
 
 /** Test-only reset for the module-level capability cache. */
@@ -61,7 +88,7 @@ export function useMacDesktopSupport(args: {
     // Optional call, not an assertion. A surface whose `window.ade` predates
     // this namespace — an older packaged shell, a partially stubbed host —
     // must lose the capability answer, not the whole Work pane.
-    const api = window.ade.macDesktop;
+    const api = window.ade?.macDesktop;
     if (!api) return;
     let cancelled = false;
     void api

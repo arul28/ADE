@@ -1,8 +1,10 @@
 import { useCallback, useSyncExternalStore } from "react";
-import type {
-  MacDesktopDisplay,
-  MacDesktopEventPayload,
-  MacDesktopLaneSummary,
+import {
+  desktopSeatKind,
+  type DesktopSeatKind,
+  type MacDesktopDisplay,
+  type MacDesktopEventPayload,
+  type MacDesktopLaneSummary,
 } from "../../../shared/types/macDesktop";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -32,34 +34,31 @@ const EMPTY: LaneMacDesktops = new Set();
 /** The tooltip and accessible name for a lane's desktop mark. */
 export const LANE_MAC_DESKTOP_LABEL = "Mac Desktop running on this lane";
 
-/**
- * Which screen a lane holds, for the mark's glyph and words. A Windows host
- * runs either the private child session or the user's own desktop.
- */
-export type LaneDesktopKind = "mac" | "windows-private" | "windows-shared";
-
-export const LANE_DESKTOP_LABELS: Record<LaneDesktopKind, string> = {
+/** The mark's tooltip and accessible name for each kind of lane screen. */
+export const LANE_DESKTOP_LABELS: Record<DesktopSeatKind, string> = {
   mac: LANE_MAC_DESKTOP_LABEL,
   "windows-private": "Private Windows screen",
   "windows-shared": "Using your main Windows desktop",
 };
 
-/** The kind from what the host reported: its platform and the lane's seat. */
+/**
+ * The kind of screen a lane holds, by the shared `desktopSeatKind` rule.
+ *
+ * `platform` is the host's, from the feed's status read. Only a display event
+ * that arrives when that read failed has no platform; a display that names a
+ * seat mode is then a Windows one, because only Windows displays carry it.
+ */
 export function laneDesktopKind(args: {
   platform: NodeJS.Platform | null;
-  seatMode?: string | null;
-  mode?: MacDesktopDisplay["mode"] | null;
-}): LaneDesktopKind {
-  const windows = args.platform === "win32" || Boolean(args.seatMode);
-  if (!windows) return "mac";
-  return args.seatMode === "shared" || (!args.seatMode && args.mode === "offscreen-region")
-    ? "windows-shared"
-    : "windows-private";
+  display: Pick<MacDesktopDisplay, "seatMode" | "mode"> | Pick<MacDesktopLaneSummary, "seatMode">;
+}): DesktopSeatKind {
+  const platform = args.platform ?? (args.display.seatMode ? "win32" : null);
+  return desktopSeatKind({ platform, display: args.display });
 }
 
 export type LaneDesktopSeats = {
   lanes: LaneMacDesktops;
-  kinds: ReadonlyMap<string, LaneDesktopKind>;
+  kinds: ReadonlyMap<string, DesktopSeatKind>;
 };
 
 /** Lane ids holding a display, from one status answer's lane list. */
@@ -103,7 +102,7 @@ export function useLaneMacDesktops(): LaneMacDesktops {
   return useLaneDesktopSeats().lanes;
 }
 
-const EMPTY_KINDS: ReadonlyMap<string, LaneDesktopKind> = new Map();
+const EMPTY_KINDS: ReadonlyMap<string, DesktopSeatKind> = new Map();
 const EMPTY_SEATS: LaneDesktopSeats = { lanes: EMPTY, kinds: EMPTY_KINDS };
 
 /**
@@ -130,39 +129,42 @@ function openSeatFeed(): SeatFeed {
   if (!api?.getStatus) return feed;
   let cancelled = false;
   let platform: NodeJS.Platform | null = null;
-  const withKind = (laneId: string, kind: LaneDesktopKind): ReadonlyMap<string, LaneDesktopKind> => {
-    if (feed.seats.kinds.get(laneId) === kind) return feed.seats.kinds;
-    return new Map(feed.seats.kinds).set(laneId, kind);
-  };
-  const applyLanes = (lanes: LaneMacDesktops, kinds: ReadonlyMap<string, LaneDesktopKind>) => {
+  const applyLanes = (lanes: LaneMacDesktops, kinds: ReadonlyMap<string, DesktopSeatKind>) => {
     const sameSet = sameLanes(lanes, feed.seats.lanes);
     if (sameSet && kinds === feed.seats.kinds) return;
     publish({ lanes: sameSet ? feed.seats.lanes : lanes, kinds });
   };
-  // Events that land while the first read is in flight are replayed onto its
-  // answer, so a display created in that gap is not lost.
+  /** One event applied to a lane set and its kinds; the kind uses `platform` as known now. */
+  const applyEvent = (
+    lanes: LaneMacDesktops,
+    kinds: ReadonlyMap<string, DesktopSeatKind>,
+    event: MacDesktopEventPayload,
+  ): [LaneMacDesktops, ReadonlyMap<string, DesktopSeatKind>] => {
+    const nextLanes = applyLaneMacDesktopEvent(lanes, event);
+    if (event.type !== "display-created") return [nextLanes, kinds];
+    const laneId = event.display.laneId?.trim();
+    if (!laneId) return [nextLanes, kinds];
+    const kind = laneDesktopKind({ platform, display: event.display });
+    return [nextLanes, kinds.get(laneId) === kind ? kinds : new Map(kinds).set(laneId, kind)];
+  };
+  // Events that land while the first read is in flight are held and replayed
+  // onto its answer, once the host's platform is known, so a display created in
+  // that gap is neither lost nor given the wrong kind.
   let pending: MacDesktopEventPayload[] | null = [];
   let unsubscribe: (() => void) | null = api.onEvent?.((event: MacDesktopEventPayload) => {
     if (event.type !== "display-created" && event.type !== "display-destroyed") return;
-    const kinds = event.type === "display-created"
-      ? withKind(event.display.laneId, laneDesktopKind({
-        platform,
-        seatMode: event.display.seatMode,
-        mode: event.display.mode,
-      }))
-      : feed.seats.kinds;
     if (pending) {
       pending.push(event);
-      if (kinds !== feed.seats.kinds) publish({ lanes: feed.seats.lanes, kinds });
-    } else {
-      applyLanes(applyLaneMacDesktopEvent(feed.seats.lanes, event), kinds);
+      return;
     }
+    applyLanes(...applyEvent(feed.seats.lanes, feed.seats.kinds, event));
   }) ?? null;
-  const settle = (base: LaneMacDesktops, kinds: ReadonlyMap<string, LaneDesktopKind>) => {
-    let next = base;
-    for (const event of pending ?? []) next = applyLaneMacDesktopEvent(next, event);
+  const settle = (base: LaneMacDesktops, baseKinds: ReadonlyMap<string, DesktopSeatKind>) => {
+    let lanes = base;
+    let kinds = baseKinds;
+    for (const event of pending ?? []) [lanes, kinds] = applyEvent(lanes, kinds, event);
     pending = null;
-    applyLanes(next, kinds);
+    applyLanes(lanes, kinds);
   };
   void api.getStatus({})
     .then((status) => {
@@ -175,12 +177,12 @@ function openSeatFeed(): SeatFeed {
         return;
       }
       platform = status.platform ?? null;
-      const fromRead = (status.lanes ?? []).flatMap((lane) => {
+      const kinds = new Map<string, DesktopSeatKind>();
+      for (const lane of status.lanes ?? []) {
         const laneId = lane.laneId?.trim();
-        return laneId ? [[laneId, laneDesktopKind({ platform, seatMode: lane.seatMode })] as const] : [];
-      });
-      // An event that landed while the read was out is newer than the read.
-      settle(buildLaneMacDesktops(status.lanes), new Map([...fromRead, ...feed.seats.kinds]));
+        if (laneId) kinds.set(laneId, laneDesktopKind({ platform, display: lane }));
+      }
+      settle(buildLaneMacDesktops(status.lanes), kinds);
     })
     .catch(() => {
       // An unreachable host is not "no displays"; events still move the set.
@@ -228,8 +230,12 @@ export function useLaneDesktopSeats(): LaneDesktopSeats {
  * The desktop a single lane holds, or null. For the chat header's button; it
  * shares the list's one read rather than opening a per-lane one.
  */
-export function useLaneDesktopSeat(laneId: string | null | undefined): LaneDesktopKind | null {
-  const seats = useLaneDesktopSeats();
+export function useLaneDesktopSeat(laneId: string | null | undefined): DesktopSeatKind | null {
+  return laneDesktopSeat(useLaneDesktopSeats(), laneId);
+}
+
+/** The desktop a lane holds in one seats answer, or null when it holds none. */
+export function laneDesktopSeat(seats: LaneDesktopSeats, laneId: string | null | undefined): DesktopSeatKind | null {
   if (!laneId || !seats.lanes.has(laneId)) return null;
-  return seats.kinds.get(laneId) ?? "mac";
+  return seats.kinds.get(laneId) ?? null;
 }

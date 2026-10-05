@@ -14,7 +14,7 @@
  */
 
 import type {
-  DesktopSeatKind,
+  DesktopSeatProviderId,
   DesktopSeatProvider,
   DesktopSeatReply,
   MacDesktopAppLeftOpen,
@@ -22,6 +22,7 @@ import type {
   MacDesktopInputMode,
   MacDesktopWalkStop,
   MacDesktopWindow,
+  MacDesktopWindowAction,
   WindowsDesktopSeatMode,
   WindowsDesktopSetupArgs,
   WindowsDesktopSetupResult,
@@ -121,11 +122,16 @@ export function createSeatRequester(client: MacDesktopDriverClient): SeatRequest
 export type SeatProviderWindowsHooks = {
   status: (request: SeatRequester) => Promise<WindowsDesktopStatus>;
   setup: (request: SeatRequester, args: WindowsDesktopSetupArgs) => Promise<WindowsDesktopSetupResult>;
+  /** Raise, minimize or close one of the lane's own windows. */
+  windowAction: (
+    request: SeatRequester,
+    args: { laneId: string; windowId: number; action: MacDesktopWindowAction },
+  ) => Promise<DesktopSeatReply>;
 };
 
 export type SeatProviderConfig = {
   /** Defaults to the Mac virtual display. */
-  id?: DesktopSeatKind;
+  id?: DesktopSeatProviderId;
   /** Extra fields merged into `display.create` (Windows seat mode + consent). */
   createArgs?: (args: {
     laneId: string;
@@ -318,6 +324,7 @@ export function createSeatProvider(
     const hooks = config.windows;
     provider.windowsStatus = () => hooks.status(request);
     provider.setupWindows = (args) => hooks.setup(request, args);
+    provider.windowAction = (args) => hooks.windowAction(request, args);
   }
 
   return provider;
@@ -339,7 +346,7 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
  * second implementation and the reason the interface exists.
  */
 export type DesktopSeatAdapter = {
-  readonly id: DesktopSeatKind;
+  readonly id: DesktopSeatProviderId;
   /** The one platform this adapter serves. */
   readonly platform: NodeJS.Platform;
   /** The sentence a wrong-platform rejection carries. */

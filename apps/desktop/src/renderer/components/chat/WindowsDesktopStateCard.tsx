@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { Key, Lock, WindowsLogo, Warning } from "@phosphor-icons/react";
 
 import {
+  macDesktopErrorCode,
   windowsDesktopOperationFailureText,
   type WindowsDesktopOperationFailureKind,
 } from "./macDesktopErrorText";
@@ -11,9 +12,9 @@ import {
   WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE,
   windowsDesktopPrivateUnavailableMessage,
   type MacDesktopDriverHealth,
-  type WindowsDesktopOperation,
   type WindowsDesktopStatus,
 } from "../../../shared/types/macDesktop";
+import { windowsDesktopOperationFor } from "./useMacDesktopStatus";
 import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";
 import { WORK_TOOL_PRIMARY_BUTTON } from "../terminals/workToolChrome";
 
@@ -28,9 +29,9 @@ import { WORK_TOOL_PRIMARY_BUTTON } from "../terminals/workToolChrome";
  * was closed mid-sign-in and opened again shows the same progress and the same
  * clock, never an empty state and never a second request.
  *
- * `Use main desktop` asks for consent first, except from the held card: there
- * the button itself is the trusted client's consent, and the card says what it
- * means before it is pressed. The service refuses a shared create without the
+ * `Use main desktop` asks for consent first (`confirmDialog`), except from the
+ * held card: there the button itself is the trusted client's consent, and the
+ * card says what it means before it is pressed. The service refuses a shared create without the
  * consent field regardless.
  */
 
@@ -50,13 +51,6 @@ const HOST_FAILURE_TTL_MS = 10 * 60_000;
 
 /** Dismissed host outcomes, by `endedAt`, so a reopened pane does not repeat them. */
 const dismissedHostOutcomes = new Set<string>();
-
-/** The operation the host is running that concerns this lane, if any. */
-function operationFor(windows: WindowsDesktopStatus, laneId: string): WindowsDesktopOperation | null {
-  const operation = windows.operation ?? null;
-  if (!operation) return null;
-  return operation.laneId === null || operation.laneId === laneId ? operation : null;
-}
 
 function hostFailureFor(windows: WindowsDesktopStatus, laneId: string): Failure | null {
   const last = windows.lastOperation ?? null;
@@ -166,13 +160,12 @@ export function WindowsDesktopStateCard({
 }) {
   const [busy, setBusy] = useState<{ kind: Busy; at: number } | null>(null);
   const [localFailure, setLocalFailure] = useState<Failure | null>(null);
-  const [showingConsent, setShowingConsent] = useState(false);
   const [, setDismissTick] = useState(0);
 
   const api = window.ade.macDesktop;
   const holderName = windows.heldByLaneName?.trim() || "Another lane";
   const heldByOther = Boolean(windows.heldByLaneId && windows.heldByLaneId !== laneId);
-  const hostOperation = operationFor(windows, laneId);
+  const hostOperation = windowsDesktopOperationFor(windows, laneId);
   const errorOptions = { laneId, laneName, passwordSaved: windows.passwordSaved };
 
   /**
@@ -206,9 +199,28 @@ export function WindowsDesktopStateCard({
     }
   };
 
-  const startPrivate = () => api.start({ laneId, seatMode: "private", chatSessionId: sessionId }, runtimePin);
-  const savePassword = () => api.setupWindows({ allowPrompt: true, savePassword: true }, runtimePin);
-  const openSharedDesktop = () => void run("shared", () => api.useSharedDesktop({ laneId, chatSessionId: sessionId }, runtimePin));
+  /** What each step asks the host to do: the buttons and Try again both run these. */
+  const ACTIONS: Record<Busy, () => Promise<unknown>> = {
+    setup: () => api.setupWindows({ allowPrompt: true }, runtimePin),
+    save_password: () => api.setupWindows({ allowPrompt: true, savePassword: true }, runtimePin),
+    forget_password: () => api.setupWindows({ allowPrompt: true, forgetPassword: true }, runtimePin),
+    start_private: () => api.start({ laneId, seatMode: "private", chatSessionId: sessionId }, runtimePin),
+    takeover: () => api.takeoverWindows({ laneId, chatSessionId: sessionId }, runtimePin),
+    shared: () => api.useSharedDesktop({ laneId, chatSessionId: sessionId }, runtimePin),
+  };
+  const runStep = (kind: Busy) => void run(kind, ACTIONS[kind]);
+  /** Save the password, then start the private screen without another click. */
+  const saveAndStart = () => void run("save_password", ACTIONS.save_password, ACTIONS.start_private);
+  const openSharedDesktop = () => runStep("shared");
+  /** `Use main desktop` from a card that has not already said what it means. */
+  const askThenOpenSharedDesktop = () => void (async () => {
+    const confirmed = await confirmDialog({
+      title: "Use your main desktop?",
+      message: WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE,
+      confirmLabel: "Use main desktop",
+    });
+    if (confirmed) openSharedDesktop();
+  })();
 
   // In progress: this card's own request, the pane's start, or one the host is
   // running for this lane (started before the pane was last closed).
@@ -258,29 +270,11 @@ export function WindowsDesktopStateCard({
     };
     // A saved password Windows rejected has been forgotten: the fix is a new one.
     const needsNewPassword = failure.kind !== "save_password" && !windows.passwordSaved
-      && /WINDOWS_DESKTOP_WRONG_PASSWORD/.test(failure.raw);
+      && macDesktopErrorCode(failure.raw) === "WINDOWS_DESKTOP_WRONG_PASSWORD";
     const retry = (): void => {
       if (failure.hostKey) dismissedHostOutcomes.add(failure.hostKey);
-      if (needsNewPassword || failure.kind === "save_password") {
-        void run("save_password", savePassword, failure.kind === "save_password" ? undefined : startPrivate);
-        return;
-      }
-      switch (failure.kind) {
-        case "setup":
-          void run("setup", () => api.setupWindows({ allowPrompt: true }, runtimePin));
-          return;
-        case "forget_password":
-          void run("forget_password", () => api.setupWindows({ allowPrompt: true, forgetPassword: true }, runtimePin));
-          return;
-        case "takeover":
-          void run("takeover", () => api.takeoverWindows({ laneId, chatSessionId: sessionId }, runtimePin));
-          return;
-        case "shared":
-          openSharedDesktop();
-          return;
-        default:
-          void run("start_private", startPrivate);
-      }
+      if (needsNewPassword) saveAndStart();
+      else runStep(failure.kind);
     };
     return (
       <MacDesktopStateCard
@@ -330,42 +324,6 @@ export function WindowsDesktopStateCard({
           >
             Check again
           </button>
-        )}
-      />
-    );
-  }
-
-  if (showingConsent) {
-    return (
-      <MacDesktopStateCard
-        testId="windows-desktop-shared-consent"
-        tone="idle"
-        icon={Warning}
-        title="Use your main desktop?"
-        detail={WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE}
-        actions={(
-          <>
-            <button
-              type="button"
-              data-testid="windows-desktop-consent-accept"
-              className={WORK_TOOL_PRIMARY_BUTTON}
-              onClick={() => {
-                setShowingConsent(false);
-                openSharedDesktop();
-              }}
-            >
-              <WindowsLogo size={14} />
-              Use main desktop
-            </button>
-            <button
-              type="button"
-              data-testid="windows-desktop-consent-decline"
-              className={MAC_DESKTOP_SECONDARY_BUTTON}
-              onClick={() => setShowingConsent(false)}
-            >
-              Cancel
-            </button>
-          </>
         )}
       />
     );
@@ -424,8 +382,7 @@ export function WindowsDesktopStateCard({
                   message: "Their screen signs out and its apps close. Nothing carries over.",
                   confirmLabel: "Take over",
                 });
-                if (!confirmed) return;
-                await run("takeover", () => api.takeoverWindows({ laneId, chatSessionId: sessionId }, runtimePin));
+                if (confirmed) runStep("takeover");
               })()}
             >
               Take over
@@ -450,7 +407,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-setup-run"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              onClick={() => void run("setup", () => api.setupWindows({ allowPrompt: true }, runtimePin))}
+              onClick={() => runStep("setup")}
             >
               Set up private screens
             </button>
@@ -458,7 +415,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-setup-shared"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
-              onClick={() => setShowingConsent(true)}
+              onClick={askThenOpenSharedDesktop}
             >
               Use main desktop
             </button>
@@ -482,7 +439,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-unavailable-shared"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              onClick={() => setShowingConsent(true)}
+              onClick={askThenOpenSharedDesktop}
             >
               Use main desktop
             </button>
@@ -514,7 +471,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-save-and-start"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              onClick={() => void run("save_password", savePassword, startPrivate)}
+              onClick={saveAndStart}
             >
               Save password and start
             </button>
@@ -523,7 +480,7 @@ export function WindowsDesktopStateCard({
               data-testid="windows-desktop-start"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
               title="Windows asks for your password each time"
-              onClick={() => void run("start_private", startPrivate)}
+              onClick={() => runStep("start_private")}
             >
               Start without saving
             </button>
@@ -531,7 +488,7 @@ export function WindowsDesktopStateCard({
               type="button"
               data-testid="windows-desktop-shared"
               className={MAC_DESKTOP_SECONDARY_BUTTON}
-              onClick={() => setShowingConsent(true)}
+              onClick={askThenOpenSharedDesktop}
             >
               Use main desktop
             </button>
@@ -555,7 +512,7 @@ export function WindowsDesktopStateCard({
             type="button"
             data-testid="windows-desktop-start"
             className={WORK_TOOL_PRIMARY_BUTTON}
-            onClick={() => void run("start_private", startPrivate)}
+            onClick={() => runStep("start_private")}
           >
             <WindowsLogo size={14} />
             Start private screen
@@ -564,7 +521,7 @@ export function WindowsDesktopStateCard({
             type="button"
             data-testid="windows-desktop-shared"
             className={MAC_DESKTOP_SECONDARY_BUTTON}
-            onClick={() => setShowingConsent(true)}
+            onClick={askThenOpenSharedDesktop}
           >
             Use main desktop
           </button>
@@ -575,7 +532,7 @@ export function WindowsDesktopStateCard({
           type="button"
           data-testid="windows-desktop-forget-password"
           className="font-sans text-xs text-muted-fg underline-offset-2 hover:text-fg hover:underline"
-          onClick={() => void run("forget_password", () => api.setupWindows({ allowPrompt: true, forgetPassword: true }, runtimePin))}
+          onClick={() => runStep("forget_password")}
         >
           Forget saved password
         </button>

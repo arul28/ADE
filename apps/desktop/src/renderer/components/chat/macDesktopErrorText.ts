@@ -21,6 +21,8 @@
  * dropped (with the sentence tidied) otherwise.
  */
 
+import type { WindowsDesktopOperationKind } from "../../../shared/types/macDesktop";
+
 /** `MAC_DESKTOP_NO_DISPLAY: `, and the driver's lowercase `window_not_ready: `. */
 const CODE_PREFIX = /^(?:(?:MAC|WINDOWS)_DESKTOP_[A-Z0-9_]+|[a-z][a-z0-9_]*(?:_[a-z0-9_]+)+):\s*/;
 
@@ -39,6 +41,13 @@ export type MacDesktopErrorTextOptions = {
   machineVersion?: string | null;
 };
 
+/** `The desktop driver did not answer windows.setup in 160000ms.` */
+const DRIVER_TIMEOUT = /^The desktop driver did not answer \S+ in \d+ms\.?$/i;
+/** `The desktop driver stopped (code 1).` */
+const DRIVER_STOPPED = /^The desktop driver stopped \([^)]*\)\.?$/i;
+
+const MAC_DESKTOP_MISSING_DOMAIN = /Domain ['"]mac_desktop['"] is unavailable in this runtime/i;
+
 /**
  * The one error that means "update ADE on that machine".
  *
@@ -50,13 +59,6 @@ export type MacDesktopErrorTextOptions = {
  * not about the screen the user just opened — so it becomes a sentence naming
  * the machine and the version, which is the one thing they can act on.
  */
-/** `The desktop driver did not answer windows.setup in 160000ms.` */
-const DRIVER_TIMEOUT = /^The desktop driver did not answer \S+ in \d+ms\.?$/i;
-/** `The desktop driver stopped (code 1).` */
-const DRIVER_STOPPED = /^The desktop driver stopped \([^)]*\)\.?$/i;
-
-const MAC_DESKTOP_MISSING_DOMAIN = /Domain ['"]mac_desktop['"] is unavailable in this runtime/i;
-
 function macDesktopMissingDomainText(options?: MacDesktopErrorTextOptions): string {
   const machine = options?.machineName?.trim() || "That machine";
   const version = options?.machineVersion?.trim();
@@ -135,13 +137,8 @@ export function macDesktopErrorCode(raw: string | null | undefined): string | nu
   return match ? match[1]! : null;
 }
 
-export type WindowsDesktopOperationFailureKind =
-  | "setup"
-  | "save_password"
-  | "forget_password"
-  | "start_private"
-  | "takeover"
-  | "shared";
+/** A Windows step that can fail: the host's own operations, plus take over and the shared desktop. */
+export type WindowsDesktopOperationFailureKind = WindowsDesktopOperationKind | "takeover" | "shared";
 
 /**
  * What a failed Windows sign-in, setup or start should say: a title naming

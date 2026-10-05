@@ -1091,6 +1091,8 @@ declare global {
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         readClipboardText: () => Promise<string>;
+        getElevatedDesktop: () => Promise<boolean>;
+        onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => () => void;
         hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{
           data: string;

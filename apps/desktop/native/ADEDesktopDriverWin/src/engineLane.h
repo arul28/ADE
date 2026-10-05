@@ -72,6 +72,13 @@ inline std::vector<std::string> stringList(const Json& value) {
   return out;
 }
 
+// A browser launched on the private seat gets a stable per-lane profile under
+// `laneDataDir`, unless the caller chose one: an app that hands a second launch
+// to its running instance would otherwise open on the user's own desktop.
+// Inserts the profile flags at the front of `args`; returns the profile
+// directory, or null when none was added. engineLaunch.cpp.
+Json addLaneBrowserProfile(const std::wstring& target, const std::wstring& laneDataDir, std::vector<std::wstring>& args);
+
 [[noreturn]] inline void failLocked() {
   fail(code::kLocked, "This PC is locked, so the private screen cannot take input. The agent waits until it is unlocked.");
 }

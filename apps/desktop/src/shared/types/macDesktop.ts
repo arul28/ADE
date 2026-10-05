@@ -501,6 +501,25 @@ export type MacDesktopClickArgs = MacDesktopTarget & MacDesktopControllerArgs & 
   chatSessionId?: string | null;
 };
 
+/**
+ * Windows types real text one character per `SendInput`, with a pause after
+ * each (a WinUI editor drops batched characters), so a long `type` takes real
+ * time. The driver refuses more than this many characters in one call.
+ */
+export const WINDOWS_DESKTOP_MAX_TYPED_CHARS = 4_000;
+/** The driver budget for one Windows `type`: base plus a per-character cost, capped. */
+export const WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS = 20_000;
+export const WINDOWS_DESKTOP_TYPE_PER_CHAR_MS = 25;
+export const WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS =
+  WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS + WINDOWS_DESKTOP_MAX_TYPED_CHARS * WINDOWS_DESKTOP_TYPE_PER_CHAR_MS;
+
+export function windowsDesktopTypeTimeoutMs(textLength: number): number {
+  return Math.min(
+    WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS,
+    WINDOWS_DESKTOP_TYPE_BASE_TIMEOUT_MS + Math.max(0, textLength) * WINDOWS_DESKTOP_TYPE_PER_CHAR_MS,
+  );
+}
+
 export type MacDesktopTypeArgs = MacDesktopControllerArgs & MacDesktopSilentArgs & {
   laneId: string;
   text: string;
@@ -1002,6 +1021,8 @@ export type DesktopSeatSummary = {
   seatDescription: string | null;
   /** True when real pointer/keyboard input on this lane's screen needs the lease. */
   realInputNeedsLease: boolean;
+  /** The real-input rule for this seat, as one sentence, or null with no screen. */
+  realInputSentence: string | null;
   /** Windows: whether the private seat can start now, and why not. */
   privateAvailable: boolean | null;
   privateUnavailable: string | null;
@@ -1016,93 +1037,24 @@ export type DesktopSeatSummary = {
   nextStep: string | null;
 };
 
-/** The product name a host's lane screen goes by. */
-export function desktopProductName(platform: string | null | undefined): string {
-  return platform === "win32" ? "Windows Desktop" : "Mac Desktop";
-}
-
-export const WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION =
-  "private — a separate Windows session of the user's account. It shows the same wallpaper and taskbar, but it has its own pointer and keyboard and is NOT the user's screen.";
-export const WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION =
-  "shared — the user's main Windows desktop. Actions take over the window the user is using.";
-
 /**
- * The status summary every text surface leads with.
- *
- * Pure, and in the shared contract, so the service attaches it and an older
- * runtime's reply can still be summarized by the CLI the same way.
+ * Which kind of lane screen a host and display describe: a Mac virtual display,
+ * the private Windows child session, or the user's shared Windows desktop.
  */
-export function describeDesktopSeat(status: Pick<MacDesktopStatus, "platform" | "supported" | "display" | "windowsDesktop"> & { displayMode?: MacDesktopDisplayMode }): DesktopSeatSummary {
-  const product = desktopProductName(status.platform);
-  const display = status.display ?? null;
-  if (status.platform !== "win32") {
-    const mode = display?.mode ?? null;
-    return {
-      product,
-      seat: mode === "virtual" ? "virtual-display" : mode === "offscreen-region" ? "offscreen-region" : null,
-      seatDescription: !display
-        ? null
-        : mode === "offscreen-region"
-          ? "off-screen region of the user's main display (this Mac has no virtual display)"
-          : "a private virtual display on this Mac; the user's screen and pointer are not touched by accessibility actions",
-      realInputNeedsLease: true,
-      privateAvailable: null,
-      privateUnavailable: null,
-      heldBy: null,
-      setupDone: null,
-      passwordSaved: null,
-      locked: null,
-      nextStep: !status.supported
-        ? null
-        : !display ? "ade screen start --text" : null,
-    };
-  }
-  const windows = status.windowsDesktop ?? null;
-  const seat = display ? (display.seatMode ?? windows?.seatMode ?? "private") : null;
-  const setupDone = windows ? windows.childSessionsEnabled && windows.remoteDesktopAllowed : null;
-  const heldBy = windows?.heldByLaneId
-    ? (windows.heldByLaneName ? `${windows.heldByLaneName} (${windows.heldByLaneId})` : windows.heldByLaneId)
-    : null;
-  const nextStep = (() => {
-    if (!status.supported) return null;
-    if (display) return null;
-    switch (windows?.privateUnavailableReason) {
-      case "setup_required":
-        return "Ask the user to set up Windows Desktop once (the Windows Desktop pane's setup card, or `ade screen setup --allow-prompt` from a trusted ADE client). You cannot do this step.";
-      case "locked":
-        return "The PC is locked. Ask the user to unlock it, then run: ade screen start --text";
-      case "held":
-        return `Lane ${heldBy ?? "another lane"} holds the private screen. Ask the user to take it over (Take over in the Windows Desktop pane), or run \`ade screen start --shared --text\` to ask the user, in this chat, to let you use their main desktop.`;
-      case "not_console_session":
-        return "ADE is not running on the PC's own desktop, so the private screen cannot start. Run `ade screen start --shared --text` to ask the user to let you use their main desktop.";
-      case "unsupported_platform":
-        return "This Windows edition has no private screens. Run `ade screen start --shared --text` to ask the user to let you use their main desktop.";
-      default:
-        return windows && windows.passwordSaved === false
-          ? "ade screen start --text (Windows asks the user to sign in on the PC; ask them to save their password in the Windows Desktop pane so later starts are automatic)"
-          : "ade screen start --text";
-    }
-  })();
-  return {
-    product,
-    seat,
-    seatDescription: seat === "shared"
-      ? WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION
-      : seat === "private"
-        ? WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION
-        : null,
-    realInputNeedsLease: seat === "shared",
-    privateAvailable: windows ? windows.privateAvailable : null,
-    privateUnavailable: windows?.privateUnavailableReason
-      ? windowsDesktopPrivateUnavailableMessage(windows.privateUnavailableReason)
-      : null,
-    heldBy,
-    setupDone,
-    passwordSaved: windows ? windows.passwordSaved : null,
-    locked: windows ? windows.locked : null,
-    nextStep,
-  };
-}
+export type DesktopSeatKind = "mac" | "windows-private" | "windows-shared";
+
+// The seat logic (`describeDesktopSeat`, `desktopSeatKind`, the product name,
+// the seat sentences and the next-step table) lives in `../desktopSeat`, and is
+// re-exported here so every existing import keeps working.
+export {
+  WINDOWS_DESKTOP_NEXT_STEP,
+  WINDOWS_DESKTOP_PRIVATE_SEAT_DESCRIPTION,
+  WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION,
+  describeDesktopSeat,
+  desktopProductName,
+  desktopSeatKind,
+  windowsDesktopPrivateUnavailableMessage,
+} from "../desktopSeat";
 
 export type MacDesktopGetStatusArgs = {
   laneId?: string | null;
@@ -1381,7 +1333,7 @@ export function reduceMacDesktopNotParked(
  * private child session and the shared console desktop, and the driver reports
  * which it is on every `display.create` reply.
  */
-export type DesktopSeatKind =
+export type DesktopSeatProviderId =
   | "mac-virtual-display"
   | "windows-child-session"
   | "windows-shared-desktop";
@@ -1551,7 +1503,7 @@ export type DesktopSeatReply = Record<string, unknown>;
  * service reaches its helper through it and nothing else.
  */
 export type DesktopSeatProvider = {
-  readonly id: DesktopSeatKind;
+  readonly id: DesktopSeatProviderId;
   health(): Promise<DesktopSeatReply>;
   create(args: {
     laneId: string;
@@ -1725,13 +1677,14 @@ export const MAC_DESKTOP_PROOF_BACKEND_NAME = "ade-mac-desktop";
  */
 export const AUTOMATION_CHAT_SESSION_PREFIX = "automation:";
 
-export function macDesktopDisplayName(laneName: string | null | undefined): string {
+/** "ADE · <lane>", or "<prefix> · <lane>" for a host that names its screen differently. */
+export function macDesktopDisplayName(laneName: string | null | undefined, prefix = "ADE"): string {
   const trimmed = laneName?.trim();
-  return trimmed?.length ? `ADE · ${trimmed}` : "ADE lane";
+  return trimmed?.length ? `${prefix} · ${trimmed}` : `${prefix} lane`;
 }
 
 /** True for either Windows seat, so one predicate answers "is this Windows?". */
-export function isWindowsDesktopSeatKind(id: DesktopSeatKind): boolean {
+export function isWindowsDesktopSeatProvider(id: DesktopSeatProviderId): boolean {
   return id === "windows-child-session" || id === "windows-shared-desktop";
 }
 
@@ -1745,32 +1698,24 @@ export const WINDOWS_DESKTOP_WORK_TOOL_ID = "windows-desktop" as const;
 export const WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE =
   "The private Windows screen is not available. ADE can still work on your main Windows desktop, but it will take over the window you are using while it acts.";
 
+/** `providerMetadata` key on the shared-seat consent card. */
+export const WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY = "windowsDesktopSharedConsent" as const;
+/** `providerMetadata` key on the real-input lease card. */
+export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as const;
+
 /**
- * Why the private screen is unavailable, as one short sentence.
- *
- * One map, read by the pane and the ask card, so the two describe the same code
- * the same way. An unknown reason falls through to itself rather than a vague
- * sentence, exactly as `macDesktopNotParkedPhrase` does.
+ * True for a pending-input card only the user may answer: the shared-seat
+ * consent and the real-input lease. The answer IS the permission, so an agent
+ * caller (session-bound, unbound, or the CTO's tools) is refused.
  */
-export function windowsDesktopPrivateUnavailableMessage(
-  reason: WindowsDesktopPrivateUnavailableReason | string | null | undefined,
-): string {
-  switch (reason) {
-    case "unsupported_platform":
-      return "Private Windows screens need Windows Pro, Enterprise, or Education.";
-    case "not_console_session":
-      return "ADE is not running on this PC's desktop, so it cannot start a private screen.";
-    case "setup_required":
-      return "Private screens are not set up on this PC yet.";
-    case "held":
-      return "Another lane is using the private screen.";
-    case "locked":
-      return "This PC is locked.";
-    default:
-      return "The private Windows screen is not available.";
-  }
+export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
+  return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
+    || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true;
 }
 
+/** What an agent is told when it tries to answer one of those cards. */
+export const USER_ONLY_CONSENT_CARD_REFUSAL =
+  "This card asks the user for permission, so only the user can answer it. Wait for the user to choose Allow or Don't allow in the chat.";
 
 export function isMacDesktopHandle(value: unknown): value is string {
   return typeof value === "string" && /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);

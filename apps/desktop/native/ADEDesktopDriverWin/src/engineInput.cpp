@@ -225,11 +225,19 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     if (windows.empty()) fail(code::kNoWindow, "Lane " + lane.laneId + " has a screen but no window to scroll.");
     HWND scrollWindow = payloadWindow(windows, payload);
     if (!scrollWindow) scrollWindow = windows.front().hwnd;
-    RECT frame = windows.front().frame;
-    for (const auto& w : windows) if (w.hwnd == scrollWindow) frame = w.frame;
-    POINT c = centerOf(frame);
+    // The private seat raises (and restores) the window first, as a person
+    // would; the shared seat cannot, so a minimized window there is refused.
+    if (priv) raiseOnPrivateSeat(scrollWindow);
+    else if (IsIconic(scrollWindow)) fail(code::kNoWindow, "That window is minimized. Focus it first (ade screen focus --window <id>), then scroll.");
+    WinInfo current;
+    if (!describeWindow(scrollWindow, current)) fail(code::kWindowNotFound, "That window closed before it could be scrolled.");
+    // The wheel lands at the middle of the part of the window on the lane's
+    // screen; a window reaching past the lane's area would put it elsewhere.
+    RECT visible{};
+    if (!IntersectRect(&visible, &current.frame, &lane.area))
+      fail(code::kNoWindow, "That window is not on this lane's screen, so it cannot be scrolled.");
+    POINT c = centerOf(visible);
     if (priv) {
-      raiseOnPrivateSeat(scrollWindow);
       if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
     } else {
       postScroll(scrollWindow, c.x, c.y, direction, amount);

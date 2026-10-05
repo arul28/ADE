@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import {
+  DEMO_RAW_FILE_EXTENSION,
   DEMO_RAW_FILE_MAGIC,
   DEMO_RAW_FLAG_KEYFRAME,
   DEMO_RAW_KIND_H264_ACCESS_UNIT,
@@ -34,8 +35,24 @@ export function isDemoMp4Path(filePath: string): boolean {
   return DEMO_MP4_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
+/** What a demo engine reads: an `.aderaw` capture, or an H.264 movie (the Windows desktop driver's recording). */
+export const DEMO_ENGINE_INPUT_EXTENSIONS: readonly string[] = [DEMO_RAW_FILE_EXTENSION, ...DEMO_MP4_EXTENSIONS];
+
+/** The one rule for which files a demo engine takes as input. */
+export function isDemoEngineInputPath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  return DEMO_ENGINE_INPUT_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
 /** A `moov` larger than this is not a screen recording's. */
 const MAX_MOOV_BYTES = 256 * 1024 * 1024;
+
+/**
+ * More samples than any screen recording has (over 18 hours at 60 fps). The
+ * sample tables' counts come from the file, so each is bounded before
+ * anything is allocated for it.
+ */
+const MAX_SAMPLES = 4_000_000;
 
 export type DemoMp4Sample = {
   offset: number;
@@ -123,13 +140,26 @@ async function topLevelBoxes(handle: fs.promises.FileHandle, fileSize: number): 
     let headerSize = 8;
     if (size === 1) {
       if (bytesRead < 16) break;
-      size = Number(header.readBigUInt64BE(8));
+      const wide = header.readBigUInt64BE(8);
+      if (wide > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Mp4UnusableError(`The recording's ${type} box claims an impossible size, so it cannot be read.`);
+      }
+      size = Number(wide);
       headerSize = 16;
     } else if (size === 0) {
       size = fileSize - offset;
     }
     if (size < headerSize) throw new Mp4Error("The movie file is corrupt (a box with an impossible size).");
-    boxes.push({ type, start: offset, headerSize, size: Math.min(size, fileSize - offset) });
+    if (size > fileSize - offset) {
+      // A box that runs past the end: the file was cut short. With the index
+      // already read, the movie is still usable up to here; without it, it is not.
+      if (!boxes.some((box) => box.type === "moov")) {
+        throw new Mp4UnusableError(`The recording's ${type} box runs past the end of the file, so the file was cut short and cannot be played.`);
+      }
+      boxes.push({ type, start: offset, headerSize, size: fileSize - offset });
+      break;
+    }
+    boxes.push({ type, start: offset, headerSize, size });
     offset += size;
   }
   return boxes;
@@ -140,17 +170,32 @@ function hex2(value: number): string {
 }
 
 /** The video track's sample tables, turned into samples in decode order. */
-function readSamples(buffer: Buffer, stbl: Box, timescale: number): Array<DemoMp4Sample & { end: number }> {
+function readSamples(
+  buffer: Buffer,
+  stbl: Box,
+  timescale: number,
+  fileSize: number,
+): Array<DemoMp4Sample & { end: number }> {
   const req = (type: string): Box => {
     const box = child(buffer, stbl, type);
     if (!box) throw new Mp4Error(`The movie's video track has no ${type} table.`);
     return box;
   };
+  const refuse = (type: string): never => {
+    throw new Mp4UnusableError(`The recording's ${type} table claims more entries than the file holds, so it cannot be read.`);
+  };
+  /** A table's entry count, refused when its entries would not fit in its box. */
+  const entryCount = (box: Box, countAt: number, entrySize: number): number => {
+    const n = buffer.readUInt32BE(countAt);
+    if (n > MAX_SAMPLES || countAt + 4 + n * entrySize > box.start + box.size) refuse(box.type);
+    return n;
+  };
 
   const stsz = req("stsz");
   let o = fullBody(stsz);
   const uniformSize = buffer.readUInt32BE(o);
-  const count = buffer.readUInt32BE(o + 4);
+  const count = uniformSize ? buffer.readUInt32BE(o + 4) : entryCount(stsz, o + 4, 4);
+  if (count > MAX_SAMPLES || (uniformSize && count > Math.floor(fileSize / uniformSize))) refuse("stsz");
   const sizes = new Array<number>(count);
   for (let i = 0; i < count; i += 1) sizes[i] = uniformSize || buffer.readUInt32BE(o + 8 + i * 4);
 
@@ -160,17 +205,17 @@ function readSamples(buffer: Buffer, stbl: Box, timescale: number): Array<DemoMp
   const chunkOffsets: number[] = [];
   if (stco) {
     o = fullBody(stco);
-    const n = buffer.readUInt32BE(o);
+    const n = entryCount(stco, o, 4);
     for (let i = 0; i < n; i += 1) chunkOffsets.push(buffer.readUInt32BE(o + 4 + i * 4));
   } else if (co64) {
     o = fullBody(co64);
-    const n = buffer.readUInt32BE(o);
+    const n = entryCount(co64, o, 8);
     for (let i = 0; i < n; i += 1) chunkOffsets.push(Number(buffer.readBigUInt64BE(o + 4 + i * 8)));
   }
 
   const stsc = req("stsc");
   o = fullBody(stsc);
-  const stscCount = buffer.readUInt32BE(o);
+  const stscCount = entryCount(stsc, o, 12);
   const runs: Array<{ firstChunk: number; perChunk: number }> = [];
   for (let i = 0; i < stscCount; i += 1) {
     runs.push({ firstChunk: buffer.readUInt32BE(o + 4 + i * 12), perChunk: buffer.readUInt32BE(o + 8 + i * 12) });
@@ -193,7 +238,7 @@ function readSamples(buffer: Buffer, stbl: Box, timescale: number): Array<DemoMp
 
   const stts = req("stts");
   o = fullBody(stts);
-  const sttsCount = buffer.readUInt32BE(o);
+  const sttsCount = entryCount(stts, o, 8);
   const dts = new Array<number>(count);
   const durations = new Array<number>(count);
   let time = 0;
@@ -218,7 +263,7 @@ function readSamples(buffer: Buffer, stbl: Box, timescale: number): Array<DemoMp
   if (ctts) {
     const signed = version(buffer, ctts) === 1;
     o = fullBody(ctts);
-    const n = buffer.readUInt32BE(o);
+    const n = entryCount(ctts, o, 8);
     sample = 0;
     for (let i = 0; i < n && sample < count; i += 1) {
       const runLength = buffer.readUInt32BE(o + 4 + i * 8);
@@ -231,7 +276,7 @@ function readSamples(buffer: Buffer, stbl: Box, timescale: number): Array<DemoMp
   let keys: Set<number> | null = null;
   if (stss) {
     o = fullBody(stss);
-    const n = buffer.readUInt32BE(o);
+    const n = entryCount(stss, o, 4);
     keys = new Set();
     for (let i = 0; i < n; i += 1) keys.add(buffer.readUInt32BE(o + 4 + i * 4) - 1);
   }
@@ -317,7 +362,7 @@ export async function readDemoMp4(filePath: string): Promise<DemoMp4Info> {
         parameterSets.push(Buffer.from(buffer.subarray(o + 2, o + 2 + length)));
         o += 2 + length;
       }
-      const samples = readSamples(buffer, stbl, timescale);
+      const samples = readSamples(buffer, stbl, timescale, fileSize);
       for (const sample of samples) {
         if (sample.offset + sample.size > fileSize) throw new Mp4Error("The recording's samples run past the end of the file.");
       }
@@ -345,7 +390,7 @@ export async function readDemoMp4(filePath: string): Promise<DemoMp4Info> {
 }
 
 export type DemoMp4Inspection =
-  | { status: "ok"; durationSeconds: number; width: number; height: number; frames: number }
+  | { status: "ok"; durationSeconds: number }
   /** Nothing to show: empty, never finalised, or no frames. Never proof. */
   | { status: "unusable"; reason: string }
   /** Some other movie (HEVC, fragmented, a corrupt table): not judged here. */
@@ -356,7 +401,7 @@ export async function inspectDemoMp4(filePath: string): Promise<DemoMp4Inspectio
   try {
     const info = await readDemoMp4(filePath);
     if (!info.frames) return { status: "unusable", reason: "The recording has no frames." };
-    return { status: "ok", durationSeconds: info.durationSeconds, width: info.width, height: info.height, frames: info.frames };
+    return { status: "ok", durationSeconds: info.durationSeconds };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return error instanceof Mp4UnusableError || (error as NodeJS.ErrnoException)?.code === "ENOENT"

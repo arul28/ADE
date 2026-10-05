@@ -144,6 +144,7 @@ import {
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
+import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
 import {
@@ -11779,7 +11780,7 @@ export function createAgentChatService(args: {
         cancelSteer: ({ sessionId, steerId }) => cancelSteer({ sessionId, steerId }),
         listSubagents: ({ sessionId }) => listSubagents({ sessionId }),
         approveToolUse: ({ sessionId, toolUseId, decision }) =>
-          approveToolUse({ sessionId, itemId: toolUseId, decision }),
+          approveToolUseAsAgent({ sessionId, itemId: toolUseId, decision }),
         issueTracker: linearIssueTracker ?? null,
         ctoStateService: ctoStateService ?? null,
         ctoMemoryService: ctoMemoryService ?? null,
@@ -15496,16 +15497,7 @@ export function createAgentChatService(args: {
     };
     acquired.pooled.bridge.onUiCancel = (requestId) => {
       if (managed.runtime !== runtime) return;
-      const pending = managed.localPendingInputs.get(requestId);
-      if (!pending) return;
-      managed.localPendingInputs.delete(requestId);
-      pending.resolve({ decision: "cancel" });
-      emitPendingInputResolved(managed, {
-        itemId: requestId,
-        decision: "cancel",
-        turnId: pending.request.turnId ?? null,
-        questions: pending.request.questions,
-      });
+      cancelLocalPendingInput(managed, requestId);
     };
     acquired.pooled.bridge.onUiNotice = (payload) => {
       if (managed.runtime !== runtime) return;
@@ -22336,16 +22328,27 @@ export function createAgentChatService(args: {
   ): void => {
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
       if (!sources.includes(pending.request.source)) continue;
-      managed.localPendingInputs.delete(itemId);
-      pending.resolve({ decision: "cancel" });
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pending.request.turnId ?? null,
-        questions: pending.request.questions,
-      });
+      cancelLocalPendingInput(managed, itemId);
     }
   };
+
+  /**
+   * Cancels one card in `managed.localPendingInputs`: drops it, answers its
+   * waiter with `cancel`, and writes the `pending_input_resolved` receipt.
+   * A card that is already gone is left alone.
+   */
+  function cancelLocalPendingInput(managed: ManagedChatSession, itemId: string): void {
+    const pending = managed.localPendingInputs.get(itemId);
+    if (!pending) return;
+    managed.localPendingInputs.delete(itemId);
+    pending.resolve({ decision: "cancel" });
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: "cancel",
+      turnId: pending.request.turnId ?? null,
+      questions: pending.request.questions,
+    });
+  }
 
   /**
    * The shared body of the four `settle*` wrappers below: empty the map,
@@ -30318,14 +30321,7 @@ export function createAgentChatService(args: {
       // only this form's card is stale now.
       for (const [itemId, pending] of [...managed.localPendingInputs]) {
         if (asRecord(pending.request.providerMetadata)?.formId !== formId) continue;
-        managed.localPendingInputs.delete(itemId);
-        pending.resolve({ decision: "cancel" });
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: "cancel",
-          turnId: pending.request.turnId ?? null,
-          questions: pending.request.questions,
-        });
+        cancelLocalPendingInput(managed, itemId);
       }
     }
     if (sessionId !== runtime.handle.sessionId) emitOpenCodeChildBlocked(managed, runtime, sessionId, null);
@@ -55123,6 +55119,33 @@ export function createAgentChatService(args: {
     onPendingInputDismissed?.({ provider: managed.session.provider });
   };
 
+  /**
+   * True when the card waiting under `itemId` is one only the user may answer
+   * (`isUserOnlyConsentCard`). The RPC server and the CTO's approve tool ask
+   * this before they let an agent caller answer a card.
+   */
+  const isUserOnlyPendingInput = ({ sessionId, itemId }: { sessionId: string; itemId: string }): boolean => {
+    const managed = managedSessions.get(sessionId.trim());
+    if (!managed) return false;
+    const trimmedItemId = itemId.trim();
+    const request = managed.asyncQuestions.get(trimmedItemId)?.request
+      ?? managed.localPendingInputs.get(trimmedItemId)?.request
+      ?? (managed.runtime?.kind === "codex" || managed.runtime?.kind === "claude"
+        ? managed.runtime.approvals.get(trimmedItemId)?.request
+        : undefined);
+    return isUserOnlyConsentCard(request?.providerMetadata ?? null);
+  };
+
+  /** The CTO's approve tool: an agent, so it cannot answer a consent card. */
+  const approveToolUseAsAgent = async (args: {
+    sessionId: string;
+    itemId: string;
+    decision: AgentChatApprovalDecision;
+  }): Promise<void> => {
+    if (isUserOnlyPendingInput(args)) throw new Error(USER_ONLY_CONSENT_CARD_REFUSAL);
+    await approveToolUse(args);
+  };
+
   const approveToolUse = async ({
     sessionId,
     itemId,
@@ -59643,6 +59666,11 @@ export function createAgentChatService(args: {
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
     eventDetail?: Record<string, unknown>;
+    /**
+     * Cancels the card when the asker stops waiting, so a late answer cannot
+     * act for a caller that is gone. Resolves as `cancel`.
+     */
+    signal?: AbortSignal;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -59788,12 +59816,17 @@ export function createAgentChatService(args: {
       answers?: Record<string, string | string[]>;
       responseText?: string | null;
     }>((resolve) => {
+      if (args.signal?.aborted) {
+        resolve({ decision: "cancel" });
+        return;
+      }
       managed.localPendingInputs.set(itemId, { request, resolve });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: args.eventDescription ?? request.description ?? args.body,
         ...(args.eventDetail !== undefined ? { detail: args.eventDetail } : {}),
       });
+      args.signal?.addEventListener("abort", () => cancelLocalPendingInput(managed, itemId), { once: true });
     });
 
     const normalizedAnswers = normalizePendingInputAnswers(request, response.answers, response.responseText);
@@ -60485,6 +60518,8 @@ export function createAgentChatService(args: {
     getCtoThreadHealth,
     getCtoAttention,
     approveToolUse,
+    approveToolUseAsAgent,
+    isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
     dismissPendingInputForSettlement,

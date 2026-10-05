@@ -10,6 +10,7 @@ import {
   type WorkSidebarTab,
 } from "../../state/appStore";
 import { closeWorkToolForReal } from "./closeWorkToolForReal";
+import { isDesktopWorkTool } from "./workTools";
 import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
 import { confirmMacDesktopToolClose } from "../chat/MacDesktopStopConfirm";
 
@@ -211,7 +212,7 @@ export function useWorkSidebarTool(
         });
       };
       /*
-       * Round 4 §B3: closing the Apple tab POWERS THE DEVICE OFF, so it asks
+       * Closing the Apple tab POWERS THE DEVICE OFF, so it asks
        * first — but only when there is something to power off.
        *
        * The gate is here rather than inside `closeWorkToolForReal` because
@@ -223,7 +224,7 @@ export function useWorkSidebarTool(
        * Mac Desktop asks too, while a display runs, and has a third answer:
        * "Keep running" closes the tab and leaves the display up.
        */
-      if (target === "mac-desktop" || target === "windows-desktop") {
+      if (isDesktopWorkTool(target)) {
         void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
           if (answer === "stop") drop();
           else if (answer === "keep") drop(false);

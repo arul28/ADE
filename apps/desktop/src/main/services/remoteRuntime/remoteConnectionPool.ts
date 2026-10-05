@@ -33,6 +33,7 @@ import {
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
@@ -182,6 +183,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Waits on the user's answer to the shared-seat card, then the start.
   ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A long Windows `type` is typed one character at a time.
+  ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;

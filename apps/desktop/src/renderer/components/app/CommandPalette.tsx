@@ -98,6 +98,7 @@ import {
 } from "./commandPaletteWork";
 import { requestWorkTool } from "../terminals/workToolRequests";
 import type { WorkToolContext } from "../terminals/workTools";
+import { desktopToolContext, useMacDesktopSupport } from "../terminals/useMacDesktopSupport";
 import { fadeScale } from "../../lib/motion";
 import {
   captureGestureChord,
@@ -544,12 +545,17 @@ export function CommandPalette({
       cancelled = true;
     };
   }, [projectBinding]);
+  // The lane-screen tool follows the HOST platform, from the same cached
+  // support read the Work tools use: a Windows host offers Windows Desktop
+  // only, a Mac host Mac Desktop only.
+  const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open });
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
       supportsIosSimulator,
       isWebClient: isWebClientMode(),
+      ...desktopToolContext(macDesktopSupport),
     }),
-    [supportsIosSimulator],
+    [macDesktopSupport, supportsIosSimulator],
   );
 
   const commands: Command[] = useMemo(() => {

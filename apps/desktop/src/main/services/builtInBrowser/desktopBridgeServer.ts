@@ -36,7 +36,6 @@ import {
   isDemoEngineBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/demoEngineBridgeClient";
 import {
-  DEMO_RAW_FILE_EXTENSION,
   type DemoEngine,
   type DemoPlan,
 } from "../../../shared/demoVideo/demoContract";
@@ -45,7 +44,8 @@ import {
   resolveBuiltInBrowserActorCapability,
   revokeBuiltInBrowserActorCapability,
 } from "./builtInBrowserActorCapabilities";
-import { DEMO_MP4_EXTENSIONS } from "../demoVideo/demoMp4Source";
+import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
+import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
@@ -105,7 +105,7 @@ const execFileAsync = promisify(execFile);
  * True when this Windows process runs elevated (High or System integrity).
  * `whoami /groups` names the token's mandatory label; never throws.
  */
-export async function isWindowsProcessElevated(): Promise<boolean> {
+async function isWindowsProcessElevated(): Promise<boolean> {
   if (process.platform !== "win32") return false;
   try {
     const whoami = resolveTrustedWindowsTool("whoami");
@@ -278,7 +278,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           if (!elevated) return;
           logger.warn("built_in_browser_bridge.elevated_desktop", {
             socketPath,
-            reason: "ADE is running as administrator, so the ADE background service cannot reach it. Quit ADE and open it normally.",
+            reason: `${ELEVATED_DESKTOP_TITLE}. ${ELEVATED_DESKTOP_MESSAGE}`,
           });
           args.onElevatedDesktop?.();
         });
@@ -734,8 +734,6 @@ async function resolveRecorderTargetPath(filePath: string | null): Promise<strin
   return path.join(realDir, path.basename(filePath));
 }
 
-/** What the demo engine reads: an `.aderaw` capture, or an H.264 movie (the Windows desktop driver's recording). */
-const DEMO_ENGINE_INPUT_EXTENSIONS = [DEMO_RAW_FILE_EXTENSION, ...DEMO_MP4_EXTENSIONS];
 
 /**
  * A file the demo engine may read (`mustExist`) or write. Absolute, with an

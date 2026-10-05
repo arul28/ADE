@@ -11,9 +11,9 @@ import {
   type JsonRpcTransport,
 } from "../../jsonrpc";
 import {
+  checkBuiltInBrowserDesktopBridgeAuth,
   createBuiltInBrowserDesktopBridgeClient,
   DesktopBridgeUnavailableError,
-  verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./desktopBridgeClient";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 import type { BuiltInBrowserDesktopBridgeClient } from "./desktopBridgeMethods";
@@ -150,10 +150,10 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       return { authenticated: true };
     });
 
-    await expect(verifyBuiltInBrowserDesktopBridgeAuth({
+    await expect(checkBuiltInBrowserDesktopBridgeAuth({
       socketPath: server.socketPath,
       authToken: "ephemeral-secret",
-    })).resolves.toBe(true);
+    }).then((result) => result.verified)).resolves.toBe(true);
     expect(seen).toEqual([expect.objectContaining({
       method: "built_in_browser.authenticate",
       params: { __adeDesktopBridgeAuth: "ephemeral-secret" },

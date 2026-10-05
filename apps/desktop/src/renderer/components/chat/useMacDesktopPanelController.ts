@@ -22,6 +22,7 @@ import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordin
 import { macDesktopApi } from "./macDesktopApi";
 import { macDesktopMissingPermissions, type MacDesktopPermissionCheck } from "./MacDesktopPermissionCard";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
+import type { DesktopWorkTool } from "../terminals/workTools";
 import {
   displayPointToViewPoint,
   macDesktopContentBox,
@@ -122,7 +123,7 @@ export type ChatMacDesktopPanelProps = {
    * but the first read has not answered while it says "Checking", so without
    * this a Windows host read "Checking Mac Desktop…".
    */
-  desktopKind?: "mac" | "windows";
+  desktopTool?: DesktopWorkTool;
 };
 
 export function useMacDesktopPanelController({
@@ -130,7 +131,7 @@ export function useMacDesktopPanelController({
   laneName,
   sessionId,
   runtimePin,
-  desktopKind = "mac",
+  desktopTool = "mac-desktop",
 }: ChatMacDesktopPanelProps) {
   // The machine on the other end of the pin, for the one failure that is about
   // it rather than about this screen: a brain with no `mac_desktop` domain.
@@ -951,9 +952,9 @@ export function useMacDesktopPanelController({
 
   /**
    * "Restart capture", after a yes/no question: a new driver process and a new
-   * screen for this lane. For a driver whose streams stopped sending
-   * frames while its screenshots still worked (2026-09-28); Reconnect only
-   * restarted the stream inside the same stuck process. The old process takes
+   * screen for this lane. For a driver whose streams stop sending frames
+   * while its screenshots still work; Reconnect only restarts the stream
+   * inside the same stuck process. The old process takes
    * its screens with it, so the lane's open apps stay open on the main screen.
    */
   const restartCapture = useCallback(async () => {
@@ -994,7 +995,7 @@ export function useMacDesktopPanelController({
 
 
   return {
-    desktopKind,
+    desktopTool,
     laneId, laneName, sessionId, runtimePin, machineFacts,
     status, setStatus, statusError, setStatusError, readError, unconfirmed, refreshStatus, stopDisplay, stopping,
     start, starting, gaveUp, cursor, notParked, dismissNotParked, appsLeftOpen, dismissAppLeftOpen,

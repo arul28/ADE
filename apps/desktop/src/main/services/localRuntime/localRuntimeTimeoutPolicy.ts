@@ -1,5 +1,6 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
+import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 
@@ -143,6 +144,14 @@ export const WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS = 180_000;
 export const WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS = 195_000;
 /** The renderer's timer outlives the transport, so the real reason wins. */
 export const WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS = 210_000;
+/**
+ * Windows types one character at a time, so a long `type` outlives the 30 s
+ * default. The brain's own driver budget is capped at
+ * `WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS`; the caller waits a little longer so
+ * the brain's own answer arrives first.
+ */
+export const WINDOWS_DESKTOP_TYPE_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS + 15_000;
+export const WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS = WINDOWS_DESKTOP_TYPE_TIMEOUT_MS + 15_000;
 
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
@@ -199,6 +208,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
   // Waits on the user's answer to the shared-seat card, then the start.
   ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS],
+  // See WINDOWS_DESKTOP_TYPE_TIMEOUT_MS.
+  ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_TIMEOUT_MS],
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],

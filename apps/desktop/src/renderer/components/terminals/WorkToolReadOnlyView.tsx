@@ -22,6 +22,7 @@ import {
   type MacDesktopPoint,
 } from "../chat/useMacDesktopRealInput";
 import { cn } from "../ui/cn";
+import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
 import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
 
 /**
@@ -61,7 +62,7 @@ export const WORK_TOOL_READ_ONLY_POLL_MS = 4_000;
 export const WORK_TOOL_READ_ONLY_LIVE_POLL_MS = 15_000;
 
 export type WorkToolReadOnlyViewProps = {
-  tool: "browser" | "app-control" | "mac-desktop" | "windows-desktop";
+  tool: "browser" | "app-control" | DesktopWorkTool;
   laneId: string | null;
 };
 
@@ -127,7 +128,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
   // the host: when it advertises takeover, "Control from the desktop" would
   // contradict the button right above it. `supportsMacDesktopControl` is a
   // synchronous hello read, so this costs no state.
-  const macDesktopControlAvailable = (tool === "mac-desktop" || tool === "windows-desktop")
+  const macDesktopControlAvailable = isDesktopWorkTool(tool)
     && macDesktopWebApi()?.supportsMacDesktopControl?.() === true;
 
   useEffect(() => {
@@ -173,7 +174,7 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto px-3 py-3">
       {tool === "browser" ? <BrowserSummary state={state} /> : null}
       {tool === "app-control" ? <AppControlSummary state={state} /> : null}
-      {tool === "mac-desktop" || tool === "windows-desktop" ? (
+      {isDesktopWorkTool(tool) ? (
         <MacDesktopPanel
           laneId={laneId}
           macDesktop={state.macDesktop}

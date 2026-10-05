@@ -15,7 +15,9 @@ import {
   WindowsLogo,
 } from "@phosphor-icons/react";
 import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
-import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
+import { desktopSeatKind, type MacDesktopWindow } from "../../../shared/types/macDesktop";
+import { desktopToolProductName } from "../terminals/workTools";
+import { STOP_CONFIRM_COPY } from "./MacDesktopStopConfirm";
 import { cn } from "../ui/cn";
 import { MakingDemoPill, RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import {
@@ -36,7 +38,6 @@ import { MAC_DESKTOP_NOT_ANSWERING } from "./macDesktopStatusStore";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import {
-  MAC_DESKTOP_LIST_ROW,
   MAC_DESKTOP_LIST_TITLE,
   MacDesktopAppIcon,
   MacDesktopMinimizedBadge,
@@ -137,32 +138,29 @@ const MacDesktopWindowCard = memo(function MacDesktopWindowCard({
 
 export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanelController }) {
   const {
-    laneId, laneName, sessionId, runtimePin, machineFacts, status, setStatus, statusError, setStatusError, readError,
-    unconfirmed, refreshStatus, stopDisplay, stopping, start, starting, gaveUp, cursor, notParked, dismissNotParked,
+    laneId, laneName, sessionId, runtimePin, machineFacts, status, statusError, setStatusError, readError,
+    unconfirmed, stopDisplay, stopping, start, starting, gaveUp, notParked, dismissNotParked,
     appsLeftOpen, dismissAppLeftOpen, pickerOpen, setPickerOpen, claimable, claimableLoading, claimError, expanded,
-    setExpanded, paneMaximize, busy, setBusy, checkingPermissions, setCheckingPermissions, captureError, setCaptureError,
-    captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId, setSelectedWindowId,
-    lastObservation, surfaceNode, videoHost, canvasSlot, attachCanvasSlot, attachSurface, errorText, display, lease, windows,
+    setExpanded, paneMaximize, busy, checkingPermissions, captureError, setCaptureError,
+    captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId,
+    lastObservation, videoHost, attachCanvasSlot, attachSurface, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, permissionCheck, confirmStop, setConfirmStop,
     restartingCapture, restartCapture,
-    connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
+    connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
-    saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopKind,
+    saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool,
   } = controller;
-  const windowsHost = desktopKind === "windows" || status?.platform === "win32" || Boolean(status?.windowsDesktop);
-  const desktopName = windowsHost ? "Windows Desktop" : "Mac Desktop";
-  /** A Windows seat on the user's own desktop (Mode B) rather than the private screen. */
-  const windowsShared = windowsHost && Boolean(display)
-    && (display?.seatMode === "shared" || (!display?.seatMode && display?.mode === "offscreen-region"));
-  const stopLabel = windowsShared
-    ? "Stop using your main desktop"
-    : windowsHost ? "Stop the private screen" : `Stop ${desktopName}`;
-  const stopConsequence = windowsShared
-    ? "The agent stops working on your desktop, and windows it moved off-screen come back."
-    : windowsHost
-      ? "The private screen signs out, and apps this lane opened there close, even with unsaved work."
-      : "Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.";
+  const windowsHost = desktopTool === "windows-desktop" || status?.platform === "win32";
+  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop");
+  /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
+  const seatKind = desktopSeatKind({
+    platform: windowsHost ? "win32" : status?.platform,
+    display,
+    windowsDesktop: display ? status?.windowsDesktop : null,
+  });
+  const windowsShared = Boolean(display) && seatKind === "windows-shared";
+  const { action: stopLabel, consequence: stopConsequence } = STOP_CONFIRM_COPY[seatKind];
   // Hidden entirely when the host cannot host a display. The tab is hidden too
   // (`workToolAvailability`); this is the case where the tab was already open
   // when the answer arrived.
@@ -995,7 +993,8 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             icon: <WindowsLogo size={16} aria-hidden="true" />,
             title: "Using your main Windows desktop",
             detail: "ADE takes over the window you are using while it acts. Stop gives your desktop back.",
-            actions: [{ label: "Stop", onClick: () => void stopDisplay() }],
+            // Same confirmation as the chrome-row Stop: it quits the lane's apps.
+            actions: [{ label: "Stop", onClick: () => setConfirmStop(true) }],
           }}
         />
       ) : null}

@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
-import { desktopProductName } from "../../desktop/src/shared/types/macDesktop";
+import { desktopProductName, USER_ONLY_CONSENT_CARD_REFUSAL, WINDOWS_DESKTOP_NEXT_STEP } from "../../desktop/src/shared/types/macDesktop";
 import {
   createSessionHomeResolver,
   type SessionHomeLane,
@@ -3579,9 +3579,9 @@ export function scopeMacDesktopAdeActionArgs(
   if (isCtoOnlyAdeAction("mac_desktop", action)) {
     // The Windows steps are the user's; say what the agent does instead.
     const windowsUserStep: Record<string, string> = {
-      setupWindows: "Windows Desktop setup and the saved password are the user's steps: ask them to use the setup card in the Windows Desktop pane",
-      takeoverWindows: "taking the private Windows screen from another lane is the user's choice: ask them to press Take over in the Windows Desktop pane",
-      useSharedDesktop: "only the user can allow the main desktop: run `ade screen start --shared --reason \"<why>\"` to ask them in this chat",
+      setupWindows: `Windows Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
+      takeoverWindows: `taking the private Windows screen from another lane is the user's choice. ${WINDOWS_DESKTOP_NEXT_STEP.held}`,
+      useSharedDesktop: WINDOWS_DESKTOP_NEXT_STEP.consent,
     };
     scopeAccessDenied(
       windowsUserStep[action] ?? "mac_desktop viewing and permission actions belong to user clients",
@@ -4085,6 +4085,22 @@ function isExternalSessionProviderName(value: string | null): value is ExternalS
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
 }
 
+/**
+ * The first argument `run_ade_action` passes to the service method: the first
+ * positional entry, else the scalar `arg`, else the object args. A guard that
+ * reads a different shape than the dispatch passes can be stepped around.
+ */
+function firstDispatchedAdeActionArg(args: {
+  argsList: unknown[] | null;
+  hasScalarArg: boolean;
+  scalarArg: unknown;
+  objectArgs: Record<string, unknown>;
+}): unknown {
+  if (args.argsList) return args.argsList[0];
+  if (args.hasScalarArg) return args.scalarArg;
+  return args.objectArgs;
+}
+
 function isUnboundAdeCliCaller(session: SessionState): boolean {
   // `ade actions run` is a local user-facing escape hatch. Unlike an agent
   // launched inside Work, it has no chat/run lane binding, so applying the
@@ -4316,7 +4332,7 @@ async function runCtoOperatorBridgeTool(
     cancelSteer: ({ sessionId, steerId }) => agentChatService.cancelSteer({ sessionId, steerId }),
     listSubagents: ({ sessionId }) => agentChatService.listSubagents({ sessionId }),
     approveToolUse: ({ sessionId, toolUseId, decision }) =>
-      agentChatService.approveToolUse({ sessionId, itemId: toolUseId, decision }),
+      agentChatService.approveToolUseAsAgent({ sessionId, itemId: toolUseId, decision }),
     ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
       agentChatService.ensureIdentitySession({
         identityKey: "cto",
@@ -5211,6 +5227,33 @@ async function runTool(args: {
         `run_ade_action:${domain}.${action}`,
       );
     }
+    if (
+      domain === "chat"
+      && (action === "respondToInput" || action === "approveToolUse")
+      && (!isUserClient || isUnboundAdeCliCaller(session))
+    ) {
+      // The Mac input-lease and Windows shared-seat cards ARE the user's
+      // permission. An agent answering one would be granting itself access, so
+      // only a trusted user client (desktop, phone, web) may answer them. The
+      // ids are read from the argument the dispatch below will actually pass;
+      // ids that cannot be read are refused rather than let through.
+      const first = firstDispatchedAdeActionArg({ argsList, hasScalarArg, scalarArg: toolArgs.arg, objectArgs: rawObjectArgs });
+      const answerArgs = isRecord(first) ? first : {};
+      const answerSessionId = asOptionalTrimmedString(answerArgs.sessionId);
+      const answerItemId = asOptionalTrimmedString(answerArgs.itemId);
+      if (
+        !answerSessionId
+        || !answerItemId
+        || runtime.agentChatService?.isUserOnlyPendingInput({ sessionId: answerSessionId, itemId: answerItemId }) !== false
+      ) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          answerSessionId && answerItemId
+            ? USER_ONLY_CONSENT_CARD_REFUSAL
+            : `chat.${action} needs object arguments with sessionId and itemId.`,
+        );
+      }
+    }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(
@@ -5574,6 +5617,7 @@ async function runTool(args: {
     }
     try {
       if (!scopedResultHandled) {
+        // Keep in step with `firstDispatchedAdeActionArg`, which guards read.
         if (argsList) {
           result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
         } else if (hasScalarArg) {

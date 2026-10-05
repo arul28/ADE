@@ -73,7 +73,10 @@ vi.mock("../apple/useLaneAppleDevices", async (importOriginal) => ({
 const { laneMacDesktopsForTest } = vi.hoisted(() => ({ laneMacDesktopsForTest: new Set<string>() }));
 vi.mock("./useLaneMacDesktops", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./useLaneMacDesktops")>()),
-  useLaneMacDesktops: () => laneMacDesktopsForTest,
+  useLaneDesktopSeats: () => ({
+    lanes: laneMacDesktopsForTest,
+    kinds: new Map([...laneMacDesktopsForTest].map((laneId) => [laneId, "mac" as const])),
+  }),
 }));
 
 function makePr(overrides: Partial<PrSummary> = {}): PrSummary {

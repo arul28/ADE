@@ -5,6 +5,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../../desktop/src/shared/demoVideo/demoContract";
+import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../../desktop/src/shared/types/builtInBrowser";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserBridgeServedMethod,
@@ -314,7 +315,7 @@ function bridgeAuthFailure(error: unknown): DesktopBridgeAuthCheck & { verified:
       verified: false,
       kind: "access_denied",
       reason: process.platform === "win32"
-        ? "Windows refused the background service access to the ADE desktop app (it is running as administrator). Quit ADE and open it normally"
+        ? `${ELEVATED_DESKTOP_TITLE}. ${ELEVATED_DESKTOP_MESSAGE}`
         : "the ADE desktop app's bridge socket refused the background service",
     };
   }
@@ -366,13 +367,6 @@ export async function checkBuiltInBrowserDesktopBridgeAuth(args: {
   } finally {
     client?.close();
   }
-}
-
-export async function verifyBuiltInBrowserDesktopBridgeAuth(args: {
-  socketPath: string;
-  authToken: string;
-}): Promise<boolean> {
-  return (await checkBuiltInBrowserDesktopBridgeAuth(args)).verified;
 }
 
 /**

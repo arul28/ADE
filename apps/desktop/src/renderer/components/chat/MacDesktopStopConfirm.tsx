@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 import type { OpenProjectBinding } from "../../../shared/types";
+import { desktopSeatKind, type DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { getFocusableElements } from "../ui/dialogFocus";
 import { macDesktopStatusKey, publishMacDesktopStatus, withMacDesktopTimeout } from "./macDesktopStatusStore";
 
@@ -25,12 +26,10 @@ import { macDesktopStatusKey, publishMacDesktopStatus, withMacDesktopTimeout } f
 
 export type MacDesktopCloseAnswer = "stop" | "keep" | "cancel";
 
-/** Which screen the question is about; the Windows seats sign out rather than quit. */
-export type MacDesktopStopConfirmKind = "mac" | "windows-private" | "windows-shared";
-
 export type MacDesktopStopConfirmRequest = {
   resolve: (answer: MacDesktopCloseAnswer) => void;
-  kind: MacDesktopStopConfirmKind;
+  /** Which screen the question is about; the Windows seats sign out rather than quit. */
+  kind: DesktopSeatKind;
 };
 
 let pending: MacDesktopStopConfirmRequest | null = null;
@@ -55,7 +54,7 @@ export function getMacDesktopStopConfirmRequest(): MacDesktopStopConfirmRequest 
  * Ask, and resolve with the answer. A second ask while one is on screen
  * resolves "cancel": the safe reading of "I could not ask" is "change nothing".
  */
-export function askMacDesktopStopConfirm(kind: MacDesktopStopConfirmKind = "mac"): Promise<MacDesktopCloseAnswer> {
+export function askMacDesktopStopConfirm(kind: DesktopSeatKind = "mac"): Promise<MacDesktopCloseAnswer> {
   if (pending) return Promise.resolve("cancel");
   return new Promise<MacDesktopCloseAnswer>((resolve) => {
     pending = { resolve, kind };
@@ -87,10 +86,7 @@ export async function confirmMacDesktopToolClose(args: {
   if (!status) return "stop";
   publishMacDesktopStatus(macDesktopStatusKey(laneId, pin), { status, confirmed: true });
   if (!status.display) return "stop";
-  const kind: MacDesktopStopConfirmKind = !status.windowsDesktop
-    ? "mac"
-    : status.display.mode === "offscreen-region" ? "windows-shared" : "windows-private";
-  return askMacDesktopStopConfirm(kind);
+  return askMacDesktopStopConfirm(desktopSeatKind(status));
 }
 
 function subscribe(listener: () => void): () => void {
@@ -111,22 +107,30 @@ export function MacDesktopStopConfirmHost() {
   return <MacDesktopStopConfirmDialog kind={request.kind} />;
 }
 
-const STOP_CONFIRM_COPY: Record<MacDesktopStopConfirmKind, { title: string; body: string }> = {
+/**
+ * What stopping each kind of lane screen does, in the user's words: the action
+ * as a button would name it, and what it costs. The question asks
+ * `${action}?`, and the pane's own Stop reads the same two strings, so the two
+ * places that stop a screen cannot describe it differently.
+ */
+export const STOP_CONFIRM_COPY: Record<DesktopSeatKind, { action: string; consequence: string }> = {
   mac: {
-    title: "Stop Mac Desktop?",
-    body: "Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen. Keep it running if the agent still needs it.",
+    action: "Stop Mac Desktop",
+    consequence: "Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen.",
   },
   "windows-private": {
-    title: "Stop the private Windows screen?",
-    body: "The private screen signs out, and apps this lane opened there close, even with unsaved work. Keep it running if the agent still needs it.",
+    action: "Stop the private Windows screen",
+    consequence: "The private screen signs out, and apps this lane opened there close, even with unsaved work.",
   },
   "windows-shared": {
-    title: "Stop using your main Windows desktop?",
-    body: "The agent stops working on your desktop, and windows it moved off-screen come back. Keep it running if the agent still needs it.",
+    action: "Stop using your main Windows desktop",
+    consequence: "The agent stops working on your desktop, and windows it moved off-screen come back.",
   },
 };
 
-function MacDesktopStopConfirmDialog({ kind }: { kind: MacDesktopStopConfirmKind }) {
+const KEEP_RUNNING_HINT = "Keep it running if the agent still needs it.";
+
+function MacDesktopStopConfirmDialog({ kind }: { kind: DesktopSeatKind }) {
   const copy = STOP_CONFIRM_COPY[kind];
   const panelRef = useRef<HTMLElement | null>(null);
   const stopRef = useRef<HTMLButtonElement | null>(null);
@@ -183,10 +187,10 @@ function MacDesktopStopConfirmDialog({ kind }: { kind: MacDesktopStopConfirmKind
       >
         <div className="px-5 pb-4 pt-5">
           <h2 id="mac-desktop-stop-confirm-title" className="font-sans text-[14px] font-semibold text-fg/92">
-            {copy.title}
+            {copy.action}?
           </h2>
           <p id="mac-desktop-stop-confirm-body" className="mt-2 text-[12px] leading-5 text-muted-fg">
-            {copy.body}
+            {copy.consequence} {KEEP_RUNNING_HINT}
           </p>
         </div>
         <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3.5">

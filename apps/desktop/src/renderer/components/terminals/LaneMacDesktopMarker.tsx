@@ -1,7 +1,9 @@
 import { Monitor, WindowsLogo } from "@phosphor-icons/react";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
-import { LANE_DESKTOP_LABELS, useLaneDesktopSeat, type LaneDesktopKind } from "./useLaneMacDesktops";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
+import { LANE_DESKTOP_LABELS, useLaneDesktopSeat } from "./useLaneMacDesktops";
+import { desktopToolProductName, type DesktopWorkTool } from "./workTools";
 
 /**
  * The small screen mark beside a lane name: this lane holds a desktop screen.
@@ -9,7 +11,7 @@ import { LANE_DESKTOP_LABELS, useLaneDesktopSeat, type LaneDesktopKind } from ".
  * tool uses on that host — the Mac Desktop monitor, or the Windows logo on a
  * Windows host, whose tooltip says which seat (private or the user's own).
  */
-export function LaneMacDesktopMarker({ laneId, kind = "mac" }: { laneId: string; kind?: LaneDesktopKind }) {
+export function LaneMacDesktopMarker({ laneId, kind = "mac" }: { laneId: string; kind?: DesktopSeatKind }) {
   const label = LANE_DESKTOP_LABELS[kind];
   const Icon = kind === "mac" ? Monitor : WindowsLogo;
   return (
@@ -37,13 +39,13 @@ export function LaneDesktopHeaderButton({
   onOpen,
 }: {
   laneId: string | null | undefined;
-  onOpen: (tool: "mac-desktop" | "windows-desktop") => void;
+  onOpen: (tool: DesktopWorkTool) => void;
 }) {
   const kind = useLaneDesktopSeat(laneId);
   if (!kind) return null;
   const label = LANE_DESKTOP_LABELS[kind];
   const Icon = kind === "mac" ? Monitor : WindowsLogo;
-  const tool = kind === "mac" ? "mac-desktop" : "windows-desktop";
+  const tool: DesktopWorkTool = kind === "mac" ? "mac-desktop" : "windows-desktop";
   return (
     <button
       type="button"
@@ -51,7 +53,7 @@ export function LaneDesktopHeaderButton({
       data-lane-desktop-kind={kind}
       className={WORK_HEADER_ICON_BUTTON_CLASS}
       title={label}
-      aria-label={kind === "mac" ? "Open Mac Desktop" : "Open Windows Desktop"}
+      aria-label={`Open ${desktopToolProductName(tool)}`}
       onClick={() => onOpen(tool)}
     >
       <Icon size={16} weight="bold" />

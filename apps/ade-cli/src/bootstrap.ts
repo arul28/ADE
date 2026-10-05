@@ -1766,6 +1766,7 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
         // A lane may not claim another lane's App Control app onto its screen.
         appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
           appControlService?.laneForAppProcess(pid) ?? null,
@@ -3122,12 +3123,12 @@ export async function createAdeRuntime(args: {
         }
         // A newer token supersedes a retry still running for an older one.
         const attempt = ++builtInBrowserBridgeAuthAttempt;
-        const check = async (): Promise<boolean> => {
+        const check = async () => {
           const result = await checkBuiltInBrowserDesktopBridgeAuth({
             socketPath: builtInBrowserBridgeSocketPath,
             authToken,
           });
-          if (attempt !== builtInBrowserBridgeAuthAttempt) return result.verified;
+          if (attempt !== builtInBrowserBridgeAuthAttempt) return result;
           if (result.verified) {
             builtInBrowserBridgeAuthToken = authToken.trim();
             desktopBridgeUnattached = null;
@@ -3140,23 +3141,28 @@ export async function createAdeRuntime(args: {
             verified: result.verified,
             ...(result.verified ? {} : { kind: result.kind, reason: result.reason }),
           });
-          return result.verified;
+          return result;
         };
-        const verified = await check();
+        const first = await check();
+        const verified = first.verified;
         if (!verified) {
           // A timeout or a refused connect can be the brain or the desktop
           // still starting up; a denied pipe or a rejected token cannot.
           // Retried in the background so `ade/initialize` is not held up.
+          // An older verified token does not end the retry: after a desktop
+          // relaunch that token is stale, and this one is the live desktop's.
           void (async () => {
+            let last: Awaited<ReturnType<typeof check>> = first;
             for (const delayMs of [2_000, 10_000, 30_000]) {
-              if (attempt !== builtInBrowserBridgeAuthAttempt || builtInBrowserBridgeAuthToken) return;
-              if (desktopBridgeUnattached?.kind === "access_denied" || desktopBridgeUnattached?.kind === "rejected") return;
+              if (attempt !== builtInBrowserBridgeAuthAttempt) return;
+              if (!last.verified && (last.kind === "access_denied" || last.kind === "rejected")) return;
               await new Promise<void>((resolve) => {
                 const timer = setTimeout(resolve, delayMs);
                 timer.unref?.();
               });
               if (attempt !== builtInBrowserBridgeAuthAttempt) return;
-              if (await check()) return;
+              last = await check();
+              if (last.verified) return;
             }
           })().catch(() => {});
         }

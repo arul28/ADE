@@ -5,6 +5,9 @@
 #include "rdp.h"
 #include "credentials.h"
 #include "childtask.h"
+#include "hostwindow.h"
+#include "ownedchild.h"
+#include "parkedwindows.h"
 
 #include <sddl.h>
 #include <shellapi.h>
@@ -12,7 +15,6 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <iterator>
 #include <future>
 #include <condition_variable>
 #include <deque>
@@ -33,34 +35,22 @@ std::wstring homeKey(const std::wstring& home) {
 // worker stops waiting, signs the child out by id, and replies.
 constexpr int64_t kUiTeardownBudgetMs = 6'000;
 constexpr int64_t kUiBeginBudgetMs = 20'000;
-
-// Brings a window this background process owns in front of the user's
-// foreground app (ADE). A process without foreground rights cannot simply
-// SetForegroundWindow; attaching to the foreground thread's input usually
-// allows it, and a topmost window is above ADE even when activation is refused.
-void bringToFront(HWND window, bool keepTopmost) {
-  if (!window || !IsWindow(window)) return;
-  if (IsIconic(window)) ShowWindow(window, SW_RESTORE);
-  SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  const HWND foreground = GetForegroundWindow();
-  const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
-  const DWORD ownThread = GetWindowThreadProcessId(window, nullptr);
-  const DWORD self = GetCurrentThreadId();
-  const bool attachedSelf = foregroundThread && foregroundThread != self && AttachThreadInput(self, foregroundThread, TRUE);
-  const bool attachedOwner = foregroundThread && ownThread && ownThread != self && ownThread != foregroundThread &&
-      AttachThreadInput(ownThread, foregroundThread, TRUE);
-  BringWindowToTop(window);
-  const bool activated = SetForegroundWindow(window) != FALSE;
-  SetActiveWindow(window);
-  if (attachedOwner) AttachThreadInput(ownThread, foregroundThread, FALSE);
-  if (attachedSelf) AttachThreadInput(self, foregroundThread, FALSE);
-  if (!keepTopmost) SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  if (!activated) {
-    FLASHWINFO flash{sizeof(flash), window, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0};
-    FlashWindowEx(&flash);
-  }
-  logLine(std::string("ui: brought window to front activated=") + (activated ? "1" : "0") + " topmost=" + (keepTopmost ? "1" : "0"));
-}
+// A cosmetic UI-thread call (topmost, parking): missing one never retires the driver.
+constexpr int64_t kUiCosmeticBudgetMs = 2'000;
+// One budget for an interactive operation: the prompt, sign-in, IPC handshake
+// and teardown. Past it, the host cancels its own UI.
+constexpr int64_t kInteractiveOperationBudgetMs = 120'000;
+// After the operation budget, how long cancelled UI has to return before the
+// driver retires (or, with a shared seat live, gives up on the request).
+constexpr int64_t kHardDeadlineGraceMs = 15'000;
+// How long the user has to enter their Windows account in a prompt.
+constexpr int64_t kUserSignInMs = 90'000;
+// How long a saved password's verification sign-in has to settle.
+constexpr int64_t kSignInSettleMs = 30'000;
+// A private start keeps this much of its budget for the pipes and the engine.
+constexpr int64_t kStartAfterSignInReserveMs = 15'000;
+// How long the private session's engine has to connect its pipes.
+constexpr int64_t kPipeConnectMs = 30'000;
 
 LRESULT CALLBACK hostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (msg == kUiTask) {
@@ -82,9 +72,12 @@ class Host {
  public:
   Host(HWND window, std::wstring home)
       : window_(window), uiThread_(GetCurrentThreadId()), home_(std::move(home)),
-        childTask_(L"ADE private screen " + homeKey(home_)), output_(GetStdHandle(STD_OUTPUT_HANDLE)),
-        shared_(Engine::Mode::Shared, [this](const Json& e) { output_.write(e); }) {
+        childTask_(L"ADE private screen " + homeKey(home_)), owned_(home_), output_(GetStdHandle(STD_OUTPUT_HANDLE)),
+        parked_(home_), shared_(Engine::Mode::Shared, [this](const Json& e) { output_.write(e); }) {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&rdp_));
+    // Windows a driver that died left parked off-screen go back first.
+    parked_.restoreAll(false);
+    shared_.setParkedRecord(&parked_);
     refreshStatus();
   }
 
@@ -372,15 +365,16 @@ class Host {
     const auto id = req["id"].str(), op = req["op"].str();
     const bool interactive = op == "windows.setup" || op == "display.create" || op == "display.destroy";
     // One budget includes the prompt, sign-in, IPC handshake and teardown.
-    operationDeadline_ = interactive ? nowMs() + 120'000 : 0;
-    hardDeadline_ = interactive ? operationDeadline_ + 15'000 : 0;
+    operationDeadline_ = interactive ? nowMs() + kInteractiveOperationBudgetMs : 0;
+    hardDeadline_ = interactive ? operationDeadline_ + kHardDeadlineGraceMs : 0;
+    const int64_t deadline = operationDeadline_;
     std::mutex deadlineMutex;
     std::condition_variable finished;
     bool complete = false;
     std::thread watchdog;
-    if (interactive) watchdog = std::thread([&, id, op] {
+    if (interactive) watchdog = std::thread([&, id, op, deadline] {
       std::unique_lock<std::mutex> lock(deadlineMutex);
-      if (finished.wait_for(lock, std::chrono::milliseconds(120'000), [&] { return complete; })) return;
+      if (finished.wait_for(lock, std::chrono::milliseconds(std::max<int64_t>(0, deadline - nowMs())), [&] { return complete; })) return;
       logLine(op + ": operation deadline; cancelling owned UI");
       struct OwnedUi { DWORD pid; HWND host; } ownedUi{GetCurrentProcessId(), window_};
       EnumWindows([](HWND hwnd, LPARAM context) -> BOOL {
@@ -394,7 +388,7 @@ class Host {
         }
         return TRUE;
       }, reinterpret_cast<LPARAM>(&ownedUi));
-      if (finished.wait_for(lock, std::chrono::milliseconds(15'000), [&] { return complete; })) return;
+      if (finished.wait_for(lock, std::chrono::milliseconds(kHardDeadlineGraceMs), [&] { return complete; })) return;
       // In-process COM/Windows RPC is not safely interruptible. If it ignores
       // cancellation, retire only this driver, after replying; the brain will
       // recreate it on the next request. Never leave executing_ stuck forever.
@@ -403,7 +397,15 @@ class Host {
       const DWORD child = cleanupSession_.load();
       if (child) spawnCleanupHelper(child);
       setSignInWaiting(false);
-      output_.write(errorReply(id, {code::kCancelled, "Windows Desktop timed out. Its native host was reset; try again.", Json()}));
+      // A shared seat's parked windows (the user's own among them) go back
+      // before the process ends: only if the record is free right now, never
+      // by waiting on the stuck worker. Otherwise the next host puts them back.
+      const int restored = parked_.restoreAll(true);
+      output_.write(errorReply(id, {code::kCancelled, restored > 0
+          ? "Windows Desktop timed out. Its native host was reset and your windows were put back on your desktop; try again."
+          : restored < 0
+            ? "Windows Desktop timed out. Its native host was reset; your windows go back on your desktop when it restarts. Try again."
+            : "Windows Desktop timed out. Its native host was reset; try again.", Json()}));
       TerminateProcess(GetCurrentProcess(), kRetireExitCode);
     });
     executing_ = true;
@@ -485,39 +487,21 @@ class Host {
     if (holder_.empty() && childId_) stopPrivate();  // Retry cleanup of our own failed attempt.
     if (consoleLocked()) fail(code::kLocked, "Unlock this PC before saving the Windows password.");
     if (!holder_.empty()) fail(code::kHeld, "Stop the private Windows screen before changing its saved password.");
-    requireNoForeignChild();
+    owned_.requireNoForeign(cleanupSession_);
     if (rdp_.state() == RdpSession::State::Connecting || signInWaiting_)
       fail(code::kSignInFailed, "Finish or close the Windows sign-in window before saving your password.");
     if (uiWedged_) fail(code::kDriverUnavailable, "Windows Desktop is restarting its native host. Try again in a few seconds.");
     setSignInWaiting(true);
     setPhase("prompt_open");
     struct Waiting { Host& host; ~Waiting() { host.setSignInWaiting(false); } } waiting{*this};
-    std::shared_ptr<WindowsCredential> credential = promptCredential(stopping_, std::min<int64_t>(operationDeadline_, nowMs() + 90'000));
+    std::shared_ptr<WindowsCredential> credential = promptCredential(stopping_, std::min<int64_t>(operationDeadline_, nowMs() + kUserSignInMs));
     setSignInWaiting(false);
     setPhase("verifying");
-    auto begun = std::make_shared<BeginOutcome>();
     bool saved = false;
     try {
-      // Captures only shared state and `this`: the worker stops waiting at the budget.
-      if (!uiWithin([this, begun, credential] {
-            ShowWindow(window_, SW_HIDE);
-            unparkHostWindow(1280, 800);
-            begun->connected = rdp_.begin(window_, 1280, 800, &begun->error, credential.get());
-            if (begun->connected) signInStarted_ = true;
-          }, kUiBeginBudgetMs, "save: rdp begin"))
-        fail(code::kDriverUnavailable, "Windows Remote Desktop did not respond. ADE is restarting its native host; try again in a few seconds.");
-      const bool connected = begun->connected;
-      refreshStatus();
-      logLine("save: rdp begin result=" + std::to_string(connected));
-      if (!connected) fail(code::kSignInFailed, begun->error);
-      auto deadline = std::min<int64_t>(operationDeadline_, nowMs() + 30'000);
-      auto settled = rdp_.state();
-      while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
-        if (const DWORD partial = childSessionId()) { cleanupSession_ = partial; rememberOwnedChild(partial); }
-        settled = rdp_.waitSettled(100);
-      }
-      childId_ = childSessionId(); cleanupSession_ = childId_; rememberOwnedChild(childId_);
-      logLine("save: sign-in outcome state=" + std::to_string(static_cast<int>(settled)) + " child=" + std::to_string(childId_) + " reason=" + std::to_string(rdp_.disconnectReason()) + " extended=" + std::to_string(rdp_.extendedDisconnectReason()));
+      const auto settled = signInChild("save", 1280, 800, credential,
+          [this] { ShowWindow(window_, SW_HIDE); unparkHostWindow(window_, 1280, 800); },
+          nullptr, operationDeadline_, kSignInSettleMs, nullptr);
       if (settled != RdpSession::State::SignedIn || !childId_) {
         if (rdp_.passwordRejected()) fail(code::kWrongPassword, "Windows rejected that password. Nothing was saved.");
         fail(code::kSignInFailed, "Windows could not verify the password. Nothing was saved.");
@@ -529,11 +513,7 @@ class Host {
       credential.reset();
       logLine("save: password verified and saved (value omitted)");
     } catch (...) {
-      setSignInWaiting(false);
-      setPhase("cleaning_up");
-      if (!childId_ && signInStarted_) childId_ = childSessionId();
-      cleanupSession_ = childId_;
-      try { stopPrivate(); } catch (const DriverError& e) { logLine("save: cleanup after failure incomplete: " + e.message); }
+      cleanupFailedSignIn("save");
       throw;
     }
     if (saved) {
@@ -550,6 +530,50 @@ class Host {
   }
 
   struct BeginOutcome { bool connected = false; std::string error; };
+
+  // Signs a child session of the user's account in through the Remote
+  // Desktop control, waits for it to settle, and records the child it got.
+  // `prepareWindow` runs on the UI thread just before the control begins;
+  // `afterBegin` and `afterSettle` run here. Captures only shared state and
+  // `this` on the UI thread: the worker stops waiting at the budget.
+  RdpSession::State signInChild(const char* tag, int width, int height,
+      std::shared_ptr<WindowsCredential> credential, std::function<void()> prepareWindow,
+      const std::function<void(bool connected)>& afterBegin, int64_t deadlineCap, int64_t settleMs,
+      const std::function<void()>& afterSettle) {
+    const std::string name(tag);
+    auto begun = std::make_shared<BeginOutcome>();
+    if (!uiWithin([this, begun, credential, width, height, prepareWindow] {
+          prepareWindow();
+          begun->connected = rdp_.begin(window_, width, height, &begun->error, credential.get());
+          if (begun->connected) signInStarted_ = true;
+        }, kUiBeginBudgetMs, (name + ": rdp begin").c_str()))
+      fail(code::kDriverUnavailable, "Windows Remote Desktop did not respond. ADE is restarting its native host; try again in a few seconds.");
+    const bool connected = begun->connected;
+    const std::string error = begun->error;
+    if (afterBegin) afterBegin(connected);
+    refreshStatus();
+    logLine(name + ": rdp begin result=" + std::to_string(connected));
+    if (!connected) fail(code::kSignInFailed, error);
+    auto settled = rdp_.state();
+    const auto deadline = std::min<int64_t>(deadlineCap, nowMs() + settleMs);
+    while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
+      if (const DWORD partial = childSessionId()) { cleanupSession_ = partial; owned_.remember(partial); }
+      settled = rdp_.waitSettled(100);
+    }
+    if (afterSettle) afterSettle();
+    childId_ = childSessionId(); cleanupSession_ = childId_; owned_.remember(childId_);
+    logLine(name + ": sign-in outcome state=" + std::to_string(static_cast<int>(settled)) + " child=" + std::to_string(childId_) + " reason=" + std::to_string(rdp_.disconnectReason()) + " extended=" + std::to_string(rdp_.extendedDisconnectReason()));
+    return settled;
+  }
+
+  // After a failed sign-in: sign out whatever child the attempt left.
+  void cleanupFailedSignIn(const char* tag) {
+    setSignInWaiting(false);
+    setPhase("cleaning_up");
+    if (!childId_ && signInStarted_) childId_ = childSessionId();
+    cleanupSession_ = childId_;
+    try { stopPrivate(); } catch (const DriverError& e) { logLine(std::string(tag) + ": cleanup after failure incomplete: " + e.message); }
+  }
 
   void ensureShared() {
     if (sharedReady_) return;
@@ -588,7 +612,7 @@ class Host {
     if (currentSessionId() != consoleSessionId()) fail(code::kNotConsoleSession, "The Windows screen host must run in the console session.");
     if (consoleLocked()) fail(code::kLocked, "This PC is locked. Unlock it to continue.");
     if (!childSessionsEnabled() || !remoteDesktopAllowed()) fail(code::kSetupRequired, "Open Windows Desktop setup on this PC first.");
-    requireNoForeignChild();
+    owned_.requireNoForeign(cleanupSession_);
     GUID guid;
     if (FAILED(CoCreateGuid(&guid))) fail(code::kDriverUnavailable, "Cannot create screen connection identity.");
     wchar_t id[40];
@@ -620,37 +644,25 @@ class Host {
         logLine("start: no logon task; the startup entry will start the private screen engine");
       std::shared_ptr<WindowsCredential> credential = readCredential(credentialTarget(home_));
       if (uiWedged_) fail(code::kDriverUnavailable, "Windows Desktop is restarting its native host. Try again in a few seconds.");
-      auto begun = std::make_shared<BeginOutcome>();
       int width = static_cast<int>(std::clamp<int64_t>(req["width"].asInt(2560), 640, 3840));
       int height = static_cast<int>(std::clamp<int64_t>(req["height"].asInt(1440), 480, 2160));
       setSignInWaiting(!credential);
       setPhase(credential ? "verifying" : "prompt_open");
-      if (!uiWithin([this, begun, credential, width, height] {
-            unparkHostWindow(width, height);
+      const bool hasCredential = credential != nullptr;
+      const auto settled = signInChild("start", width, height, credential,
+          [this, width, height, hasCredential] {
+            unparkHostWindow(window_, width, height);
             SetWindowTextW(window_, L"Sign in to your ADE private screen");
-            ShowWindow(window_, credential ? SW_HIDE : SW_SHOWNORMAL);
+            ShowWindow(window_, hasCredential ? SW_HIDE : SW_SHOWNORMAL);
             // Topmost while the user signs in: it must not open behind ADE.
-            if (!credential) bringToFront(window_, true);
-            begun->connected = rdp_.begin(window_, width, height, &begun->error, credential.get());
-            if (begun->connected) signInStarted_ = true;
-          }, kUiBeginBudgetMs, "start: rdp begin"))
-        fail(code::kDriverUnavailable, "Windows Remote Desktop did not respond. ADE is restarting its native host; try again in a few seconds.");
-      const bool connected = begun->connected;
-      const std::string error = begun->error;
-      setSignInWaiting(!credential && connected);
-      refreshStatus();
-      logLine("start: rdp begin result=" + std::to_string(connected));
-      if (!connected) fail(code::kSignInFailed, error);
-      auto settled = rdp_.state();
-      auto deadline = std::min<int64_t>(createDeadline - 15'000, nowMs() + 90'000);
-      while (!stopping_ && settled == RdpSession::State::Connecting && nowMs() < deadline) {
-        if (const DWORD partial = childSessionId()) { cleanupSession_ = partial; rememberOwnedChild(partial); }
-        settled = rdp_.waitSettled(100);
-      }
-      setSignInWaiting(false);
-      if (!credential) uiWithin([this] { SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }, 2'000, "start: drop topmost", false);
-      childId_ = childSessionId(); cleanupSession_ = childId_; rememberOwnedChild(childId_);
-      logLine("start: sign-in outcome state=" + std::to_string(static_cast<int>(settled)) + " child=" + std::to_string(childId_) + " reason=" + std::to_string(rdp_.disconnectReason()) + " extended=" + std::to_string(rdp_.extendedDisconnectReason()));
+            if (!hasCredential) bringToFront(window_, true);
+          },
+          [this, hasCredential](bool connected) { setSignInWaiting(!hasCredential && connected); },
+          createDeadline - kStartAfterSignInReserveMs, kUserSignInMs,
+          [this, hasCredential] {
+            setSignInWaiting(false);
+            if (!hasCredential) uiWithin([this] { SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }, kUiCosmeticBudgetMs, "start: drop topmost", false);
+          });
       if (settled != RdpSession::State::SignedIn || !childId_) {
         if (credential && rdp_.passwordRejected()) {
           forgetCredential(credentialTarget(home_));
@@ -660,7 +672,7 @@ class Host {
       }
       credential.reset();
       setPhase("starting");
-      const auto pipeDeadline = std::min<int64_t>(createDeadline, nowMs() + 30'000);
+      const auto pipeDeadline = std::min<int64_t>(createDeadline, nowMs() + kPipeConnectMs);
       connectPipe(toChild_, pipeDeadline);
       connectPipe(fromChild_, pipeDeadline);
       ULONG pid = 0; DWORD session = 0;
@@ -679,13 +691,9 @@ class Host {
       startChildReader();
       DeleteFileW(launchFile_.c_str());
       removeChildLaunchTask(childTask_);
-      uiWithin([this, width, height] { parkHostWindow(width, height); }, 2'000, "start: park host window", false);
+      uiWithin([this, width, height] { parkHostWindow(window_, width, height); }, kUiCosmeticBudgetMs, "start: park host window", false);
     } catch (...) {
-      setSignInWaiting(false);
-      setPhase("cleaning_up");
-      if (!childId_ && signInStarted_) childId_ = childSessionId();
-      cleanupSession_ = childId_;
-      try { stopPrivate(); } catch (const DriverError& e) { logLine("start: cleanup after failure incomplete: " + e.message); }
+      cleanupFailedSignIn("start");
       throw;
     }
   }
@@ -768,115 +776,6 @@ class Host {
     return false;
   }
 
-  // Which child session this driver started survives the driver: a driver
-  // that replaces a crashed one signs out exactly that session (same id,
-  // account, logon and connect time) and nothing else. Windows allows one
-  // child session per console session, and one ADE did not start (Power
-  // Automate, a Windows agent workspace) is never signed out.
-  std::wstring ownedChildFile() const { return joinPath(joinPath(home_, L"windows-desktop"), L"owned-child.json"); }
-
-  void rememberOwnedChild(DWORD session) {
-    if (!session) return;
-    SessionIdentity identity;
-    if (!querySessionIdentity(session, &identity) || (!identity.logonTime && !identity.connectTime)) return;
-    // FILETIME ticks exceed a double's exact range: kept as decimal strings.
-    const std::string record = Json(Json::Object{{"sessionId", static_cast<int64_t>(session)},
-        {"user", narrow(identity.user)}, {"logonTime", std::to_string(identity.logonTime)},
-        {"connectTime", std::to_string(identity.connectTime)}}).dump();
-    if (record == ownedRecord_) return;
-    if (!ensureDir(joinPath(home_, L"windows-desktop"))) return;
-    const auto target = ownedChildFile();
-    const auto temp = target + L".tmp";
-    {
-      std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-      file << record;
-      file.close();
-      if (!file) { DeleteFileW(temp.c_str()); logLine("owned-child: record not written"); return; }
-    }
-    if (!MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-      logLine("owned-child: record not written error=" + std::to_string(GetLastError()));
-      DeleteFileW(temp.c_str());
-      return;
-    }
-    ownedRecord_ = record;
-    logLine("owned-child: recorded child=" + std::to_string(session));
-  }
-
-  void forgetOwnedChild() {
-    ownedRecord_.clear();
-    DeleteFileW(ownedChildFile().c_str());
-  }
-
-  // True when `existing` is exactly the child a previous ADE driver recorded
-  // and it is now signed out. Anything else is left alone.
-  bool adoptRecordedChild(DWORD existing) {
-    std::ifstream file(ownedChildFile(), std::ios::binary);
-    if (!file) return false;
-    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-    Json record;
-    try { record = Json::parse(text); } catch (...) { forgetOwnedChild(); return false; }
-    SessionIdentity identity;
-    const bool same = record.isObject()
-        && record["sessionId"].asInt(0) == static_cast<int64_t>(existing)
-        && querySessionIdentity(existing, &identity)
-        && (identity.logonTime || identity.connectTime)
-        && lower(widen(record["user"].str())) == lower(identity.user)
-        && record["logonTime"].str() == std::to_string(identity.logonTime)
-        && record["connectTime"].str() == std::to_string(identity.connectTime);
-    if (!same) {
-      // What ADE recorded is gone: the one child slot now holds another session.
-      logLine("owned-child: the existing child session is not the one ADE recorded; leaving it alone");
-      forgetOwnedChild();
-      return false;
-    }
-    logLine("owned-child: signing out the private session a previous ADE driver started child=" + std::to_string(existing));
-    cleanupSession_ = existing;
-    const bool signedOut = signOutSession(existing, nowMs() + 10'000);
-    cleanupSession_ = 0;
-    if (signedOut) forgetOwnedChild();
-    return signedOut;
-  }
-
-  // Refuses with HELD while a child session this driver may not sign out
-  // exists, after adopting one a crashed ADE driver left behind.
-  void requireNoForeignChild() {
-    const DWORD existing = childSessionId();
-    if (!existing) {
-      if (fileExists(ownedChildFile())) forgetOwnedChild();  // Ours is already gone.
-      return;
-    }
-    if (adoptRecordedChild(existing) && !childSessionId()) return;
-    fail(code::kHeld, "Another private Windows session is signed in on this PC (session " + std::to_string(existing)
-        + "), and ADE did not start it, so ADE leaves it alone: it may be Power Automate or a Windows agent workspace. "
-        "Sign it out in Task Manager > Users (or run `logoff " + std::to_string(existing) + "`), then try again, or use the shared desktop.");
-  }
-
-  // Windows treats the private session as minimized while the Remote Desktop
-  // control that shows it is hidden: the session keeps drawing, but it drops
-  // every injected pointer and key event (SetCursorPos and SendInput change
-  // nothing, so no click, key or window activation reaches an app there). The
-  // control stays shown, at its full size, outside every monitor, and off the
-  // taskbar and Alt+Tab, so the session stays live and the user sees nothing.
-  void parkHostWindow(int width, int height) {
-    const LONG_PTR ex = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-    SetWindowLongPtrW(window_, GWL_EXSTYLE, (ex & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW)) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
-    const int x = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN) + 64;
-    const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    SetWindowPos(window_, HWND_BOTTOM, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED);
-    logLine("start: host window parked outside the monitors");
-  }
-
-  // Undoes parkHostWindow before a sign-in, which may show this window to the
-  // user: on the primary monitor, on the taskbar.
-  void unparkHostWindow(int width, int height) {
-    const LONG_PTR ex = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-    SetWindowLongPtrW(window_, GWL_EXSTYLE, (ex | WS_EX_APPWINDOW) & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
-    RECT work{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    SetWindowPos(window_, nullptr, work.left, work.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-  }
-
   void stopPrivate() {
     logLine("teardown: begin child=" + std::to_string(childId_));
     if (executing_) setPhase("cleaning_up");
@@ -907,7 +806,7 @@ class Host {
       privateActive_ = false; recording_ = false;
       fail(code::kDriverUnavailable, "Windows could not sign out the private screen. Its session is retained; retry Stop before starting another screen.");
     }
-    forgetOwnedChild();
+    owned_.forget();
     signInStarted_ = false;
     childId_ = 0; cleanupSession_ = 0; holder_.clear(); holderName_.clear(); activeUntil_ = 0; privateActive_ = false; recording_ = false;
     logLine("teardown: complete");
@@ -917,7 +816,9 @@ class Host {
   DWORD uiThread_;  // The thread that pumps window_ (constructed there).
   std::wstring home_, launchFile_;
   const std::wstring childTask_;  // The logon task that starts the child engine.
+  OwnedChildRecord owned_;  // The child session this driver started, on disk.
   LineWriter output_;
+  ParkedWindowsRecord parked_;  // Declared before shared_: the engine writes to it until it is gone.
   Engine shared_;
   bool sharedReady_ = false;
   std::mutex requestMutex_, statusMutex_;
@@ -930,7 +831,6 @@ class Host {
   // A global Windows child session is not ours unless our RDP begin succeeded.
   bool signInStarted_ = false;
   DWORD childId_ = 0;
-  std::string ownedRecord_;  // The owned-child.json this driver last wrote.
   HANDLE toChild_ = INVALID_HANDLE_VALUE, fromChild_ = INVALID_HANDLE_VALUE;
   std::unique_ptr<LineWriter> childOutput_;
   std::string childBuffer_;

@@ -120,12 +120,19 @@ the PC is locked, and a `next` line with the exact command or ask.
 | User said no (`WINDOWS_DESKTOP_CONSENT_REQUIRED`) | Stop and say what you could not do. Do not ask again this turn. |
 
 `start --shared` puts an Allow / Don't allow card in your chat and waits; on
-Allow it starts the shared seat. The same chat is not asked twice. Never pass
-`--consent` or `--allow-prompt`: those are the user's clients' flags and an
-agent is refused.
+Allow it starts the shared seat. Only the user's button press counts: typed
+text is not an answer, and an agent that tries to answer the card itself (or
+the real-input lease card) is refused. If nobody answers within about three
+minutes the card is withdrawn and the command fails; ask again later. The same
+chat is not asked twice. Never pass `--consent` or `--allow-prompt`: those are
+the user's clients' flags and an agent is refused. A command with no chat (a
+plain shell outside one) cannot act on the main desktop at all.
 
 ## Windows specifics
 
+- **Long text:** on the private seat, and for `--real` typing, Windows types
+  one character at a time, so `type` takes about 25 ms per character and
+  refuses more than 4,000 characters in one call; split longer text.
 - **Browsers:** `ade screen open chrome` (or `msedge`) on the private seat gets
   a lane-private profile, not the user's. `open` prints the windows that
   appeared; if none did it says why (for example the request was handed to an
@@ -175,19 +182,19 @@ Use these directly; you do not need `--help` for them.
 
 | Task | Command |
 |---|---|
-| Start the screen (do this first) | `ade mac-desktop start --text` |
-| Open an app, file or URL | `ade mac-desktop open "Safari" --text` |
-| What is on screen | `ade mac-desktop observe --text` |
-| Click a control by its label | `ade mac-desktop click --text "Sign in" --text` |
-| Type, then press Return | `ade mac-desktop type "reddit" --submit --text` |
-| Press one key | `ade mac-desktop press return --text` (also `tab`, `escape`) |
-| Wait for a label to appear | `ade mac-desktop wait --label "Done" --timeout 8000 --text` |
-| Record a video | `ade mac-desktop record start --caption "<what>" --text`, then `record stop --text` |
-| Take a screenshot | `ade mac-desktop screenshot --out shot.png --text` |
-| Show the screen to the user | `ade mac-desktop show --text` (tools pane) or `--floating` |
-| Close your own window | `ade mac-desktop press w --cmd --text` (Windows: `ade screen close --window <id> --text`) |
-| Stop the screen (quits the apps the lane opened) | `ade mac-desktop stop --text` |
-| Quit apps the lane opened, released ones too (only when asked) | `ade mac-desktop quit [<app>] --text` |
+| Start the screen (do this first) | `ade screen start --text` |
+| Open an app, file or URL | `ade screen open "Safari" --text` |
+| What is on screen | `ade screen observe --text` |
+| Click a control by its label | `ade screen click --text "Sign in" --text` |
+| Type, then press Return | `ade screen type "reddit" --submit --text` |
+| Press one key | `ade screen press return --text` (also `tab`, `escape`) |
+| Wait for a label to appear | `ade screen wait --label "Done" --timeout 8000 --text` |
+| Record a video | `ade screen record start --caption "<what>" --text`, then `record stop --text` |
+| Take a screenshot | `ade screen screenshot --out shot.png --text` |
+| Show the screen to the user | `ade screen show --text` (tools pane) or `--floating` |
+| Close your own window | `ade screen press w --cmd --text` (Windows: `ade screen close --window <id> --text`) |
+| Stop the screen (quits the apps the lane opened) | `ade screen stop --text` |
+| Quit apps the lane opened, released ones too (only when asked) | `ade screen quit [<app>] --text` |
 
 ## Operating loop
 

@@ -1,4 +1,5 @@
 #include "engineLane.h"
+#include "parkedwindows.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -415,6 +416,7 @@ void Engine::parkWindow(Lane& lane, HWND hwnd, const char* origin) {
     RECT r;
     GetWindowRect(hwnd, &r);
     lane.home[hwnd] = r;
+    if (parked_) parked_->add(hwnd, r);
   }
   lane.origin[hwnd] = origin;
   if (IsIconic(hwnd)) ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -430,22 +432,11 @@ void Engine::parkWindow(Lane& lane, HWND hwnd, const char* origin) {
 void Engine::releaseWindow(Lane& lane, HWND hwnd) {
   auto home = lane.home.find(hwnd);
   if (IsWindow(hwnd)) {
-    RECT target;
-    if (home != lane.home.end() && home->second.left < virtualScreen().right) {
-      target = home->second;
-    } else {
-      // A window that started off-screen (a lane launch) comes back to the
-      // primary monitor's work area.
-      RECT work;
-      SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-      RECT cur;
-      GetWindowRect(hwnd, &cur);
-      target = {work.left + 80, work.top + 80, work.left + 80 + (cur.right - cur.left),
-                work.top + 80 + (cur.bottom - cur.top)};
-    }
+    const RECT target = releaseTargetFor(hwnd, home != lane.home.end() ? &home->second : nullptr);
     SetWindowPos(hwnd, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
   }
+  if (parked_ && lane.origin.count(hwnd)) parked_->remove(hwnd);
   lane.origin.erase(hwnd);
   lane.home.erase(hwnd);
 }
@@ -565,33 +556,6 @@ Json Engine::unpark(const Json& req) {
   return out;
 }
 
-namespace {
-// Apps that hand a second launch to their running instance (one per profile).
-// On the private seat that instance is the user's own, in the console session,
-// so the launch would open on the user's desktop and nothing on the lane's.
-enum class ProfileFlag { None, Chromium, Firefox };
-ProfileFlag profileFlagFor(const std::wstring& exeName) {
-  static const wchar_t* chromium[] = {L"chrome.exe", L"msedge.exe", L"brave.exe", L"vivaldi.exe", L"chromium.exe"};
-  const auto name = lower(exeName);
-  for (auto c : chromium) if (name == c) return ProfileFlag::Chromium;
-  if (name == L"firefox.exe" || name == L"librewolf.exe" || name == L"waterfox.exe") return ProfileFlag::Firefox;
-  return ProfileFlag::None;
-}
-bool callerChoseProfile(ProfileFlag kind, const std::vector<std::wstring>& args) {
-  for (const auto& raw : args) {
-    const auto a = lower(raw);
-    if (kind == ProfileFlag::Chromium && a.rfind(L"--user-data-dir", 0) == 0) return true;
-    if (kind == ProfileFlag::Firefox && (a == L"-profile" || a == L"--profile" || a == L"-p" || a == L"-no-remote" ||
-                                        a == L"--no-remote" || a.rfind(L"--profile=", 0) == 0)) return true;
-  }
-  return false;
-}
-std::wstring baseName(const std::wstring& path) {
-  const auto slash = path.find_last_of(L"\\/");
-  return slash == std::wstring::npos ? path : path.substr(slash + 1);
-}
-}  // namespace
-
 Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& operation) {
   auto lane = requireLane(requireString(req, "laneId"));
   std::wstring target = widen(requireString(req, "target"));
@@ -600,25 +564,8 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
   // "chrome" reaches chrome.exe through App Paths, as it would from Run.
   const std::wstring resolved = resolveAppPath(target);
   if (!resolved.empty()) target = resolved;
-  Json profileDir;
-  const ProfileFlag profileKind = profileFlagFor(baseName(target).find(L'.') == std::wstring::npos ? baseName(target) + L".exe" : baseName(target));
-  if (mode_ == Mode::Private && profileKind != ProfileFlag::None && !lane->dataDir.empty() && !callerChoseProfile(profileKind, args)) {
-    std::wstring stem = lower(baseName(target));
-    if (stem.size() > 4 && stem.substr(stem.size() - 4) == L".exe") stem.resize(stem.size() - 4);
-    const std::wstring dir = joinPath(joinPath(lane->dataDir, L"profiles"), stem);
-    if (ensureDir(dir)) {
-      // Stable per lane, so sign-ins in this lane's browser persist for the lane.
-      if (profileKind == ProfileFlag::Chromium) {
-        args.insert(args.begin(), {L"--user-data-dir=" + dir, L"--no-first-run", L"--no-default-browser-check"});
-      } else {
-        args.insert(args.begin(), {L"-no-remote", L"-profile", dir});
-      }
-      profileDir = narrow(dir);
-      logLine("launch: lane-private browser profile added");
-    } else {
-      logLine("launch: lane profile directory unavailable; launching without one");
-    }
-  }
+  // The private seat: a browser gets this lane's own profile.
+  const Json profileDir = mode_ == Mode::Private ? addLaneBrowserProfile(target, lane->dataDir, args) : Json();
   std::set<HWND> before;
   for (auto& w : listAppWindows()) before.insert(w.hwnd);
   FILETIME since;
@@ -711,9 +658,7 @@ Json Engine::quitApp(const Json& req) {
   std::set<DWORD> selected;
   for (const auto& [pid, created] : owned) {
     auto path = processImagePath(pid);
-    const auto slash = path.find_last_of(L"\\/");
-    auto basename = slash == std::wstring::npos ? path : path.substr(slash + 1);
-    const auto name = lowerA(narrow(basename));
+    const auto name = lowerA(narrow(baseName(path)));
     if (app.empty() || (appPid && pid == appPid) || name == app || name == app + ".exe" || lowerA(narrow(appNameForExe(path))) == app) {
       for (const auto& child : processTreeIdentities(pid, created)) if (owned.count(child.first)) selected.insert(child.first);
     }
@@ -723,8 +668,7 @@ Json Engine::quitApp(const Json& req) {
   for (DWORD pid : selected) {
     identities[pid] = owned.at(pid);
     auto path = processImagePath(pid);
-    const auto slash = path.find_last_of(L"\\/");
-    names[pid] = {narrow(appNameForExe(path)), narrow(slash == std::wstring::npos ? path : path.substr(slash + 1))};
+    names[pid] = {narrow(appNameForExe(path)), narrow(baseName(path))};
   }
   for (const auto& window : laneWindows(*lane)) if (selected.count(window.pid)) closeWindowGracefully(window.hwnd, 3000);
   Json quit = Json::array();
@@ -777,7 +721,8 @@ HWND Engine::requireLaneWindow(Lane& lane, int64_t windowId) {
       if (kv.first != lane.laneId && kv.second->origin.count(hwnd))
         fail(code::kAppOwnedByOtherLane, "Lane " + kv.first + " holds window " + std::to_string(windowId) + ".");
     }
-    fail(code::kAppOwnedByOtherLane, "Window " + std::to_string(windowId) + " is not on lane " + lane.laneId + "'s screen.");
+    // No lane holds it (a window of the user's own desktop): not one of this
+    // lane's windows, so not found, never "another lane's".
   }
   fail(code::kWindowNotFound, "Window " + std::to_string(windowId) + " is not on lane " + lane.laneId + "'s screen.");
 }
@@ -1006,6 +951,7 @@ void Engine::watchLoop() {
         // Forget windows that closed.
         for (auto it = lane->origin.begin(); it != lane->origin.end();) {
           if (!IsWindow(it->first)) {
+            if (parked_) parked_->remove(it->first);
             lane->home.erase(it->first);
             it = lane->origin.erase(it);
           } else {

@@ -3,20 +3,13 @@
 #define SECURITY_WIN32
 #include <security.h>
 #include <taskschd.h>
+#include <wrl/client.h>
 
 #include <cstdio>
 
 namespace ade {
 namespace {
-
-template <class T>
-struct Com {
-  T* p = nullptr;
-  ~Com() { if (p) p->Release(); }
-  T** out() { return &p; }
-  void** raw() { return reinterpret_cast<void**>(&p); }
-  T* operator->() const { return p; }
-};
+using Microsoft::WRL::ComPtr;
 
 struct Bstr {
   BSTR value;
@@ -32,13 +25,13 @@ std::string hex(HRESULT hr) {
   return buffer;
 }
 
-bool connectRoot(Com<ITaskService>& service, Com<ITaskFolder>& folder) {
-  HRESULT hr = CoCreateInstance(__uuidof(TaskScheduler), nullptr, CLSCTX_INPROC_SERVER, __uuidof(ITaskService), service.raw());
+bool connectRoot(ComPtr<ITaskService>& service, ComPtr<ITaskFolder>& folder) {
+  HRESULT hr = CoCreateInstance(__uuidof(TaskScheduler), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&service));
   VARIANT none;
   VariantInit(&none);
   if (SUCCEEDED(hr)) hr = service->Connect(none, none, none, none);
   Bstr root(L"\\");
-  if (SUCCEEDED(hr)) hr = service->GetFolder(root.value, folder.out());
+  if (SUCCEEDED(hr)) hr = service->GetFolder(root.value, folder.GetAddressOf());
   if (FAILED(hr)) logLine("child-task: Task Scheduler unavailable hr=" + hex(hr));
   return SUCCEEDED(hr);
 }
@@ -73,35 +66,35 @@ bool registerChildLaunchTask(const std::wstring& name, const std::wstring& path,
                              int lifetimeSeconds) {
   const std::wstring user = currentUser();
   if (user.empty()) { logLine("child-task: this account has no name for Task Scheduler"); return false; }
-  Com<ITaskService> service;
-  Com<ITaskFolder> folder;
+  ComPtr<ITaskService> service;
+  ComPtr<ITaskFolder> folder;
   if (!connectRoot(service, folder)) return false;
-  Com<ITaskDefinition> task;
-  HRESULT hr = service->NewTask(0, task.out());
+  ComPtr<ITaskDefinition> task;
+  HRESULT hr = service->NewTask(0, task.GetAddressOf());
   const auto failed = [&](const char* step) {
     logLine(std::string("child-task: ") + step + " failed hr=" + hex(hr));
     return false;
   };
   if (FAILED(hr)) return failed("new task");
 
-  Com<IRegistrationInfo> info;
-  if (SUCCEEDED(task->get_RegistrationInfo(info.out()))) {
+  ComPtr<IRegistrationInfo> info;
+  if (SUCCEEDED(task->get_RegistrationInfo(info.GetAddressOf()))) {
     Bstr author(L"ADE");
     Bstr description(L"Starts ADE's private Windows screen when ADE signs it in. ADE removes it after that sign-in.");
     info->put_Author(author.value);
     info->put_Description(description.value);
   }
 
-  Com<IPrincipal> principal;
-  hr = task->get_Principal(principal.out());
+  ComPtr<IPrincipal> principal;
+  hr = task->get_Principal(principal.GetAddressOf());
   if (FAILED(hr)) return failed("principal");
   Bstr userId(user);
   principal->put_UserId(userId.value);
   principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN);
   principal->put_RunLevel(TASK_RUNLEVEL_LUA);
 
-  Com<ITaskSettings> settings;
-  hr = task->get_Settings(settings.out());
+  ComPtr<ITaskSettings> settings;
+  hr = task->get_Settings(settings.GetAddressOf());
   if (FAILED(hr)) return failed("settings");
   Bstr noLimit(L"PT0S");
   settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
@@ -114,24 +107,24 @@ bool registerChildLaunchTask(const std::wstring& name, const std::wstring& path,
   // With every trigger expired, Windows deletes the task itself.
   settings->put_DeleteExpiredTaskAfter(noLimit.value);
 
-  Com<ITriggerCollection> triggers;
-  Com<ITrigger> trigger;
-  Com<ILogonTrigger> logon;
-  hr = task->get_Triggers(triggers.out());
-  if (SUCCEEDED(hr)) hr = triggers->Create(TASK_TRIGGER_LOGON, trigger.out());
-  if (SUCCEEDED(hr)) hr = trigger->QueryInterface(__uuidof(ILogonTrigger), logon.raw());
+  ComPtr<ITriggerCollection> triggers;
+  ComPtr<ITrigger> trigger;
+  ComPtr<ILogonTrigger> logon;
+  hr = task->get_Triggers(triggers.GetAddressOf());
+  if (SUCCEEDED(hr)) hr = triggers->Create(TASK_TRIGGER_LOGON, trigger.GetAddressOf());
+  if (SUCCEEDED(hr)) hr = trigger.As(&logon);
   if (FAILED(hr)) return failed("trigger");
   Bstr endBoundary(localTimeIn(lifetimeSeconds));
   logon->put_UserId(userId.value);
   hr = logon->put_EndBoundary(endBoundary.value);
   if (FAILED(hr)) return failed("trigger expiry");
 
-  Com<IActionCollection> actions;
-  Com<IAction> action;
-  Com<IExecAction> exec;
-  hr = task->get_Actions(actions.out());
-  if (SUCCEEDED(hr)) hr = actions->Create(TASK_ACTION_EXEC, action.out());
-  if (SUCCEEDED(hr)) hr = action->QueryInterface(__uuidof(IExecAction), exec.raw());
+  ComPtr<IActionCollection> actions;
+  ComPtr<IAction> action;
+  ComPtr<IExecAction> exec;
+  hr = task->get_Actions(actions.GetAddressOf());
+  if (SUCCEEDED(hr)) hr = actions->Create(TASK_ACTION_EXEC, action.GetAddressOf());
+  if (SUCCEEDED(hr)) hr = action.As(&exec);
   if (FAILED(hr)) return failed("action");
   Bstr program(path), arguments(args);
   exec->put_Path(program.value);
@@ -144,17 +137,17 @@ bool registerChildLaunchTask(const std::wstring& name, const std::wstring& path,
   VariantInit(&sddl);
   account.vt = VT_BSTR;
   account.bstrVal = userId.value;
-  Com<IRegisteredTask> registered;
-  hr = folder->RegisterTaskDefinition(taskName.value, task.p, TASK_CREATE_OR_UPDATE, account, password,
-                                      TASK_LOGON_INTERACTIVE_TOKEN, sddl, registered.out());
+  ComPtr<IRegisteredTask> registered;
+  hr = folder->RegisterTaskDefinition(taskName.value, task.Get(), TASK_CREATE_OR_UPDATE, account, password,
+                                      TASK_LOGON_INTERACTIVE_TOKEN, sddl, registered.GetAddressOf());
   if (FAILED(hr)) return failed("register");
   logLine("child-task: registered for the next sign-in");
   return true;
 }
 
 void removeChildLaunchTask(const std::wstring& name) {
-  Com<ITaskService> service;
-  Com<ITaskFolder> folder;
+  ComPtr<ITaskService> service;
+  ComPtr<ITaskFolder> folder;
   if (!connectRoot(service, folder)) return;
   Bstr taskName(name);
   const HRESULT hr = folder->DeleteTask(taskName.value, 0);

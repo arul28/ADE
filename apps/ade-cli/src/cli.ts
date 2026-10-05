@@ -278,6 +278,9 @@ import {
   MAC_DESKTOP_VALUE_CARRIER_FLAGS,
   MAC_DESKTOP_VALUE_FLAGS,
   buildMacDesktopPlan,
+  macDesktopSocketPlacementWarning,
+} from "./cliMacDesktop";
+import {
   formatMacDesktopAction,
   formatMacDesktopLease,
   formatMacDesktopObservation,
@@ -291,9 +294,8 @@ import {
   formatMacDesktopWindows,
   macDesktopErrorHint,
   macDesktopRecordingDurationMs,
-  macDesktopSocketPlacementWarning,
   recordingStopLeftNoFile,
-} from "./cliMacDesktop";
+} from "./cliMacDesktopFormat";
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,

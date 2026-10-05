@@ -104,8 +104,7 @@ std::wstring appNameForExe(const std::wstring& exePath) {
     }
   }
   if (name.empty()) {
-    size_t slash = exePath.find_last_of(L"\\/");
-    name = exePath.substr(slash == std::wstring::npos ? 0 : slash + 1);
+    name = baseName(exePath);
     size_t dot = name.find_last_of(L'.');
     if (dot != std::wstring::npos) name = name.substr(0, dot);
   }
@@ -143,8 +142,7 @@ bool describeWindow(HWND hwnd, WinInfo& out) {
   out.title.assign(title, n > 0 ? n : 0);
   out.exePath = processImagePath(out.pid);
   out.appName = appNameForExe(out.exePath);
-  size_t slash = out.exePath.find_last_of(L"\\/");
-  out.exeName = lower(out.exePath.substr(slash == std::wstring::npos ? 0 : slash + 1));
+  out.exeName = lower(baseName(out.exePath));
   RECT r;
   if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r)))) GetWindowRect(hwnd, &r);
   out.frame = r;
@@ -480,6 +478,8 @@ bool sendText(const std::wstring& text) {
   // them repeated the last one ("hello from ADE" arrived in Windows 11
   // Notepad as "hello EEEEEEEE"); typing real keys with Shift raced the same
   // way ("ADE" arrived as "ade" or "FROM").
+  if (text.size() > kMaxTypedChars)
+    fail(code::kInvalidArgument, "Type at most " + std::to_string(kMaxTypedChars) + " characters at a time; split the text into several type calls.");
   for (size_t i = 0; i < text.size(); ++i) {
     wchar_t c = text[i];
     if (c == L'\r' || c == L'\n' || c == L'\t') {

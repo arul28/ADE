@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { MacDesktopDisplay, WindowsDesktopOperationKind } from "../../../shared/types/macDesktop";
+import {
+  desktopSeatKind,
+  type MacDesktopDisplay,
+  type WindowsDesktopOperationKind,
+} from "../../../shared/types/macDesktop";
+import { reduceMacDesktopStatus, windowsDesktopOperationFor } from "../chat/useMacDesktopStatus";
+import { desktopToolProductName, type DesktopWorkTool } from "./workTools";
 import {
   MAC_DESKTOP_STOP_WAIT_MS,
   macDesktopPendingStop,
@@ -74,16 +80,8 @@ export function macDesktopToolStateFromEntry(
     confirmed: entry.confirmed,
   };
   // Host-wide setup steps count for every lane; a private start only for its own.
-  const windowsOperation = windowsOperationFor(entry.status?.windowsDesktop?.operation, laneId);
+  const windowsOperation = windowsDesktopOperationFor(entry.status?.windowsDesktop, laneId)?.kind ?? null;
   return windowsOperation ? { ...state, windowsOperation } : state;
-}
-
-function windowsOperationFor(
-  operation: { kind: WindowsDesktopOperationKind; laneId: string | null } | null | undefined,
-  laneId: string | null | undefined,
-): WindowsDesktopOperationKind | null {
-  if (!operation) return null;
-  return operation.laneId === null || operation.laneId === laneId ? operation.kind : null;
 }
 
 /** Coming back to the window re-reads the card, at most this often. */
@@ -158,14 +156,12 @@ export function useMacDesktopToolStatus(args: {
     const dispose = api.onEvent?.((event) => {
       switch (event.type) {
         case "windows-desktop-changed": {
-          // Host-wide and carries the whole Windows status: patched in place,
-          // no read, so a sign-in's phases cost nothing here.
+          // Host-wide and carries the whole Windows status: applied by the
+          // pane's own reducer, no read, so a sign-in's phases cost nothing here.
           const current = readMacDesktopStatusEntry(storeKey);
-          if (current?.status) {
-            publishMacDesktopStatus(storeKey, {
-              status: { ...current.status, windowsDesktop: event.status },
-              confirmed: current.confirmed,
-            });
+          const next = reduceMacDesktopStatus(current?.status ?? null, event, laneId);
+          if (current && next && next !== current.status) {
+            publishMacDesktopStatus(storeKey, { status: next, confirmed: current.confirmed });
           }
           return;
         }
@@ -202,11 +198,12 @@ export function useMacDesktopToolStatus(args: {
  */
 export function macDesktopStatusLineText(
   state: MacDesktopToolState | null,
-  desktopName: "Mac Desktop" | "Windows Desktop" = "Mac Desktop",
+  desktopTool: DesktopWorkTool = "mac-desktop",
 ): {
   line: string;
   live: boolean;
 } {
+  const desktopName = desktopToolProductName(desktopTool);
   // Never "active" on the strength of a read that failed: that is how the card
   // kept saying "active · 1 window" about a display that was gone.
   if (state && state.confirmed === false) return { line: `${desktopName} is not answering`, live: false };
@@ -215,11 +212,12 @@ export function macDesktopStatusLineText(
   }
   if (!state?.display) return { line: `${desktopName} is off`, live: false };
   // A Windows seat says which one: the private screen or the user's own desktop.
-  const name = state.display.seatMode === "shared"
-    ? "Main desktop"
-    : state.display.seatMode === "private" || desktopName === "Windows Desktop"
-      ? "Private screen"
-      : desktopName;
+  // Only a Windows display carries a seat mode, so one names its host.
+  const seat = desktopSeatKind({
+    platform: desktopTool === "windows-desktop" || state.display.seatMode ? "win32" : "darwin",
+    display: state.display,
+  });
+  const name = seat === "windows-shared" ? "Main desktop" : seat === "windows-private" ? "Private screen" : desktopName;
   return {
     line: state.windowCount > 0
       ? `${name} active · ${state.windowCount} ${state.windowCount === 1 ? "window" : "windows"}`

@@ -32,6 +32,8 @@
 
 namespace ade {
 
+class ParkedWindowsRecord;
+
 using EventSink = std::function<void(const Json&)>;
 
 class Engine {
@@ -43,6 +45,9 @@ class Engine {
   bool init(std::string* error);
   void shutdown();
   void cancelRequests() { running_ = false; }
+  // Shared mode: where each parked window is recorded so a later host can put
+  // it back if this one dies. Set once, before any window is parked.
+  void setParkedRecord(ParkedWindowsRecord* record) { parked_ = record; }
 
   // Handles one request. Throws DriverError. `op` is already known to be one
   // this engine serves (see `serves`).
@@ -144,6 +149,7 @@ class Engine {
   std::atomic<bool> shutdownStarted_{false};
   std::thread watcher_;
   int nextSlot_ = 0;
+  ParkedWindowsRecord* parked_ = nullptr;
 };
 
 // Serializes a window for the wire.

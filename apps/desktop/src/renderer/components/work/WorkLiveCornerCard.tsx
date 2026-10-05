@@ -31,7 +31,7 @@ import {
 } from "../../state/workLiveCardState";
 import { EMPHASIZED_EASE, exitTransition } from "../../lib/motion";
 import { cn } from "../ui/cn";
-import { workToolDefinition } from "../terminals/workTools";
+import { hostDesktopTool, workToolDefinition } from "../terminals/workTools";
 import {
   closeWorkLiveCardForChat,
   markWorkLiveCardSeenForChat,
@@ -390,6 +390,7 @@ export function WorkLiveCornerCard({
     canBrowser,
     context: toolContext,
   } = useNativeToolFeeds();
+  const desktopTool = hostDesktopTool(toolContext);
   useNativeToolFeedHandlers(useMemo(() => ({
     onBrowserStatusSettled,
     onBrowserEvent,
@@ -1278,9 +1279,11 @@ export function WorkLiveCornerCard({
       chatSessionId={chatSessionId}
       sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
-      desktopTool={toolContext.supportsWindowsDesktop === true ? "windows-desktop" : "mac-desktop"}
-      supported={toolContext.supportsWindowsDesktop === true || toolContext.supportsMacDesktop !== false}
-      onOpenInPane={() => onPick(toolContext.supportsWindowsDesktop === true ? "windows-desktop" : "mac-desktop")}
+      desktopTool={desktopTool}
+      supported={desktopTool === "windows-desktop"
+        ? toolContext.supportsWindowsDesktop !== false
+        : toolContext.supportsMacDesktop !== false}
+      onOpenInPane={() => onPick(desktopTool)}
     />
     <AppControlMiniPlayer
       active={active}

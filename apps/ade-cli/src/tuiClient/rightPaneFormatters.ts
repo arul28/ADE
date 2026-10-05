@@ -14,7 +14,7 @@ import {
 } from "../../../desktop/src/shared/types/workTools";
 import { macDesktopNotParkedSentence } from "../../../desktop/src/renderer/components/chat/macDesktopActivityText";
 import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
-import { macDesktopVisibleNotParked, windowsDesktopPrivateUnavailableMessage } from "../../../desktop/src/shared/types/macDesktop";
+import { describeDesktopSeat, macDesktopVisibleNotParked } from "../../../desktop/src/shared/types/macDesktop";
 import { formatRelativePastTime } from "./relativeTime";
 
 type JsonRecord = Record<string, unknown>;
@@ -800,25 +800,27 @@ export function formatWorkToolsLaneState(
 function workToolsMacDesktopLines(desktop: WorkToolsMacDesktopState, nowMs: number): string[] {
   // `windowsDesktop` is non-null exactly on a Windows host.
   const windowsHost = desktop.windowsDesktop != null;
-  const lines = ["", windowsHost ? "Windows Desktop" : "Mac Desktop"];
+  // The same summary the CLI status and the status JSON lead with.
+  const seat = describeDesktopSeat({
+    platform: windowsHost ? "win32" : "darwin",
+    supported: desktop.supported,
+    display: desktop.display,
+    windowsDesktop: desktop.windowsDesktop ?? null,
+  });
+  const lines = ["", seat.product];
   const display = desktop.display;
   if (!display) {
-    const windows = desktop.windowsDesktop;
-    if (windows?.heldByLaneId) {
-      lines.push(`No screen yet. The private screen is held by ${windows.heldByLaneName ?? windows.heldByLaneId}.`);
-    } else if (windows && !windows.privateAvailable && windows.privateUnavailableReason) {
-      lines.push(`No screen yet. ${windowsDesktopPrivateUnavailableMessage(windows.privateUnavailableReason)}`);
+    if (seat.heldBy) {
+      lines.push(`No screen yet. The private screen is held by ${seat.heldBy}.`);
+    } else if (seat.privateAvailable === false && seat.privateUnavailable) {
+      lines.push(`No screen yet. ${seat.privateUnavailable}`);
     } else {
       lines.push(windowsHost ? "No screen yet." : "No display yet.");
     }
     return lines;
   }
-  if (windowsHost) {
-    // The private seat shows the user's wallpaper and taskbar; say whose it is.
-    lines.push(display.seatMode === "shared"
-      ? "seat: shared — the user's main desktop"
-      : "seat: private — a separate Windows session, not the user's screen");
-  }
+  // The private seat shows the user's wallpaper and taskbar; say whose it is.
+  if (windowsHost && seat.seatDescription) lines.push(`seat: ${seat.seatDescription}`);
   const windowCount = desktop.windows.length;
   const parts = [
     `${display.width}x${display.height}`,

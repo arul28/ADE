@@ -68,6 +68,10 @@ bool sendClick(int x, int y, const std::string& button, int count);
 bool sendDrag(int fromX, int fromY, int toX, int toY, int durationMs);
 bool sendScroll(int x, int y, const std::string& direction, int amount);
 bool sendKeys(const std::string& key, const std::vector<std::string>& modifiers);
+// Real text, one character per SendInput with a pause after each. Refuses
+// (invalid_argument) more than kMaxTypedChars, so one call cannot hold the
+// driver's worker for minutes; the brain sizes its wait to the same cap.
+constexpr size_t kMaxTypedChars = 4'000;
 bool sendText(const std::wstring& text);
 void releaseAllButtons();
 

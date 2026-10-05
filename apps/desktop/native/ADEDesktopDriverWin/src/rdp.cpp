@@ -5,6 +5,8 @@
 #include <olectl.h>
 #include <wtsapi32.h>
 
+#include <wrl/client.h>
+
 #include <algorithm>
 #include <cstdio>
 
@@ -29,7 +31,7 @@ IMsTscNonScriptable : public IUnknown {
 
 namespace {
 
-// MsRdpClient9NotSafeForScripting, the client the spike used.
+// MsRdpClient9NotSafeForScripting: the client this host drives.
 const CLSID kRdpClsid = {0x8B918B82, 0x7985, 0x4C24, {0x89, 0xDF, 0xC3, 0x3A, 0xD2, 0xBB, 0xFB, 0xCD}};
 
 HRESULT dispId(IDispatch* d, const wchar_t* name, DISPID* id) {
@@ -56,34 +58,47 @@ HRESULT dispGet(IDispatch* d, const wchar_t* name, VARIANT* out) {
   return d->Invoke(id, IID_NULL, LOCALE_USER_DEFAULT, DISPATCH_PROPERTYGET, &none, out, nullptr, nullptr);
 }
 
+// The control's ExtendedDisconnectReason, when it can be read as a number.
+bool readExtendedReason(IDispatch* d, int* out) {
+  if (!d) return false;
+  bool read = false;
+  VARIANT value; VariantInit(&value);
+  if (SUCCEEDED(dispGet(d, L"ExtendedDisconnectReason", &value))) {
+    VARIANT number; VariantInit(&number);
+    if (SUCCEEDED(VariantChangeType(&number, &value, 0, VT_I4))) { *out = number.lVal; read = true; }
+    VariantClear(&number);
+  }
+  VariantClear(&value);
+  return read;
+}
+
 // Non-scriptable properties cannot use the control's IDispatch. Its own
 // type library supplies the verified vtable layout to ITypeInfo::Invoke.
 HRESULT nativePromptPolicy(IOleObject* control, bool allow) {
+  using Microsoft::WRL::ComPtr;
   const IID iid = {0x4f6996d5, 0xd7b1, 0x412c, {0xb0, 0xff, 0x06, 0x37, 0x18, 0x56, 0x69, 0x07}};
-  IUnknown* native = nullptr;
-  IProvideClassInfo* provider = nullptr;
-  ITypeInfo* classInfo = nullptr; ITypeInfo* info = nullptr;
-  ITypeLib* library = nullptr; UINT index = 0;
-  HRESULT hr = control->QueryInterface(iid, reinterpret_cast<void**>(&native));
-  if (SUCCEEDED(hr)) hr = control->QueryInterface(IID_IProvideClassInfo, reinterpret_cast<void**>(&provider));
-  if (SUCCEEDED(hr)) hr = provider->GetClassInfo(&classInfo);
-  if (SUCCEEDED(hr)) hr = classInfo->GetContainingTypeLib(&library, &index);
-  if (SUCCEEDED(hr)) hr = library->GetTypeInfoOfGuid(iid, &info);
+  ComPtr<IUnknown> native;
+  ComPtr<IProvideClassInfo> provider;
+  ComPtr<ITypeInfo> classInfo, info;
+  ComPtr<ITypeLib> library; UINT index = 0;
+  HRESULT hr = control->QueryInterface(iid, reinterpret_cast<void**>(native.GetAddressOf()));
+  if (SUCCEEDED(hr)) hr = control->QueryInterface(IID_PPV_ARGS(&provider));
+  if (SUCCEEDED(hr)) hr = provider->GetClassInfo(classInfo.GetAddressOf());
+  if (SUCCEEDED(hr)) hr = classInfo->GetContainingTypeLib(library.GetAddressOf(), &index);
+  if (SUCCEEDED(hr)) hr = library->GetTypeInfoOfGuid(iid, info.GetAddressOf());
   LPOLESTR name = const_cast<LPOLESTR>(L"AllowPromptingForCredentials"); DISPID id;
   if (SUCCEEDED(hr)) hr = info->GetIDsOfNames(&name, 1, &id);
   if (SUCCEEDED(hr)) {
     VARIANT value; VariantInit(&value); value.vt = VT_BOOL; value.boolVal = allow ? VARIANT_TRUE : VARIANT_FALSE;
     DISPID put = DISPID_PROPERTYPUT; DISPPARAMS params{&value, &put, 1, 1};
-    hr = info->Invoke(native, id, DISPATCH_PROPERTYPUT, &params, nullptr, nullptr, nullptr);
+    hr = info->Invoke(native.Get(), id, DISPATCH_PROPERTYPUT, &params, nullptr, nullptr, nullptr);
     if (SUCCEEDED(hr)) {
       DISPPARAMS none{}; VARIANT actual; VariantInit(&actual);
-      hr = info->Invoke(native, id, DISPATCH_PROPERTYGET, &none, &actual, nullptr, nullptr);
+      hr = info->Invoke(native.Get(), id, DISPATCH_PROPERTYGET, &none, &actual, nullptr, nullptr);
       if (SUCCEEDED(hr) && (actual.vt != VT_BOOL || (actual.boolVal != VARIANT_FALSE) != allow)) hr = E_FAIL;
       VariantClear(&actual);
     }
   }
-  if (info) info->Release(); if (library) library->Release();
-  if (classInfo) classInfo->Release(); if (provider) provider->Release(); if (native) native->Release();
   return hr;
 }
 
@@ -442,19 +457,13 @@ bool RdpSession::begin(HWND host, int width, int height, std::string* error, con
     end(); return false;
   }
   if (credential) {
-    // Match the successful saved-password spike exactly: the full qualified
-    // name belongs in UserName, not split across UserName and Domain.
+    // The fully qualified name goes in UserName, never split across UserName
+    // and Domain: that is the form a saved-password sign-in accepts.
     logLine("rdp: account present=" + std::to_string(!credential->username.empty()) + " kind=" + credentialAccountKind(credential->username));
     VARIANT user = vBstr(credential->username.c_str());
     hr = dispPut(impl_->disp, L"UserName", user);
     VariantClear(&user);
     logLine(hrString("rdp: account configured", hr));
-    for (const wchar_t* property : {L"UserName", L"Domain"}) {
-      VARIANT actual;
-      if (SUCCEEDED(dispGet(impl_->disp, property, &actual)) && actual.vt == VT_BSTR)
-        logLine("rdp: account readback " + narrow(property) + "Present=" + std::to_string(actual.bstrVal && *actual.bstrVal));
-      VariantClear(&actual);
-    }
     IMsTscNonScriptable* native = nullptr;
     if (SUCCEEDED(hr)) hr = impl_->ole->QueryInterface(__uuidof(IMsTscNonScriptable), reinterpret_cast<void**>(&native));
     if (SUCCEEDED(hr) && native) {
@@ -531,15 +540,10 @@ void RdpSession::end(int disconnectWaitMs) {
       logLine("rdp: teardown disconnect wait " + std::string(event ? "event" : controlConnected(impl_->disp) ? "timed out" : "not-connected") +
           " afterMs=" + std::to_string(nowMs() - waitStart));
     }
-    VARIANT value;
-    if (SUCCEEDED(dispGet(impl_->disp, L"ExtendedDisconnectReason", &value))) {
-      VARIANT number; VariantInit(&number);
-      if (SUCCEEDED(VariantChangeType(&number, &value, 0, VT_I4))) {
-        std::lock_guard<std::mutex> lock(mutex_); extendedReason_ = number.lVal;
-      }
-      VariantClear(&number);
+    int extended = 0;
+    if (readExtendedReason(impl_->disp, &extended)) {
+      std::lock_guard<std::mutex> lock(mutex_); extendedReason_ = extended;
     }
-    VariantClear(&value);
     logLine("rdp: teardown disconnect reason=" + std::to_string(disconnectReason()) + " extended=" + std::to_string(extendedDisconnectReason()));
   }
   // Each step below calls into the control and can block inside it; the log
@@ -630,13 +634,7 @@ void RdpSession::onLoginComplete() {
 
 void RdpSession::onDisconnected(int reason) {
   int extended = -1;
-  VARIANT value; VariantInit(&value);
-  if (impl_->disp && SUCCEEDED(dispGet(impl_->disp, L"ExtendedDisconnectReason", &value))) {
-    VARIANT number; VariantInit(&number);
-    if (SUCCEEDED(VariantChangeType(&number, &value, 0, VT_I4))) extended = number.lVal;
-    VariantClear(&number);
-  }
-  VariantClear(&value);
+  readExtendedReason(impl_->disp, &extended);
   logLine("rdp: OnDisconnected reason=" + std::to_string(reason) + " extended=" + std::to_string(extended));
   std::lock_guard<std::mutex> lock(mutex_);
   reason_ = reason; extendedReason_ = extended; disconnectedEvent_ = true;

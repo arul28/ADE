@@ -29,7 +29,9 @@ for the user's screen.
   pane, or another chat holding the lane's lease, still wins.
 - **Shared:** real input is under the lease, and the user's shared-seat consent
   covers it: the acting chat takes the lane's lease on its first real action
-  instead of showing a second card. Keys on the shared seat are always real
+  instead of showing a second card. The consent covers the chats of that lane
+  only; a caller with no chat (a plain `ade` shell) is refused with
+  `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Keys on the shared seat are always real
   input. Two shared lanes share one pointer and foreground, so every action
   that takes the foreground on a shared seat — Accessibility (UI Automation)
   clicks and typing as well as real input, opening an app, closing a window —
@@ -45,10 +47,29 @@ for the user's screen.
 `ade screen start --shared --reason "<why>"` (action
 `mac_desktop.requestSharedDesktop`) is agent-callable. It puts an Allow / Don't
 allow card in the calling chat, and starts the shared seat when the user allows
-it. The user's answer is the consent; the chat id comes from the authenticated
-session, so an agent cannot answer for itself. A chat the user allowed is not
-asked again for that lane until the chat closes. A caller with no chat is
-refused with `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
+it. The user's answer is the consent:
+
+- The card has buttons only. The seat starts only when the answer is exactly
+  the **Allow** option; typed text, **Don't allow**, a dismissal or anything
+  else is a no. The real-input lease card on a Mac follows the same rule
+  (`askChatAllowDeny` in `macDesktopLeaseFlow.ts`).
+- Only a trusted user client (the desktop app, the phone, the web client) can
+  answer the shared-seat card or the real-input lease card. An agent caller —
+  session-bound, an unbound `ade` shell, or the CTO's approve tool — is refused
+  by `chat.respondToInput` and `chat.approveToolUse` (`policyDenied`) and told
+  to wait for the user (`isUserOnlyConsentCard`), whichever argument shape it
+  sends; a call whose session and card ids cannot be read is refused too.
+  `personalChats.call` never answers one either.
+- The card is withdrawn after about 170 seconds without an answer, before the
+  caller's own 180-second wait ends, so a late Allow cannot start a seat
+  nobody is waiting for; the request fails with
+  `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
+- If a private screen started on the lane while the card was open, the request
+  fails with `WINDOWS_DESKTOP_CONSENT_REQUIRED` instead of reporting the
+  private screen as the shared one.
+
+A chat the user allowed is not asked again for that lane until the chat closes.
+A caller with no chat is refused with `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
 
 ## Setup (once per PC, by the user)
 
@@ -114,13 +135,30 @@ CLI and the pane unchanged:
 - `WINDOWS_DESKTOP_CONSENT_REQUIRED` — a shared seat was asked for without the
   user's consent, or the user said no. Enforced in the service, not by prompt.
 
-Each code prints a one-line next step in the CLI (`macDesktopErrorHint`).
+Each code prints a one-line next step in the CLI (`macDesktopErrorHint`). The
+service's message states only the fact; the next step for the Windows codes
+comes from one table, `WINDOWS_DESKTOP_NEXT_STEP` in
+`apps/desktop/src/shared/desktopSeat.ts`, which the status `next` line and
+the agent-facing refusals read too.
 
 The native driver retires itself (exit code 75) when its UI thread is wedged
 after a teardown, or an operation passes its hard deadline, after replying.
 That is not a crash: the brain starts a fresh driver at once, without backoff
 or a crash-loop count, sends it the requests the old one had queued, and tells
-the pane nothing unless a lane's screen went with it.
+the pane nothing unless a lane's screen went with it. A lane whose screen went
+with it is reported lost.
+
+Parked shared-seat windows never stay stranded off-screen. The host records
+each window it parks (handle, process id, process start time and where the
+window came from) in `<ADE home>\windows-desktop\parked-windows.json`,
+written atomically, and removes the entry when the window is released or
+closes. At the hard deadline the host first puts those windows back — only if
+the record is free at that moment, never by waiting on the stuck operation —
+then retires; its error says the host was reset and whether the windows were
+put back. Every host also puts back, at start, any recorded window that still
+matches a live window exactly (same handle, process and process start), then
+clears the record, so a driver that crashed or was retired before it could
+restore them leaves nothing behind.
 
 ## Policy
 
@@ -145,7 +183,11 @@ Policy lives at the service and action boundaries, never in prompts:
 
 - The Work tools pane shows **Windows Desktop** on a Windows host and **Mac
   Desktop** on a Mac host; Browser and App Control show on both. Apple is
-  Mac-only.
+  Mac-only. A tool for the other platform is not shown at all; a host of the
+  right platform that cannot run the tool (the driver is missing, say) keeps
+  the card, disabled, with the host's own reason. The command palette reads
+  the same host answer (`desktopToolContext`) and offers only the host's
+  desktop tool.
 - While a shared seat is live the pane keeps an inline reminder banner
   ("Using your main Windows desktop") with a **Stop** action, so the user always
   has the way out.
@@ -157,7 +199,11 @@ Policy lives at the service and action boundaries, never in prompts:
   offers **Try again**. **Save password and start** continues straight into the
   private screen.
 - When another lane holds the private screen, **Use main desktop** on that card
-  starts the shared seat in one click; **Take over** asks first.
+  starts the shared seat in one click (the card already says what it means);
+  **Take over** asks first. **Use main desktop** anywhere else asks first in a
+  confirm dialog.
+- **Stop** in the "Using your main Windows desktop" reminder asks first, like
+  every other Stop, because it quits the apps the lane opened.
 - The floating preview, the session card's lane mark and the chat header show
   the Windows logo while the lane's screen is live, with "Private Windows
   screen" or "Using your main Windows desktop" as the tooltip. The header mark
@@ -182,6 +228,14 @@ Policy lives at the service and action boundaries, never in prompts:
   host refuses them with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 - Modifier keys are `--ctrl`, `--alt`, `--shift` and `--win`; `--cmd` is sent as
   Ctrl and `--opt` as Alt. A Mac host refuses `--win`.
+- Keystroke text is typed one character per `SendInput` with a short pause (a
+  WinUI editor such as Windows 11 Notepad drops batched characters), so a long
+  `type` takes real time. That covers real-input typing and every `type` on the
+  private seat; Accessibility typing on the shared seat sets the value or
+  posts the text at once and has no such limit. For keystroke typing the brain
+  gives the driver 20 s plus 25 ms per character, and one `type` takes at most
+  4,000 characters (`WINDOWS_DESKTOP_MAX_TYPED_CHARS`; the driver refuses more
+  too). If the budget runs out the error says the driver may still be typing.
 - A watch-only client (the phone, or a browser tab without control) gets a
   **Stop** that signs the private screen out through the viewer-allowed
   `macDesktop.stopPrivate` command.
@@ -195,9 +249,13 @@ Policy lives at the service and action boundaries, never in prompts:
   as recorded, with its real length, and `record stop` and the proof both say
   "Filed as recorded: the ADE desktop app was not connected to make the demo";
   an empty or unfinished one is not filed, and `record stop` exits non-zero
-  with the reason (text and JSON).
+  with the reason (text and JSON). A movie whose sample tables claim more
+  entries than the file holds is refused the same way, before anything is
+  allocated for it.
+- A turn's time-lapse clip is deleted when a newer one replaces it, unless a
+  proof artifact points at the file.
 - An ADE desktop app started as administrator cannot be reached by the
   background service (Windows refuses the medium-integrity brain access to the
   elevated app's pipe), so agents get no built-in browser, App Control
-  recording or demo videos. The app shows a notification saying so; quit ADE
-  and open it normally.
+  recording or demo videos. The app docks a warning banner saying so for as
+  long as it runs; quit ADE and open it normally.

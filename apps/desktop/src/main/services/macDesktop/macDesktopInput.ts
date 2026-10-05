@@ -15,9 +15,14 @@ import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract"
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
 import { macDesktopDemoKey } from "./macDesktopRecording";
+import { MAC_DESKTOP_ANONYMOUS_HOLDER_ID } from "./macDesktopLeaseFlow";
 import {
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
+  WINDOWS_DESKTOP_MAX_TYPED_CHARS,
+  desktopSeatKind,
+  windowsDesktopTypeTimeoutMs,
+  type DesktopSeatKind,
   type DesktopSeatProvider,
   type MacDesktopClickArgs,
   type MacDesktopDisplay,
@@ -70,6 +75,10 @@ const isGestureInFlight = (error: unknown): boolean =>
   asRecord(error).code === MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE;
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+
+/** The driver client's "did not answer in time", as opposed to a refusal. */
+const isDriverRequestTimeout = (error: unknown): boolean =>
+  error instanceof Error && /did not answer .* in \d+ms/.test(error.message);
 const MAX_WAIT_TIMEOUT_MS = 120_000;
 
 /**
@@ -132,9 +141,9 @@ export type MacDesktopInputDeps = {
    * Windows shared seat: the user's consent to the shared seat covers real
    * input for this lane, so the acting chat takes the lane's lease here rather
    * than asking again. Refuses while another lane's shared seat is driving the
-   * same main desktop. Absent on a Mac, where the lease card is the only way.
+   * same main desktop. Called only for a Windows shared seat.
    */
-  takeSharedSeatLease?: ((laneId: string, holderId: string) => Promise<void>) | null;
+  takeSharedSeatLease: (laneId: string, holderId: string) => Promise<void>;
   emit: (payload: MacDesktopEventPayload) => void;
   /** Starts the backend if needed. Throws the same errors the service does. */
   ensureProvider: () => Promise<DesktopSeatProvider>;
@@ -320,7 +329,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   };
 
   const leaseHolderId = (chatSessionId: string | null | undefined): string =>
-    chatSessionId?.trim() || "anonymous-agent";
+    chatSessionId?.trim() || MAC_DESKTOP_ANONYMOUS_HOLDER_ID;
 
   /**
    * Who this call claims to be, for the lease check.
@@ -358,6 +367,19 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     throw deps.serviceError(decision.code, decision.message);
   };
 
+  /** The lane's seat kind, or null when it has no screen. */
+  const seatOf = (laneId: string, display?: MacDesktopDisplay): DesktopSeatKind | null => {
+    let current = display ?? null;
+    if (!current) {
+      try {
+        current = deps.requireDisplay(laneId);
+      } catch {
+        return null;
+      }
+    }
+    return desktopSeatKind({ platform: deps.platform, display: current });
+  };
+
   /**
    * The lease rule, per seat.
    *
@@ -375,13 +397,14 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     holderId: string,
     controllerId: string | null | undefined,
   ): Promise<void> => {
-    if (deps.platform === "win32" && display.seatMode === "private") {
+    const seat = seatOf(laneId, display);
+    if (seat === "windows-private") {
       const decision = leases.checkRealInput({ laneId, holderId });
       if (decision.ok || decision.code === MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE) return;
       throw deps.serviceError(decision.code, decision.message);
     }
-    if (deps.platform === "win32" && display.seatMode === "shared" && !controllerId?.trim()) {
-      await deps.takeSharedSeatLease?.(laneId, holderId);
+    if (seat === "windows-shared" && !controllerId?.trim()) {
+      await deps.takeSharedSeatLease(laneId, holderId);
     }
     assertRealInputAllowed(laneId, holderId);
   };
@@ -398,28 +421,14 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     laneId: string,
     args: { chatSessionId?: string | null; controllerId?: string | null },
   ): Promise<void> => {
-    if (deps.platform !== "win32" || args.controllerId?.trim()) return;
-    let display: MacDesktopDisplay;
-    try {
-      display = deps.requireDisplay(laneId);
-    } catch {
-      return;
-    }
-    if (display.seatMode !== "shared") return;
+    if (args.controllerId?.trim() || seatOf(laneId) !== "windows-shared") return;
     const holderId = inputHolderId(args);
-    await deps.takeSharedSeatLease?.(laneId, holderId);
+    await deps.takeSharedSeatLease(laneId, holderId);
     assertRealInputAllowed(laneId, holderId);
   };
 
   /** A Windows shared seat sends keys only as real input (the driver's rule). */
-  const isSharedSeat = (laneId: string): boolean => {
-    if (deps.platform !== "win32") return false;
-    try {
-      return deps.requireDisplay(laneId).seatMode === "shared";
-    } catch {
-      return false;
-    }
-  };
+  const isSharedSeat = (laneId: string): boolean => seatOf(laneId) === "windows-shared";
 
   const runAction = async (args: {
     laneId: string;
@@ -438,6 +447,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     skipObservation?: boolean;
     /** What a running recording's demo track notes about this action. */
     demo?: { kind: DemoTrackEventKind; label?: string | null } | null;
+    /** The driver budget, when this action takes longer than a usual request. */
+    timeoutMs?: number;
+    /** The error to throw instead when that budget runs out. */
+    timeoutError?: () => Error;
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
     const display = deps.requireDisplay(laneId);
@@ -481,10 +494,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // than trusting its caller. Telling it which holder this process just
         // authorized is what lets the two agree instead of racing.
         ...(args.mode === "real" ? { lease: { holderId } } : {}),
+        ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
       });
       resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
     } catch (error) {
-      failure = deps.toServiceError(error);
+      failure = args.timeoutError && isDriverRequestTimeout(error)
+        ? args.timeoutError()
+        : deps.toServiceError(error);
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
@@ -638,6 +654,18 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const target = args.target ? resolveTarget(laneId, args.target) : { payload: {}, element: null, needsReal: false };
       // `--clear` on the Windows main desktop is a real Ctrl+A.
       const mode = resolveMode(args.mode, target.needsReal || (args.clear === true && args.mode == null && isSharedSeat(laneId)));
+      // Windows sends keystrokes one character at a time with a pause after
+      // each (real input, and every type on the private seat, which is its own
+      // session), so that typing gets a budget that grows with the text and a
+      // cap the driver refuses past. Accessibility typing on the shared seat
+      // sets the value or posts the text at once.
+      const perCharacter = deps.platform === "win32" && (mode === "real" || seatOf(laneId) === "windows-private");
+      if (perCharacter && args.text.length > WINDOWS_DESKTOP_MAX_TYPED_CHARS) {
+        throw new Error(
+          `Windows Desktop types at most ${WINDOWS_DESKTOP_MAX_TYPED_CHARS} characters of real input in one call; this text has ${args.text.length}. Split it into several type calls.`,
+        );
+      }
+      const typeTimeoutMs = perCharacter ? windowsDesktopTypeTimeoutMs(args.text.length) : undefined;
       const silent = isSilent(args, mode);
       const submit = args.submit === true;
       const caption = `type · ${args.text.slice(0, 40)}`;
@@ -650,6 +678,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // overwritten by them. The driver reads `text` as the words only when
         // `typeText` is absent (an older service), and then never as a label.
         payload: { ...target.payload, typeText: args.text, clear: args.clear === true },
+        ...(typeTimeoutMs ? {
+          timeoutMs: typeTimeoutMs,
+          timeoutError: () => deps.serviceError(
+            "MAC_DESKTOP_DRIVER_UNAVAILABLE",
+            `Windows Desktop did not finish typing ${args.text.length} characters within ${Math.round(typeTimeoutMs / 1000)} s. It may still be typing: observe the screen before typing again.`,
+          ),
+        } : {}),
         resolved: target.element,
         chatSessionId: args.chatSessionId ?? null,
         controllerId: args.controllerId ?? null,

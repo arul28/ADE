@@ -55,7 +55,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
-import type { LaneDesktopKind } from "./useLaneMacDesktops";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel } from "./useLaneWorkToolUse";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -467,8 +467,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
-  laneMacDesktop = false,
-  laneDesktopKind = "mac",
+  laneDesktop = null,
   laneCloud = null,
   laneAppControl = false,
   laneBrowserTabs = 0,
@@ -538,10 +537,11 @@ export const SessionCard = React.memo(function SessionCard({
    * with `showLaneIdentity`; elsewhere the lane header shows it.
    */
   laneAppleDevice?: LaneAppleDevice | null;
-  /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
-  laneMacDesktop?: boolean;
-  /** Which screen that is: the Mac Desktop, or a private or shared Windows seat. */
-  laneDesktopKind?: LaneDesktopKind;
+  /**
+   * The screen the card's lane holds — the Mac Desktop, or a private or shared
+   * Windows seat — or null when it holds none. Shown like `laneAppleDevice`.
+   */
+  laneDesktop?: DesktopSeatKind | null;
   /** A headerless lane that lives on a cloud: its card carries the cloud mark. */
   laneCloud?: "devin" | "cursor" | null;
   /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
@@ -885,7 +885,7 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktopKind} /> : null}
+        {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
         {laneAppControl ? (
           <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
         ) : null}
