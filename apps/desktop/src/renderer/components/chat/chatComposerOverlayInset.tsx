@@ -77,8 +77,8 @@ export function useChatComposerOverlayInset(apply: (px: number) => void): void {
  * that row shows a chip. Null means the pill keeps its default floating spot.
  *
  * A chip appearing or leaving changes the stack's height, so re-reading on
- * every inset change keeps this current. The row's visibility is the one
- * definition of "has a chip": CSS hides the row when it is empty.
+ * every inset change keeps this current. "Has a chip" is the same selector
+ * the row's CSS uses to hide itself, matched without forcing a layout.
  */
 export function useChatComposerJumpSlot(): HTMLElement | null {
   const overlay = useContext(ChatComposerOverlayContext);
@@ -91,7 +91,7 @@ export function useChatComposerJumpSlot(): HTMLElement | null {
     const read = () => {
       const footer = overlay.footer.get();
       const row = footer?.querySelector<HTMLElement>(`[${CHAT_COMPOSER_CHIP_ROW_ATTR}]`) ?? null;
-      const occupied = row !== null && row.getClientRects().length > 0;
+      const occupied = row !== null && row.matches(":has([data-status-strip] > *)");
       setSlot(occupied ? row.querySelector<HTMLElement>(`[${CHAT_COMPOSER_JUMP_SLOT_ATTR}]`) : null);
     };
     read();

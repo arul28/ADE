@@ -79,7 +79,7 @@ export function StatusChip({
       aria-label={tooltip}
       title={tooltip}
       style={style}
-      className="pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-[var(--status-chip-fill)] pl-2 pr-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60"
+      className={cn("pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-[var(--status-chip-fill)] pl-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60", actions.length > 0 || onDismiss ? "pr-1" : "pr-2")}
     >
       <span className="inline-flex shrink-0" style={{ color: tokens.color }} aria-hidden>{icon}</span>
       <span className="shrink-0 font-medium" style={{ color: tokens.text }}>{label}</span>

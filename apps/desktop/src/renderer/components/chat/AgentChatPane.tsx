@@ -15993,7 +15993,7 @@ export function AgentChatPane({
                 <span className="text-red-400/75">-{sessionDelta.deletions}</span>
               </span>
             )}
-            tooltip="Lines changed in this lane"
+            tooltip="Lines changed since this chat started"
             testId="chat-session-delta-chip"
           />
         ) : null}
@@ -16180,7 +16180,7 @@ export function AgentChatPane({
              left-pinned this card while the still-open composer stayed
              centered, so the non-blocking steering card read as off-axis. */
           // Opaque: it can float over transcript text (ChatSurfaceShell `overlayFooter`).
-          className="mx-auto w-full max-w-[var(--chat-column,52rem)] rounded-[var(--chat-radius-shell)] bg-[color:var(--chat-canvas-bg)]"
+          className="mx-auto w-full max-w-[var(--chat-column,52rem)] bg-[color:var(--chat-canvas-bg)]"
         >
           <AskQuestionComposer
             key={steeringPendingInput.itemId}
