@@ -1513,6 +1513,7 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
 ];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
+  "read_remote_caller_capture",
   "list_ade_actions",
   "get_ade_action_status",
   "stream_events",

@@ -112,6 +112,8 @@ the trust boundary, as it is for the person's own desktop.
 - If a remote `chat create` loses its answer (a timeout after the target
   created the child), this machine never learned the child, so that child's
   reports are refused and it says it could not reach its parent.
+- A child that has not reported for a month is forgotten on both machines; a
+  later report is refused the same way.
 
 - Both machines need this ADE version; an older target is reported as
   "update ADE there" (capability `agentRemoteCallers`).

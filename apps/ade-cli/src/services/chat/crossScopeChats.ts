@@ -98,7 +98,8 @@ type RemoteChildRecord = {
   machineKey: string;
   machineName: string;
   wakeToken: string;
-  createdAt: number;
+  /** When it was recorded, or last reported here. */
+  usedAt: number;
 };
 
 const FIRST_RETRY_MS = 30_000;
@@ -106,8 +107,14 @@ const MAX_RETRY_MS = 5 * 60_000;
 const GIVE_UP_AFTER_MS = 24 * 60 * 60_000;
 const PUMP_INTERVAL_MS = 30_000;
 const MAX_OUTBOX = 1_000;
-const MAX_REMOTE_CHILDREN = 2_000;
-const REMOTE_CHILD_TTL_MS = 30 * 24 * 60 * 60_000;
+/**
+ * A child started on another machine is forgotten after a month without a
+ * report, the same rule that machine keeps for its token: never by count, so
+ * a busy parent machine cannot push out a child that is still working.
+ */
+const REMOTE_CHILD_UNUSED_MS = 30 * 24 * 60 * 60_000;
+/** How stale a report's timestamp may get before it is persisted. */
+const REMOTE_CHILD_TOUCH_MS = 60 * 60_000;
 
 function readJsonArray(filePath: string): unknown[] {
   try {
@@ -166,7 +173,8 @@ function readRemoteChild(value: unknown): RemoteChildRecord | null {
     machineKey,
     machineName: text("machineName") ?? machineKey,
     wakeToken,
-    createdAt: typeof record.createdAt === "number" ? record.createdAt : 0,
+    // Older stores named it `createdAt`.
+    usedAt: typeof record.usedAt === "number" ? record.usedAt : typeof record.createdAt === "number" ? record.createdAt : 0,
   };
 }
 
@@ -186,7 +194,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   let outbox: OutboxEntry[] = readJsonArray(outboxPath).flatMap((entry) => readOutboxEntry(entry) ?? []);
   let remoteChildren: RemoteChildRecord[] = readJsonArray(childrenPath)
     .flatMap((entry) => readRemoteChild(entry) ?? [])
-    .filter((record) => now() - record.createdAt < REMOTE_CHILD_TTL_MS);
+    .filter((record) => now() - record.usedAt < REMOTE_CHILD_UNUSED_MS);
   const persist = (filePath: string, value: unknown, label: string): void => {
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -273,10 +281,11 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     return { scope: located.scope, permissionLevel };
   };
 
-  const recordRemoteChild = (record: Omit<RemoteChildRecord, "createdAt">): void => {
-    remoteChildren = remoteChildren.filter((entry) => entry.childSessionId !== record.childSessionId);
-    remoteChildren.push({ ...record, createdAt: now() });
-    if (remoteChildren.length > MAX_REMOTE_CHILDREN) remoteChildren = remoteChildren.slice(-MAX_REMOTE_CHILDREN);
+  const recordRemoteChild = (record: Omit<RemoteChildRecord, "usedAt">): void => {
+    const at = now();
+    remoteChildren = remoteChildren.filter((entry) =>
+      entry.childSessionId !== record.childSessionId && at - entry.usedAt < REMOTE_CHILD_UNUSED_MS);
+    remoteChildren.push({ ...record, usedAt: at });
     saveChildren();
   };
 
@@ -300,21 +309,24 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     const wake = readExternalParentWake(record?.wake);
     const parentChatSessionId = typeof record?.parentChatSessionId === "string" ? record.parentChatSessionId : "";
     const wakeToken = typeof record?.wakeToken === "string" ? record.wakeToken : "";
-    const child = wake
-      ? remoteChildren.find((entry) =>
-        entry.childSessionId === wake.childSessionId && entry.parentChatSessionId === parentChatSessionId)
-      : undefined;
+    const known = wake ? remoteChildren.filter((entry) => entry.childSessionId === wake.childSessionId) : [];
+    const child = known.find((entry) => entry.parentChatSessionId === parentChatSessionId);
     // A child this brain does not know YET is not refused: its create may
     // still be on its way back here while its first, fast turn already
     // reported. The sender retries; a wake for a child that never appears
-    // runs out with the sender's 24 h limit.
-    if (wake && !child) return "pending";
+    // runs out with the sender's 24 h limit. A known child named with
+    // another parent is refused.
+    if (wake && known.length === 0) return "pending";
     if (!wake || !child || !wakeToken || !tokensMatch(child.wakeToken, wakeToken)) {
       logger?.warn("cross_scope_chats.remote_wake_refused", {
         parentChatSessionId,
         childSessionId: wake?.childSessionId ?? null,
       });
       return "refused";
+    }
+    if (now() - child.usedAt > REMOTE_CHILD_TOUCH_MS) {
+      child.usedAt = now();
+      saveChildren();
     }
     const readHint = `ade chat read ${child.childSessionId} --machine ${JSON.stringify(child.machineName)}`;
     return await deliverLocally(parentChatSessionId, {

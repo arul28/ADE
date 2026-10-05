@@ -30620,13 +30620,23 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
-  if (parsed.options.machine) {
-    // This shell's lane is a lane on THIS machine. Plan builders that default
-    // to it would name a lane the other machine has never heard of; there the
-    // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets
-    // the target pick, as `ade chat launch` does with a new lane.
-    delete process.env.ADE_LANE_ID;
+  if (!parsed.options.machine) return await runParsedCli(parsed);
+  // This shell's lane is a lane on THIS machine. Plan builders that default
+  // to it would name a lane the other machine has never heard of; there the
+  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
+  // target pick, as `ade chat launch` does with a new lane. Only for this run.
+  const laneId = process.env.ADE_LANE_ID;
+  delete process.env.ADE_LANE_ID;
+  try {
+    return await runParsedCli(parsed);
+  } finally {
+    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
   }
+}
+
+async function runParsedCli(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
   const primary = parsed.command[0]?.toLowerCase();
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();

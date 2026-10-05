@@ -196,6 +196,8 @@ describe("cross-scope chat wakes", () => {
       wakeToken: "token-1",
     });
     await expect(service.acceptRemoteWake(payload("forged"))).resolves.toBe("refused");
+    // A known child claimed for another parent is refused, not left to retry.
+    await expect(service.acceptRemoteWake(payload("token-1", "parent-b"))).resolves.toBe("refused");
     await expect(service.acceptRemoteWake({ ...payload("token-1"), wake: { childSessionId: "child-1" } })).resolves.toBe("refused");
     expect(personal.chats.deliverExternalChildCompletion).not.toHaveBeenCalled();
 

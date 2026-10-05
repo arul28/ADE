@@ -66,9 +66,17 @@ export type ExternalChatContext = {
  */
 const MAX_EXTERNAL_CHATS = 500;
 const externalChats = new Map<string, ExternalChatContext>();
-/** A child started here for another machine's chat → the token its wakes carry. */
-const MAX_CHILD_WAKE_TOKENS = 2_000;
-const childWakeTokens = new Map<string, string>();
+/**
+ * A child started here for another machine's chat → the token its wakes carry,
+ * and when it was last stored or read. A token is dropped only after a month
+ * unused: every report the child makes reads it, and a queued report reads it
+ * at least every few minutes until it gives up after a day, so a child that
+ * may still report never loses it to a busy machine starting others.
+ */
+const CHILD_WAKE_TOKEN_UNUSED_MS = 30 * 24 * 60 * 60_000;
+/** How stale a read's timestamp may get before the read is persisted. */
+const CHILD_WAKE_TOKEN_TOUCH_MS = 60 * 60_000;
+const childWakeTokens = new Map<string, { token: string; usedAt: number }>();
 let storePath: string | null = null;
 let loaded = false;
 
@@ -107,7 +115,14 @@ function load(): void {
     for (const [childId, token] of Object.entries(
       stored.childWakeTokens && typeof stored.childWakeTokens === "object" ? stored.childWakeTokens : {},
     )) {
-      if (typeof token === "string" && token) childWakeTokens.set(childId, token);
+      // Older stores kept the bare token; it counts as used now.
+      const record = typeof token === "string" ? { token, usedAt: Date.now() } : token as { token?: unknown; usedAt?: unknown };
+      if (typeof record?.token === "string" && record.token) {
+        childWakeTokens.set(childId, {
+          token: record.token,
+          usedAt: typeof record.usedAt === "number" ? record.usedAt : Date.now(),
+        });
+      }
     }
   } catch {
     // Missing or unreadable: start empty. Losing it costs a ceiling (the child
@@ -172,17 +187,24 @@ export function rememberChildWakeToken(childSessionId: string, token: string): v
   const id = childSessionId.trim();
   if (!id || !token) return;
   load();
-  childWakeTokens.delete(id);
-  childWakeTokens.set(id, token);
-  while (childWakeTokens.size > MAX_CHILD_WAKE_TOKENS) {
-    childWakeTokens.delete(childWakeTokens.keys().next().value as string);
+  const at = Date.now();
+  childWakeTokens.set(id, { token, usedAt: at });
+  for (const [childId, entry] of childWakeTokens) {
+    if (at - entry.usedAt > CHILD_WAKE_TOKEN_UNUSED_MS) childWakeTokens.delete(childId);
   }
   save();
 }
 
 export function childWakeToken(childSessionId: string): string | null {
   load();
-  return childWakeTokens.get(childSessionId.trim()) ?? null;
+  const entry = childWakeTokens.get(childSessionId.trim());
+  if (!entry) return null;
+  const at = Date.now();
+  if (at - entry.usedAt > CHILD_WAKE_TOKEN_TOUCH_MS) {
+    entry.usedAt = at;
+    save();
+  }
+  return entry.token;
 }
 
 /** What delivering one child completion to its parent came to. */

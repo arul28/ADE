@@ -542,23 +542,26 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   const selectMachine = async (query: string): Promise<AdeAccountMachine> => {
     const trimmed = query.trim();
     if (!trimmed) throw new Error("machine must be a machine id or name.");
-    let machines = await listAccountMachines();
-    try {
+    const pick = (machines: AdeAccountMachine[]): AdeAccountMachine | null => {
       try {
         return selectAccountMachine(machines, trimmed);
       } catch (error) {
-        if (error instanceof AmbiguousAccountMachineError) throw error;
-        machines = await listAccountMachines(true);
-        return selectAccountMachine(machines, trimmed);
+        if (error instanceof AmbiguousAccountMachineError) {
+          throw new Error(`${errorMessage(error)} Pass the machine id from listMachines.`);
+        }
+        return null;
       }
-    } catch (error) {
-      const message = errorMessage(error);
-      if (error instanceof AmbiguousAccountMachineError) throw new Error(`${message} Pass the machine id from listMachines.`);
-      const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
-      throw new Error(
-        `No machine on your ADE account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
-      );
-    }
+    };
+    const cached = pick(await listAccountMachines());
+    if (cached) return cached;
+    // The fresh read's own failure (signed out, directory down) is the answer.
+    const machines = await listAccountMachines(true);
+    const fresh = pick(machines);
+    if (fresh) return fresh;
+    const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
+    throw new Error(
+      `No machine on your ADE account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
+    );
   };
 
   return {

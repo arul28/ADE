@@ -361,6 +361,43 @@ describe("explicit proof capture", () => {
     ]);
   });
 
+  it("lets a caller on another machine read back only its own fresh capture", async () => {
+    const fixture = createRuntime();
+    const shotPath = path.join(projectRoot, "remote-screen.png");
+    fixture.runtime.iosSimulatorService = {
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "device pixels");
+        return { filePath: shotPath, deviceUdid: "SIM-1" };
+      }),
+    };
+    const remoteCaller = async (foreignId: string) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { clientName: "ade-agent-remote", identity: { callerId: foreignId, role: "agent", chatSessionId: foreignId } },
+      });
+      return handler;
+    };
+    const owner = await remoteCaller("remote:device-a:chat-a");
+    await callTool(owner, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+
+    const read = await callTool(owner, "read_remote_caller_capture", { path: shotPath, offset: 0 });
+    expect(read.isError).toBeUndefined();
+    expect(Buffer.from(read.structuredContent.dataBase64, "base64").toString("utf8")).toBe("device pixels");
+    expect(read.structuredContent).toMatchObject({ done: true, size: "device pixels".length });
+
+    // Another machine's caller, or a file nobody captured, reads nothing.
+    fs.writeFileSync(path.join(projectRoot, "secret.txt"), "not a capture");
+    const other = await remoteCaller("remote:device-b:chat-b");
+    for (const [handler, file] of [[other, shotPath], [owner, path.join(projectRoot, "secret.txt")]] as const) {
+      const refused = await callTool(handler, "read_remote_caller_capture", { path: file });
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.error)).toMatch(/not a capture this machine made for you/);
+    }
+  });
+
   it("files `ade mac-desktop proof` as ADE's capture: the screenshot action's file, unchanged", async () => {
     const fixture = createRuntime();
     // The chat's lane: a display is lane-scoped, and so is the proof it files.

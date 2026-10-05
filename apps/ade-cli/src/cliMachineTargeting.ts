@@ -148,6 +148,9 @@ function machineCallScopeFor(
   return { kind: "repo", originUrl };
 }
 
+/** The most a proof command reads back from another machine for one capture. */
+const MAX_REMOTE_CAPTURE_BYTES = 512 * 1024 * 1024;
+
 /** Paths that name THIS machine's checkout mean nothing over there. */
 const LOCAL_PATH_KEYS = ["projectRoot", "workspaceRoot", "callerRoot", "callerRootSource"];
 
@@ -226,10 +229,13 @@ export async function createMachineRemoteConnection(
           name: "read_remote_caller_capture",
           arguments: { path: remotePath, offset },
         }));
-        if (!isRecord(chunk) || typeof chunk.dataBase64 !== "string") {
+        if (!isRecord(chunk) || typeof chunk.dataBase64 !== "string" || chunk.offset !== offset) {
           throw new Error(`${machine} did not return the capture at ${remotePath}.`);
         }
         const bytes = Buffer.from(chunk.dataBase64, "base64");
+        if (offset + bytes.length > MAX_REMOTE_CAPTURE_BYTES) {
+          throw new Error(`${machine}'s capture at ${remotePath} is over ${MAX_REMOTE_CAPTURE_BYTES / (1024 * 1024)} MiB; it stays there.`);
+        }
         fs.writeSync(handle, bytes, 0, bytes.length, offset);
         offset += bytes.length;
         if (chunk.done === true || bytes.length === 0) break;
