@@ -36,6 +36,9 @@ struct MacDesktopViewer: View {
   /// display; only that button does.
   @State private var starting = false
   @State private var startError: String?
+  @State private var stopping = false
+  @State private var confirmingStop = false
+  @State private var stopError: String?
   @State private var orientation = MacDesktopViewerOrientation()
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
@@ -52,6 +55,9 @@ struct MacDesktopViewer: View {
       // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
         controls
+        if let stopError {
+          Text(stopError).font(.caption).foregroundStyle(ADEColor.warning).padding(.horizontal)
+        }
         // The stage fills the space between the controls and the footer, and
         // a zoomed picture may use all of it.
         stage
@@ -94,6 +100,36 @@ struct MacDesktopViewer: View {
         dismiss()
       }
       Spacer(minLength: 0)
+      if let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
+         syncService.canStopWindowsDesktop(seat: seat) {
+        let copy = windowsDesktopStopCopy(seat: seat)
+        // Asks first, like every Stop on the desktop: the private screen signs
+        // out and closes the lane's apps; the main desktop is handed back.
+        controlButton(systemName: "stop.fill", label: copy.action) {
+          confirmingStop = true
+        }
+        .disabled(stopping)
+        .confirmationDialog(
+          "\(copy.action)?",
+          isPresented: $confirmingStop,
+          titleVisibility: .visible
+        ) {
+          Button(copy.action, role: .destructive) {
+            Task {
+              stopping = true
+              stopError = nil
+              defer { stopping = false }
+              do {
+                try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+                await refresh()
+              } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
+            }
+          }
+          Button("Keep running", role: .cancel) {}
+        } message: {
+          Text(copy.consequence)
+        }
+      }
       if let session {
         MacDesktopViewerReconnectButton(session: session) { reconnect() }
       }
@@ -107,7 +143,11 @@ struct MacDesktopViewer: View {
   }
 
   private var title: some View {
-    Label("macOS", systemImage: "desktopcomputer")
+    Label(
+      windowsDesktopSeatLabel(windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display))
+        ?? (desktop?.windowsDesktop == nil ? "macOS" : "Windows"),
+      systemImage: desktop?.windowsDesktop == nil ? "desktopcomputer" : windowsDesktopSymbolName
+    )
       .font(.footnote.weight(.semibold))
       .foregroundStyle(.white.opacity(0.85))
       .accessibilityAddTraits(.isHeader)
@@ -178,9 +218,11 @@ struct MacDesktopViewer: View {
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
         error: startError,
-        canStart: syncService.supportsMacDesktopStart
+        canStart: syncService.supportsMacDesktopStart,
+        hostIsWindows: desktop?.windowsDesktop != nil,
+        pcOperation: desktop?.windowsDesktop?.operation?.kind
       ))
-      if !starting && syncService.supportsMacDesktopStart {
+      if !starting && syncService.supportsMacDesktopStart && desktop?.windowsDesktop?.operation == nil {
         Button {
           ADEHaptics.light()
           startDesktop()
@@ -252,6 +294,7 @@ struct MacDesktopViewer: View {
     macDesktopStartDisplay(
       using: syncService,
       laneId: laneId,
+      hostIsWindows: desktop?.windowsDesktop != nil,
       starting: $starting,
       errorText: $startError,
       refresh: { await refresh() }
@@ -455,17 +498,51 @@ func macDesktopVisibleMessage(_ rawMessage: String?, code explicitCode: String? 
   }
 }
 
-func macDesktopVisibleMessage(for error: Error) -> String {
+/// The phone's Stop for a Windows screen, in the desktop's words
+/// (`STOP_CONFIRM_COPY` in `MacDesktopStopConfirm.tsx`), per seat.
+let windowsPrivateStopAction = "Stop the private Windows screen"
+let windowsPrivateStopConsequence = "The private screen signs out, and apps this lane opened there close, even with unsaved work."
+let windowsSharedStopAction = "Stop using your main Windows desktop"
+let windowsSharedStopConsequence = "The agent stops working on your desktop, and windows it moved off-screen come back."
+
+/// The confirm title and consequence for stopping a seat (`private` | `shared`).
+func windowsDesktopStopCopy(seat: String?) -> (action: String, consequence: String) {
+  seat == "shared"
+    ? (windowsSharedStopAction, windowsSharedStopConsequence)
+    : (windowsPrivateStopAction, windowsPrivateStopConsequence)
+}
+
+func macDesktopVisibleMessage(for error: Error, hostIsWindows: Bool = false) -> String {
   let nsError = error as NSError
   return macDesktopVisibleMessage(
     nsError.localizedDescription,
     code: nsError.userInfo["ADEErrorCode"] as? String
-  ) ?? "The macOS desktop could not complete the request. Try again."
+  ) ?? (hostIsWindows
+    ? "The Windows desktop could not complete the request. Try again."
+    : "The macOS desktop could not complete the request. Try again.")
 }
 
 /// The Off card's one line: the start in flight, why the last one failed, or
-/// that the display is off.
-func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool) -> String {
+/// that the display is off. `pcOperation` is the Windows host's own in-flight
+/// step (`windowsDesktop.operation.kind`), so a start begun on the PC reads as
+/// under way here too instead of offering a second one.
+func macDesktopOffCardMessage(
+  starting: Bool,
+  error: String?,
+  canStart: Bool,
+  hostIsWindows: Bool = false,
+  pcOperation: String? = nil
+) -> String {
+  if hostIsWindows {
+    if starting { return "Waiting for Windows sign-in…" }
+    switch pcOperation {
+    case "start_private": return "The private Windows screen is starting on the PC…"
+    case "setup", "save_password", "forget_password": return "Windows Desktop setup is in progress on the PC…"
+    default: break
+    }
+    if let error = macDesktopVisibleMessage(error) { return error }
+    return canStart ? "The Windows desktop is off." : "Start this lane’s Windows desktop in ADE on the PC."
+  }
   if starting { return "Starting the macOS desktop…" }
   if let error = macDesktopVisibleMessage(error) {
     return error

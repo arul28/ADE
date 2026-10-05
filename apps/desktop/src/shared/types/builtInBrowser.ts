@@ -9,6 +9,16 @@ import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoCo
 
 export type BuiltInBrowserProvider = "cdp";
 
+/**
+ * Windows: an ADE desktop app started as administrator makes its bridge pipe
+ * admit administrators only, so the background service (the plain user) is
+ * refused. One sentence for the brain's reason, the desktop's log and the
+ * app-wide banner.
+ */
+export const ELEVATED_DESKTOP_TITLE = "ADE is running as administrator";
+export const ELEVATED_DESKTOP_MESSAGE =
+  "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.";
+
 export type BuiltInBrowserFrame = AgentFrame;
 
 export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {

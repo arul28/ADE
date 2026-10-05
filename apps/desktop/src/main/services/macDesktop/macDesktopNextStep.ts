@@ -54,6 +54,8 @@ export type MacDesktopNextStepInput = {
   count?: number | null;
   /** Whether this caller may post real input right now. */
   lease: MacDesktopLeaseDecision;
+  /** A Windows seat: `--real` needs no approval card, so none is suggested. */
+  realInputNeedsNoCard?: boolean;
 };
 
 /** Is the element web content (inside an `AXWebArea`)? Elements are walked by `parentIndex`. */
@@ -118,11 +120,18 @@ function accessibilityMissReason(
 }
 
 function realInputStep(
-  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "lease">,
+  args: Pick<MacDesktopNextStepInput, "action" | "resolved" | "button" | "count" | "lease" | "realInputNeedsNoCard">,
   why: string,
 ): ComputerUseActionNextStep {
   const { lease } = args;
   if (!lease.ok) {
+    if (lease.code === "MAC_DESKTOP_INPUT_LEASE_REQUIRED" && args.realInputNeedsNoCard) {
+      return {
+        method: "real_input",
+        reason: `${why}; repeat the command with --real`,
+        command: realClickCommand(args),
+      };
+    }
     if (lease.code === "MAC_DESKTOP_INPUT_LEASE_REQUIRED") {
       return {
         method: "lease",
@@ -223,6 +232,7 @@ export function macDesktopRefusedNextStep(args: {
   button?: string | null;
   count?: number | null;
   lease: MacDesktopLeaseDecision;
+  realInputNeedsNoCard?: boolean;
 }): ComputerUseActionNextStep | null {
   if (args.mode !== "accessibility" || args.action !== "click") return null;
   if (!/answered no press action/i.test(args.message)) return null;

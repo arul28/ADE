@@ -253,6 +253,7 @@ import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedSched
 import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
@@ -15014,9 +15015,8 @@ export function AgentChatPane({
           deviceName={iosSimulatorSessionChip.deviceName}
           onOpen={openIosSimulatorDrawer}
           onFloat={() => {
-            // §7: Float opens the mini player, which owns native PiP in its
-            // own hover bar. The auto-appearing corner card it used to ask is
-            // gone, so asking it would have been a button that did nothing.
+            // Float opens the mini player, which owns native PiP in its own
+            // hover bar. There is no auto-appearing corner card to ask.
             if (!iosSimulatorSessionChip.deviceUdid) return;
             openAppleMiniPlayer({
               laneId: selectedSession?.laneId ?? laneId ?? null,
@@ -15141,6 +15141,7 @@ export function AgentChatPane({
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
       />
+      <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
       {hasAttachedTerminal ? (
         <button
           type="button"

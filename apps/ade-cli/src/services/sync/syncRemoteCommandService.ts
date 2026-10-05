@@ -5888,6 +5888,43 @@ function registerMacDesktopRemoteCommands({
         laneId: requireString(payload.laneId, "macDesktop.stop requires laneId."),
       }));
 
+    // A phone or any watch-only viewer's Stop. Distinct from `macDesktop.stop`
+    // on purpose: the general stop is a controller's, while signing the private
+    // screen out is the one action the plan gives a view-only client. It stops
+    // the lane's seat and nothing else.
+    register("macDesktop.stopPrivate", {
+      viewerAllowed: true,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.stopPrivate requires laneId.");
+      const status = await macDesktopService.getStatus({ laneId });
+      if (!status.windowsDesktop || (status.display && status.display.mode !== "virtual")) {
+        throw new Error("Only a private Windows screen can be stopped by a watch-only viewer.");
+      }
+      return await macDesktopService.stop({ laneId });
+    });
+
+    // The phone's and the web viewer's Stop for the lane's Windows screen on
+    // EITHER seat: the private screen, or the user's main desktop ("Using your
+    // main Windows desktop"), so the user always has the way out from any
+    // trusted device. `stopPrivate` above stays for phones that predate this.
+    // A Mac lane's display is still not a viewer's to stop: that takes the
+    // controller-only `macDesktop.stop`.
+    register("macDesktop.stopSeat", {
+      viewerAllowed: true,
+      controllerAllowed: true,
+      queueable: false,
+    }, async (payload) => {
+      const laneId = requireString(payload.laneId, "macDesktop.stopSeat requires laneId.");
+      const status = await macDesktopService.getStatus({ laneId });
+      if (status.platform !== "win32" || !status.windowsDesktop) {
+        throw new Error("Only a Windows screen can be stopped by a watch-only viewer.");
+      }
+      if (!status.display) throw new Error("This lane has no Windows screen to stop.");
+      return await macDesktopService.stop({ laneId });
+    });
+
     register("macDesktop.takeControl", {
       viewerAllowed: false,
       controllerAllowed: true,

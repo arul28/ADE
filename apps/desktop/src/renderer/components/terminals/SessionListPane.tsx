@@ -34,7 +34,8 @@ import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
-import { useLaneMacDesktops } from "./useLaneMacDesktops";
+import { laneDesktopSeat, useLaneDesktopSeats } from "./useLaneMacDesktops";
+import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
 import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./useLaneWorkToolUse";
 import { SessionCard } from "./SessionCard";
@@ -1138,8 +1139,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   const prsByLaneId = useLanePrsByLaneId();
   // Keyed to the lane list, so claims refresh when the lanes do.
   const laneAppleDevices = useLaneAppleDevices({ refreshKey: lanesProp });
-  // One status read plus display events for the whole list, not per row.
-  const laneMacDesktops = useLaneMacDesktops();
+  // Which lanes hold a screen, and which kind (Mac, private or shared
+  // Windows): one status read plus display events for the whole list, not per row.
+  const laneDesktopSeats = useLaneDesktopSeats();
   // The same for App Control apps and agent-owned browser tabs: one read and
   // one subscription each for the whole list.
   const laneToolUse = useLaneWorkToolUse();
@@ -2368,8 +2370,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     machineMarker?: CrossMachineLaneMarker | null;
     /** The Apple device a headerless lane holds; its card shows the mark. */
     laneAppleDevice?: LaneAppleDevice | null;
-    /** The headerless lane holds a Mac Desktop display; its card shows the mark. */
-    laneMacDesktop?: boolean;
+    /** The screen the headerless lane holds, or null; its card shows the mark. */
+    laneDesktop?: DesktopSeatKind | null;
     /** The headerless lane lives on a cloud; its card shows the mark. */
     laneCloud?: "devin" | "cursor" | null;
     /** The headerless lane has a live App Control app; its card shows the mark. */
@@ -2485,7 +2487,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? null}
-        laneMacDesktop={options?.laneMacDesktop ?? false}
+        laneDesktop={options?.laneDesktop ?? null}
         // A card that names its lane also says the lane lives on a cloud.
         laneCloud={options?.laneCloud ?? (options?.showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         laneAppControl={options?.laneAppControl ?? false}
@@ -2541,7 +2543,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 laneActions: null,
                 machineMarker: null,
                 laneAppleDevice: null,
-                laneMacDesktop: false,
+                laneDesktop: null,
                 laneAppControl: false,
                 laneBrowserTabs: 0,
               })}
@@ -2641,7 +2643,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           : undefined,
       machineMarker: markersByLaneId.get(markerKey) ?? null,
       laneAppleDevice: !foreignRow && lane ? laneAppleDevices.get(lane.id) ?? null : null,
-      laneMacDesktop: !foreignRow && lane ? laneMacDesktops.has(lane.id) : false,
+      laneDesktop: !foreignRow && lane ? laneDesktopSeat(laneDesktopSeats, lane.id) : null,
       laneAppControl: !foreignRow && lane ? laneToolUse.appControl.has(lane.id) : false,
       laneBrowserTabs: !foreignRow && lane ? laneToolUse.browserTabs.get(lane.id) ?? 0 : 0,
       laneActions,
@@ -3140,7 +3142,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // The Working shelf is not quiet: its lanes keep their live cards and tails.
     const inQuietShelf = isQuietLaneShelf(laneShelfFor(lane.id)) && !sharedBranchInboxKeepIds.has(lane.id);
     const laneAppleDevice = laneAppleDevices.get(lane.id) ?? null;
-    const laneMacDesktop = laneMacDesktops.has(lane.id);
+    const laneDesktop = laneDesktopSeat(laneDesktopSeats, lane.id);
     const laneAppControl = laneToolUse.appControl.has(lane.id);
     const laneBrowserTabs = laneToolUse.browserTabs.get(lane.id) ?? 0;
     return (
@@ -3160,10 +3162,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
           : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
-        appleDevice={laneAppleDevice || laneMacDesktop || laneAppControl || laneBrowserTabs > 0 ? (
+        appleDevice={laneAppleDevice || laneDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
-            {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+            {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
             {laneAppControl ? (
               <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
             ) : null}
@@ -3220,7 +3222,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               })}`),
               machineMarker,
               laneAppleDevice,
-              laneMacDesktop,
+              laneDesktop,
               laneCloud: laneCloudProvider(lane),
               laneAppControl,
               laneBrowserTabs,

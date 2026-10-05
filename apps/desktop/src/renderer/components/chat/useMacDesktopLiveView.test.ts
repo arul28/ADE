@@ -9,6 +9,7 @@ import {
   resetMacDesktopLiveViewLeasesForTests,
 } from "./macDesktopLiveViewLease";
 import {
+  EVENT_RESTART_MAX,
   FIRST_FRAME_TIMEOUT_MS,
   RECOVER_DELAY_MS,
   RECOVER_MAX_TRIES,
@@ -169,6 +170,47 @@ describe("useMacDesktopLiveView reconnects by itself", () => {
     act(() => emit(stopped("lane-1")));
     await pass(RECOVER_DELAY_MS + 50);
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2 + RECOVER_MAX_TRIES));
+  });
+
+  it("a viewer that gave up takes the picture back when the host announces one, a bounded number of times", async () => {
+    // A recording starting or stopping can drop the capture while every quick
+    // re-dial lands before it is back. The host's announcement brings the
+    // viewer back without a person pressing Retry — but a host that keeps
+    // announcing a capture this viewer cannot draw must not loop forever.
+    const view = mount();
+    await waitFor(() => expect(view.result.current.url).toBeTruthy());
+    const exhaust = async () => {
+      for (let i = 0; i < RECOVER_MAX_TRIES + 3; i += 1) {
+        await pass(FIRST_FRAME_TIMEOUT_MS + RECOVER_DELAY_MS * (RECOVER_MAX_TRIES + 1));
+      }
+      await waitFor(() => expect(view.result.current.gaveUp).toBe(true));
+      return api.startStream.mock.calls.length;
+    };
+    const announce = () => emit({ type: "display-created", display: { laneId: "lane-1" } } as MacDesktopEventPayload);
+
+    let starts = await exhaust();
+    // Another lane's announcement is not ours.
+    act(() => emit({ type: "display-created", display: { laneId: "lane-9" } } as MacDesktopEventPayload));
+    await pass(RECOVER_DELAY_MS * 4);
+    expect(api.startStream).toHaveBeenCalledTimes(starts);
+    for (let round = 0; round < EVENT_RESTART_MAX; round += 1) {
+      act(() => announce());
+      await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(starts));
+      starts = await exhaust();
+    }
+    // Spent: the next announcement starts nothing.
+    act(() => announce());
+    await pass(FIRST_FRAME_TIMEOUT_MS + RECOVER_DELAY_MS * 4);
+    expect(api.startStream).toHaveBeenCalledTimes(starts);
+    // Without a drawn frame, the whole run stays within a fixed number of starts.
+    expect(starts).toBeLessThanOrEqual((1 + RECOVER_MAX_TRIES) * (1 + EVENT_RESTART_MAX));
+
+    // A person's Retry renews it.
+    act(() => view.result.current.restart());
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(starts));
+    starts = await exhaust();
+    act(() => announce());
+    await waitFor(() => expect(api.startStream.mock.calls.length).toBeGreaterThan(starts));
   });
 
   it("regression: the card and the pane of one chat never start the lane twice", async () => {

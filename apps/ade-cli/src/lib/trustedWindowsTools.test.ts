@@ -113,7 +113,7 @@ describe("trusted Windows tool resolution", () => {
     const poisonDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trusted-tools-poison-"));
 
     try {
-      for (const tool of ["powershell.exe", "reg.exe", "schtasks.exe", "taskkill.exe", "icacls.exe"]) {
+      for (const tool of ["powershell.exe", "reg.exe", "schtasks.exe", "taskkill.exe", "icacls.exe", "whoami.exe"]) {
         fs.writeFileSync(path.join(poisonDir, tool), "not a Windows executable");
       }
       const moduleUrl = pathToFileURL(path.resolve("src/lib/trustedWindowsTools.ts")).href;
@@ -127,7 +127,7 @@ describe("trusted Windows tool resolution", () => {
         const originalWindir = process.env.windir;
         process.env.SystemRoot = ${JSON.stringify(poisonDir)};
         process.env.windir = ${JSON.stringify(poisonDir)};
-        const tools = ["powershell", "reg", "schtasks", "taskkill", "icacls"];
+        const tools = ["powershell", "reg", "schtasks", "taskkill", "icacls", "whoami"];
         const canonicalRoot = fs.realpathSync.native(TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT);
         const resolved = Object.fromEntries(tools.map((tool) => [tool, resolveTrustedWindowsTool(tool)]));
         process.env.SystemRoot = originalSystemRoot;

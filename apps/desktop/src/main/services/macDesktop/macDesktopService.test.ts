@@ -10,6 +10,7 @@ import type {
 import {
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_LEASE_TTL_MS,
+  MAC_DESKTOP_USER_CLI_HOLDER_ID,
   macDesktopPaneCaption,
   type MacDesktopEventPayload,
   type MacDesktopRecordingStatus,
@@ -20,9 +21,14 @@ import {
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
 import { createMacDesktopService } from "./macDesktopService";
+import type { DesktopSeatAdapter } from "./macDesktopSeatProvider";
+import type { MacDesktopRequestChatInput } from "./macDesktopLeaseFlow";
+import { createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
+import { describeDesktopSeat, desktopSeatKind } from "../../../shared/desktopSeat";
 import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
+import { movie } from "../demoVideo/__fixtures__/demoMp4Bytes";
 
 const logger = {
   debug: () => {},
@@ -37,7 +43,7 @@ const logger = {
  * real helper needs a window server and a signed binary.
  */
 function createFakeDriver(overrides: Record<string, (payload: Record<string, unknown>) => unknown> = {}) {
-  const calls: Array<{ op: string; payload: Record<string, unknown> }> = [];
+  const calls: Array<{ op: string; payload: Record<string, unknown>; options?: { timeoutMs?: number } }> = [];
   const listeners = new Set<(event: { event: string } & Record<string, unknown>) => void>();
   let resolveCreate: (() => void) | null = null;
   const client = {
@@ -63,8 +69,8 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
       client.restartCalls += 1;
       calls.push({ op: "restart", payload: {} });
     },
-    async request(op: string, payload: Record<string, unknown> = {}) {
-      calls.push({ op, payload });
+    async request(op: string, payload: Record<string, unknown> = {}, options?: { timeoutMs?: number }) {
+      calls.push({ op, payload, ...(options ? { options } : {}) });
       const override = overrides[op];
       if (override) {
         const result = override(payload);
@@ -73,9 +79,10 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
           const rawPath = started?.payload.filePath;
           if (typeof rawPath === "string") {
             fs.mkdirSync(path.dirname(rawPath), { recursive: true });
-            const values = result as Record<string, unknown>;
-            fs.writeFileSync(rawPath, String(values.wallDurationMs ?? values.durationMs ?? 1_200));
-            return { ...(result as Record<string, unknown>), filePath: rawPath };
+            const { rawBytes, ...values } = result as Record<string, unknown>;
+            // `rawBytes`: what the recorder really wrote, for a test of the file itself.
+            fs.writeFileSync(rawPath, Buffer.isBuffer(rawBytes) ? rawBytes : String(values.wallDurationMs ?? values.durationMs ?? 1_200));
+            return { ...values, filePath: rawPath };
           }
         }
         return result;
@@ -135,11 +142,17 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
 
 function makeService(options: {
   platform?: NodeJS.Platform;
+  seat?: DesktopSeatAdapter;
+  hostIsLocal?: () => boolean;
   driver?: ReturnType<typeof createFakeDriver>;
   projectRoot?: string;
   now?: () => number;
   ingestArtifacts?: (request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult;
   captureAnalytics?: (properties: { action: "mac_desktop"; outcome: "started" | "agent_drove" | "recorded" }) => void;
+  requestChatInput?: MacDesktopRequestChatInput;
+  /** Replaces the fake demo engine; `[]` is a host with none. */
+  demoEngines?: DemoEngine[];
+  isArtifactFileReferenced?: (filePath: string) => boolean;
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
@@ -159,15 +172,418 @@ function makeService(options: {
     projectRoot: options.projectRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
     logger,
     platform: options.platform ?? "darwin",
+    ...(options.seat ? { seat: options.seat } : {}),
+    ...(options.hostIsLocal ? { hostIsLocal: options.hostIsLocal } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
-    demoEngines: { engines: () => [demoEngine] },
+    ...(options.requestChatInput ? { requestChatInput: options.requestChatInput } : {}),
+    ...(options.isArtifactFileReferenced ? { isArtifactFileReferenced: options.isArtifactFileReferenced } : {}),
+    demoEngines: { engines: () => options.demoEngines ?? [demoEngine] },
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
   });
   return { service, driver, events };
 }
+
+describe("Windows seat through the shared desktop service", () => {
+  const readyHost = { state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: false, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" };
+  function windowsService(
+    status: Record<string, unknown>,
+    hostIsLocal = true,
+    options: Omit<NonNullable<Parameters<typeof makeService>[0]>, "platform" | "seat" | "driver" | "hostIsLocal"> & {
+      ops?: Record<string, (payload: Record<string, unknown>) => unknown>;
+    } = {},
+  ) {
+    const { ops, ...rest } = options;
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => status,
+      [MAC_DESKTOP_DRIVER_OPS.health]: () => ({ version: "1.0.0", windowsDesktop: status }),
+      ...ops,
+    });
+    const seat = { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null };
+    return makeService({ platform: "win32", seat, driver, hostIsLocal: () => hostIsLocal, ...rest });
+  }
+
+  it("starts and stops a Windows lane through the shared lifecycle and reports native host identity", async () => {
+    const { service } = windowsService(readyHost);
+    try {
+      const started = await service.start({ laneId: "windows-lane" });
+      expect(started.supported).toBe(true);
+      expect(started.display?.laneId).toBe("windows-lane");
+      expect(started.windowsDesktop).toMatchObject({ driverSessionId: 1, hostIsConsoleSession: true, edition: "Professional" });
+      await service.stop({ laneId: "windows-lane" });
+      expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+    } finally { service.dispose(); }
+  });
+
+  it.each([
+    ["locked", "WINDOWS_DESKTOP_LOCKED"],
+    ["setup_required", "WINDOWS_DESKTOP_SETUP_REQUIRED"],
+    ["not_console_session", "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION"],
+    ["held", "WINDOWS_DESKTOP_HELD"],
+  ])("refuses a private start on a %s host", async (state, code) => {
+    const { service } = windowsService({ ...readyHost, state, holderLaneId: state === "held" ? "other-lane" : null });
+    try {
+      await expect(service.start({ laneId: "windows-lane" })).rejects.toMatchObject({ code });
+      expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+    } finally { service.dispose(); }
+  });
+
+  it.each([
+    [true, false], [false, true], [false, false], [true, true],
+  ])("requires explicit consent from either client location (local=%s consent=%s)", async (local, consent) => {
+    const { service } = windowsService(readyHost, local);
+    try {
+      const start = service.start({ laneId: "windows-lane", seatMode: "shared", sharedDesktopConsent: consent });
+      if (consent) {
+        await expect(start).resolves.toMatchObject({ display: { laneId: "windows-lane" } });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display?.laneId).toBe("windows-lane");
+        await service.stop({ laneId: "windows-lane" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      } else {
+        await expect(start).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+        expect((await service.getStatus({ laneId: "windows-lane" })).display).toBeNull();
+      }
+    } finally { service.dispose(); }
+  });
+});
+
+describe("Windows Desktop seats, consent and window verbs", () => {
+  const readyHost = { state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" };
+  function windowsService(options: Omit<NonNullable<Parameters<typeof makeService>[0]>, "platform" | "seat" | "driver"> & {
+    ops?: Record<string, (payload: Record<string, unknown>) => unknown>;
+  } = {}) {
+    const { ops, ...rest } = options;
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => readyHost,
+      [MAC_DESKTOP_DRIVER_OPS.health]: () => ({ version: "1.0.0", windowsDesktop: readyHost }),
+      ...ops,
+    });
+    const seat = { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null };
+    return makeService({ platform: "win32", seat, driver, ...rest });
+  }
+  /** A chat host that answers the one question it is asked with `picked`. */
+  function answering(response: { decision: string; picked: string[]; responseText?: string | null }) {
+    const asked: string[] = [];
+    const requestChatInput: MacDesktopRequestChatInput = async (input) => {
+      asked.push(input.chatSessionId);
+      return {
+        decision: response.decision,
+        answers: { [input.questions?.[0]?.id ?? "q"]: response.picked },
+        responseText: response.responseText ?? null,
+      };
+    };
+    return { asked, requestChatInput };
+  }
+  const inputOps = (driver: ReturnType<typeof createFakeDriver>, laneId: string) =>
+    driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.input && call.payload.laneId === laneId);
+
+  it.each([
+    ["the Allow option", { decision: "accept", picked: ["allow"] }, true],
+    ["Allow in another case, with spaces", { decision: "accept", picked: ["  Allow "] }, true],
+    ["typed 'no'", { decision: "accept", picked: ["no"] }, false],
+    ["typed 'disallow'", { decision: "accept", picked: ["disallow"] }, false],
+    ["typed 'I do not want to allow'", { decision: "accept", picked: ["I do not want to allow"] }, false],
+    ["both options at once", { decision: "accept", picked: ["allow", "deny"] }, false],
+    ["an accept with only free text", { decision: "accept", picked: [], responseText: "allow" }, false],
+    ["a decline", { decision: "decline", picked: ["allow"] }, false],
+    ["a cancel", { decision: "cancel", picked: ["allow"] }, false],
+  ])("a consent card grants only on the Allow option: %s", async (_name, response, grants) => {
+    // The Mac input lease.
+    const mac = makeService({ requestChatInput: answering(response).requestChatInput });
+    await mac.service.start({ laneId: "lane-1" });
+    const lease = await mac.service.requestInputLease({ laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(lease.granted).toBe(grants);
+    expect((await mac.service.getStatus({ laneId: "lane-1" })).lease?.holderId ?? null).toBe(grants ? "chat-1" : null);
+    mac.service.dispose();
+
+    // The Windows main desktop.
+    const windows = windowsService({ requestChatInput: answering(response).requestChatInput });
+    const shared = windows.service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: "check the tray" });
+    if (grants) {
+      await expect(shared).resolves.toMatchObject({ display: { laneId: "lane-1", seatMode: "shared" } });
+    } else {
+      await expect(shared).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+      expect(windows.driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toBe(false);
+    }
+    windows.service.dispose();
+  });
+
+  it("asks for the main desktop once per chat, forgets it with the chat, and never asks without a chat", async () => {
+    const card = answering({ decision: "accept", picked: ["allow"] });
+    const { service, driver } = windowsService({ requestChatInput: card.requestChatInput });
+    try {
+      await service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: null });
+      await service.stop({ laneId: "lane-1" });
+      // The same chat, after the screen stopped: no second card.
+      await expect(service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: null }))
+        .resolves.toMatchObject({ display: { seatMode: "shared" } });
+      expect(card.asked).toEqual(["chat-1"]);
+      await service.stop({ laneId: "lane-1" });
+
+      // The chat closed: its consent went with it.
+      await service.releaseIfOwnedBy("chat-1");
+      await service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: null });
+      expect(card.asked).toEqual(["chat-1", "chat-1"]);
+      await service.stop({ laneId: "lane-1" });
+
+      // No chat, or an automation's synthetic holder: nobody to ask, no card.
+      const creates = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay).length;
+      for (const chatSessionId of [null, "automation:rule-1"]) {
+        await expect(service.requestSharedDesktop({ laneId: "lane-2", chatSessionId, reason: null }))
+          .rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+      }
+      expect(card.asked).toHaveLength(2);
+      expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toHaveLength(creates);
+    } finally { service.dispose(); }
+  });
+
+  it("starts nothing when the card is overtaken: a private start while it is open, or its deadline", async () => {
+    // The card stays open until answered or withdrawn, as the real one does.
+    const open: Array<{ allow: () => void }> = [];
+    let cardShown: () => void = () => {};
+    const shown = new Promise<void>((resolve) => { cardShown = resolve; });
+    const requestChatInput: MacDesktopRequestChatInput = (input) => new Promise((resolve, reject) => {
+      input.signal?.addEventListener("abort", () => reject(new Error("withdrawn")));
+      open.push({ allow: () => resolve({ decision: "accept", answers: { [input.questions?.[0]?.id ?? "q"]: ["allow"] }, responseText: null }) });
+      cardShown();
+    });
+    const { service, driver } = windowsService({ requestChatInput });
+    try {
+      const shared = service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: null });
+      await shown;
+      await service.start({ laneId: "lane-1" });
+      open[0]!.allow();
+      await expect(shared).rejects.toMatchObject({ code: "WINDOWS_DESKTOP_CONSENT_REQUIRED" });
+      expect((await service.getStatus({ laneId: "lane-1" })).display?.seatMode).toBe("private");
+    } finally { service.dispose(); }
+
+    vi.useFakeTimers();
+    const late = windowsService({ requestChatInput });
+    try {
+      let settled: unknown = null;
+      const shared = late.service.requestSharedDesktop({ laneId: "lane-2", chatSessionId: "chat-2", reason: null })
+        .then(() => "started", (error: { code?: string }) => error.code);
+      void shared.then((value) => { settled = value; });
+      await vi.advanceTimersByTimeAsync(169_000);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe("WINDOWS_DESKTOP_CONSENT_REQUIRED");
+      // The user's Allow arrives after the card was withdrawn.
+      open.at(-1)!.allow();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(late.driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toBe(false);
+      expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toHaveLength(1);
+    } finally {
+      late.service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("authorizes real input per seat: private needs no lease, shared takes it once, the user and the first lane win", async () => {
+    const { service, driver } = windowsService();
+    try {
+      await service.start({ laneId: "private" });
+      await service.start({ laneId: "shared-1", seatMode: "shared", sharedDesktopConsent: true });
+      await service.start({ laneId: "shared-2", seatMode: "shared", sharedDesktopConsent: true });
+      const real = (laneId: string, chatSessionId?: string | null) =>
+        service.click({ laneId, x: 10, y: 10, mode: "real", ...(chatSessionId ? { chatSessionId } : {}) });
+
+      // Private: its own session, its own pointer. No lease is taken or needed.
+      await expect(real("private", "chat-p")).resolves.toMatchObject({ ok: true });
+      expect((await service.getStatus({ laneId: "private" })).lease).toBeNull();
+
+      // Shared: the user's consent covers this lane's chats; the lease is taken.
+      await expect(real("shared-1", "chat-1")).resolves.toMatchObject({ ok: true });
+      expect((await service.getStatus({ laneId: "shared-1" })).lease?.holderId).toBe("chat-1");
+      // A second shared lane cannot drive the user's one pointer meanwhile.
+      await expect(real("shared-2", "chat-2")).rejects.toMatchObject({ code: "MAC_DESKTOP_LEASE_HELD_BY_OTHER" });
+      expect(inputOps(driver, "shared-2")).toHaveLength(0);
+      // A caller with no chat is nobody's consent.
+      await expect(real("shared-1", null)).rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+
+      // A person who took control keeps it, on either seat.
+      await service.takeControl({ laneId: "private", controllerId: "ade-window:user" });
+      await expect(real("private", "chat-p")).rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+      expect(inputOps(driver, "private")).toHaveLength(1);
+    } finally { service.dispose(); }
+
+    // A Mac still needs the chat's own lease.
+    const mac = makeService();
+    await mac.service.start({ laneId: "lane-1" });
+    await expect(mac.service.click({ laneId: "lane-1", x: 1, y: 1, mode: "real", chatSessionId: "chat-1" }))
+      .rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+    mac.service.dispose();
+
+    // The user's own trusted `ade` with no chat (`ade --role cto screen …`)
+    // arrives under its stable holder and drives the shared seat it started;
+    // an agent's `ade` shell with no chat arrives as nobody and is refused.
+    const cli = windowsService({
+      ops: { [MAC_DESKTOP_DRIVER_OPS.launch]: () => ({ pid: 900, appName: "Notepad", windows: [] }) },
+    });
+    try {
+      await cli.service.start({ laneId: "shared-1", seatMode: "shared", sharedDesktopConsent: true });
+      await cli.service.start({ laneId: "shared-2", seatMode: "shared", sharedDesktopConsent: true });
+      const trusted = { holderId: MAC_DESKTOP_USER_CLI_HOLDER_ID };
+      await expect(cli.service.open({ laneId: "shared-1", target: "notepad" }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+      await expect(cli.service.click({ laneId: "shared-1", x: 10, y: 10, mode: "real" }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED" });
+      expect(inputOps(cli.driver, "shared-1")).toHaveLength(0);
+
+      await expect(cli.service.open({ laneId: "shared-1", target: "notepad", ...trusted })).resolves.toBeTruthy();
+      await expect(cli.service.click({ laneId: "shared-1", x: 10, y: 10, mode: "real", ...trusted }))
+        .resolves.toMatchObject({ ok: true });
+      expect((await cli.service.getStatus({ laneId: "shared-1" })).lease?.holderId).toBe(MAC_DESKTOP_USER_CLI_HOLDER_ID);
+      // Still one pointer per host: another shared lane waits.
+      await expect(cli.service.click({ laneId: "shared-2", x: 10, y: 10, mode: "real", ...trusted }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_LEASE_HELD_BY_OTHER" });
+      // And a person who takes control in the pane wins.
+      await cli.service.takeControl({ laneId: "shared-1", controllerId: "ade-window:user" });
+      await expect(cli.service.click({ laneId: "shared-1", x: 10, y: 10, mode: "real", ...trusted }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_USER_HAS_CONTROL" });
+    } finally { cli.service.dispose(); }
+  });
+
+  it("acts only on the lane's own windows, and refuses the window verbs on a Mac", async () => {
+    const notepad = { id: 501, pid: 900, appName: "Notepad", title: "a.txt", laneId: "lane-2" };
+    const { service, driver } = windowsService({
+      ops: {
+        [MAC_DESKTOP_DRIVER_OPS.launch]: () => ({ pid: 900, appName: "Notepad", windows: [notepad] }),
+        // The driver lists a lane's windows (and every window for no lane).
+        [MAC_DESKTOP_DRIVER_OPS.listWindows]: (payload) => ({
+          windows: payload.laneId == null || payload.laneId === "lane-2" ? [notepad] : [],
+        }),
+      },
+    });
+    try {
+      await service.start({ laneId: "lane-1", seatMode: "shared", sharedDesktopConsent: true });
+      await service.start({ laneId: "lane-2" });
+      await service.open({ laneId: "lane-2", target: "notepad", chatSessionId: "chat-2" });
+      const verbs = new Set<string>([MAC_DESKTOP_DRIVER_OPS.windowFocus, MAC_DESKTOP_DRIVER_OPS.windowMinimize, MAC_DESKTOP_DRIVER_OPS.windowClose]);
+      const windowOps = () => driver.calls.filter((call) => verbs.has(call.op));
+
+      await expect(service.focusWindow({ laneId: "lane-1", windowId: 501, chatSessionId: "chat-1" }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE" });
+      await expect(service.closeWindow({ laneId: "lane-1", windowId: 501, chatSessionId: "chat-1" }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE" });
+      await expect(service.minimizeWindow({ laneId: "lane-1", windowId: 999, chatSessionId: "chat-1" }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_WINDOW_NOT_FOUND" });
+      expect(windowOps()).toEqual([]);
+
+      await expect(service.minimizeWindow({ laneId: "lane-2", windowId: 501, chatSessionId: "chat-2" }))
+        .resolves.toMatchObject({ laneId: "lane-2", windowId: 501, action: "minimize" });
+      expect(windowOps().map(({ op, payload }) => ({ op, payload }))).toEqual([{ op: "window.minimize", payload: { laneId: "lane-2", windowId: 501 } }]);
+    } finally { service.dispose(); }
+
+    const mac = makeService();
+    await mac.service.start({ laneId: "lane-1" });
+    for (const verb of ["focusWindow", "minimizeWindow", "closeWindow"] as const) {
+      await expect(mac.service[verb]({ laneId: "lane-1", windowId: 1 }))
+        .rejects.toMatchObject({ code: "MAC_DESKTOP_UNSUPPORTED_PLATFORM" });
+    }
+    expect(mac.driver.calls.some((call) => /^window\.(focus|minimize|close)$/.test(call.op))).toBe(false);
+    mac.service.dispose();
+  });
+
+  it("puts the running operation on every status and the outcome after, without starting a second", async () => {
+    let finishSetup: () => void = () => {};
+    let setupBegan: () => void = () => {};
+    const began = new Promise<void>((resolve) => { setupBegan = resolve; });
+    let setups = 0;
+    const { service, events } = windowsService({
+      ops: {
+        [MAC_DESKTOP_DRIVER_OPS.setupWindows]: () => {
+          setups += 1;
+          if (setups > 1) return { status: readyHost };
+          setupBegan();
+          return new Promise((resolve) => { finishSetup = () => resolve({ status: readyHost }); });
+        },
+      },
+    });
+    try {
+      await service.getStatus({});
+      const setup = service.setupWindowsDesktop({ allowPrompt: true });
+      await began;
+      expect((await service.getStatus({})).windowsDesktop).toMatchObject({ operation: { kind: "setup" }, lastOperation: null });
+
+      // A second request while one runs joins the record instead of replacing it.
+      await service.setupWindowsDesktop({ allowPrompt: true, savePassword: true });
+      expect((await service.getStatus({})).windowsDesktop?.operation).toMatchObject({ kind: "setup" });
+
+      finishSetup();
+      await setup;
+      const after = (await service.getStatus({})).windowsDesktop;
+      expect(after?.operation).toBeNull();
+      expect(after?.lastOperation).toMatchObject({ kind: "setup", outcome: "succeeded", error: null });
+      // A pane that was closed meanwhile learns both edges from the events.
+      const published = events.flatMap((event) => (event.type === "windows-desktop-changed" ? [event.status.operation?.kind ?? null] : []));
+      expect(published).toEqual(["setup", null]);
+    } finally { service.dispose(); }
+  });
+
+  it("caps typed text a Windows seat sends key by key, with a budget that grows with the text", async () => {
+    const { service, driver } = windowsService();
+    try {
+      await service.start({ laneId: "private" });
+      await service.start({ laneId: "shared", seatMode: "shared", sharedDesktopConsent: true });
+      const typeTimeouts = (laneId: string) => inputOps(driver, laneId).map((call) => call.options?.timeoutMs ?? null);
+
+      // Private: every type is key by key. Over the cap is refused before the driver.
+      await expect(service.type({ laneId: "private", text: "x".repeat(4_001), chatSessionId: "chat-1" }))
+        .rejects.toThrow(/4000/);
+      expect(inputOps(driver, "private")).toHaveLength(0);
+      await service.type({ laneId: "private", text: "short", chatSessionId: "chat-1" });
+      await service.type({ laneId: "private", text: "y".repeat(3_000), chatSessionId: "chat-1" });
+      const [short, long] = typeTimeouts("private");
+      expect(short).toBeGreaterThan(0);
+      expect(long).toBeGreaterThan(short!);
+
+      // Shared, accessibility: the value is set at once, so no cap applies.
+      await service.type({ laneId: "shared", text: "z".repeat(5_000), mode: "accessibility", chatSessionId: "chat-2" });
+      expect(typeTimeouts("shared")).toEqual([null]);
+      // Shared, real input: key by key again, and capped.
+      await expect(service.type({ laneId: "shared", text: "z".repeat(5_000), mode: "real", chatSessionId: "chat-2" }))
+        .rejects.toThrow(/4000/);
+    } finally { service.dispose(); }
+  });
+});
+
+describe("desktop seat summary (the status `seat` every text surface leads with)", () => {
+  const display = (extra: Record<string, unknown>) => ({ laneId: "lane-1", mode: "virtual", ...extra }) as never;
+  const host = (extra: Record<string, unknown>) => ({
+    state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true,
+    privateAvailable: true, privateUnavailableReason: null, heldByLaneId: null, heldByLaneName: null, seatMode: null, ...extra,
+  }) as never;
+  it.each([
+    // [case, platform, supported, display, windowsDesktop, kind, seat, lease, next step]
+    ["Mac with a display", "darwin", true, display({}), null, "mac", "virtual-display", true, null],
+    ["Mac in the off-screen fallback", "darwin", true, display({ mode: "offscreen-region" }), null, "mac", "offscreen-region", true, null],
+    ["Mac with no display yet", "darwin", true, null, null, "mac", null, true, /ade screen start/],
+    ["an unsupported host", "linux", false, null, null, "mac", null, true, null],
+    ["Windows private screen", "win32", true, display({ seatMode: "private" }), host({}), "windows-private", "private", false, null],
+    ["Windows main desktop", "win32", true, display({ seatMode: "shared" }), host({}), "windows-shared", "shared", true, null],
+    ["an older runtime's off-screen display", "win32", true, display({ mode: "offscreen-region" }), host({}), "windows-shared", "shared", true, null],
+    ["an older runtime's shared host", "win32", true, display({}), host({ seatMode: "shared" }), "windows-shared", "shared", true, null],
+    ["Windows, private screen held", "win32", true, null, host({ state: "held", privateAvailable: false, privateUnavailableReason: "held", heldByLaneId: "lane-9", heldByLaneName: "Login" }), "windows-private", null, false, /Login \(lane-9\)[\s\S]*ade screen start --shared/],
+    ["Windows, locked", "win32", true, null, host({ state: "locked", locked: true, privateAvailable: false, privateUnavailableReason: "locked" }), "windows-private", null, false, /unlock/],
+    ["Windows, not set up", "win32", true, null, host({ state: "setup_required", childSessionsEnabled: false, privateAvailable: false, privateUnavailableReason: "setup_required" }), "windows-private", null, false, /ade screen setup/],
+    ["Windows, ADE not on the console", "win32", true, null, host({ state: "not_console_session", privateAvailable: false, privateUnavailableReason: "not_console_session" }), "windows-private", null, false, /ade screen start --shared/],
+    ["Windows, ready without a saved password", "win32", true, null, host({ passwordSaved: false }), "windows-private", null, false, /ade screen start --text[\s\S]*password/],
+    ["Windows, ready", "win32", true, null, host({}), "windows-private", null, false, /^ade screen start --text$/],
+  ])("%s", (_case, platform, supported, shownDisplay, windowsDesktop, kind, seat, lease, nextStep) => {
+    expect(desktopSeatKind({ platform, display: shownDisplay, windowsDesktop })).toBe(kind);
+    const summary = describeDesktopSeat({ platform, supported, display: shownDisplay, windowsDesktop });
+    expect(summary.product).toBe(platform === "win32" ? "Windows Desktop" : "Mac Desktop");
+    expect(summary.seat).toBe(seat);
+    // A seat says whether real input needs a lease; no seat, no sentence.
+    if (seat) expect(summary.realInputNeedsLease).toBe(lease);
+    expect(Boolean(summary.realInputSentence)).toBe(Boolean(seat));
+    if (nextStep) expect(summary.nextStep).toMatch(nextStep);
+    else expect(summary.nextStep).toBeNull();
+  });
+});
 
 describe("macDesktopService capability gate", () => {
   it("getStatus answers on Windows with supported:false and an unsupported driver", async () => {
@@ -248,6 +664,29 @@ describe("macDesktopService usage analytics", () => {
     expect(serialized).not.toContain("clip");
     expect(serialized).not.toContain("ade-window");
     service.dispose();
+
+    // A Windows lane screen reports through the same closed taxonomy, and its
+    // setup, saved password and main-desktop consent are never product events.
+    const ready = { state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, edition: "Professional" };
+    const windowsCaptures: typeof captures = [];
+    const windows = makeService({
+      platform: "win32",
+      seat: { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null },
+      driver: createFakeDriver({
+        [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => ready,
+        [MAC_DESKTOP_DRIVER_OPS.health]: () => ({ version: "1.0.0", windowsDesktop: ready }),
+        [MAC_DESKTOP_DRIVER_OPS.setupWindows]: () => ({ status: ready }),
+      }),
+      captureAnalytics: (properties) => windowsCaptures.push(properties),
+    });
+    await windows.service.setupWindowsDesktop({ allowPrompt: true, savePassword: true });
+    await windows.service.start({ laneId: "lane-w", laneName: "Tray fix" });
+    await windows.service.click({ laneId: "lane-w", x: 5, y: 5, mode: "real", chatSessionId: "chat-w" });
+    expect(windowsCaptures).toEqual([
+      { action: "mac_desktop", outcome: "started" },
+      { action: "mac_desktop", outcome: "agent_drove" },
+    ]);
+    windows.service.dispose();
   });
 });
 
@@ -1051,6 +1490,98 @@ describe("macDesktopService recordings", () => {
     service.dispose();
   });
 
+  it("files a raw recording with its real length and says why it is no demo, and never files an unusable one", async () => {
+    let clock = Date.parse("2026-10-01T00:00:00.000Z");
+    const raws: Buffer[] = [movie({ frames: 30 }), Buffer.from("not a movie")];
+    const driver = createFakeDriver({
+      // A driver that reports no lengths at all.
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ rawBytes: raws.shift() }),
+    });
+    const broker = createFakeBroker();
+    const { service } = makeService({ driver, demoEngines: [], ingestArtifacts: broker.ingest, now: () => clock });
+    await service.start({ laneId: "lane-1" });
+
+    await service.startRecording({ laneId: "lane-1", caption: "the fix", chatSessionId: "chat-1" });
+    clock += 4_000;
+    const filed = await service.stopRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
+    // The driver sent no lengths and no engine read the movie, so its length
+    // is read from the movie's own index (30 frames of 100 ms), not zero.
+    expect(filed).toMatchObject({ running: false, lastError: null, durationMs: 3_000, wallDurationMs: 3_000 });
+    expect(filed.demoNote).toEqual(expect.stringMatching(/\S/));
+    expect(filed.proofArtifactId).toBeTruthy();
+    expect(broker.requests).toHaveLength(1);
+
+    await service.startRecording({ laneId: "lane-1", caption: "the fix again", chatSessionId: "chat-1" });
+    clock += 2_000;
+    const unusable = await service.stopRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
+    // Nothing to show, so nothing filed; the time it ran is the wall clock.
+    expect(unusable).toMatchObject({ running: false, filePath: null, proofArtifactId: null, durationMs: 0, wallDurationMs: 2_000 });
+    expect(unusable.lastError).toMatch(/not filed/);
+    expect(broker.requests).toHaveLength(1);
+    service.dispose();
+  });
+
+  it.each([
+    // The driver names the clip exactly as ADE did.
+    ["darwin", "as ADE spelled it", (filePath: string) => filePath],
+    // Both seats' file systems fold case, and Windows takes either separator:
+    // a clip the driver names another way is still the clip being published.
+    ["darwin", "in another case", (filePath: string) => filePath.toUpperCase()],
+    ["win32", "as ADE spelled it", (filePath: string) => filePath],
+    ["win32", "in another case and separator", (filePath: string) => filePath.toUpperCase().replace(/\//g, "\\")],
+  ] as const)("prunes a chat's superseded turn clip, but never one a proof points at or another chat's current one (%s, driver path %s)", async (platform, _spelling, driverSpelling) => {
+    const referenced = new Set<string>();
+    const isArtifactFileReferenced = (filePath: string) => referenced.has(path.resolve(filePath));
+    const driver = createFakeDriver(platform === "win32" ? {
+      [MAC_DESKTOP_DRIVER_OPS.windowsStatus]: () => ({ state: "ready", locked: false, childSessionsEnabled: true, remoteDesktopAllowed: true, passwordSaved: true, consoleSessionId: 1, sessionId: 1, inConsoleSession: true, holderLaneId: null, childSessionId: null, edition: "Professional" }),
+    } : {});
+    // Only the newest clip is reported in the driver's own spelling: it is the
+    // one that must survive its own publication. (An older one is deleted by
+    // the name the driver gave, which a case-sensitive test host cannot do.)
+    let spellLikeDriver = false;
+    const answer = driver.request.bind(driver);
+    driver.request = async (op, payload, options) => {
+      const reply = await answer(op, payload, options);
+      if (!spellLikeDriver || op !== MAC_DESKTOP_DRIVER_OPS.stopRecording) return reply;
+      const values = reply as Record<string, unknown>;
+      return typeof values.filePath === "string" ? { ...values, filePath: driverSpelling(values.filePath) } : reply;
+    };
+    const { service } = platform === "win32"
+      ? makeService({
+        platform,
+        seat: { ...createWindowsDesktopSeatAdapter({ logger, adeHome: "C:\\ADE" }), createDriverClient: null },
+        driver,
+        hostIsLocal: () => true,
+        isArtifactFileReferenced,
+      })
+      : makeService({ driver, isArtifactFileReferenced });
+    await service.start({ laneId: "lane-1" });
+    let turn = 0;
+    /** The clip's file as ADE asked the driver to write it. */
+    const clip = async (chatSessionId: string): Promise<string> => {
+      turn += 1;
+      await service.beginTurn({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
+      const lapse = await service.noteTurnEnded({ laneId: "lane-1", chatSessionId, turnId: `turn-${turn}` });
+      expect(lapse?.filePath, "setup: the turn produced a clip").toBeTruthy();
+      const started = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording).at(-1);
+      return String(started!.payload.filePath);
+    };
+
+    const filedAsProof = await clip("chat-1");
+    referenced.add(path.resolve(filedAsProof));
+    const otherChats = await clip("chat-2");
+    const superseded = await clip("chat-1");
+    spellLikeDriver = true;
+    const current = await clip("chat-1");
+
+    expect(fs.existsSync(filedAsProof)).toBe(true);
+    expect(fs.existsSync(otherChats)).toBe(true);
+    expect(fs.existsSync(current)).toBe(true);
+    // Only the newest clip per chat is shown, so the one before it goes.
+    expect(fs.existsSync(superseded)).toBe(false);
+    service.dispose();
+  });
+
   it("a clean stop clears the failure state", async () => {
     const driver = createFakeDriver({
       [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 1_200 }),
@@ -1098,9 +1629,9 @@ function writeCapture(name: string, bytes: number): string {
 
 describe("macDesktopService proof from the pane", () => {
   it("names a pane capture after the lane, and plainly without one", () => {
-    expect(macDesktopPaneCaption("recording", "docs-fix")).toBe("Mac Desktop recording · docs-fix");
-    expect(macDesktopPaneCaption("screenshot", "  ")).toBe("Mac Desktop screenshot");
-    expect(macDesktopPaneCaption("recording", null)).toBe("Mac Desktop recording");
+    expect(macDesktopPaneCaption("recording", "docs-fix", "Mac Desktop")).toBe("Mac Desktop recording · docs-fix");
+    expect(macDesktopPaneCaption("screenshot", "  ", "Mac Desktop")).toBe("Mac Desktop screenshot");
+    expect(macDesktopPaneCaption("recording", null, "Mac Desktop")).toBe("Mac Desktop recording");
   });
 
   it("files a captioned recording and hands back its proof record and size", async () => {
@@ -1113,7 +1644,7 @@ describe("macDesktopService proof from the pane", () => {
     await service.start({ laneId: "lane-1" });
     await service.startRecording({
       laneId: "lane-1",
-      caption: macDesktopPaneCaption("recording", "docs-fix"),
+      caption: macDesktopPaneCaption("recording", "docs-fix", "Mac Desktop"),
       chatSessionId: "chat-1",
     });
 
@@ -1172,7 +1703,7 @@ describe("macDesktopService proof from the pane", () => {
     const filed = await service.screenshot({
       laneId: "lane-1",
       chatSessionId: "chat-1",
-      caption: macDesktopPaneCaption("screenshot", "docs-fix"),
+      caption: macDesktopPaneCaption("screenshot", "docs-fix", "Mac Desktop"),
     });
     expect(filed).toMatchObject({ proofArtifactId: "artifact-1-0", bytes: 2_048 });
     expect(broker.requests[0]!.inputs[0]).toMatchObject({
@@ -1672,6 +2203,11 @@ describe("macDesktopService teardown", () => {
     const destroyed = events.filter((event) => event.type === "display-destroyed");
     expect(destroyed).toHaveLength(2);
     expect(destroyed.every((event) => event.type === "display-destroyed" && event.reason === "driver_lost")).toBe(true);
+
+    // A retirement while a lane has a screen is a lost driver like any other.
+    await service.start({ laneId: "lane-3" });
+    driverLost[0]!("retired");
+    expect(events.filter((event) => event.type === "display-destroyed").at(-1)).toMatchObject({ laneId: "lane-3", reason: "driver_lost" });
     service.dispose();
   });
 

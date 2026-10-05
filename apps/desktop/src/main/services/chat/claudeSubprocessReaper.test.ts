@@ -6,6 +6,26 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeSubprocessReaper, parseEtimeSeconds } from "./claudeSubprocessReaper";
 
+/**
+ * The Windows tree kill runs `taskkill` through `execFile`, the process
+ * boundary. Every other test gets the real one; the Windows test captures each
+ * call so it can decide when the tree kill finishes.
+ */
+const taskkill = vi.hoisted(() => ({
+  capture: null as null | Array<{ args: string[]; done: (error: Error | null) => void }>,
+}));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: ((command: string, args: string[], options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (!taskkill.capture) return (actual.execFile as unknown as (...params: unknown[]) => unknown)(command, args, options, callback);
+      taskkill.capture.push({ args, done: (error) => callback(error, "", error ? "Access is denied." : "") });
+      return undefined;
+    }) as unknown as typeof actual.execFile,
+  };
+});
+
 function createLogger() {
   return {
     debug: vi.fn(),
@@ -498,42 +518,97 @@ describe("createClaudeSubprocessReaper", () => {
     expect(processKill).not.toHaveBeenCalledWith(4324, "SIGKILL");
   });
 
-  it("does not detach on Windows, and kills the tree with taskkill on both signals", () => {
+  it("does not detach on Windows, and kills the tree before the leader on both signals", async () => {
     // `detached` on Windows means "own console window", which is both wrong and
-    // unnecessary: `taskkill /T /F` walks the tree by parent link. The
-    // escalation has to walk it too — a bare SIGKILL on the leader is what
-    // turns a surviving tree into a permanently orphaned one.
+    // unnecessary: `taskkill /T /F` walks the tree by parent link. The leader is
+    // signalled only after the tree kill finishes, because once the leader is
+    // gone `taskkill /T` can no longer find its children. The escalation walks
+    // the tree too — a bare SIGKILL on the leader orphans a surviving tree.
     vi.useFakeTimers();
-    const logger = createLogger();
-    const child = createProcess(7100);
-    const spawnProcess = vi.fn(() => child);
-    const reaper = createClaudeSubprocessReaper({
-      logger,
-      platform: "win32",
-      killGraceMs: 25,
-      spawnProcess: spawnProcess as any,
-      registryPath: null,
-    });
+    taskkill.capture = [];
+    try {
+      const logger = createLogger();
+      const child = createProcess(7100);
+      const spawnProcess = vi.fn(() => child);
+      const reaper = createClaudeSubprocessReaper({
+        logger,
+        platform: "win32",
+        killGraceMs: 25,
+        spawnProcess: spawnProcess as any,
+        registryPath: null,
+      });
 
-    reaper.spawnClaudeCodeProcess({
-      command: "C:\\Program Files\\claude\\claude.exe",
-      args: [],
-      cwd: "C:\\lane",
-      env: {},
-      signal: new AbortController().signal,
-    }, { sessionId: "chat-win", sdkSessionId: null, laneId: "lane-1", cwd: "C:\\lane" });
+      reaper.spawnClaudeCodeProcess({
+        command: "C:\\Program Files\\claude\\claude.exe",
+        args: [],
+        cwd: "C:\\lane",
+        env: {},
+        signal: new AbortController().signal,
+      }, { sessionId: "chat-win", sdkSessionId: null, laneId: "lane-1", cwd: "C:\\lane" });
 
-    expect(spawnProcess).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
-      detached: false,
-      windowsHide: true,
-    }));
+      expect(spawnProcess).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
+        detached: false,
+        windowsHide: true,
+      }));
 
-    reaper.reapForSession("chat-win", "ended_session");
-    // Both the tree kill and the direct child signal run — taskkill's exit code
-    // is not evidence the tree died, in either direction.
-    expect(child.killedWith).toEqual(["SIGTERM"]);
-    vi.advanceTimersByTime(25);
-    expect(child.killedWith).toEqual(["SIGTERM", "SIGKILL"]);
+      reaper.reapForSession("chat-win", "ended_session");
+      expect(taskkill.capture.map((call) => call.args)).toEqual([["/PID", "7100", "/T", "/F"]]);
+      // The tree first: the leader waits for taskkill to finish.
+      expect(child.killedWith).toEqual([]);
+      taskkill.capture[0]!.done(null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(child.killedWith).toEqual(["SIGTERM"]);
+
+      // Still alive after the grace: the tree is walked again, and a taskkill
+      // that fails is logged and does not spare the leader.
+      await vi.advanceTimersByTimeAsync(25);
+      expect(taskkill.capture.map((call) => call.args)).toEqual([["/PID", "7100", "/T", "/F"], ["/PID", "7100", "/T", "/F"]]);
+      expect(child.killedWith).toEqual(["SIGTERM"]);
+      taskkill.capture[1]!.done(Object.assign(new Error("Command failed"), { code: 5 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(child.killedWith).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.claude_subprocess_taskkill_failed",
+        expect.objectContaining({ pid: 7100, sessionId: "chat-win" }),
+      );
+    } finally {
+      taskkill.capture = null;
+    }
+  });
+
+  it("does not signal a Windows leader that exited while its tree was being killed", async () => {
+    // The pid may be reused by then: the exit guard is read again after the
+    // tree kill, not before it.
+    vi.useFakeTimers();
+    taskkill.capture = [];
+    try {
+      const child = createProcess(7200);
+      const reaper = createClaudeSubprocessReaper({
+        logger: createLogger(),
+        platform: "win32",
+        killGraceMs: 25,
+        spawnProcess: vi.fn(() => child) as any,
+        registryPath: null,
+      });
+      reaper.spawnClaudeCodeProcess({
+        command: "claude.exe",
+        args: [],
+        cwd: "C:\\lane",
+        env: {},
+        signal: new AbortController().signal,
+      }, { sessionId: "chat-win", sdkSessionId: null, laneId: "lane-1", cwd: "C:\\lane" });
+
+      reaper.reapForSession("chat-win", "ended_session");
+      expect(taskkill.capture).toHaveLength(1);
+      child.emitExit();
+      taskkill.capture[0]!.done(null);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(child.killedWith).toEqual([]);
+      // An exited leader is not escalated either.
+      expect(taskkill.capture).toHaveLength(1);
+    } finally {
+      taskkill.capture = null;
+    }
   });
 
   it("terminates live subprocesses and escalates to SIGKILL after the grace period", () => {

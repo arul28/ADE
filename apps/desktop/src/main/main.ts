@@ -394,6 +394,7 @@ import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
+import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
@@ -402,6 +403,7 @@ import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
 import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
+import { createDemoEngineSet } from "./services/demoVideo/demoEngines";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -1902,6 +1904,9 @@ app.whenReady().then(async () => {
     logger: builtInBrowserBridgeLogger,
   });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  /** Windows: this desktop runs elevated, so the background service cannot reach it. */
+  let elevatedDesktop = false;
+  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
@@ -1909,6 +1914,19 @@ app.whenReady().then(async () => {
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
       demoEngine: chromiumDemoEngine,
+      // Windows: an elevated desktop's pipe refuses the background service.
+      // A lasting state, so the renderer docks a banner for it.
+      onElevatedDesktop: () => {
+        elevatedDesktop = true;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win.isDestroyed()) continue;
+          try {
+            win.webContents.send(IPC.appElevatedDesktopChanged, true);
+          } catch {
+            // ignore
+          }
+        }
+      },
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -4968,10 +4986,27 @@ app.whenReady().then(async () => {
      * service's own `subscribe` is for in-process readers constructed after it
      * (the Work tools mirror), while this is what reaches a window.
      */
+    const macDesktopLogger = createMacDesktopLogger(logger, getMachineMainLogger());
     const macDesktopService = createMacDesktopService({
       projectRoot,
       // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
-      logger: createMacDesktopLogger(logger, getMachineMainLogger()),
+      logger: macDesktopLogger,
+      // Windows hosts reuse the whole seat service; only the helper, the
+      // provider, and the permission story differ. Every other host keeps the
+      // Mac adapter (and its unchanged macOS behavior).
+      seat: process.platform === "win32"
+        ? createWindowsDesktopSeatAdapter({
+          logger: macDesktopLogger,
+          adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+        })
+        : null,
+      adeHome: process.env.ADE_HOME?.trim() || null,
+      // `ade-media` on macOS; this desktop's Chromium engine everywhere, which
+      // is what turns a Windows lane's MP4 recording into its demo.
+      demoEngines: createDemoEngineSet({
+        logger: macDesktopLogger,
+        getChromiumDemoEngine: () => chromiumDemoEngine,
+      }),
       onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {
@@ -4990,6 +5025,7 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      isArtifactFileReferenced: (filePath) => computerUseArtifactBrokerService.isFileReferenced(filePath),
       // A lane may not claim another lane's App Control app. Read at call
       // time: the App Control service is built just below.
       appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),

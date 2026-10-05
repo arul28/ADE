@@ -11,9 +11,9 @@ import {
   type JsonRpcTransport,
 } from "../../jsonrpc";
 import {
+  checkBuiltInBrowserDesktopBridgeAuth,
   createBuiltInBrowserDesktopBridgeClient,
   DesktopBridgeUnavailableError,
-  verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./desktopBridgeClient";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./desktopBridgeMethods";
 import type { BuiltInBrowserDesktopBridgeClient } from "./desktopBridgeMethods";
@@ -150,14 +150,67 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
       return { authenticated: true };
     });
 
-    await expect(verifyBuiltInBrowserDesktopBridgeAuth({
+    await expect(checkBuiltInBrowserDesktopBridgeAuth({
       socketPath: server.socketPath,
       authToken: "ephemeral-secret",
-    })).resolves.toBe(true);
+    }).then((result) => result.verified)).resolves.toBe(true);
     expect(seen).toEqual([expect.objectContaining({
       method: "built_in_browser.authenticate",
       params: { __adeDesktopBridgeAuth: "ephemeral-secret" },
     })]);
+  });
+
+  it.each([
+    ["accepts the desktop's own token", async () => (server = await startBridgeServer(async () => ({ authenticated: true }))).socketPath, { verified: true }],
+    ["a desktop that answers no", async () => (server = await startBridgeServer(async () => ({ authenticated: false }))).socketPath, { verified: false, kind: "rejected" }],
+    ["a desktop that refuses the token", async () => (server = await startBridgeServer(async () => { throw new Error("Desktop bridge authentication failed."); })).socketPath, { verified: false, kind: "rejected" }],
+    ["no desktop listening", async () => createBridgeSocketPath("ade-bridge-absent"), { verified: false, kind: "unreachable" }],
+    // The one row that waits: `timedOut` lets the clock run only once the
+    // desktop has the request in hand, on fake timers rather than real time.
+    ["a desktop that never answers", async () => {
+      let asked!: () => void;
+      const received = new Promise<void>((resolve) => { asked = resolve; });
+      server = await startBridgeServer(() => {
+        asked();
+        return new Promise(() => {});
+      });
+      return { socketPath: server.socketPath, timedOut: received };
+    }, { verified: false, kind: "timeout" }],
+    // An ADE desktop started as administrator: its socket refuses the
+    // background service. POSIX shows it as a socket this user cannot open.
+    ...(process.platform === "win32" ? [] : [[
+      "a socket this process may not open",
+      async () => {
+        server = await startBridgeServer(async () => ({ authenticated: true }));
+        fs.chmodSync(server.socketPath, 0o000);
+        return server.socketPath;
+      },
+      { verified: false, kind: "access_denied" },
+    ] as const]),
+  ] as const)("says why the desktop bridge did not attach: %s", async (_case, listen, expected) => {
+    const listening: string | { socketPath: string; timedOut: Promise<void> } = await listen();
+    const timeoutMs = 200;
+    let result;
+    if (typeof listening === "string") {
+      result = await checkBuiltInBrowserDesktopBridgeAuth({ socketPath: listening, authToken: "desktop-token", timeoutMs });
+    } else {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const checking = checkBuiltInBrowserDesktopBridgeAuth({ socketPath: listening.socketPath, authToken: "desktop-token", timeoutMs });
+        await listening.timedOut;
+        await vi.advanceTimersByTimeAsync(timeoutMs);
+        result = await checking;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+    expect(result).toMatchObject(expected);
+    // A failure always carries one sentence for logs and proof metadata, and
+    // never the token.
+    if (!result.verified) {
+      expect(result.reason).toEqual(expect.stringMatching(/\S/));
+      expect(result.reason).not.toContain("desktop-token");
+    }
   });
 
   it("rejects missing authentication without dropping a bridge connection", async () => {

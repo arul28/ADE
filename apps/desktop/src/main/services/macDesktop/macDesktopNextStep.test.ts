@@ -175,6 +175,13 @@ describe("macDesktopNextStep reads the element's state", () => {
 });
 
 describe("macDesktopNextStep follows the caller's lease", () => {
+  it("goes straight to real input on a seat where --real needs no approval card", () => {
+    const next = nextFor({ resolved: element({ actions: ["AXShowMenu"] }), lease: noLease, realInputNeedsNoCard: true });
+    expect(next?.method).toBe("real_input");
+    expect(next?.command).toContain("--real");
+    expect(next?.reason).not.toMatch(/approval|lease/);
+  });
+
   it("asks for the lease, with the lease command, when nobody holds it", () => {
     const next = nextFor({ resolved: element({ actions: [] }), lease: noLease });
     expect(next?.method).toBe("lease");

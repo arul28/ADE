@@ -1,6 +1,6 @@
 ---
 name: ade-computer-use
-description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade mac-desktop`, `ade app-control`, `ade browser`) and covers the lane's private macOS screen, so you never drive the user's own screen.
+description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows — `ade app-control`, `ade browser`) and covers the lane's own screen on both hosts, so you never drive the user's screen by accident.
 ---
 
 # ADE computer use
@@ -14,6 +14,7 @@ then follow that surface's loop.
 |---|---|---|
 | An iOS or SwiftUI app | `ade apple` | **ade-apple** |
 | Any macOS app, or anything that must not touch the user's own screen | `ade mac-desktop` (the lane's private display) | this skill, below |
+| Any Windows app (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
 | A dev Electron app you launch or attach to | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 
@@ -71,7 +72,7 @@ Follow `next:` instead of a guess. Today only the Mac Desktop prints it.
 | Surface | Still proof | Video |
 |---|---|---|
 | Apple | `ade apple proof --caption "<what>"` | `ade apple record-start`, then `ade apple record-stop --keep` |
-| Mac Desktop | `ade mac-desktop proof --caption "<what>"` | `ade mac-desktop record start --caption "<what>"`, then `record stop` |
+| Mac Desktop / Windows Desktop | `ade screen proof --caption "<what>"` | `ade screen record start --caption "<what>"`, then `record stop` |
 | App Control | `ade app-control proof --caption "<what>"` | `ade app-control record start --caption "<what>"`, then `record stop` |
 | Browser | `ade browser proof --tab <id> --caption "<what>"` | `ade browser record start --tab <id> --caption "<what>"`, then `record stop --tab <id>` |
 
@@ -111,6 +112,86 @@ every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
+# Windows Desktop
+
+On a Windows host, `ade screen` is Windows Desktop (`ade windows-desktop` and
+`ade mac-desktop` are aliases of the same Windows screen; every output says
+"Windows Desktop"). The verbs are the Mac ones below, with the Windows notes
+here. Start every task with `ade screen status --text`: it names the seat, who
+holds the private screen, whether setup and the saved password are done, whether
+the PC is locked, and a `next` line with the exact command or ask.
+
+## The two seats
+
+- **private** (default): a separate Windows session of the user's own account.
+  **It shows their wallpaper and taskbar, but it is not their screen.** It has
+  its own pointer, keyboard and foreground, so point clicks, drags and `--real`
+  need no lease. One lane holds it at a time.
+- **shared**: the user's main desktop, only after the user says yes. Actions
+  take over the window the user is using. Real input there is covered by the
+  user's yes; only one shared lane drives at a time
+  (`MAC_DESKTOP_LEASE_HELD_BY_OTHER` names the other lane: wait and retry).
+
+## What needs the user — ask, never do it yourself
+
+| Situation (`status` / error) | What you do |
+|---|---|
+| Setup not done (`WINDOWS_DESKTOP_SETUP_REQUIRED`) | Ask the user to run the setup card in the Windows Desktop pane. You cannot. |
+| Password not saved | `start` still works; Windows asks the user to sign in on the PC. Tell them, and suggest **Save Windows password** in the pane. Never ask for the password in chat. |
+| Private screen held by another lane (`WINDOWS_DESKTOP_HELD`) | Ask the user to **Take over** in the pane, or ask for the main desktop: `ade screen start --shared --reason "<what for>" --text`. |
+| Private unavailable (`WINDOWS_DESKTOP_NOT_CONSOLE_SESSION`, Home edition) | `ade screen start --shared --reason "<what for>" --text` |
+| PC locked (`WINDOWS_DESKTOP_LOCKED`) | Ask the user to unlock it, then retry the same command. |
+| User said no (`WINDOWS_DESKTOP_CONSENT_REQUIRED`) | Stop and say what you could not do. Do not ask again this turn. |
+
+`start --shared` puts an Allow / Don't allow card in your chat and waits; on
+Allow it starts the shared seat. Only the user's button press counts: typed
+text is not an answer, and an agent that tries to answer the card itself (or
+the real-input lease card) is refused. If nobody answers within about three
+minutes the card is withdrawn and the command fails; ask again later. The same
+chat is not asked twice. Never pass `--consent` or `--allow-prompt`: those are
+the user's clients' flags and an agent is refused. A command with no chat (a
+plain shell outside one) cannot act on the main desktop at all; only the
+user's own `ade --role cto` can. Never use that role yourself; a `holderId`
+you pass is stripped.
+
+## Windows specifics
+
+- **Long text:** on the private seat, and for `--real` typing, Windows types
+  one character at a time, so `type` takes about 25 ms per character and
+  refuses more than 4,000 characters in one call; split longer text.
+- **Browsers:** `ade screen open chrome` (or `msedge`) on the private seat gets
+  a lane-private profile, not the user's. `open` prints the windows that
+  appeared; if none did it says why (for example the request was handed to an
+  instance that was already running) and what to run next. Do not invent a
+  `--user-data-dir`. For web tasks prefer `ade browser`.
+- **Editors restore the user's tabs.** Notepad reopens the user's open files,
+  which can hold secrets. Create a blank file for the task and open that one:
+  `ade screen open notepad -- C:\Users\<you>\AppData\Local\Temp\ade-proof.txt --text`.
+  Then `observe` (or look at the screenshot) **before** you record or file
+  proof, and stop if anything private is visible.
+- **Modifier keys:** `--ctrl`, `--alt`, `--shift`, `--win`. `--cmd` is sent as
+  Ctrl. Example: `ade screen press s --ctrl --text`.
+- **Windows:** `ade screen focus --window <id>` raises one of your lane's
+  windows, `minimize --window <id>` hides it, `close --window <id>` closes it
+  (it reports `closed no` when a save prompt kept it open). Only your lane's
+  windows; ids come from `ade screen windows --text`.
+- **Paths** print with backslashes; quote them. `--out` must be in the lane
+  worktree or `%TEMP%`.
+
+## Proof on Windows
+
+```bash
+ade screen observe --text                       # check nothing private shows
+ade screen record start --caption "Notepad saves hello" --text
+ade proof step "Type hello"
+ade screen type "hello" --text
+ade screen wait --label "hello" --text
+ade screen record stop --text                   # prints duration and a cite line
+ade screen proof --caption "hello typed in a blank Notepad file" --text
+```
+
+Paste the `cite` line under your claim. The shared seat files proof the same way.
+
 ## Check each step before you report it
 
 A click, type or press that returns `ok` only means ADE sent the input. It
@@ -127,19 +208,19 @@ Use these directly; you do not need `--help` for them.
 
 | Task | Command |
 |---|---|
-| Start the screen (do this first) | `ade mac-desktop start --text` |
-| Open an app, file or URL | `ade mac-desktop open "Safari" --text` |
-| What is on screen | `ade mac-desktop observe --text` |
-| Click a control by its label | `ade mac-desktop click --text "Sign in" --text` |
-| Type, then press Return | `ade mac-desktop type "reddit" --submit --text` |
-| Press one key | `ade mac-desktop press return --text` (also `tab`, `escape`) |
-| Wait for a label to appear | `ade mac-desktop wait --label "Done" --timeout 8000 --text` |
-| Record a video | `ade mac-desktop record start --caption "<what>" --text`, then `record stop --text` |
-| Take a screenshot | `ade mac-desktop screenshot --out shot.png --text` |
-| Show the screen to the user | `ade mac-desktop show --text` (tools pane) or `--floating` |
-| Close your own window | `ade mac-desktop press w --cmd --text` |
-| Stop the screen (quits the apps the lane opened) | `ade mac-desktop stop --text` |
-| Quit apps the lane opened, released ones too (only when asked) | `ade mac-desktop quit [<app>] --text` |
+| Start the screen (do this first) | `ade screen start --text` |
+| Open an app, file or URL | `ade screen open "Safari" --text` |
+| What is on screen | `ade screen observe --text` |
+| Click a control by its label | `ade screen click --text "Sign in" --text` |
+| Type, then press Return | `ade screen type "reddit" --submit --text` |
+| Press one key | `ade screen press return --text` (also `tab`, `escape`) |
+| Wait for a label to appear | `ade screen wait --label "Done" --timeout 8000 --text` |
+| Record a video | `ade screen record start --caption "<what>" --text`, then `record stop --text` |
+| Take a screenshot | `ade screen screenshot --out shot.png --text` |
+| Show the screen to the user | `ade screen show --text` (tools pane) or `--floating` |
+| Close your own window | `ade screen press w --cmd --text` (Windows: `ade screen close --window <id> --text`) |
+| Stop the screen (quits the apps the lane opened) | `ade screen stop --text` |
+| Quit apps the lane opened, released ones too (only when asked) | `ade screen quit [<app>] --text` |
 
 ## Operating loop
 
@@ -221,9 +302,10 @@ again. If a handle is refused as expired, observe again and retry.
 
 ### 4. Real input needs one approval per chat
 
-Accessibility actions are the default and need nothing. Real pointer and
-keyboard events (`--real`) are global to the Mac, so they sit behind a lease
-the user grants once per chat:
+Accessibility actions are the default and need nothing. On a Mac, real pointer
+and keyboard events (`--real`, a point click, a drag) are global to the Mac, so
+they sit behind a lease the user grants once per chat (a Windows private seat
+needs none; on the Windows shared seat the user's yes covers it):
 
 ```bash
 ade mac-desktop lease --reason "drag the file onto the Dock" --text

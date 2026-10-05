@@ -426,11 +426,11 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     if (server && port) return Promise.resolve(port);
     if (binding) return binding;
     const attempt = bindLoopbackServer(handleRequest, {
-      bindErrorMessage: "The Mac Desktop video server could not bind a loopback port.",
+      bindErrorMessage: "The lane screen video server could not bind a loopback port.",
     }).then((bound) => {
       if (disposed) {
         bound.server.close();
-        throw new Error("The Mac Desktop video server has been disposed.");
+        throw new Error("The lane screen video server has been disposed.");
       }
       server = bound.server;
       port = bound.port;
@@ -499,9 +499,9 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
      * that ends a run.
      */
     async start(args: MacDesktopStreamStartArgs): Promise<MacDesktopStreamTransportWithSecret> {
-      if (disposed) throw new Error("The Mac Desktop video server has been disposed.");
+      if (disposed) throw new Error("The lane screen video server has been disposed.");
       await ensureServer();
-      if (disposed) throw new Error("The Mac Desktop video server has been disposed.");
+      if (disposed) throw new Error("The lane screen video server has been disposed.");
       const existing = lanes.get(args.laneId);
       if (existing) return transportFor(existing);
       const lane: LaneStream = {

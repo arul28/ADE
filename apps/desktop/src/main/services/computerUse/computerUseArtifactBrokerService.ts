@@ -28,6 +28,7 @@ import type {
   ComputerUseEventPayload,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { pathsEqual } from "../shared/pathCompare";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
 import {
   PROOF_PROVENANCE_METADATA_KEYS,
@@ -1709,6 +1710,28 @@ export function createComputerUseArtifactBrokerService(args: {
       );
       if (!rows.length) return { deleted: [], missing: [], failed: [], freedBytes: 0 };
       return deleteArtifacts({ artifactIds: rows.map((row) => row.id) });
+    },
+
+    /**
+     * True when an artifact row stores its bytes at `filePath`. The broker
+     * references a file under `.ade/artifacts` in place, so a module that
+     * cleans up its own scratch files there asks first.
+     */
+    isFileReferenced(filePath: string): boolean {
+      const name = path.basename(filePath);
+      if (!name) return false;
+      const escaped = name.replace(/[\\%_]/g, (char) => `\\${char}`);
+      const rows = readArtifactRows(
+        `
+          select ${ARTIFACT_SELECT_COLUMNS}
+          from computer_use_artifacts
+          where project_id = ?
+            and storage_kind = 'file'
+            and uri like ? escape '\\'
+        `,
+        [projectId, `%${escaped}`],
+      );
+      return rows.some((record) => pathsEqual(resolveArtifactFilePath(record), filePath));
     },
 
     /**

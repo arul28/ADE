@@ -1,4 +1,5 @@
 import type { WorkSidebarTab } from "../../state/appStore";
+import { isDesktopWorkTool } from "../terminals/workTools";
 import {
   WORK_LIVE_SCREEN_TOOLS,
   isWorkLiveCardClosed,
@@ -197,10 +198,10 @@ export function selectWorkLiveCardTool(args: {
  * reads otherwise for a moment cannot put a second picture beside the pane.
  *
  * A player that holds the lane's decoder is in view too, before its first
- * frame. It used to mount hidden until a frame arrived, and a stream that sent
- * no frame kept an encoder and a reader running behind a player nobody could
- * see (the owner's 2026-09-24 report). Now the player shows the last frame, or
- * "Connecting video", or says the display sent no picture.
+ * frame: a player mounted hidden until a frame arrived would keep an encoder
+ * and a reader running behind a player nobody can see when the stream sends no
+ * frame. It shows the last frame, or "Connecting video", or says the display
+ * sent no picture.
  */
 export function macDesktopFloatState(args: {
   active: boolean;
@@ -231,7 +232,8 @@ export function macDesktopFloatState(args: {
   );
   return {
     present: wanted || args.decoding,
-    visible: wanted && args.paneTool !== "mac-desktop" && !args.paneMounted,
+    // Either desktop tool: a host offers exactly one, and both show this screen.
+    visible: wanted && !isDesktopWorkTool(args.paneTool) && !args.paneMounted,
   };
 }
 

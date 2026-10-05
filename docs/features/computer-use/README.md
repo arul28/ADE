@@ -295,7 +295,7 @@ App Control keeps one session per lane. Proof goes through this broker in two wa
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
-## Mac Desktop
+## Mac Desktop and Windows Desktop
 
 A third, newer surface sits beside these: **Mac Desktop** gives each lane its
 own macOS virtual display, parks that lane's windows on it, and drives them
@@ -303,6 +303,11 @@ through the Accessibility API — window-scoped, so the user's real screen and
 real pointer are untouched. It is macOS-only on the runtime host and is driven
 by `ade mac-desktop` (aliases `desk` / `mac-desk`; `ade desktop` is the app
 launcher) plus the `mac_desktop` action domain.
+
+**Windows Desktop** is the same service on a Windows runtime host, adding a
+private child session (the default) and a consented shared desktop. Both speak
+the neutral `ade screen` family; see
+[`../windows-desktop/README.md`](../windows-desktop/README.md).
 
 It changes nothing about the two responsibilities above:
 
@@ -326,8 +331,9 @@ ownership, lease, and streaming model.
 ## One action answer
 
 Four surfaces act for an agent: the built-in browser (`ade browser`), App
-Control (`ade app-control`), Mac Desktop (`ade mac-desktop`), and the Apple
-device tool (`ade apple`). Every acting command on them answers the same way.
+Control (`ade app-control`), Mac Desktop / Windows Desktop (`ade screen`), and
+the Apple device tool (`ade apple`). Every acting command on them answers the
+same way.
 The agent learns two facts from each action: which element it hit, and whether
 the screen visibly changed.
 
@@ -423,6 +429,7 @@ change. When either list was capped, only the shared prefix is compared.
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
 - [`../mac-desktop/README.md`](../mac-desktop/README.md) — the per-lane macOS virtual display and its `ade mac-desktop` surface.
+- [`../windows-desktop/README.md`](../windows-desktop/README.md) — the same service on a Windows host, its two seats, and `ade screen`.
 - [`../automations/README.md`](../automations/README.md) — automations that dispatch agent work rely on the agent's own `ade proof` calls; no automation-level proof policy exists.
 
 ## Detail docs

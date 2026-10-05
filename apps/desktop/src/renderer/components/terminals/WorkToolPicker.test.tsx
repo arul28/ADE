@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WorkToolPicker } from "./WorkToolPicker";
 import {
@@ -121,7 +121,9 @@ describe("WorkToolPicker", () => {
     render(
       <WorkToolPicker
         activeTool={null}
-        context={{ ...LOCAL, supportsIosSimulator: false }}
+        // A cloud lane: the tool exists, but this lane cannot reach it. (A host
+        // that can never run a tool hides the card instead.)
+        context={{ ...LOCAL, cloudLane: "devin" }}
         statuses={{}}
         loading={false}
         onPick={onPick}
@@ -131,8 +133,8 @@ describe("WorkToolPicker", () => {
     const ios = cardFor("Apple Development");
     expect(ios.disabled).toBe(true);
     // The reason replaces the hint rather than joining it.
-    expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
-    expect(screen.queryByText("Open an Apple device")).toBeNull();
+    expect(within(ios).getByText(/lives on Devin Cloud/)).toBeTruthy();
+    expect(within(ios).queryByText("Open an Apple device")).toBeNull();
     // The unavailable tool stays visible, but cannot be selected.
     fireEvent.click(ios);
     expect(onPick).not.toHaveBeenCalled();

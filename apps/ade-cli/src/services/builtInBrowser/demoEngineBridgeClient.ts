@@ -8,7 +8,7 @@ import type {
   DemoRenderRequest,
   DemoRenderResult,
 } from "../../../../desktop/src/shared/demoVideo/demoContract";
-import { DEMO_RAW_FILE_EXTENSION } from "../../../../desktop/src/shared/demoVideo/demoContract";
+import { isDemoEngineInputPath } from "../../../../desktop/src/main/services/demoVideo/demoMp4Source";
 import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
 
 /**
@@ -121,7 +121,8 @@ export function createDemoEngineBridgeClient(args: {
 
   return {
     id: "chromium",
-    canRead: (inputPath: string) => inputPath.toLowerCase().endsWith(DEMO_RAW_FILE_EXTENSION),
+    // The desktop's engine reads an `.aderaw` capture or an H.264 MP4.
+    canRead: isDemoEngineInputPath,
     analyze: (inputPath, options = {}) =>
       runJob<DemoAnalysis>("analyze", { input: inputPath }, options.signal),
     render: (request: DemoRenderRequest, options = {}) =>

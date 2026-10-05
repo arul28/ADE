@@ -20,6 +20,8 @@ import {
 } from "../chat/chatCompanionUiState";
 import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
 import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../work/appControlCardGrants";
+import { useMacDesktopSupport } from "./useMacDesktopSupport";
+import { hostDesktopTool, type DesktopWorkTool } from "./workTools";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
@@ -40,12 +42,13 @@ function showPaneTool({
   setWorkSidebarTool,
 }: {
   chatSessionId: string;
-  tool: "ios" | "mac-desktop" | "app-control";
+  tool: "ios" | DesktopWorkTool | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
   setWorkSidebarTool: (tool: WorkSidebarTab) => void;
 }): Promise<WorkToolShowOutcome> {
-  setWorkLivePreviewEnabledForChat(chatSessionId, tool, true);
+  // The preview marker is keyed `mac-desktop` on both hosts (see `MacDesktopMiniPlayer`).
+  setWorkLivePreviewEnabledForChat(chatSessionId, tool === "windows-desktop" ? "mac-desktop" : tool, true);
   setWorkSidebarTool(tool);
   return showOutcomeWhenOnScreen(workSurfaceKey(tool, scopeKey, activeLaneId));
 }
@@ -99,8 +102,8 @@ export function useWorkShowRequests({
   /*
    * Built from the SESSION in front, never from `activeLaneId`: on the
    * new-chat screen that falls back to the composer's draft lane, so a lane's
-   * simulator read as "belonging" to a new chat that had not started anywhere
-   * (the owner's 2026-09-23 report). No session, no surface: the player hides
+   * simulator would read as "belonging" to a new chat that has not started
+   * anywhere. No session, no surface: the player hides
    * without closing.
    */
   const appleMiniPlayerSurface = useMemo<AppleMiniPlayerSurface | null>(() => (
@@ -111,7 +114,16 @@ export function useWorkShowRequests({
 
   const scopeKey = workRuntimeScopeKey(runtimePin, projectBinding);
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
-  const macDesktopToolOpening = workSidebarVisible && workSidebarTool === "mac-desktop";
+  /*
+   * `mac-desktop` is the surface name on every host; the pane tool that shows
+   * it is the host's own (`hostDesktopTool`, the rule the tools pane uses).
+   * This hook runs above `NativeToolFeedsProvider`, so it takes the platform
+   * from the same cached capability read rather than from the provider's
+   * context; it costs no extra round trip.
+   */
+  const desktopSupport = useMacDesktopSupport({ runtimePin, enabled: active });
+  const desktopTool = hostDesktopTool({ hostPlatform: desktopSupport?.platform ?? null });
+  const macDesktopToolOpening = workSidebarVisible && workSidebarTool === desktopTool;
   const appControlToolOpening = workSidebarVisible && workSidebarTool === "app-control";
   const showWorkSurface = useCallback((
     request: WorkToolShowRequest,
@@ -154,7 +166,7 @@ export function useWorkShowRequests({
       // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
       return showPaneTool({
         chatSessionId: request.chatSessionId,
-        tool: "mac-desktop",
+        tool: desktopTool,
         scopeKey,
         activeLaneId,
         setWorkSidebarTool,
@@ -163,7 +175,7 @@ export function useWorkShowRequests({
     if (request.surface === "floating-mac-desktop") {
       // Like the floating device: only over a chat of the card's own lane.
       if (!floatsOnChatLane) return "declined";
-      if (isWorkSurfaceOnScreen(workSurfaceKey("mac-desktop", scopeKey, activeLaneId))) return "shown";
+      if (isWorkSurfaceOnScreen(workSurfaceKey(desktopTool, scopeKey, activeLaneId))) return "shown";
       if (request.auto) {
         if (macDesktopToolOpening) return "declined";
         if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "mac-desktop")) {
@@ -226,6 +238,7 @@ export function useWorkShowRequests({
     activeWorkSession,
     appControlToolOpening,
     appleToolOpening,
+    desktopTool,
     macDesktopToolOpening,
     runtimePin,
     scopeKey,

@@ -336,12 +336,12 @@ function WorkIosTool({
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
   /**
-   * The device follows the pane out of the door (round 3, A4).
+   * The device follows the pane out of the door.
    *
-   * Closing the tools pane, or switching to another tool, used to leave a
+   * Closing the tools pane, or switching to another tool, must not leave a
    * running simulator with nothing on screen at all — no picture, no control,
-   * no hint that a device was still up. Unmounting this panel now floats it
-   * over the chat instead, unless the user has closed the player for that
+   * no hint that a device is still up. Unmounting this panel floats it over
+   * the chat instead, unless the user has closed the player for that
    * device. Mounting takes it back: two live views of one device is the
    * handoff failing, not succeeding.
    */
@@ -365,7 +365,7 @@ function WorkIosTool({
   }, []);
 
   /*
-   * Keep the handover's cache warm while the tool is open (round 4 §B4).
+   * Keep the handover's cache warm while the tool is open.
    *
    * One read on mount and one per device-state event — no poll. The handover
    * itself is synchronous and must stay that way, so the name and family it
@@ -412,8 +412,8 @@ function WorkIosTool({
    *  3. open the player, so its mount is flushed in this same commit rather
    *     than a round trip later.
    *
-   * Round 3 did all three in a passive cleanup behind a `deviceList` await,
-   * which is the "visible moment" §B4 describes.
+   * Doing all three in a passive cleanup behind a `deviceList` await leaves a
+   * visible moment with no picture anywhere.
    */
   /*
    * The other half of the retake: give the hold back now that the pane holds a
@@ -570,6 +570,37 @@ function WorkMacDesktopTool({
   );
 }
 
+function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
+  const { laneId, activeLane, toolContext, panelSessionId, runtimePin } = props;
+  const mountScope = useWorkToolMountScope(runtimePin);
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(
+    laneId ? workSurfaceKey("windows-desktop", mountScope, laneId) : null,
+  );
+  if (isReadOnlyWorkTool("windows-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneEmptyLine />;
+  // Reuses the Mac Desktop pane: it reads the lane's seat from the runtime and
+  // renders the Windows cards when `status.windowsDesktop` is present. Only one
+  // of the two panes is ever available, because the host platform picks one.
+  return (
+    <NativePanelFrame padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-windows-desktop:${mountScope}`}
+        desktopTool="windows-desktop"
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkPrTool({
   laneId,
   activeLane,
@@ -600,5 +631,6 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
   "mac-desktop": WorkMacDesktopTool,
+  "windows-desktop": WorkWindowsDesktopTool,
   pr: WorkPrTool,
 };

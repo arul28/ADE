@@ -15504,7 +15504,7 @@ final class SyncService: ObservableObject {
   /// Creates the lane's display on the host. Only the Off card's Start calls
   /// this: watching never starts a display. The host is idempotent per lane and
   /// finds the lane's name itself, so a second press is safe.
-  func macDesktopStart(laneId: String) async throws {
+  func macDesktopStart(laneId: String, hostIsWindows: Bool = false) async throws {
     guard supportsMacDesktopStart else {
       throw NSError(
         domain: "ADE",
@@ -15520,8 +15520,38 @@ final class SyncService: ObservableObject {
       action: "macDesktop.start",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
-      timeoutMessage: "The macOS desktop is taking too long to start.",
-      timeoutNanoseconds: Self.macDesktopStartTimeoutNanoseconds,
+      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The macOS desktop is taking too long to start.",
+      timeoutNanoseconds: hostIsWindows ? 160_000_000_000 : Self.macDesktopStartTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// A paired viewer may stop its lane's Windows screen. The host advertises
+  /// this separately from controller-only desktop actions: `stopSeat` stops
+  /// either seat (private, or the user's main desktop); an older host has only
+  /// `stopPrivate`, for the private screen. A Mac lane is never a viewer's to stop.
+  func canStopWindowsDesktop(seat: String?) -> Bool {
+    switch seat {
+    case "shared": return supportsViewerRemoteAction("macDesktop.stopSeat")
+    case "private":
+      return supportsViewerRemoteAction("macDesktop.stopSeat") || supportsViewerRemoteAction("macDesktop.stopPrivate")
+    default: return false
+    }
+  }
+
+  func windowsDesktopStop(laneId: String, seat: String?) async throws {
+    guard canStopWindowsDesktop(seat: seat) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the Windows screen from here."])
+    }
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
+    }
+    _ = try await sendCommand(
+      action: supportsViewerRemoteAction("macDesktop.stopSeat") ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
+      args: ["laneId": trimmed],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
   }

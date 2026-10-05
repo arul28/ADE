@@ -207,6 +207,11 @@ export function useAppleRecordings({
         { laneId, chatSessionId, keep: !options.discard, discard: Boolean(options.discard) },
         runtimePinRef.current,
       );
+      // Not kept (the movie held nothing to show): say why instead of a receipt.
+      if (saved?.lastError) {
+        setLastSaved(null);
+        throw new Error(saved.lastError);
+      }
       setLastSaved(saved ?? null);
       return saved;
     });

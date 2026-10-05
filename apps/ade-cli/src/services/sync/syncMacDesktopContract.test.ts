@@ -227,6 +227,52 @@ describe("macDesktop sync wire contract", () => {
 
 });
 
+describe("macDesktop watch-only Stop", () => {
+  const windowsStatus = (seatMode: "private" | "shared" | null) => ({
+    ...fixture.status,
+    platform: "win32",
+    windowsDesktop: { state: "ready" },
+    display: seatMode
+      ? { ...fixture.status.display!, seatMode, mode: seatMode === "shared" ? "offscreen-region" : "virtual" }
+      : null,
+  }) as unknown as MacDesktopStatus;
+
+  it.each(["macDesktop.stopPrivate", "macDesktop.stopSeat"])("advertises %s to viewer clients", (action) => {
+    const { service } = createService();
+    expect(service.getDescriptor(action)).toEqual({
+      action,
+      scope: "project",
+      policy: { viewerAllowed: true, controllerAllowed: true, queueable: false },
+    });
+  });
+
+  it.each([
+    // The user's way out of "Using your main Windows desktop", from any trusted device.
+    ["macDesktop.stopSeat", "the main Windows desktop", windowsStatus("shared"), null],
+    ["macDesktop.stopSeat", "the private Windows screen", windowsStatus("private"), null],
+    // A Mac lane's display is a controller's to stop (`macDesktop.stop`), never a viewer's.
+    ["macDesktop.stopSeat", "a Mac lane's display", fixture.status, /Only a Windows screen/],
+    ["macDesktop.stopSeat", "a Windows lane with no screen", windowsStatus(null), /no Windows screen/],
+    // An older phone's command keeps its rule: the private screen only.
+    ["macDesktop.stopPrivate", "the private Windows screen", windowsStatus("private"), null],
+    ["macDesktop.stopPrivate", "the main Windows desktop", windowsStatus("shared"), /Only a private Windows screen/],
+    ["macDesktop.stopPrivate", "a Mac lane's display", fixture.status, /Only a private Windows screen/],
+  ] as const)("%s on %s", async (action, _target, status, refusal) => {
+    const { service, getStatus, stop } = createService();
+    getStatus.mockResolvedValue(status);
+
+    const run = service.execute(makePayload(action, { laneId: fixture.laneId }));
+
+    if (refusal) {
+      await expect(run).rejects.toThrow(refusal);
+      expect(stop).not.toHaveBeenCalled();
+    } else {
+      await expect(run).resolves.toEqual({ stopped: true, releasedWindows: 1 });
+      expect(stop).toHaveBeenCalledWith({ laneId: fixture.laneId });
+    }
+  });
+});
+
 describe("macDesktop web takeover contract", () => {
   it("registers display lifecycle and takeover as controller-only, never viewer-allowed", () => {
     const { service } = createService();

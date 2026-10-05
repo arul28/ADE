@@ -15,6 +15,7 @@ import { appleRecordingsDirectory } from "./appleRecordingsStore";
 import { APPLE_DEVICE_ALREADY_RECORDING_CODE } from "../../../../shared/types/iosSimulator";
 import { SimHelperError, type SimHelperTransport } from "../simHelperClient";
 import type { DemoEngine } from "../../../../shared/demoVideo/demoContract";
+import { movie } from "../../demoVideo/__fixtures__/demoMp4Bytes";
 
 /**
  * A helper that answers instead of running.
@@ -543,6 +544,24 @@ describe("simRecordingService", () => {
     refusing.dispose();
   });
 
+  it("files nothing for a movie with nothing to show, and says why", async () => {
+    // The helper "finished" a movie that was never written out: no demo engine
+    // can read it, and the raw file is not a playable video either.
+    const started = await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    const rawPath = String(transport.typed("record-start")[0]!.path);
+    fs.writeFileSync(rawPath, "");
+
+    const stopped = await service.stop({ laneId: lane, chatSessionId: "chat-1" });
+
+    expect(filed).toEqual([]);
+    expect(stopped).toMatchObject({ id: started.id, proof: false, proofArtifactId: null, lastError: expect.stringMatching(/not filed/i) });
+    expect(fs.existsSync(rawPath)).toBe(false);
+    expect(await service.list({ laneId: lane })).toEqual([]);
+    // Proof-bundle has nothing to pick up afterwards either.
+    await expect(service.pinActiveOrLatest({ laneId: lane, chatSessionId: "chat-1" })).resolves.toBeNull();
+    expect(filed).toEqual([]);
+  });
+
   it("takes the drawer row with the file when the user deletes it", async () => {
     const deleted: string[] = [];
     const wired = build({
@@ -609,7 +628,9 @@ function createStatefulHelper(): SimHelperTransport & {
           throw new SimHelperError("already-recording", "This device is already recording.");
         }
         recording.set(deviceUdid, String(command.path));
-        fs.writeFileSync(String(command.path), "movie");
+        // A finished movie, as the simulator's recorder writes: an empty or
+        // unfinished one is refused before it is filed.
+        fs.writeFileSync(String(command.path), movie({ frames: 1 }));
         if (loseStartReply) {
           // The helper began; the reply did not reach ADE in time.
           loseStartReply = false;

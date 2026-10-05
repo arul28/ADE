@@ -706,7 +706,7 @@ describe("SessionCard Mac Desktop mark", () => {
         session={makeSession({})}
         lane={lane}
         showLaneIdentity
-        laneMacDesktop
+        laneDesktop="mac"
         isSelected={false}
         onSelect={vi.fn()}
         onContextMenu={vi.fn()}

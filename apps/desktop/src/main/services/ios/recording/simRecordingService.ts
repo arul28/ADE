@@ -8,7 +8,7 @@ import { demoProofSentence, recordingStopSentence } from "../../../../shared/dem
 import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proofProvenance";
 import { createDemoEngineSet, type DemoEngineSet } from "../../demoVideo/demoEngines";
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
-import { demoLengths, produceDemoVideo } from "../../demoVideo/demoRenderService";
+import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
 import type { Logger } from "../../logging/logger";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
@@ -109,6 +109,13 @@ export type SimRecording = {
    * the video is still on disk, which is why that is a warning and not a throw.
    */
   proofArtifactId?: string | null;
+  /**
+   * Why the stopped recording was not kept: the movie held nothing to show
+   * (empty, never finished). Such a recording is not filed as proof and
+   * leaves no file and no sidecar behind; this field is how the caller learns
+   * why. Same rule as the Desktop and App Control recorders' `lastError`.
+   */
+  lastError?: string | null;
 };
 
 export type { AppleInputSource };
@@ -788,6 +795,9 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           lengths = demoLengths(produced.metadata);
         } catch (error) {
           warn("apple.recording.demo_failed", { laneId, error: String(error) });
+          if (error instanceof DemoRecordingUnusableError) {
+            return dropUnusable({ ...entry.record, endedAt: new Date().toISOString(), stopReason: options.reason }, entry.rawPath, error);
+          }
           filedPath = entry.rawPath;
         }
       }
@@ -908,6 +918,21 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       warn("apple.recording.proof_file_failed", { id: record.id, error: String(error) });
     }
     return { ...record, proof: true, proofArtifactId: artifactId };
+  };
+
+  /**
+   * A recording whose movie holds nothing to show (`DemoRecordingUnusableError`).
+   * It is not proof: nothing is filed, the raw file and the sidecar go, and the
+   * returned record says why in `lastError`.
+   */
+  const dropUnusable = (record: SimRecording, rawPath: string, error: Error): SimRecording => {
+    removeFiles({ ...record, proofArtifactId: null });
+    try {
+      fs.rmSync(rawPath, { force: true });
+    } catch (removeError) {
+      warn("apple.recording.remove_failed", { file: rawPath, error: String(removeError) });
+    }
+    return { ...record, path: rawPath, bytes: null, proof: false, proofArtifactId: null, demo: null, lastError: error.message };
   };
 
   const removeFiles = (record: SimRecording): void => {
@@ -1041,6 +1066,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         };
       } catch (error) {
         warn("apple.recording.orphan_demo_failed", { udid, error: String(error) });
+        if (error instanceof DemoRecordingUnusableError) {
+          const dropped = dropUnusable(record, moviePathFromHelper, error);
+          notify(dropped.laneId, "stopped", dropped);
+          return dropped;
+        }
         record = { ...record, path: moviePathFromHelper };
       }
     }
@@ -1252,7 +1282,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           ?? candidates[0]
           ?? null;
       }
-      if (!target) return null;
+      // Nothing to show, so nothing to file (see `dropUnusable`).
+      if (!target || target.lastError) return null;
       // `stopActive` already filed it. Re-filing the same bytes would put a
       // second row in the drawer for one video, so this is now a read of what
       // stopping already did — kept as a method because `proof-bundle` asks

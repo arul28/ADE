@@ -23,7 +23,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
-import { useMacDesktopSupport } from "./useMacDesktopSupport";
+import { desktopToolContext, useMacDesktopSupport } from "./useMacDesktopSupport";
 import {
   useNativeToolSessions,
   type NativeToolFeedScope,
@@ -158,8 +158,7 @@ export function NativeToolFeedsProvider({
   const context = useMemo<WorkToolContext>(() => ({
     supportsIosSimulator,
     isWebClient: isWebClientMode(),
-    supportsMacDesktop: macDesktopSupport?.supported ?? null,
-    macDesktopUnsupportedReason: macDesktopSupport?.reason ?? null,
+    ...desktopToolContext(macDesktopSupport),
   }), [macDesktopSupport, supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep

@@ -4585,6 +4585,14 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
     readClipboardText: async (): Promise<string> =>
       ipcRenderer.invoke(IPC.appReadClipboardText),
+    /** Windows: true when this desktop runs as administrator (see `ELEVATED_DESKTOP_MESSAGE`). */
+    getElevatedDesktop: async (): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.appGetElevatedDesktop),
+    onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, elevated: boolean) => cb(elevated === true);
+      ipcRenderer.on(IPC.appElevatedDesktopChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.appElevatedDesktopChanged, listener);
+    },
     hasClipboardImage: async (): Promise<boolean> =>
       ipcRenderer.invoke(IPC.appHasClipboardImage),
     readClipboardImage: async (): Promise<{

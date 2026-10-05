@@ -221,6 +221,7 @@ export type WorkSidebarTab =
   | "app-control"
   | "browser"
   | "mac-desktop"
+  | "windows-desktop"
   | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
@@ -467,6 +468,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "app-control"
     || value === "browser"
     || value === "mac-desktop"
+    || value === "windows-desktop"
     || value === "pr"
   ) return value;
   return null;

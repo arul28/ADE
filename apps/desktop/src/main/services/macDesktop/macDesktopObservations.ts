@@ -176,7 +176,7 @@ export function createMacDesktopObservations(deps: MacDesktopObservationsDeps) {
       if (!match) {
         throw new MacDesktopObservationError(
           MAC_DESKTOP_HANDLE_EXPIRED_CODE,
-          `"${handle}" is not a Mac Desktop element handle. Observe the display and use a handle from that observation.`,
+          `"${handle}" is not an element handle from this lane's screen. Observe the screen and use a handle from that observation.`,
         );
       }
       const [, observationId, rawIndex] = match;

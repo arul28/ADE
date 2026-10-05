@@ -293,17 +293,24 @@ import {
   MAC_DESKTOP_VALUE_CARRIER_FLAGS,
   MAC_DESKTOP_VALUE_FLAGS,
   buildMacDesktopPlan,
+  macDesktopSocketPlacementWarning,
+} from "./cliMacDesktop";
+import {
   formatMacDesktopAction,
+  formatMacDesktopLease,
   formatMacDesktopObservation,
+  formatMacDesktopOpen,
   formatMacDesktopProofFiled,
   formatMacDesktopRecording,
+  formatMacDesktopScreenshot,
   formatMacDesktopStatus,
   formatMacDesktopStop,
+  formatMacDesktopWindowAction,
   formatMacDesktopWindows,
   macDesktopErrorHint,
   macDesktopRecordingDurationMs,
-  macDesktopSocketPlacementWarning,
-} from "./cliMacDesktop";
+  recordingStopLeftNoFile,
+} from "./cliMacDesktopFormat";
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
@@ -546,6 +553,10 @@ export type FormatterId =
   | "mac-desktop-action"
   | "mac-desktop-recording"
   | "mac-desktop-proof"
+  | "mac-desktop-open"
+  | "mac-desktop-screenshot"
+  | "mac-desktop-lease"
+  | "mac-desktop-window-action"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -1032,8 +1043,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade mac-desktop start | observe | click | proof
-                                                     Drive this lane's private macOS display
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
+                                                     or Windows Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -1162,6 +1173,16 @@ function commandHelpText(key: string): string | undefined {
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
     );
+  }
+  if (
+    key === "screen" || key === "windows-desktop" || key === "windows-desk"
+    // On a Windows host the Mac name is an alias of the same Windows screen,
+    // and the Mac page (virtual display, ⌘, System Settings) would mislead.
+    || (process.platform === "win32" && (key === "mac-desktop" || key === "mac-desk" || key === "desk"))
+  ) {
+    // The neutral family and the Windows name share one host-neutral help; the
+    // Mac-only name keeps its own.
+    return HELP_BY_COMMAND["screen"];
   }
   return HELP_BY_COMMAND[key];
 }
@@ -2613,6 +2634,89 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   matches your claim before you rely on the record. "screenshot --out" and
   "proof --out" write inside the lane worktree or the OS temp dir ($TMPDIR);
   anywhere else is refused.
+`,
+  "screen": `${ADE_BANNER}
+  Screen
+
+  One screen per lane, on the runtime host. On macOS it is Mac Desktop, a
+  private virtual display. On Windows it is Windows Desktop, with two seats:
+    private  A separate Windows session of the user's own account. It shows
+             their wallpaper and taskbar, but it has its own pointer and
+             keyboard and it is NOT the user's screen. No lease is needed.
+    shared   The user's main desktop, only after the user says yes in your
+             chat. Actions take over the window they are using.
+  The verbs are the same on both hosts.
+
+  Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` and
+  \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
+  desktop-app launcher, not this.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID, and a
+  chat-bound caller is pinned to its chat's lane. Output flags (--text, --json)
+  may come last, even after \`--\`.
+
+  Screen:
+    $ ade screen status --text                      Product, seat, holder, next step
+    $ ade screen start --text                       Create this lane's screen (private)
+    $ ade screen start --shared --reason "<why>" --text
+                                                    Windows: ask the user, in this chat,
+                                                    for their main desktop
+    $ ade screen stop --text                        Stop it (quits apps the lane opened)
+    $ ade screen show --text                        Show it to the user (--floating: card)
+
+  The user's steps (Windows; an agent asks, it cannot do these):
+    $ ade screen setup --allow-prompt --text        One-time admin step
+    $ ade screen setup --allow-prompt --save-password --text   Save the Windows password
+    $ ade screen takeover --text                    Take the private screen from another lane
+
+  Apps and windows:
+    $ ade screen open <app|path|url> --text         Launch onto the screen; prints its windows
+    $ ade screen open notepad -- C:\\tmp\\proof.txt --text   App args after --
+    $ ade screen windows --text                     List windows
+    $ ade screen focus --window <id> --text         Windows: raise one of this lane's windows
+    $ ade screen minimize --window <id> --text      Windows: minimize it
+    $ ade screen close --window <id> --text         Windows: close it (it may ask to save)
+    $ ade screen claim --window <id> --text         Move an existing window here
+    $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
+    $ ade screen quit [app] --text                  Quit apps the lane opened
+
+  Observe, then act by handle:
+    $ ade screen observe --text                     Screenshot + numbered elements
+    $ ade screen click <handle> --text              Click what you observed
+    $ ade screen click --x 400 --y 300 --text       Click a point (real input)
+    $ ade screen type "hello" --submit --text       Type, then press Return
+    $ ade screen press s --ctrl --text              One key, with modifiers
+    $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen wait --label "Done" --timeout 8000 --text
+
+  Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
+  On Windows --cmd is sent as Ctrl and --opt as Alt; on a Mac --cmd is ⌘.
+
+  Real input (a point click, a drag, --real): a Windows private seat needs no
+  lease. A Mac and the Windows shared seat do: on a Mac run
+  \`ade screen lease --reason "<why>"\` once per chat; on the shared seat the
+  user's yes covers it.
+
+  Capture:
+    $ ade screen screenshot --out shot.png --text   Capture without filing proof
+    $ ade screen record start --caption "<what>"    Record; a caption files it
+    $ ade proof step "<what happens next>"          A caption and chapter in the video
+    $ ade screen record stop --text                 Prints the duration and a cite line
+    $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
+  --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
+
+  Errors (each prints its next step):
+    WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
+    WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
+                                     the user to take over, or start --shared
+    WINDOWS_DESKTOP_LOCKED           ask the user to unlock the PC
+    WINDOWS_DESKTOP_NOT_CONSOLE_SESSION  private unavailable; start --shared
+    WINDOWS_DESKTOP_CONSENT_REQUIRED the user did not allow the main desktop
+    MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: ade screen lease
+  Setup, takeover and shared consent belong to the user; an agent cannot
+  pass --allow-prompt or --consent itself.
+
+  For the full Mac surface, run \`ade mac-desktop --help\`; the verbs match.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -4740,6 +4844,11 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
   return lines.join("\n");
 }
 
+/** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
+const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+  "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
+]);
+
 function parseCliArgs(argv: string[]): ParsedCli {
   const command: string[] = [];
   const options: GlobalOptions = {
@@ -4758,7 +4867,21 @@ function parseCliArgs(argv: string[]): ParsedCli {
     const token = argv[index]!;
     const inGlobalPrefix = command.length === 0;
     if (token === "--") {
-      command.push(token, ...argv.slice(index + 1));
+      const rest = argv.slice(index + 1);
+      // `ade screen open <app> -- <app args> --text`: everything after `--` is
+      // the launched app's, except a trailing --text/--json, which is always
+      // the caller's output choice. Only for the screen family, whose `open`
+      // documents this; elsewhere `--` passes everything through untouched.
+      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "")) {
+        let decided = false;
+        while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
+          const flag = rest.pop();
+          // The rightmost one wins, as it does before `--`.
+          if (!decided) options.text = flag === "--text";
+          decided = true;
+        }
+      }
+      command.push(token, ...rest);
       break;
     }
     const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
@@ -11062,6 +11185,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // Flags first: they take their values out of `args`, and every word
     // left is the step's text.
     const owner = proofOwnerBase();
+    // `--lane` names the lane like every screen verb's flag; left in `args`
+    // its value became the end of the caption.
+    const laneId = readValue(args, ["--lane", "--lane-id"]);
     const flagText = readValue(args, ["--text", "--caption"]);
     const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
     if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
@@ -11072,6 +11198,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         actionCallStep("result", "note_demo_step", {
           ...owner,
           ...proofCallerRootArgs(),
+          ...(laneId ? { laneId } : {}),
           text,
         }),
       ],
@@ -12820,7 +12947,14 @@ function buildAppControlRecordPlan(
     );
   }
   if (mode === "stop" || mode === "end" || mode === "finish") {
-    return plan("app-control record stop", "stopRecording");
+    return {
+      kind: "execute",
+      label: "app-control record stop",
+      formatter: "app-control-recording",
+      steps: [step("result", "stopRecording", collectGenericObjectArgs(args, {}))],
+      // Same rule as `screen record stop`: no file plus an error is a failure.
+      exitCodeFromResult: (result: unknown) => (recordingStopLeftNoFile(result) ? 1 : 0),
+    };
   }
   if (mode === "status" || mode === "state") {
     return plan("app-control record status", "getRecordingStatus");
@@ -17747,11 +17881,15 @@ function buildCliPlan(
   )
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   // `ade desktop` is the ADE desktop-app launcher and stays that way; the Mac
-  // Desktop family is `ade mac-desktop`.
+  // Desktop family is `ade mac-desktop`. `ade screen` is the neutral spelling
+  // the plan adds for both operating systems, and its verbs are the same ones.
   if (
     primary === "mac-desktop" ||
     primary === "mac-desk" ||
-    primary === "desk"
+    primary === "desk" ||
+    primary === "screen" ||
+    primary === "windows-desktop" ||
+    primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
   if (
@@ -25951,6 +26089,11 @@ function formatLastFailureLine(report: AdeLastFailureReport): string {
 export function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
+  /**
+   * Labels whose values are never clipped: a citation, a command to run next,
+   * or a sentence the caller must read whole. A clipped `cite` is unusable.
+   */
+  fullLabels: readonly string[] = [],
 ): string {
   const rows = entries.filter(
     ([, value]) => value !== undefined && value !== null && value !== "",
@@ -25965,7 +26108,7 @@ export function renderKeyValues(
     title,
     ...rows.map(
       ([label, value]) =>
-        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) ? 4096 : 96)}`,
+        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) || fullLabels.includes(label) ? 4096 : 96)}`,
     ),
   ].join("\n");
 }
@@ -29118,6 +29261,14 @@ function formatTextOutput(
       return formatMacDesktopRecording(value);
     case "mac-desktop-proof":
       return formatMacDesktopProofFiled(value);
+    case "mac-desktop-open":
+      return formatMacDesktopOpen(value);
+    case "mac-desktop-screenshot":
+      return formatMacDesktopScreenshot(value);
+    case "mac-desktop-lease":
+      return formatMacDesktopLease(value);
+    case "mac-desktop-window-action":
+      return formatMacDesktopWindowAction(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":

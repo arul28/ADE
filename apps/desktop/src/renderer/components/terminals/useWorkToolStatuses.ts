@@ -33,7 +33,11 @@ import {
   type AppleLaneDeviceCard,
 } from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
-import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
+import {
+  hostDesktopTool,
+  type WorkToolAvailability,
+  type WorkToolDefinition,
+} from "./workTools";
 
 /**
  * What a tool has to say about itself on the picker card and in the activity
@@ -321,7 +325,7 @@ function relativeCommitAge(iso: string | null | undefined): string | null {
 }
 
 /**
- * §9's card subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
+ * The Apple card's subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
  * `{name} · Shut down`.
  *
  * The LANE's device, not the app session: a lane can own a booted simulator
@@ -549,11 +553,13 @@ export function useWorkToolStatuses(args: {
   // The lane's screen: one `getStatus` per lane plus the service's own events.
   // The capability answer comes from the provider's cached read, so a host that
   // cannot run a display is never asked about one.
+  const desktopTool = hostDesktopTool(context);
   const macDesktop = useMacDesktopToolStatus({
     enabled: enabled && !offline,
     laneId,
     runtimePin,
-    supported: context.supportsMacDesktop ?? null,
+    // One read serves both desktop tools: a host offers exactly one of them.
+    supported: (desktopTool === "windows-desktop" ? context.supportsWindowsDesktop : context.supportsMacDesktop) ?? null,
   });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
@@ -629,7 +635,7 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop);
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool);
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
@@ -653,6 +659,7 @@ export function useWorkToolStatuses(args: {
     // answer standing rather than claiming the lane has no screen, and the
     // hook already stops reading.
     "mac-desktop": macDesktopStatus,
+    "windows-desktop": macDesktopStatus,
     pr: prToolStatusLine(prCount),
   }), [
     appControlSession,

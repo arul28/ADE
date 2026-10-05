@@ -32,6 +32,8 @@ import {
   IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
+  WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
@@ -175,6 +177,17 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Windows Desktop actions that wait on a person at the Windows PC (UAC,
+  // the password dialog, Windows' sign-in window). From another machine the
+  // 30s default reported a timeout while Windows was still waiting.
+  ["mac_desktop.start", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.setupWindows", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.takeoverWindows", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["mac_desktop.useSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Waits on the user's answer to the shared-seat card, then the start.
+  ["mac_desktop.requestSharedDesktop", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A long Windows `type` is typed one character at a time.
+  ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;

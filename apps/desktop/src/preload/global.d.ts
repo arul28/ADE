@@ -77,6 +77,9 @@ import type {
   MacDesktopWaitArgs,
   MacDesktopWaitResult,
   MacDesktopWindow,
+  WindowsDesktopSetupArgs,
+  WindowsDesktopSetupResult,
+  WindowsDesktopTakeoverArgs,
 } from "../shared/types/macDesktop";
 import type {
   BuiltInBrowserRemoteRequest,
@@ -1143,6 +1146,8 @@ declare global {
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         readClipboardText: () => Promise<string>;
+        getElevatedDesktop: () => Promise<boolean>;
+        onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => () => void;
         hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{
           data: string;
@@ -2940,6 +2945,18 @@ declare global {
           args: MacDesktopRequestPermissionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<MacDesktopPermissions>;
+        setupWindows: (
+          args: WindowsDesktopSetupArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<WindowsDesktopSetupResult>;
+        takeoverWindows: (
+          args: WindowsDesktopTakeoverArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        useSharedDesktop: (
+          args: { laneId: string; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
         start: (
           args: MacDesktopStartArgs,
           pin?: OpenProjectBinding | null,

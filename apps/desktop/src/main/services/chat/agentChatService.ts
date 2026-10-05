@@ -144,6 +144,7 @@ import {
 import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { codedError } from "../../../shared/codedError";
+import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
 import {
@@ -7983,6 +7984,11 @@ export function buildComputerUseDirective(
      * a plain "record opening Safari" quit the user's own Safari).
      */
     macDesktopAvailable?: boolean;
+    /**
+     * This host can give the lane a Windows screen (Windows Desktop). The same
+     * "tell the agent" rule as above, for the Windows seat.
+     */
+    windowsDesktopAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -8002,6 +8008,16 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
+  // Either seat means "this lane has its own screen". Exactly one is set per
+  // host: the seat follows the runtime host's platform.
+  const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable);
+  const recordingSurfaces = [
+    ...(options.macDesktopAvailable ? ["Apple", "Mac Desktop"] : []),
+    ...(options.windowsDesktopAvailable ? ["Windows Desktop"] : []),
+    "App Control",
+    "browser",
+  ].join(", ");
+
   // --- Header (always when we have any capability) ---
   sections.push(
     [
@@ -8011,7 +8027,7 @@ export function buildComputerUseDirective(
       "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
       "",
       "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
-      options.macDesktopAvailable
+      options.macDesktopAvailable || options.windowsDesktopAvailable
         ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
         : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
@@ -8019,12 +8035,28 @@ export function buildComputerUseDirective(
       "App Control (`ade app-control`, the **ade-app-control** skill) drives a dev Electron app, one session per lane: `launch`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
       "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
-      `Every recording (${options.macDesktopAvailable ? "Apple, Mac Desktop, App Control, browser" : "App Control, browser"}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
+      `Every recording (${recordingSurfaces}) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to where the actions happen, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with \`ade proof step \"<what happens next>\"\`: it becomes a caption in the video and a chapter in ADE's player. Pass \`--plain\` to \`record start\` only when the user asks for the raw recording.`,
     ].join("\n"),
   );
 
-  // --- Mac Desktop (this host can give the lane its own screen) ---
-  if (options.macDesktopAvailable) {
+  // --- Windows Desktop (this Windows host can give the lane its own screen) ---
+  if (options.windowsDesktopAvailable) {
+    sections.push(
+      [
+        "### Windows Desktop — this lane's own screen (use it for desktop apps)",
+        "For anything that needs a Windows app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's Windows Desktop with `ade screen` (aliases `ade windows-desktop`, `ade mac-desktop`; they are the same Windows screen here, not a Mac). Read the **ade-computer-use** skill before your first action.",
+        "Seats: the default is **private** — a separate Windows session of the user's own account. It shows their wallpaper and taskbar, but it has its own pointer and keyboard and it is NOT the user's screen, so real input (point clicks, drags) needs no lease there. The **shared** seat is the user's main desktop, used only after the user says yes; it takes over the window they are using. `ade screen status --text` names the seat, the holder and the exact next step.",
+        "Pick the surface: any Windows app → `ade screen`; a dev Electron app you launch or attach to → `ade app-control`; a web page or localhost → `ade browser` (the default for web tasks; open a real browser on the Windows screen only when the user asks for it — `open chrome`/`msedge` there gets a lane-private profile, not the user's).",
+        "The user's steps — setup, saving the Windows password, taking the private screen from another lane — are theirs: ask them. When the private screen is held or unavailable, run `ade screen start --shared --reason \"<what for>\"`: it puts the question to the user in this chat and starts the shared seat if they allow it. Never pass `--allow-prompt` or `--consent` yourself.",
+        "The loop: `ade screen start`, `ade screen open <app or file>` (it prints the windows that appeared, or why none did), `ade screen observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press s --ctrl`, `scroll`). Windows modifier keys are `--ctrl`, `--alt`, `--shift`, `--win`; `--cmd` is sent as Ctrl. Raise, minimize or close your own lane windows with `ade screen focus|minimize|close --window <id>`.",
+        "Notepad and other editors restore the user's open tabs, which can hold private files: open a new blank file you created for the task (`ade screen open notepad -- <path>`), and observe the screen before you record or file proof.",
+        "For proof, wrap the work in `ade screen record start --caption \"<what it shows>\"` … `ade screen record stop` (mark steps with `ade proof step \"<text>\"`), or file a still with `ade screen proof --caption \"<what>\"`; cite the `cite` line it prints. To show the screen to the user, run `ade screen show`.",
+        "Errors name the fix and print the next step: `WINDOWS_DESKTOP_SETUP_REQUIRED` (ask the user to set up), `WINDOWS_DESKTOP_HELD` (another lane, or a Windows session ADE did not start, holds the private screen: ask the user, or `start --shared`), `WINDOWS_DESKTOP_LOCKED` (ask the user to unlock), `WINDOWS_DESKTOP_NOT_CONSOLE_SESSION` (`start --shared`), `WINDOWS_DESKTOP_CONSENT_REQUIRED` (the user did not allow the main desktop).",
+        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade screen observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
+      ].join("\n"),
+    );
+  } else if (options.macDesktopAvailable) {
+    // --- Mac Desktop (this host can give the lane its own screen) ---
     sections.push(
       [
         "### Mac Desktop — this lane's own screen (use it for desktop apps)",
@@ -8091,7 +8123,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      options.macDesktopAvailable
+      options.windowsDesktopAvailable
+        ? "Proof is intentional. For work on the lane's Windows Desktop, file a still with `ade screen proof` or `ade proof capture`, and a video with `ade screen record` or `ade proof record`; they capture the lane's screen (private or shared seat), and `ade proof capture/record` are refused until the lane screen is started. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
+        : options.macDesktopAvailable
         ? "Proof is intentional. For work on the lane's Mac Desktop, file a still with `ade mac-desktop proof` or `ade proof capture`, and a video with `ade mac-desktop record` or `ade proof record`; all of them capture the lane's screen, never the user's, and `ade proof capture/record` are refused until the lane screen is started. `--real-screen` captures the user's whole real screen — use it only when the user asks. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
         : "Proof is intentional. File proof from the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`), or use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. `ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — use it only when the user asks. Add logs only as secondary context unless the user explicitly asks for them.",
       PROOF_IN_ANSWER_GUIDANCE,
@@ -9770,7 +9804,7 @@ export function createAgentChatService(args: {
   macDesktopTurnRecorder?: Pick<
     MacDesktopRuntimeService,
     "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
-  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
+  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync" | "seatHostPlatform">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   /**
@@ -12080,7 +12114,7 @@ export function createAgentChatService(args: {
         cancelSteer: ({ sessionId, steerId }) => cancelSteer({ sessionId, steerId }),
         listSubagents: ({ sessionId }) => listSubagents({ sessionId }),
         approveToolUse: ({ sessionId, toolUseId, decision }) =>
-          approveToolUse({ sessionId, itemId: toolUseId, decision }),
+          approveToolUseAsAgent({ sessionId, itemId: toolUseId, decision }),
         issueTracker: linearIssueTracker ?? null,
         ctoStateService: ctoStateService ?? null,
         ctoMemoryService: ctoMemoryService ?? null,
@@ -15815,16 +15849,7 @@ export function createAgentChatService(args: {
     };
     acquired.pooled.bridge.onUiCancel = (requestId) => {
       if (managed.runtime !== runtime) return;
-      const pending = managed.localPendingInputs.get(requestId);
-      if (!pending) return;
-      managed.localPendingInputs.delete(requestId);
-      pending.resolve({ decision: "cancel" });
-      emitPendingInputResolved(managed, {
-        itemId: requestId,
-        decision: "cancel",
-        turnId: pending.request.turnId ?? null,
-        questions: pending.request.questions,
-      });
+      cancelLocalPendingInput(managed, requestId);
     };
     acquired.pooled.bridge.onUiNotice = (payload) => {
       if (managed.runtime !== runtime) return;
@@ -23351,16 +23376,27 @@ export function createAgentChatService(args: {
   ): void => {
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
       if (!sources.includes(pending.request.source)) continue;
-      managed.localPendingInputs.delete(itemId);
-      pending.resolve({ decision: "cancel" });
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pending.request.turnId ?? null,
-        questions: pending.request.questions,
-      });
+      cancelLocalPendingInput(managed, itemId);
     }
   };
+
+  /**
+   * Cancels one card in `managed.localPendingInputs`: drops it, answers its
+   * waiter with `cancel`, and writes the `pending_input_resolved` receipt.
+   * A card that is already gone is left alone.
+   */
+  function cancelLocalPendingInput(managed: ManagedChatSession, itemId: string): void {
+    const pending = managed.localPendingInputs.get(itemId);
+    if (!pending) return;
+    managed.localPendingInputs.delete(itemId);
+    pending.resolve({ decision: "cancel" });
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: "cancel",
+      turnId: pending.request.turnId ?? null,
+      questions: pending.request.questions,
+    });
+  }
 
   /**
    * The shared body of the four `settle*` wrappers below: empty the map,
@@ -31459,14 +31495,7 @@ export function createAgentChatService(args: {
       // only this form's card is stale now.
       for (const [itemId, pending] of [...managed.localPendingInputs]) {
         if (asRecord(pending.request.providerMetadata)?.formId !== formId) continue;
-        managed.localPendingInputs.delete(itemId);
-        pending.resolve({ decision: "cancel" });
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: "cancel",
-          turnId: pending.request.turnId ?? null,
-          questions: pending.request.questions,
-        });
+        cancelLocalPendingInput(managed, itemId);
       }
     }
     if (sessionId !== runtime.handle.sessionId) emitOpenCodeChildBlocked(managed, runtime, sessionId, null);
@@ -45249,7 +45278,10 @@ export function createAgentChatService(args: {
     const computerUseDirective = personalSession
       ? null
       : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true,
+        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
+          && macDesktopTurnRecorder?.seatHostPlatform?.() !== "win32",
+        windowsDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true
+          && macDesktopTurnRecorder?.seatHostPlatform?.() === "win32",
       });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -57361,6 +57393,33 @@ export function createAgentChatService(args: {
     onPendingInputDismissed?.({ provider: managed.session.provider });
   };
 
+  /**
+   * True when the card waiting under `itemId` is one only the user may answer
+   * (`isUserOnlyConsentCard`). The RPC server and the CTO's approve tool ask
+   * this before they let an agent caller answer a card.
+   */
+  const isUserOnlyPendingInput = ({ sessionId, itemId }: { sessionId: string; itemId: string }): boolean => {
+    const managed = managedSessions.get(sessionId.trim());
+    if (!managed) return false;
+    const trimmedItemId = itemId.trim();
+    const request = managed.asyncQuestions.get(trimmedItemId)?.request
+      ?? managed.localPendingInputs.get(trimmedItemId)?.request
+      ?? (managed.runtime?.kind === "codex" || managed.runtime?.kind === "claude"
+        ? managed.runtime.approvals.get(trimmedItemId)?.request
+        : undefined);
+    return isUserOnlyConsentCard(request?.providerMetadata ?? null);
+  };
+
+  /** The CTO's approve tool: an agent, so it cannot answer a consent card. */
+  const approveToolUseAsAgent = async (args: {
+    sessionId: string;
+    itemId: string;
+    decision: AgentChatApprovalDecision;
+  }): Promise<void> => {
+    if (isUserOnlyPendingInput(args)) throw new Error(USER_ONLY_CONSENT_CARD_REFUSAL);
+    await approveToolUse(args);
+  };
+
   const approveToolUse = async ({
     sessionId,
     itemId,
@@ -62039,6 +62098,11 @@ export function createAgentChatService(args: {
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
     eventDetail?: Record<string, unknown>;
+    /**
+     * Cancels the card when the asker stops waiting, so a late answer cannot
+     * act for a caller that is gone. Resolves as `cancel`.
+     */
+    signal?: AbortSignal;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -62186,26 +62250,24 @@ export function createAgentChatService(args: {
       answers?: Record<string, string | string[]>;
       responseText?: string | null;
     }>((resolve) => {
+      if (args.signal?.aborted) {
+        resolve({ decision: "cancel" });
+        return;
+      }
       managed.localPendingInputs.set(itemId, { request, resolve });
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: args.eventDescription ?? request.description ?? args.body,
         ...(args.eventDetail !== undefined ? { detail: args.eventDetail } : {}),
       });
+      args.signal?.addEventListener("abort", () => cancelLocalPendingInput(managed, itemId), { once: true });
       if (args.timeoutMs && args.timeoutMs > 0) {
         expiry = setTimeout(() => {
           // Answered, or cancelled by a turn ending, in the meantime.
           if (managed.localPendingInputs.get(itemId)?.resolve !== resolve) return;
           timedOut = true;
-          managed.localPendingInputs.delete(itemId);
-          emitPendingInputResolved(managed, {
-            itemId,
-            decision: "cancel",
-            turnId: request.turnId ?? null,
-            questions: request.questions,
-          });
+          cancelLocalPendingInput(managed, itemId);
           persistChatState(managed);
-          resolve({ decision: "cancel" });
         }, args.timeoutMs);
       }
     }).finally(() => {
@@ -62922,6 +62984,8 @@ export function createAgentChatService(args: {
     getCtoThreadHealth,
     getCtoAttention,
     approveToolUse,
+    approveToolUseAsAgent,
+    isUserOnlyPendingInput,
     listPendingInputs,
     respondToInput,
     dismissPendingInputForSettlement,

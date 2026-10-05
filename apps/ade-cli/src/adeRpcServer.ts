@@ -18,6 +18,12 @@ import {
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
+  desktopProductName,
+  MAC_DESKTOP_USER_CLI_HOLDER_ID,
+  USER_ONLY_CONSENT_CARD_REFUSAL,
+  WINDOWS_DESKTOP_NEXT_STEP,
+} from "../../desktop/src/shared/types/macDesktop";
+import {
   createSessionHomeResolver,
   type SessionHomeLane,
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
@@ -2482,6 +2488,12 @@ export function describeLaneDisplayProofRefusal(
   platform: NodeJS.Platform = process.platform,
 ): string {
   const noun = kind === "screenshot" ? "capture" : "record";
+  if (platform === "win32") {
+    // A Windows lane has its own screen once it is started; the real screen
+    // is never captured from Windows.
+    return `refused: this lane has no Windows Desktop screen, and ADE does not ${noun} your real screen. `
+      + `Start the lane's screen with \`ade screen start\` and run this again, or use \`ade browser proof\`, \`ade app-control proof\` or \`ade proof attach <file>\`.`;
+  }
   if (platform !== "darwin") {
     return `refused: ADE does not ${noun} your real screen by default, and this runtime host cannot run a Mac Desktop display. `
       + "Use `ade browser proof`, `ade app-control proof` or `ade proof attach <file>`.";
@@ -2569,8 +2581,9 @@ async function fileLaneDisplayProof(args: {
     );
   }
   const display = await service.getDisplay({ laneId }).catch(() => null);
+  const productName = desktopProductName(process.platform);
   const title = asOptionalTrimmedString(toolArgs.name)
-    ?? (kind === "screenshot" ? "Mac Desktop screenshot" : "Mac Desktop recording");
+    ?? `${productName} ${kind === "screenshot" ? "screenshot" : "recording"}`;
   let filePath: string | null;
   let artifactId: string | null;
   let failure: string | null = null;
@@ -2586,7 +2599,7 @@ async function fileLaneDisplayProof(args: {
     if (status.recording?.running) {
       throw new JsonRpcError(
         JsonRpcErrorCode.toolFailed,
-        `a Mac Desktop recording is already running on lane ${laneId}. Stop it with \`ade mac-desktop record stop\` first.`,
+        `a ${productName} recording is already running on lane ${laneId}. Stop it with \`ade screen record stop\` first.`,
       );
     }
     // The cap is a backstop: if this call dies mid-wait, the recorder still
@@ -2613,7 +2626,7 @@ async function fileLaneDisplayProof(args: {
   if (!artifactId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.toolFailed,
-      `the Mac Desktop ${kind === "screenshot" ? "screenshot" : "recording"} of lane ${laneId} was not filed as proof`
+      `the ${productName} ${kind === "screenshot" ? "screenshot" : "recording"} of lane ${laneId} was not filed as proof`
         + (failure ? `: ${failure}` : filePath ? ` (file kept at ${filePath})` : ""),
     );
   }
@@ -3689,8 +3702,14 @@ export function scopeMacDesktopAdeActionArgs(
   // under the human's takeover controller id it read off `getStatus`. Refused
   // by caller shape, not role.
   if (isCtoOnlyAdeAction("mac_desktop", action)) {
+    // The Windows steps are the user's; say what the agent does instead.
+    const windowsUserStep: Record<string, string> = {
+      setupWindows: `Windows Desktop setup and the saved password are the user's steps. ${WINDOWS_DESKTOP_NEXT_STEP.setup_required}`,
+      takeoverWindows: `taking the private Windows screen from another lane is the user's choice. ${WINDOWS_DESKTOP_NEXT_STEP.held}`,
+      useSharedDesktop: WINDOWS_DESKTOP_NEXT_STEP.consent,
+    };
     scopeAccessDenied(
-      "mac_desktop viewing and permission actions belong to user clients",
+      windowsUserStep[action] ?? "mac_desktop viewing and permission actions belong to user clients",
       `run_ade_action:mac_desktop.${action}`,
     );
   }
@@ -3840,6 +3859,29 @@ export async function scopeUnboundMacDesktopAdeActionArgs(
       : null,
   });
   return { ...rest, ...(laneId ? { laneId } : {}) };
+}
+
+/**
+ * `mac_desktop` for a trusted `ade` process with no chat: `ade --role cto …`
+ * from the user's terminal, the same elevated role that makes the CTO-only
+ * `useSharedDesktop` reachable.
+ *
+ * With no chat it would act as the anonymous holder, which the Windows shared
+ * seat refuses (no consent covers an agent shell with no chat), so `screen start
+ * --shared --consent` worked and every `open`/`click`/`type` after it did not.
+ * It acts instead under one stable holder of its own,
+ * `MAC_DESKTOP_USER_CLI_HOLDER_ID`: the per-host shared-seat lease still
+ * serialises it against other lanes, and a person who took control in the pane
+ * still wins. Whatever `holderId` it sent is replaced. An agent never gets
+ * here: a bound agent goes through `scopeMacDesktopAdeActionArgs` and an
+ * agent-role shell with no chat through `scopeUnboundMacDesktopAdeActionArgs`,
+ * and both strip `holderId`.
+ */
+export function scopeTrustedChatlessMacDesktopAdeActionArgs(
+  macDesktopArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const { holderId: _callerHolder, ...rest } = macDesktopArgs;
+  return { ...rest, holderId: MAC_DESKTOP_USER_CLI_HOLDER_ID };
 }
 
 /** `ios_simulator` reads an agent may make without a lane: listings and status. */
@@ -4191,6 +4233,39 @@ function isExternalSessionProviderName(value: string | null): value is ExternalS
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
 }
 
+/**
+ * The first argument `run_ade_action` passes to the service method: the first
+ * positional entry, else the scalar `arg`, else the object args. A guard that
+ * reads a different shape than the dispatch passes can be stepped around.
+ */
+function firstDispatchedAdeActionArg(args: {
+  argsList: unknown[] | null;
+  hasScalarArg: boolean;
+  scalarArg: unknown;
+  objectArgs: Record<string, unknown>;
+}): unknown {
+  if (args.argsList) return args.argsList[0];
+  if (args.hasScalarArg) return args.scalarArg;
+  return args.objectArgs;
+}
+
+/**
+ * The direct `ade` client at an elevated role with no chat, run, step or
+ * attempt: the user's own terminal (`ade --role cto …`). See
+ * `scopeTrustedChatlessMacDesktopAdeActionArgs`.
+ */
+function isTrustedChatlessAdeCliCaller(session: SessionState): boolean {
+  const caller = resolveCallerContext(session);
+  return caller.role !== "agent"
+    && callerHasRoleAtLeast(caller.role, "cto")
+    && /^(?:ade-cli|ade-rpc-stdio-proxy):\d+$/.test(caller.callerId ?? "")
+    && !caller.chatSessionId
+    && !caller.runId
+    && !caller.stepId
+    && !caller.attemptId
+    && !caller.ownerId;
+}
+
 function isUnboundAdeCliCaller(session: SessionState): boolean {
   // `ade actions run` is a local user-facing escape hatch. Unlike an agent
   // launched inside Work, it has no chat/run lane binding, so applying the
@@ -4428,7 +4503,7 @@ async function runCtoOperatorBridgeTool(
     cancelSteer: ({ sessionId, steerId }) => agentChatService.cancelSteer({ sessionId, steerId }),
     listSubagents: ({ sessionId }) => agentChatService.listSubagents({ sessionId }),
     approveToolUse: ({ sessionId, toolUseId, decision }) =>
-      agentChatService.approveToolUse({ sessionId, itemId: toolUseId, decision }),
+      agentChatService.approveToolUseAsAgent({ sessionId, itemId: toolUseId, decision }),
     ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
       agentChatService.ensureIdentitySession({
         identityKey: "cto",
@@ -5383,6 +5458,33 @@ async function runTool(args: {
         `run_ade_action:${domain}.${action}`,
       );
     }
+    if (
+      domain === "chat"
+      && (action === "respondToInput" || action === "approveToolUse")
+      && (!isUserClient || isUnboundAdeCliCaller(session))
+    ) {
+      // The Mac input-lease and Windows shared-seat cards ARE the user's
+      // permission. An agent answering one would be granting itself access, so
+      // only a trusted user client (desktop, phone, web) may answer them. The
+      // ids are read from the argument the dispatch below will actually pass;
+      // ids that cannot be read are refused rather than let through.
+      const first = firstDispatchedAdeActionArg({ argsList, hasScalarArg, scalarArg: toolArgs.arg, objectArgs: rawObjectArgs });
+      const answerArgs = isRecord(first) ? first : {};
+      const answerSessionId = asOptionalTrimmedString(answerArgs.sessionId);
+      const answerItemId = asOptionalTrimmedString(answerArgs.itemId);
+      if (
+        !answerSessionId
+        || !answerItemId
+        || runtime.agentChatService?.isUserOnlyPendingInput({ sessionId: answerSessionId, itemId: answerItemId }) !== false
+      ) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          answerSessionId && answerItemId
+            ? USER_ONLY_CONSENT_CARD_REFUSAL
+            : `chat.${action} needs object arguments with sessionId and itemId.`,
+        );
+      }
+    }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(
@@ -5596,6 +5698,16 @@ async function runTool(args: {
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
         toolArgs.callerRoot,
       );
+    } else if (
+      domain === "mac_desktop"
+      && isUserClient
+      && !argsList
+      && !hasScalarArg
+      && isTrustedChatlessAdeCliCaller(session)
+    ) {
+      // The user's own terminal with no chat: one stable holder of its own,
+      // so the shared Windows seat it started is one it can drive.
+      scopedObjectArgs = scopeTrustedChatlessMacDesktopAdeActionArgs(rawObjectArgs);
     } else if (domain === "app_control" && !isUserClient) {
       // A bound agent acts only on its chat's lane session, as its own chat.
       scopedObjectArgs = scopeAppControlAdeActionArgs(
@@ -5784,6 +5896,7 @@ async function runTool(args: {
     }
     try {
       if (!scopedResultHandled) {
+        // Keep in step with `firstDispatchedAdeActionArg`, which guards read.
         if (argsList) {
           result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
         } else if (hasScalarArg) {

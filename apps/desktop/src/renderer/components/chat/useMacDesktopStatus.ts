@@ -9,6 +9,8 @@ import {
   type MacDesktopEventPayload,
   type MacDesktopNotParked,
   type MacDesktopStatus,
+  type WindowsDesktopOperation,
+  type WindowsDesktopStatus,
 } from "../../../shared/types/macDesktop";
 import { MAC_DESKTOP_CURSOR_FADE_MS } from "./macDesktopGeometry";
 import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
@@ -89,6 +91,20 @@ export type MacDesktopAgentCursor = {
 };
 
 /**
+ * The interactive Windows operation the host is running that concerns this
+ * lane, if any: the host-wide setup steps (no lane) concern every lane, and a
+ * private start only its own. The pane's card and the picker card both read it.
+ */
+export function windowsDesktopOperationFor(
+  windows: Pick<WindowsDesktopStatus, "operation"> | null | undefined,
+  laneId: string | null | undefined,
+): WindowsDesktopOperation | null {
+  const operation = windows?.operation ?? null;
+  if (!operation) return null;
+  return operation.laneId === null || operation.laneId === laneId ? operation : null;
+}
+
+/**
  * Folds one service event into the panel's status.
  *
  * Returns the SAME object when the event is for another lane or carries
@@ -141,6 +157,10 @@ export function reduceMacDesktopStatus(
       return { ...status, permissions: event.permissions };
     case "driver-health":
       return { ...status, driver: event.health };
+    // Host-wide too: setup, the sign-in's phases, and who holds the private
+    // screen, so the Windows cards move with the host, not on the next read.
+    case "windows-desktop-changed":
+      return { ...status, windowsDesktop: event.status };
     default:
       return status;
   }

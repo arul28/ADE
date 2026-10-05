@@ -9933,6 +9933,12 @@ export function registerIpc({
     ensureMacDesktop().recheckPermissions(arg));
   ipcMain.handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
     ensureMacDesktop().requestPermission(arg));
+  ipcMain.handle(IPC.macDesktopSetupWindows, async (_event, arg) =>
+    ensureMacDesktop().setupWindowsDesktop(arg ?? { allowPrompt: false }));
+  ipcMain.handle(IPC.macDesktopTakeoverWindows, async (_event, arg) =>
+    ensureMacDesktop().takeoverWindowsDesktop(arg));
+  ipcMain.handle(IPC.macDesktopUseSharedDesktop, async (_event, arg) =>
+    ensureMacDesktop().start({ ...arg, seatMode: "shared", sharedDesktopConsent: true }));
   ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
   ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
   ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));

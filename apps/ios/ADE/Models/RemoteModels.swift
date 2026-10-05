@@ -7560,6 +7560,10 @@ struct WorkToolsMacDesktopDisplay: Codable, Equatable {
   /// older host omits it; a client that clicks without one would post the
   /// event on the person's real screen, so control stays off until it arrives.
   var origin: MacDesktopPoint?
+  /// Windows only: `private` (a separate Windows session of the user's
+  /// account) or `shared` (the user's main desktop). Nil from a Mac and from an
+  /// older Windows host; `windowsDesktopSeat` falls back to `mode` there.
+  var seatMode: String? = nil
 }
 
 /// One window parked on the lane's display. The host also sends a pid, a frame
@@ -7637,7 +7641,35 @@ struct WorkToolsMacDesktopNotParked: Codable, Equatable {
   var reason: String
 }
 
+/// Windows-specific host facts. Missing on older hosts and on macOS.
+///
+/// Only what the phone shows is decoded; the host also sends setup, password
+/// and console-session facts and `lastOperation`, which `Codable` ignores.
+struct WindowsDesktopHostState: Codable, Equatable {
+  var state: String
+  /// The seat the requested lane holds, or nil when it holds none.
+  var seatMode: String?
+  var locked: Bool?
+  /// The driver's sign-in phase (`prompt_open` | `verifying` | `starting` |
+  /// `cleaning_up`), kept raw so a newer phase decodes. Absent from an older host.
+  var phase: String? = nil
+  /// The setup / password / private-start step the PC is running now, if any.
+  /// Absent from an older host and nil when idle.
+  var operation: WindowsDesktopOperationState? = nil
+}
+
+/// The interactive step a Windows host is running. Every field is optional so a
+/// partial or newer shape still decodes; `kind` is `setup` | `save_password` |
+/// `forget_password` | `start_private`, kept raw.
+struct WindowsDesktopOperationState: Codable, Equatable {
+  var kind: String?
+  /// The lane it is for; nil for the host-wide setup steps.
+  var laneId: String?
+  var startedAt: String?
+}
+
 struct WorkToolsMacDesktopState: Codable, Equatable {
+  var windowsDesktop: WindowsDesktopHostState? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   /// Absent from a host that sends no list; both nil and empty read as "nothing
@@ -7668,6 +7700,7 @@ struct WorkToolsObservationPreview: Codable, Equatable {
 /// this type does not name. The stream token is deliberately absent — the host
 /// redacts it on this method and only `startStream` ever carries it.
 struct MacDesktopStatus: Codable, Equatable {
+  var windowsDesktop: WindowsDesktopHostState? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   var windows: [WorkToolsMacDesktopWindow]?
