@@ -10976,6 +10976,7 @@ final class SyncService: ObservableObject {
     "agentRelay",
     "hostContinuation",
     "boardMove",
+    "prWatchWake",
   ]
 
   /// Whether a raw `chat_event` payload carries a message the host delivered on
@@ -14479,6 +14480,61 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `chat.restartSession`: stop the chat's provider process and keep the
+  /// conversation. The host refuses mid-turn with "A turn is running…" unless
+  /// `stopFirst` is set; callers confirm and retry.
+  func restartChatSession(sessionId: String, stopFirst: Bool = false) async throws -> AgentChatRestartSessionResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.restartSession", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    var args: [String: Any] = ["sessionId": sessionId]
+    if stopFirst { args["stopFirst"] = true }
+    let raw = try await sendCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not restart the agent session.")
+    guard let record = raw as? [String: Any] else { return AgentChatRestartSessionResult() }
+    return (try? decode(record, as: AgentChatRestartSessionResult.self)) ?? AgentChatRestartSessionResult()
+  }
+
+  /// Codex goal controls (`chat.setCodexGoal` / `setCodexGoalStatus` /
+  /// `clearCodexGoal`). Each answers with the goal now in force, or nil.
+  func setCodexGoal(sessionId: String, objective: String) async throws -> AgentChatCodexGoal? {
+    try await sendCodexGoalCommand("chat.setCodexGoal", sessionId: sessionId, extra: ["objective": objective])
+  }
+
+  func setCodexGoalStatus(sessionId: String, status: String) async throws -> AgentChatCodexGoal? {
+    try await sendCodexGoalCommand("chat.setCodexGoalStatus", sessionId: sessionId, extra: ["status": status])
+  }
+
+  func clearCodexGoal(sessionId: String) async throws {
+    _ = try await sendCodexGoalCommand("chat.clearCodexGoal", sessionId: sessionId, extra: [:])
+  }
+
+  private func sendCodexGoalCommand(
+    _ projectAction: String,
+    sessionId: String,
+    extra: [String: Any]
+  ) async throws -> AgentChatCodexGoal? {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName(projectAction, sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    var args = extra
+    args["sessionId"] = sessionId
+    let raw = try await sendCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not update the goal.")
+    guard let record = raw as? [String: Any], record["objective"] != nil || record["status"] != nil else { return nil }
+    return try? decode(record, as: AgentChatCodexGoal.self)
+  }
+
   func restoreCancelledChatQueue(
     sessionId: String,
     recoveryId: String
@@ -15895,6 +15951,44 @@ final class SyncService: ObservableObject {
       try await sendCommand(action: "prs.linkChatSession", args: args),
       fallback: "Could not link this pull request."
     )
+  }
+
+  /// Whether the host can arm PR Watch / Ship. Optional on mobile: an older
+  /// host simply has no watch, and the control stays hidden.
+  var supportsPrChatWatch: Bool {
+    supportsRemoteAction("prs.setChatWatch") && supportsRemoteAction("prs.getChatWatches")
+  }
+
+  /// `prs.getChatWatches { sessionId }`: the chat's watches. Nil when the host
+  /// lacks the command, so callers can degrade silently.
+  func fetchPrChatWatches(sessionId: String) async throws -> [PrChatWatchSummary]? {
+    guard supportsRemoteAction("prs.getChatWatches") else { return nil }
+    let raw = try await sendCommand(
+      action: "prs.getChatWatches",
+      args: ["sessionId": sessionId],
+      disconnectOnTimeout: false
+    )
+    guard let rows = raw as? [Any] else { return [] }
+    return rows.compactMap { row in
+      guard let record = row as? [String: Any] else { return nil }
+      return try? decode(record, as: PrChatWatchSummary.self)
+    }
+  }
+
+  /// `prs.setChatWatch { prId, sessionId, mode }`; `mode: nil` stops watching.
+  func setPrChatWatch(prId: String, sessionId: String, mode: String?) async throws -> PrChatWatchSummary? {
+    try requireInvokableRemoteAction("prs.setChatWatch")
+    let raw = try await sendCommand(
+      action: "prs.setChatWatch",
+      args: [
+        "prId": prId,
+        "sessionId": sessionId,
+        "mode": mode.map { $0 as Any } ?? NSNull(),
+      ]
+    )
+    try throwIfCommandRefused(raw, fallback: "Could not change PR Watch.")
+    guard let record = raw as? [String: Any], record["watchId"] != nil else { return nil }
+    return try? decode(record, as: PrChatWatchSummary.self)
   }
 
   func unlinkPullRequestChatSession(prId: String, sessionId: String, dismiss: Bool = true) async throws {

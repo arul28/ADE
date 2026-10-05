@@ -1154,6 +1154,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// Read-only Claude `/goal` state mirrored by the paired host. Older hosts
   /// omit this additive snapshot field.
   var claudeGoal: AgentChatClaudeGoal? = nil
+  /// Codex `thread/goal` state mirrored by the paired host. Older hosts omit it.
+  var codexGoal: AgentChatCodexGoal? = nil
   var status: String
   /// Start of the currently active provider turn; nil when no turn is running.
   var currentTurnStartedAt: String? = nil
@@ -1246,6 +1248,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
+      && lhs.codexGoal == rhs.codexGoal
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId
@@ -2395,6 +2398,55 @@ enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case adeFallback = "ade_fallback"
 }
 
+/// Codex `thread/goal` (desktop `CodexThreadGoal`). Every field is optional and
+/// decoded on its own, so a goal shape a newer host adds never fails the
+/// summary it rides on.
+struct AgentChatCodexGoal: Codable, Equatable {
+  var objective: String? = nil
+  /// `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
+  /// `complete`, or `cancelled`.
+  var status: String? = nil
+  var tokensUsed: Double? = nil
+  var tokenBudget: Double? = nil
+  var timeUsedSeconds: Double? = nil
+  var updatedAt: String? = nil
+
+  private enum CodingKeys: String, CodingKey {
+    case objective, status, tokensUsed, tokenBudget, timeUsedSeconds, updatedAt
+  }
+
+  init(objective: String? = nil, status: String? = nil, tokensUsed: Double? = nil) {
+    self.objective = objective
+    self.status = status
+    self.tokensUsed = tokensUsed
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    objective = try? container.decodeIfPresent(String.self, forKey: .objective)
+    status = try? container.decodeIfPresent(String.self, forKey: .status)
+    tokensUsed = try? container.decodeIfPresent(Double.self, forKey: .tokensUsed)
+    tokenBudget = try? container.decodeIfPresent(Double.self, forKey: .tokenBudget)
+    timeUsedSeconds = try? container.decodeIfPresent(Double.self, forKey: .timeUsedSeconds)
+    updatedAt = try? container.decodeIfPresent(String.self, forKey: .updatedAt)
+  }
+
+  /// A goal still in play: has an objective and is not reached or cancelled.
+  var isLive: Bool {
+    let trimmed = objective?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !trimmed.isEmpty && status != "complete" && status != "cancelled"
+  }
+}
+
+/// A chat's live goal projected onto its Work row (desktop `SessionActiveGoal`).
+struct SessionActiveGoal: Codable, Equatable, Hashable {
+  /// `"codex"` or `"claude"`.
+  var provider: String
+  var objective: String
+  /// Codex goal status; Claude goals are always `active` while they exist.
+  var status: String
+}
+
 struct AgentChatClaudeGoal: Codable, Equatable {
   var condition: String
   var iterations: Int
@@ -2825,15 +2877,15 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     /// in that transcript — a decode fault surfacing as duplicated rows.
     init(from decoder: Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
-      type = (try? container.decodeIfPresent(String.self, forKey: .type)) ?? nil
+      type = try? container.decodeIfPresent(String.self, forKey: .type)
       apiErrorStatus = (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatus))
         ?? (try? container.decodeIfPresent(Int.self, forKey: .apiErrorStatusSnake))
         ?? nil
-      stopSource = (try? container.decodeIfPresent(String.self, forKey: .stopSource)) ?? nil
-      stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
-      resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
-      resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
-      resumed = (try? container.decodeIfPresent(Bool.self, forKey: .resumed)) ?? nil
+      stopSource = try? container.decodeIfPresent(String.self, forKey: .stopSource)
+      stopReason = try? container.decodeIfPresent(String.self, forKey: .stopReason)
+      resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
+      resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
+      resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
     }
   }
 
@@ -3154,6 +3206,15 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 
 private struct AgentChatSpawnCompletionContainer: Decodable {
   var spawnCompletion: AgentChatSpawnCompletionPayload?
+}
+
+/// `metadata.prWatchWake` on a PR Watch / Ship wake. Only the card matters
+/// here: the wake renders as that card, never as a user bubble.
+private struct AgentChatPrWatchWakeContainer: Decodable {
+  struct Wake: Decodable {
+    var card: AgentChatAdeCardPayload?
+  }
+  var prWatchWake: Wake?
 }
 
 enum AgentChatEvent: Decodable, Equatable {
@@ -3579,6 +3640,14 @@ extension AgentChatEvent {
         return
       }
       let text = try container.decode(String.self, forKey: .text)
+      // A PR Watch / Ship wake: ADE wrote this message, not the user. It shows
+      // as its card, with the exact text the agent read folded underneath.
+      if let wakeCard = (try? container.decodeIfPresent(AgentChatPrWatchWakeContainer.self, forKey: .metadata))?.prWatchWake?.card {
+        var card = makeWorkAdeCardModel(from: wakeCard)
+        card.wakeText = text
+        self = .adeCard(card: card)
+        return
+      }
       let displayText = try container.decodeIfPresent(String.self, forKey: .displayText)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       self = .userMessage(
@@ -4348,6 +4417,55 @@ enum AgentChatStopMode: String, Codable, Equatable, Hashable, CaseIterable {
   case stopAndClear = "stop_and_clear"
   case stopAndBackground = "stop_and_background"
   case stopAndClearAndBackground = "stop_and_clear_and_background"
+  /// Also stop the chats this chat spawned, depth-first, with the same mode.
+  case stopAndClearAndChildren = "stop_and_clear_and_children"
+  case stopEverythingAndChildren = "stop_everything_and_children"
+}
+
+/// `chat.restartSession`: the provider process restarted, the conversation kept.
+struct AgentChatRestartSessionResult: Decodable, Equatable {
+  var restarted: Bool? = nil
+  var stoppedTurn: Bool? = nil
+  var backgroundJobsStopped: Int? = nil
+}
+
+/// A chat's PR Watch / Ship (`apps/desktop/src/shared/prWatch.ts`
+/// `PrChatWatchSummary`). Only the fields the phone renders are required.
+struct PrChatWatchSummary: Decodable, Equatable {
+  var watchId: String
+  var prId: String
+  var sessionId: String
+  var githubPrNumber: Int? = nil
+  /// `"watch"` or `"ship"`.
+  var mode: String
+  /// `"user"` or `"agent"`.
+  var armedBy: String? = nil
+  /// `"active"`, `"paused"`, or `"stopped"`.
+  var status: String
+  var lastToldAt: String? = nil
+  var lastToldSummary: String? = nil
+  /// Ship: news found and held until CI and the review bots finish.
+  var holding: Bool = false
+
+  private enum CodingKeys: String, CodingKey {
+    case watchId, prId, sessionId, githubPrNumber, mode, armedBy, status, lastToldAt, lastToldSummary, holding
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    watchId = try container.decode(String.self, forKey: .watchId)
+    prId = try container.decode(String.self, forKey: .prId)
+    sessionId = try container.decode(String.self, forKey: .sessionId)
+    githubPrNumber = try? container.decodeIfPresent(Int.self, forKey: .githubPrNumber)
+    mode = try container.decode(String.self, forKey: .mode)
+    armedBy = try? container.decodeIfPresent(String.self, forKey: .armedBy)
+    status = (try? container.decodeIfPresent(String.self, forKey: .status)) ?? "active"
+    lastToldAt = try? container.decodeIfPresent(String.self, forKey: .lastToldAt)
+    lastToldSummary = try? container.decodeIfPresent(String.self, forKey: .lastToldSummary)
+    holding = (try? container.decodeIfPresent(Bool.self, forKey: .holding)) ?? false
+  }
+
+  var isLive: Bool { status != "stopped" }
 }
 
 struct AgentChatInterruptRequest: Codable, Equatable {
@@ -5001,6 +5119,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// The chat's live goal (Codex `thread/goal`, Claude `/goal`), projected by
+  /// the host onto `work.listSessions` rows. Absent on older hosts and on rows
+  /// read back from the database, which has no column for it.
+  var activeGoal: SessionActiveGoal? = nil
   /// Client-only: the segmented setup rail of a chat launch that still owns
   /// this row (`workOverlayChatLaunches`). Never on the wire — not in
   /// `CodingKeys` — and nil for every ordinary session.
@@ -5065,6 +5187,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.activeGoal == rhs.activeGoal
       && lhs.launchRail == rhs.launchRail
   }
 }
@@ -5118,6 +5241,7 @@ extension TerminalSessionSummary {
     case parentIdentityKey
     case orchestrationParentSessionId
     case spawnKind
+    case activeGoal
   }
 
   init(from decoder: Decoder) throws {
@@ -5169,6 +5293,9 @@ extension TerminalSessionSummary {
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    // Tolerant: a goal shape this build does not know drops the decoration,
+    // never the row.
+    activeGoal = try? container.decodeIfPresent(SessionActiveGoal.self, forKey: .activeGoal)
   }
 }
 

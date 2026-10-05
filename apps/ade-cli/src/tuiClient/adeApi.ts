@@ -35,6 +35,7 @@ import type {
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatInterruptResult,
+  AgentChatRestartSessionResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatStopMode,
   AgentChatKillDroidWorkerArgs,
@@ -73,6 +74,7 @@ import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { ArchiveSummary, ArchiveSummaryArgs } from "../../../desktop/src/shared/types/archive";
 import type { WorkToolsLaneState } from "../../../desktop/src/shared/types/workTools";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
+import type { PrChatWatchSummary, PrWatchMode } from "../../../desktop/src/shared/prWatch";
 import {
   buildPtyContinuationLaunchFields,
   type PtyContinuationLaunchFields,
@@ -1100,6 +1102,46 @@ export async function interruptChat(
     mode,
     cancelledQueuedCount: 0,
   };
+}
+
+/**
+ * Restart the chat's agent session: a fresh provider process, same
+ * conversation. The host refuses while a turn runs ("A turn is running…")
+ * unless `stopFirst` is set.
+ */
+export async function restartChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  stopFirst = false,
+): Promise<AgentChatRestartSessionResult> {
+  return await connection.action<AgentChatRestartSessionResult>(
+    "chat",
+    "restartSession",
+    { sessionId, ...(stopFirst ? { stopFirst: true } : {}) },
+  );
+}
+
+/** Off / Watch / Ship for one of the chat's pull requests (`mode: null` stops). */
+export async function setChatPrWatch(
+  connection: AdeCodeConnection,
+  args: { prId: string; sessionId: string; mode: PrWatchMode | null },
+): Promise<PrChatWatchSummary | null> {
+  const result = await connection.action<PrChatWatchSummary | null>("pr", "setChatWatch", {
+    prId: args.prId,
+    sessionId: args.sessionId,
+    mode: args.mode,
+    armedBy: "user",
+  });
+  return result && typeof result === "object" ? result : null;
+}
+
+/** The chat's live PR watches. An older host without the action reads as none. */
+export async function getChatPrWatches(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<PrChatWatchSummary[]> {
+  const result = await connection.action<PrChatWatchSummary[] | null>("pr", "getChatWatches", { sessionId });
+  return Array.isArray(result) ? result : [];
 }
 
 export async function restoreCancelledQueue(

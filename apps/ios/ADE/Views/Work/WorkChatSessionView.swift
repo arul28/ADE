@@ -185,6 +185,7 @@ struct WorkChatSummaryRenderContext: Equatable {
   let modelLabel: String
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
+  let codexGoal: AgentChatCodexGoal?
   let spawnKind: AgentChatSpawnKind?
   let orchestrationParentSessionId: String?
   let subagentTakeoverPromptShownAt: String?
@@ -218,6 +219,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelLabel = "Model"
       self.contextWindowFallback = nil
       self.claudeGoal = nil
+      self.codexGoal = nil
       self.spawnKind = nil
       self.orchestrationParentSessionId = nil
       self.subagentTakeoverPromptShownAt = nil
@@ -245,6 +247,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelLabel = prettyWorkChatModelName(summary.model)
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
+    self.codexGoal = summary.codexGoal
     self.spawnKind = summary.spawnKind
     self.orchestrationParentSessionId = summary.orchestrationParentSessionId
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
@@ -551,6 +554,15 @@ struct WorkChatSessionView: View {
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
+  /// PR Watch / Ship for the chat's open PR. Nil hides the chip (no open PR,
+  /// or a host without `prs.setChatWatch`).
+  var prWatch: WorkChatPrWatchModel? = nil
+  var onSetPrWatch: ((String?) -> Void)? = nil
+  /// Codex goal controls. Nil when the host lacks the command; Claude goals go
+  /// through `/goal` as a message and need none of these.
+  var onSetCodexGoal: ((String) -> Void)? = nil
+  var onSetCodexGoalPaused: ((Bool) -> Void)? = nil
+  var onClearCodexGoal: (() -> Void)? = nil
   var compactComposer = false
   /// The CTO identity session, which may never queue: the host rewrites a
   /// queued delivery on that session into the provider's first live-redirect
@@ -1008,6 +1020,9 @@ struct WorkChatSessionView: View {
       }
       if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
         WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
+        if let prWatch, let onSetPrWatch {
+          WorkChatPrWatchChip(model: prWatch, onSelect: onSetPrWatch)
+        }
       }
       if showsComposerLaneToolChips {
         ForEach(laneTools.chips) { chip in
@@ -1387,6 +1402,25 @@ struct WorkChatSessionView: View {
     )
   }
 
+  /// The chat's goal for the composer chip: the transcript's live Claude goal
+  /// wins over the summary's, and a Codex chat reads its `thread/goal`.
+  var composerGoal: WorkChatGoalModel? {
+    let claude: AgentChatClaudeGoal? = frame.map(\.claudeGoal) ?? chatSummaryContext.claudeGoal
+    return workChatGoalModel(
+      provider: chatSummaryContext.provider,
+      claudeGoal: claude,
+      codexGoal: chatSummaryContext.codexGoal
+    )
+  }
+
+  /// Claude's goal lives in its own `/goal` command, sent like a typed one
+  /// between turns (desktop `sendClaudeGoalCommand`).
+  func sendClaudeGoalCommand(_ argument: String) {
+    Task { @MainActor in
+      _ = await onSend("/goal \(argument)", [], .queue)
+    }
+  }
+
   /// Single desktop-shaped composer card: text field on top, chip strip and
   /// send button on the bottom, everything wrapped in one rounded container
   /// with clear contrast against the chat background.
@@ -1395,9 +1429,19 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
-      if let claudeGoal = frame.map(\.claudeGoal) ?? chatSummaryContext.claudeGoal {
-        WorkClaudeGoalPill(goal: claudeGoal)
-          .workChatGlass(in: Capsule(style: .continuous))
+      if let goal = composerGoal {
+        WorkChatGoalChip(
+          goal: goal,
+          turnActive: sessionStatus == "active" || isStreamingTurn,
+          onEdit: goal.provider == .claude
+            ? { condition in sendClaudeGoalCommand(condition) }
+            : onSetCodexGoal,
+          onClear: goal.provider == .claude
+            ? { sendClaudeGoalCommand("clear") }
+            : onClearCodexGoal,
+          onSetPaused: goal.provider == .codex ? onSetCodexGoalPaused : nil
+        )
+        .workChatGlass(in: Capsule(style: .continuous))
       }
 
       if !pendingSteers.isEmpty {
@@ -2950,13 +2994,37 @@ private struct WorkChatComposerDraftInput: View {
     )
   }
 
-  /// Mirrors `providerSupportsStopModeChoice` on desktop: these runtimes honour
-  /// every stop mode, including the ones that also stop background jobs.
+  /// Mirrors `providerSupportsStopModeChoice` on desktop: every provider gets
+  /// the choice menu, which disables what that provider cannot honour and says
+  /// why (`WorkChatStopCapability.unsupportedReason`). Host-gated on
+  /// `chat.interruptWithQueueMode`, since an older brain only knows one stop.
   private var queueAwareStop: Bool {
-    ["claude", "opencode"].contains(chatSummary.provider.lowercased()) && queueAwareStopAvailable
+    !chatSummary.provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && queueAwareStopAvailable
   }
 
   private var stopJobCount: Int { chatSummary.activeBackgroundTaskCount ?? 0 }
+
+  /// This chat's spawned chats that are working now, read off the summary
+  /// cache the Work list fills. The child-chat Stop choices appear only while
+  /// there is one to stop.
+  private var activeChildChatCount: Int {
+    let parentId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !parentId.isEmpty else { return 0 }
+    return syncService.chatSummaryCache.values.reduce(into: 0) { count, summary in
+      if summary.orchestrationParentSessionId == parentId && summary.status == "active" { count += 1 }
+    }
+  }
+
+  /// The mode one tap of Stop uses: the remembered choice, unless this chat
+  /// cannot honour it right now (desktop `effectiveStopMode`).
+  private var effectiveStopMode: AgentChatStopMode {
+    guard queueAwareStop else { return .stopAndClear }
+    return WorkChatStopCapability.effectiveMode(
+      stopMode,
+      provider: chatSummary.provider,
+      childChatCount: activeChildChatCount
+    )
+  }
 
   /// Send modes this chat can choose between. A single mode is still listed
   /// (checked), so the submenu always says what a send during a turn does.
@@ -2964,14 +3032,15 @@ private struct WorkChatComposerDraftInput: View {
     activeSendModePickerVisible ? activeSendCapability.modes : [effectiveActiveSendMode]
   }
 
-  /// Stop modes this chat can choose between: the full queue-aware table for
-  /// Claude chats that support it, otherwise the one plain stop.
+  /// Stop modes this chat lists: the full table (child-chat modes only while a
+  /// child chat is working) when the host takes a stop mode, otherwise the one
+  /// plain stop. Modes the provider cannot honour stay listed, disabled.
   private var stopAndSendSettingsStopModes: [AgentChatStopMode] {
-    queueAwareStop ? WorkChatStopCapability.modes : [.stopAndClear]
+    queueAwareStop ? WorkChatStopCapability.visibleModes(childChatCount: activeChildChatCount) : [.stopAndClear]
   }
 
   private var stopAndSendSettingsCurrentStopMode: AgentChatStopMode {
-    queueAwareStop ? stopMode : .stopAndClear
+    effectiveStopMode
   }
 
   /// The last thing in the "⋯" menu, active turn or not: one "Stop and send
@@ -2989,23 +3058,29 @@ private struct WorkChatComposerDraftInput: View {
         // Written bottom-up: the menu opens upward from the composer and iOS
         // lays items out nearest-first, so this reads Send, then Stop, each
         // listing its modes in table order.
-        Picker(selection: Binding(
-          get: { stopAndSendSettingsCurrentStopMode },
-          set: { mode in
-            if queueAwareStop { rememberStopMode(mode) }
-          }
-        )) {
+        // Buttons, not a Picker: a mode the provider cannot honour is listed
+        // disabled with the reason under it, as on desktop.
+        Menu {
+          let current = stopAndSendSettingsCurrentStopMode
+          let childCount = activeChildChatCount
           ForEach(stopAndSendSettingsStopModes.reversed(), id: \.self) { mode in
-            Label(
-              WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title,
-              systemImage: WorkChatStopCapability.systemImage(for: mode)
-            )
-            .tag(mode)
+            let copy = WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount, childChatCount: childCount)
+            let reason = WorkChatStopCapability.unsupportedReason(provider: chatSummary.provider, mode: mode)
+            Button {
+              if queueAwareStop { rememberStopMode(mode) }
+            } label: {
+              Label {
+                Text(copy.title)
+                if let reason { Text(reason) }
+              } icon: {
+                Image(systemName: mode == current ? "checkmark" : WorkChatStopCapability.systemImage(for: mode))
+              }
+            }
+            .disabled(queueAwareStop && reason != nil)
           }
         } label: {
           Label("Stop", systemImage: "stop.circle")
         }
-        .pickerStyle(.menu)
         .accessibilityIdentifier("Work.Chat.Composer.StopSettings")
 
         Picker(selection: Binding(
@@ -3109,9 +3184,9 @@ private struct WorkChatComposerDraftInput: View {
   /// settings".
   @ViewBuilder
   private func stopButton() -> some View {
-    let mode: AgentChatStopMode = queueAwareStop ? stopMode : .stopAndClear
+    let mode: AgentChatStopMode = effectiveStopMode
     let title = queueAwareStop
-      ? WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title
+      ? WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount, childChatCount: activeChildChatCount).title
       : (interruptInFlight ? "Interrupting turn" : "Stop turn")
     Button {
       stopHapticToken &+= 1

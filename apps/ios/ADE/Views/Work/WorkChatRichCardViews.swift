@@ -4729,6 +4729,43 @@ func workAdeCardNavLabel(_ target: WorkAdeCardNavTarget?) -> String? {
 /// Tone note: failures are AMBER here, never red. The wire contract has no
 /// danger tone and `workAdeCardTone(from:)` folds red-ish values into
 /// `.warning`, so this view has no red path to take.
+/// "What the agent was told" under a PR Watch / Ship wake card: the exact
+/// message ADE sent, folded by default (desktop's `<details>` under the card).
+private struct WorkAdeCardWakeTextDisclosure: View {
+  let text: String
+  @State private var expanded = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 9, weight: .semibold))
+          Text(expanded ? "Hide what the agent was told" : "What the agent was told")
+            .font(.caption2.weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(expanded ? "Hide what the agent was told" : "Show what the agent was told")
+      if expanded {
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(8)
+          .background(ADEColor.cardBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
+  }
+}
+
 struct WorkAdeCardView: View, Equatable {
   static func == (lhs: WorkAdeCardView, rhs: WorkAdeCardView) -> Bool {
     lhs.card == rhs.card && lhs.isExpanded == rhs.isExpanded
@@ -4778,6 +4815,9 @@ struct WorkAdeCardView: View, Equatable {
           richBody
         } else {
           fallbackBody
+        }
+        if let wakeText = card.wakeText?.trimmingCharacters(in: .whitespacesAndNewlines), !wakeText.isEmpty {
+          WorkAdeCardWakeTextDisclosure(text: wakeText)
         }
       } else {
         collapsedRow

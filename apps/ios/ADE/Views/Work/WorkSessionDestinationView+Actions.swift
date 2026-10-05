@@ -1466,6 +1466,121 @@ extension WorkSessionDestinationView {
     }
   }
 
+  // MARK: - PR Watch / Ship
+
+  /// The open PR on screen, when the host can watch it. Merged and closed PRs
+  /// have nothing left to watch, matching desktop `PrWatchPill`.
+  var chatPrWatchTarget: PullRequestListItem? {
+    guard syncService.supportsPrChatWatch, let pr = chatDisplayPr else { return nil }
+    let state = pr.state.lowercased()
+    guard state != "merged", state != "closed" else { return nil }
+    return pr
+  }
+
+  /// Reload key: the chat, the PR on screen, and the PR projection revision, so
+  /// a PR update (when Watch / Ship tells the agent something) refreshes it.
+  var prChatWatchTaskKey: String {
+    "\(sessionId)|\(chatPrWatchTarget?.id ?? "")|\(syncService.prsProjectionRevision)"
+  }
+
+  var chatPrWatchModel: WorkChatPrWatchModel? {
+    guard let pr = chatPrWatchTarget else { return nil }
+    let watch = prChatWatch.flatMap { $0.prId == pr.id && $0.isLive ? $0 : nil }
+    return WorkChatPrWatchModel(
+      prNumber: pr.githubPrNumber,
+      mode: watch?.mode,
+      holding: watch?.holding ?? false,
+      lastToldSummary: watch?.lastToldSummary,
+      armedByAgent: watch?.armedBy == "agent",
+      busy: prChatWatchBusy,
+      error: prChatWatchError
+    )
+  }
+
+  /// Silent on failure: an older host or a dropped connection reads as Off.
+  @MainActor
+  func refreshPrChatWatch() async {
+    guard let pr = chatPrWatchTarget else {
+      prChatWatch = nil
+      return
+    }
+    let session = sessionId
+    guard let watches = try? await syncService.fetchPrChatWatches(sessionId: session) else { return }
+    guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
+    prChatWatch = watches.first { $0.prId == pr.id && $0.isLive }
+  }
+
+  @MainActor
+  func setPrChatWatch(mode: String?) async {
+    guard let pr = chatPrWatchTarget, !prChatWatchBusy else { return }
+    prChatWatchBusy = true
+    prChatWatchError = nil
+    defer { prChatWatchBusy = false }
+    do {
+      let next = try await syncService.setPrChatWatch(prId: pr.id, sessionId: sessionId, mode: mode)
+      prChatWatch = next.flatMap { $0.isLive ? $0 : nil }
+      ADEHaptics.success()
+    } catch {
+      ADEHaptics.error()
+      prChatWatchError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  // MARK: - Restart agent session
+
+  /// Restart the chat's provider process, keeping the conversation. A running
+  /// turn is never stopped silently: the host refuses with "turn is running",
+  /// and the user confirms before the retry with `stopFirst`.
+  @MainActor
+  func restartAgentSession(stopFirst: Bool) async {
+    do {
+      _ = try await syncService.restartChatSession(sessionId: sessionId, stopFirst: stopFirst)
+      ADEHaptics.success()
+      errorMessage = nil
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      if !stopFirst, error.localizedDescription.range(of: "turn is running", options: .caseInsensitive) != nil {
+        restartStopTurnConfirmPresented = true
+        return
+      }
+      ADEHaptics.error()
+      errorMessage = "Couldn’t restart the agent session. \(error.localizedDescription)"
+    }
+  }
+
+  // MARK: - Codex goal
+
+  @MainActor
+  func setCodexGoal(objective: String) async {
+    await runCodexGoalAction { try await syncService.setCodexGoal(sessionId: sessionId, objective: objective) }
+  }
+
+  @MainActor
+  func setCodexGoalStatus(_ status: String) async {
+    await runCodexGoalAction { try await syncService.setCodexGoalStatus(sessionId: sessionId, status: status) }
+  }
+
+  @MainActor
+  func clearCodexGoal() async {
+    await runCodexGoalAction {
+      try await syncService.clearCodexGoal(sessionId: sessionId)
+      return nil
+    }
+  }
+
+  @MainActor
+  private func runCodexGoalAction(_ body: () async throws -> AgentChatCodexGoal?) async {
+    do {
+      _ = try await body()
+      errorMessage = nil
+      // The summary carries the goal; refetch it so the chip follows.
+      await refreshChatStateAfterAction(forceRemote: true)
+    } catch {
+      ADEHaptics.error()
+      errorMessage = "Couldn’t update the goal. \(error.localizedDescription)"
+    }
+  }
+
   @MainActor
   func linkChatPr(prId: String, allowCrossLane: Bool) async {
     await withChatPrLinkBusy {

@@ -809,3 +809,135 @@ private func workChatPrChecksLabel(_ status: String) -> String {
       .joined(separator: " ")
   }
 }
+
+/// What the PR Watch / Ship chip shows for the chat's open PR.
+struct WorkChatPrWatchModel: Equatable {
+  let prNumber: Int
+  /// `"watch"`, `"ship"`, or nil for Off.
+  let mode: String?
+  /// Ship: news found and held until CI and the review bots finish.
+  let holding: Bool
+  let lastToldSummary: String?
+  let armedByAgent: Bool
+  let busy: Bool
+  let error: String?
+
+  var label: String {
+    switch mode {
+    case "ship": return "Shipping"
+    case "watch": return "Watching"
+    default: return "Watch"
+    }
+  }
+
+  var systemImage: String {
+    switch mode {
+    case "ship": return "paperplane.fill"
+    case "watch": return "eye.fill"
+    default: return "eye.slash"
+    }
+  }
+
+  var statusLine: String? {
+    guard mode != nil else { return nil }
+    if holding { return "Holding until CI and review bots finish" }
+    if let lastToldSummary, !lastToldSummary.isEmpty { return "Last told the agent: \(lastToldSummary)" }
+    return "Nothing new since it started"
+  }
+}
+
+/// Off / Watch / Ship beside the composer PR chip (desktop `PrWatchPill`).
+/// Watch wakes the agent with PR news; Ship adds standing orders to land it.
+struct WorkChatPrWatchChip: View {
+  let model: WorkChatPrWatchModel
+  let onSelect: (String?) -> Void
+
+  private var tint: Color {
+    switch model.mode {
+    case "ship": return ADEColor.warning
+    case "watch": return ADEColor.accent
+    default: return ADEColor.textMuted
+    }
+  }
+
+  private struct Choice: Identifiable {
+    let mode: String?
+    let title: String
+    let detail: String
+    let systemImage: String
+    var id: String { mode ?? "off" }
+  }
+
+  private let choices: [Choice] = [
+    Choice(mode: nil, title: "Off", detail: "PR events show as cards. The agent is not woken.", systemImage: "eye.slash"),
+    Choice(mode: "watch", title: "Watch", detail: "Wake the agent once per change: a failed check, checks passing, new comments, a conflict, a merge.", systemImage: "eye"),
+    Choice(mode: "ship", title: "Ship", detail: "Watch, plus standing orders to land it: fix CI and review, rebase on a conflict, merge when green. Waits for CI and review bots.", systemImage: "paperplane"),
+  ]
+
+  var body: some View {
+    Menu {
+      Section("PR #\(model.prNumber) · tell the agent when it changes") {
+        // Written bottom-up: the menu opens upward from the composer row.
+        ForEach(choices.reversed()) { choice in
+          Button {
+            guard choice.mode != model.mode else { return }
+            ADEHaptics.light()
+            onSelect(choice.mode)
+          } label: {
+            Label {
+              Text(choice.title)
+              Text(choice.detail)
+            } icon: {
+              Image(systemName: choice.mode == model.mode ? "checkmark" : choice.systemImage)
+            }
+          }
+        }
+      }
+      if model.statusLine != nil || model.armedByAgent || model.error != nil {
+        Section {
+          if let error = model.error {
+            Text(error)
+          }
+          if let status = model.statusLine {
+            Text(status)
+          }
+          if model.armedByAgent {
+            Text("Turned on by the agent.")
+          }
+        }
+      }
+    } label: {
+      HStack(spacing: 5) {
+        if model.busy {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: model.systemImage)
+            .font(.system(size: 11, weight: .semibold))
+        }
+        Text(model.label)
+          .font(.caption2.weight(.semibold))
+          .lineLimit(1)
+        if model.holding {
+          Circle()
+            .fill(ADEColor.warning)
+            .frame(width: 5, height: 5)
+            .accessibilityHidden(true)
+        }
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 10)
+      .frame(minHeight: workChatComposerChipRowHeight)
+      .workChatGlass(in: Capsule(style: .continuous), interactive: true)
+      .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.24), lineWidth: 0.75))
+      .contentShape(Capsule(style: .continuous))
+    }
+    .disabled(model.busy)
+    .accessibilityLabel(
+      [
+        "PR #\(model.prNumber) watch: \(model.mode == nil ? "off" : model.label)",
+        model.statusLine,
+      ].compactMap { $0 }.joined(separator: ". ")
+    )
+    .accessibilityIdentifier("Work.Chat.PrWatch")
+  }
+}
