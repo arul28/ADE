@@ -610,7 +610,13 @@ class Host {
       if (!file) fail(code::kDriverUnavailable, "Cannot write private screen launch descriptor.");
       // The startup entry reads the descriptor too, as a fallback, but Explorer
       // starts it only once the new session settles; the task fires at sign-in.
-      if (!registerChildLaunchTask(childTask_, exePath(), L"child --pipe " + base, 180))
+      // Through a headless console host: the driver is a console program, and
+      // started bare, Windows opened a visible terminal for it on the lane's
+      // screen (showing its log, and taking the foreground from the agent).
+      wchar_t system[MAX_PATH] = {};
+      GetSystemDirectoryW(system, MAX_PATH);
+      if (!registerChildLaunchTask(childTask_, joinPath(system, L"conhost.exe"),
+              L"--headless \"" + exePath() + L"\" child --pipe " + base, 180))
         logLine("start: no logon task; the startup entry will start the private screen engine");
       std::shared_ptr<WindowsCredential> credential = readCredential(credentialTarget(home_));
       if (uiWedged_) fail(code::kDriverUnavailable, "Windows Desktop is restarting its native host. Try again in a few seconds.");

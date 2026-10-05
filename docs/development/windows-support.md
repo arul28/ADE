@@ -120,7 +120,8 @@ session settles, which on a busy PC took longer than the 30 s the driver waits,
 so for each private start the driver also registers a per-user logon task,
 `ADE private screen <home hash>` (no elevation needed for the user's own
 logon trigger). It runs the driver's child mode with the user's interactive
-token at priority 4 about two seconds into the sign-in. The task's trigger
+token at priority 4 about two seconds into the sign-in, through
+`conhost.exe --headless` so the console program opens no terminal window. The task's trigger
 expires after three minutes and Windows then deletes it; the driver deletes it
 as soon as the child connects or the start is torn down.
 

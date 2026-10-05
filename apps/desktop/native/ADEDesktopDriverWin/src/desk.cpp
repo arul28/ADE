@@ -314,8 +314,10 @@ bool terminatePid(DWORD pid, const FILETIME& expectedCreation) {
       !ProcessIdToSessionId(pid, &session) || session != currentSessionId()) {
     CloseHandle(h); return false;
   }
-  bool ok = TerminateProcess(h, 1) != FALSE;
-  WaitForSingleObject(h, 2000);
+  // A process already on its way out (its window was just closed) refuses
+  // TerminateProcess with access denied; it is stopped all the same.
+  TerminateProcess(h, 1);
+  const bool ok = WaitForSingleObject(h, 2000) == WAIT_OBJECT_0;
   CloseHandle(h);
   return ok;
 }
