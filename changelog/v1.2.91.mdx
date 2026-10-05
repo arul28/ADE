@@ -3,12 +3,14 @@ title: "v1.2.91"
 description: "Release notes for ADE v1.2.91 - October 5, 2026"
 ---
 
-ADE 1.2.91 adds private Windows screens, one Mac Desktop preview, Reset ADE in Settings, and a lighter, steadier brain.
+ADE 1.2.91 adds private Windows screens, one Mac Desktop preview, Reset ADE in Settings, isolated browser tabs, readable light themes, and a lighter, steadier brain.
 
 ## Desktop and computer use
 
 - Private Windows screens for lanes, with saved sign-in (#1415), plus Windows Desktop follow-ups for exit codes, proof chapters, panes, and the driver (#1467).
 - One Mac Desktop preview, recordings that never wedge, Reset ADE in Settings, and Settings without a project open (#1470).
+- The Windows brain no longer freezes, and the false driver crash loop is gone (#1473).
+- ADE browser tabs are isolated, agents are no longer nudged toward agent-browser, proof tiles show for remote machines, and scene stills render correctly (#1474).
 
 ## Agents and chats
 
@@ -16,9 +18,15 @@ ADE 1.2.91 adds private Windows screens, one Mac Desktop preview, Reset ADE in S
 - ACP providers work with any installed CLI version (#1468).
 - Send from the composer in a chat started on a harness route (#1461); forked Codex chats can send again (#1462).
 - Cursor approvals wait for an answer (#1464).
+- Right-click a link in chat to copy it or open it anywhere (#1477).
 - Upgrades: Claude Agent SDK 0.3.289 (#1460), Codex 0.160.0 (#1462), Cursor SDK 1.0.35 (#1464), OpenCode 2.0.23 (#1463).
 
 ## Work and Lanes
 
 - Multi-select with Shift-range, lane bulk menus, and a foldable Working shelf (#1465).
 - The chat thread scrolls behind the floating composer (#1466).
+- When a merge hits a PR whose head moved, ADE shows what landed and lets you merge again in one click (#1476).
+
+## Appearance
+
+- Every light theme is readable (#1475).

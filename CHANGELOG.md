@@ -16,11 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The brain no longer runs out of memory under load; lower idle and per-turn CPU (#1469).
 - ACP providers with any CLI version, harness-route composer sends, forked Codex chats, Cursor approvals (#1468, #1461, #1462, #1464).
 - Work and Lanes multi-select, and the chat thread scrolls behind the composer (#1465, #1466).
+- Windows brain freezes and the false driver crash loop fixed (#1473).
+- Isolated ADE browser tabs, remote proof tiles, and scene still fixes (#1474).
+- Every light theme is readable (#1475).
+- Merging a PR whose head moved shows what landed and merges again in one click (#1476).
+- Right-click a chat link to copy it or open it anywhere (#1477).
 - Upgrades: Claude Agent SDK 0.3.289, Codex 0.160.0, Cursor SDK 1.0.35, OpenCode 2.0.23 (#1460, #1462, #1464, #1463).
 
 ### iOS
 
-- Mac Desktop viewer and Work tools updates (#1470).
+- Mac Desktop viewer and Work tools updates (#1470), in TestFlight as 1.1.10 build 87.
 
 ## [1.2.90] - 2026-10-05
 
