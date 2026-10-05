@@ -174,12 +174,7 @@ export function MediaLightbox({
                 key={`${index}:${chapter.t}`}
                 type="button"
                 className="inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-white/[0.12] bg-black/60 px-2 font-sans text-[11px] text-white/80 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40"
-                onClick={() => {
-                  const video = videoRef.current;
-                  if (!video) return;
-                  video.currentTime = chapter.t;
-                  void video.play().catch(() => {});
-                }}
+                onClick={() => seekVideoAndPlay(videoRef.current, chapter.t)}
               >
                 <span className="tabular-nums text-white/55">{formatProofDuration(chapter.t * 1000)}</span>
                 <span className="truncate">{chapter.text}</span>
@@ -213,6 +208,13 @@ export function MediaLightbox({
       </div>
     </Dialog>
   );
+}
+
+/** Seeks a video to `seconds` and plays it: a demo chapter's click. */
+export function seekVideoAndPlay(video: HTMLVideoElement | null, seconds: number): void {
+  if (!video) return;
+  video.currentTime = seconds;
+  void video.play().catch(() => {});
 }
 
 const LightboxTool = React.forwardRef<HTMLButtonElement, {

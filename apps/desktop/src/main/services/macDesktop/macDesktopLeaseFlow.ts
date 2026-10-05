@@ -252,7 +252,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
         body: `ADE would like to ${reason}. Accessibility actions do not need this; real pointer and keyboard events do, and they are global to this ${windowsHost ? "PC" : "Mac"}.`,
         questionId: "mac_desktop_input_lease",
         header: "Real input",
-        question: `Allow this chat to use real pointer and keyboard input on its ${product} display? (${reason})`,
+        question: `Allow this chat to use real pointer and keyboard input on its ${product} display?`,
         recommendAllow: true,
         providerMetadata: { [MAC_DESKTOP_INPUT_LEASE_METADATA_KEY]: true, laneId },
         eventDescription: `Allow real input on the ${product} display for ${reason}?`,

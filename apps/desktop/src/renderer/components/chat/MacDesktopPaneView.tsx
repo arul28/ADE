@@ -385,14 +385,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
   const selectedRect = selectedWindow
     ? displayFrameToViewRect({ frame: selectedWindow.frame, rect: viewRect, display })
     : null;
+  // Moving a window to the user's screen needs a local host and a seat that can move it.
+  const canMoveWindows = Boolean(status?.hostIsLocal) && windowsMovable;
   const presentAction = macDesktopPresentAction({
-    hostIsLocal: Boolean(status?.hostIsLocal) && windowsMovable,
+    hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
   const controls = macDesktopStripControls({
     expanded,
-    hostIsLocal: Boolean(status?.hostIsLocal) && windowsMovable,
+    hostIsLocal: canMoveWindows,
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });

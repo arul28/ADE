@@ -776,6 +776,10 @@ async function validatePackagedRuntime(appDir) {
   if (!unknownCommand) {
     fail("Bundled ADE CLI wrapper returned exit code 0 for an unknown command.");
   }
+  // The CLI exits 2 for an unknown command; a timeout or spawn error is not that.
+  if (!/Command failed \(2\)/.test(String(unknownCommand.message ?? unknownCommand))) {
+    fail(`Bundled ADE CLI wrapper did not return the CLI's exit code 2 for an unknown command: ${unknownCommand.message ?? unknownCommand}`);
+  }
 
   const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
   try {

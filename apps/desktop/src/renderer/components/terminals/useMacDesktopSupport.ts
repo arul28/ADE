@@ -89,6 +89,9 @@ export function useMacDesktopSupport(args: {
       setSupported(cached);
       return;
     }
+    // A key with no answer yet (a project tab on another machine): the last
+    // key's answer is not this one's, so the tools wait for the read.
+    setSupported(null);
     if (!args.enabled) return;
     // Optional call, not an assertion. A surface whose `window.ade` predates
     // this namespace — an older packaged shell, a partially stubbed host —

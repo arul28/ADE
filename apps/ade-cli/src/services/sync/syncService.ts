@@ -972,7 +972,16 @@ export function createSyncService(args: SyncServiceArgs) {
     const localDevice = deviceRegistryService.ensureLocalDevice();
     const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
     let lastError: unknown = null;
-    hostSingletonLease ??= await acquireSyncHostSingletonAsync({ projectRoot: args.projectRoot });
+    if (!hostSingletonLease) {
+      const lease = await acquireSyncHostSingletonAsync({ projectRoot: args.projectRoot });
+      // On Windows the acquire waits on PowerShell probes. A dispose that ran
+      // meanwhile already released nothing, so this lease is released here.
+      if (disposed) {
+        lease.dispose();
+        return;
+      }
+      hostSingletonLease = lease;
+    }
     const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
       db: args.db,
       logger: args.logger,

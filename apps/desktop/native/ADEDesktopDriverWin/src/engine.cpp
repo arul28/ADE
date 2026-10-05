@@ -623,6 +623,9 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
       if (pid != launched.pid && sameProcess(pid, created)) return true;
     return false;
   };
+  // `exeName` is lower-case with its extension; a bare name ("notepad") gets one.
+  std::wstring targetExe = lower(baseName(target));
+  if (targetExe.find(L'.') == std::wstring::npos) targetExe += L".exe";
   std::vector<WinInfo> fresh;
   const int64_t deadline = nowMs() + kLaunchWindowWaitMs;
   int64_t rootGoneAtMs = 0;
@@ -631,11 +634,24 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
     Sleep(kWindowPollMs);
     operation.lock();
     if (!running_) fail(code::kCancelled, "The Windows screen stopped while the app was starting.");
+    {
+      // The lock was free between polls: the lane's screen may have been stopped.
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto still = lanes_.find(lane->laneId);
+      if (still == lanes_.end() || still->second != lane)
+        fail(code::kCancelled, "The lane's Windows screen stopped while the app was starting.");
+    }
     std::vector<WinInfo> appeared;
     for (auto& w : listAppWindows()) if (!before.count(w.hwnd)) appeared.push_back(w);
     if (!appeared.empty()) {
+      // This launch's own process tree, or (a hand-off) another process of the
+      // same app the lane already runs. Another app of the lane opening a
+      // window meanwhile is not this launch's window.
+      const auto tree = launched.pid ? ownedProcesses(*lane, launched.pid) : std::set<DWORD>{};
       const auto owned = ownedProcesses(*lane);
-      for (auto& w : appeared) if (owned.count(w.pid)) fresh.push_back(w);
+      for (auto& w : appeared) {
+        if (tree.count(w.pid) || (owned.count(w.pid) && w.exeName == targetExe)) fresh.push_back(w);
+      }
       if (!fresh.empty()) break;
     }
     const int64_t now = nowMs();
@@ -648,6 +664,10 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
       if (!laneOwnsOtherLiveProcess() || now - rootGoneAtMs >= kHandOffWindowWaitMs) break;
     }
   }
+  // No window, and nothing of the launch left running: Windows passed it to an
+  // instance that was already running (for the private seat, outside it).
+  // Read before the new windows' processes join the launch's tree below.
+  const bool rootGone = launched.pid && ownedProcesses(*lane, launched.pid).empty();
   // A window of a process the lane already tracks keeps its original watch.
   for (auto& w : fresh) if (!lane->launchedTimes.count(w.pid)) rememberProcess(*lane, w.pid, launched.pid);
   if (mode_ == Mode::Shared) {
@@ -667,9 +687,6 @@ Json Engine::launch(const Json& req, std::unique_lock<std::recursive_mutex>& ope
     WinInfo now;
     if (describeWindow(w.hwnd, now)) windows.push(windowJson(now, lane.get()));
   }
-  // No window, and nothing of the launch left running: Windows passed it to an
-  // instance that was already running (for the private seat, outside it).
-  const bool rootGone = launched.pid && ownedProcesses(*lane, launched.pid).empty();
   Json out = Json::object();
   out["laneId"] = lane->laneId;
   // The launcher's pid while it runs; once it handed its window to one of the

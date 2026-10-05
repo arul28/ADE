@@ -43,7 +43,8 @@ if errorlevel 1 (
 
 if not "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
   call :ensure_user_path "%TARGET_DIR%"
-  if errorlevel 1 exit /b %ERRORLEVEL%
+  rem %ERRORLEVEL% would expand when this block is parsed, before the call.
+  if errorlevel 1 exit /b 1
 )
 
 echo Installed ade -^> %ADE_BIN%
