@@ -6,7 +6,8 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 
 const codeToHtml = vi.fn((code: string) => `<pre class="shiki" style="background-color:#22272e"><code><span class="line">${code}</span></code></pre>`);
 
-vi.mock("shiki", () => ({
+vi.mock("shiki", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("shiki")>()),
   createHighlighter: vi.fn(async () => ({ codeToHtml })),
   createJavaScriptRegexEngine: vi.fn(() => ({})),
 }));

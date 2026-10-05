@@ -4,6 +4,8 @@ import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appSt
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
+import type { Element as HastElement, Root as HastRoot } from "hast";
+import type { GrammarState as ShikiGrammarState } from "shiki";
 
 /* ── LRU cache for highlighted HTML ── */
 
@@ -47,6 +49,8 @@ const THEME = "github-dark-dimmed";
 
 type ShikiHighlighter = {
   codeToHtml(code: string, options: { lang: string; theme: string }): string;
+  codeToHast(code: string, options: { lang: string; theme: string; grammarState?: ShikiGrammarState }): HastRoot;
+  getLastGrammarState(element: HastRoot): ShikiGrammarState | undefined;
   loadTheme(theme: ShikiThemeData): Promise<void>;
 };
 
@@ -63,21 +67,120 @@ const STOCK_CODE_THEME: CodeTheme = { key: "stock", data: null };
 const loadedThemeNames = new Set<string>();
 
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
+let hastToHtml: ((node: HastRoot | HastElement) => string) | null = null;
 
 function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = import("shiki").then((shiki) =>
-      shiki.createHighlighter({
+    highlighterPromise = import("shiki").then((shiki) => {
+      hastToHtml = shiki.hastToHtml;
+      return shiki.createHighlighter({
         themes: [THEME],
         langs: SUPPORTED_LANGUAGES,
         engine: shiki.createJavaScriptRegexEngine(),
-      }),
-    ).catch((error) => {
+      });
+    }).catch((error) => {
       highlighterPromise = null;
       throw error;
     });
   }
   return highlighterPromise;
+}
+
+/* ── Incremental highlighting for a growing block ── */
+
+/*
+ * A streaming code block re-renders with a longer string every frame, and
+ * highlighting each string from scratch re-tokenizes every earlier line: a
+ * block costs O(lines²) over its stream, which held ~15% of the renderer main
+ * thread while an agent streamed code. TextMate tokenization runs line by line
+ * with a carried rule stack, so the HTML of the complete lines and the grammar
+ * state after them can be kept, and only the new lines tokenized. The output is
+ * byte-identical to `codeToHtml` (checked frame by frame across languages);
+ * CRLF text and plain text take the whole-block path.
+ */
+type StreamingHighlight = {
+  lang: string;
+  themeName: string;
+  /** The complete lines already tokenized, each ending in "\n". */
+  settled: string;
+  linesHtml: string[];
+  state: ShikiGrammarState | undefined;
+};
+
+const MAX_STREAMING_HIGHLIGHTS = 4;
+const streamingHighlights: StreamingHighlight[] = [];
+
+function findCodeElement(root: HastRoot): HastElement | null {
+  const pre = root.children.find((node): node is HastElement => node.type === "element" && node.tagName === "pre");
+  const code = pre?.children.find((node): node is HastElement => node.type === "element" && node.tagName === "code");
+  return code ?? null;
+}
+
+function lineElements(root: HastRoot): HastElement[] | null {
+  const code = findCodeElement(root);
+  return code ? code.children.filter((node): node is HastElement => node.type === "element") : null;
+}
+
+function renderHighlightedHtml(highlighter: ShikiHighlighter, code: string, lang: string, themeName: string): string {
+  const toHtml = hastToHtml;
+  if (!toHtml || lang === "text" || code.includes("\r")) {
+    return highlighter.codeToHtml(code, { lang, theme: themeName });
+  }
+  try {
+    return renderIncrementally(highlighter, toHtml, code, lang, themeName);
+  } catch {
+    // Incremental output is only a faster route to the same HTML.
+    streamingHighlights.length = 0;
+    return highlighter.codeToHtml(code, { lang, theme: themeName });
+  }
+}
+
+function renderIncrementally(
+  highlighter: ShikiHighlighter,
+  toHtml: (node: HastRoot | HastElement) => string,
+  code: string,
+  lang: string,
+  themeName: string,
+): string {
+
+  const lastNewline = code.lastIndexOf("\n");
+  const settled = code.slice(0, lastNewline + 1);
+  const tail = code.slice(lastNewline + 1);
+
+  let base: StreamingHighlight | null = null;
+  for (const entry of streamingHighlights) {
+    if (entry.lang !== lang || entry.themeName !== themeName || !settled.startsWith(entry.settled)) continue;
+    if (!base || entry.settled.length > base.settled.length) base = entry;
+  }
+
+  let linesHtml = base?.linesHtml ?? [];
+  let state = base?.state;
+  const fresh = settled.slice(base?.settled.length ?? 0);
+  if (fresh) {
+    const hast = highlighter.codeToHast(fresh.slice(0, -1), { lang, theme: themeName, grammarState: state });
+    const lines = lineElements(hast);
+    if (!lines) return highlighter.codeToHtml(code, { lang, theme: themeName });
+    state = highlighter.getLastGrammarState(hast);
+    linesHtml = linesHtml.concat(lines.map((line) => toHtml(line)));
+  }
+
+  if (base) streamingHighlights.splice(streamingHighlights.indexOf(base), 1);
+  streamingHighlights.push({ lang, themeName, settled, linesHtml, state });
+  if (streamingHighlights.length > MAX_STREAMING_HIGHLIGHTS) streamingHighlights.shift();
+
+  const tailHast = highlighter.codeToHast(tail, { lang, theme: themeName, grammarState: state });
+  const tailLine = lineElements(tailHast)?.[0];
+  const codeElement = findCodeElement(tailHast);
+  if (!tailLine || !codeElement) return highlighter.codeToHtml(code, { lang, theme: themeName });
+  // The <pre>/<code> wrapper carries the theme colours; serialize it empty and
+  // splice the lines in where its children go.
+  const tailChildren = codeElement.children;
+  codeElement.children = [];
+  const shell = toHtml(tailHast);
+  codeElement.children = tailChildren;
+  const closeAt = shell.lastIndexOf("</code>");
+  if (closeAt < 0) return highlighter.codeToHtml(code, { lang, theme: themeName });
+  return `${shell.slice(0, closeAt)}${linesHtml.concat(toHtml(tailLine)).join("\n")}${shell.slice(closeAt)}`;
 }
 
 /* ── Highlight function ── */
@@ -121,7 +224,7 @@ async function highlightCode(code: string, language: string, codeTheme: CodeThem
 
   let html: string;
   try {
-    html = highlighter.codeToHtml(code, { lang, theme: themeName });
+    html = renderHighlightedHtml(highlighter, code, lang, themeName);
   } catch {
     // If highlighting fails for the language, render as plain text
     html = "";
