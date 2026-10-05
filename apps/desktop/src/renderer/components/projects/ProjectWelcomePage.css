@@ -655,3 +655,20 @@ button.ade-welcome-item:focus-visible {
 
 .ade-welcome-side-body > .ade-welcome-empty,
 .ade-welcome-tabpanel > .ade-welcome-empty { padding: 2px 10px 6px; }
+
+/* ── footer ───────────────────────────────────────────────────────── */
+
+/* The app-level way into Settings, bottom-left of the new-project screen. */
+.ade-welcome-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px 20px;
+  box-sizing: border-box;
+}
+.ade-welcome-body[data-single="true"] ~ .ade-welcome-foot {
+  max-width: 680px;
+}

@@ -54,6 +54,7 @@ import type { Logger } from "../logging/logger";
 import {
   readCaptureBytes,
   readLengths,
+  startHelperRecording,
   type RecordingLengths,
 } from "../macDesktop/macDesktopRecording";
 import { clampFps } from "../macDesktop/macDesktopStreamServer";
@@ -423,13 +424,22 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         ? { width: frame.viewportWidth, height: frame.viewportHeight }
         : null,
     });
+    const key = appControlRecordingKey(laneId);
     try {
-      await recorder.start({
-        key: appControlRecordingKey(laneId),
-        windowId: window.id,
-        fps: args.fps,
-        filePath: args.filePath,
-        keepIdle: args.keepIdle,
+      await startHelperRecording({
+        start: () => recorder.start({
+          key,
+          windowId: window.id,
+          fps: args.fps,
+          filePath: args.filePath,
+          keepIdle: args.keepIdle,
+        }),
+        stop: async () => (await recorder.stop(key)).filePath || null,
+        logger: deps.logger,
+        key,
+        // `startRecording` lets one start per lane run, and this key is App
+        // Control's alone, so a recorder the helper still holds is an orphan.
+        exclusive: true,
       });
     } catch (error) {
       // A grant revoked or never made shows up here as a ScreenCaptureKit
