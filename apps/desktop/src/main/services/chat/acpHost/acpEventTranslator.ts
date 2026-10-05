@@ -159,7 +159,9 @@ function textOfContentBlock(block: AcpContentBlock): string {
     case "resource":
       return typeof block.resource.text === "string" ? block.resource.text : "";
     default:
-      return assertNever(block, "acp content block");
+      // A content block type this host does not know, from a newer schema.
+      // Render nothing rather than throwing inside the update handler.
+      return "";
   }
 }
 
@@ -172,7 +174,9 @@ function planStatusToAde(status: AcpPlanEntry["status"]): AgentChatPlanStep["sta
     case "completed":
       return "completed";
     default:
-      return assertNever(status, "acp plan entry status");
+      // Unknown plan-entry status from a newer schema. Keep the step and mark
+      // it pending instead of failing the whole plan update.
+      return "pending";
   }
 }
 
@@ -186,7 +190,9 @@ function toolStatusToAde(status: AcpToolCallStatus): "running" | "completed" | "
     case "failed":
       return "failed";
     default:
-      return assertNever(status, "acp tool call status");
+      // Unknown tool status from a newer schema. Treat it as still running so
+      // the row is not closed by a state ADE cannot read.
+      return "running";
   }
 }
 
@@ -206,7 +212,9 @@ function classifyRowKind(kind: AcpToolKind): AcpToolRowKind {
     case "other":
       return "tool";
     default:
-      return assertNever(kind, "acp tool kind");
+      // Unknown tool kind from a newer schema. A generic tool row is honest:
+      // ADE still shows the call and its result.
+      return "tool";
   }
 }
 
@@ -350,7 +358,9 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         tracked.opened = true;
         continue;
       }
-      assertNever(item, "acp tool call content");
+      // An unknown tool-call content item type from a newer schema. Skip it
+      // rather than throwing inside the update handler (item is `never` here).
+      continue;
     }
     return events;
   };

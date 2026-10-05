@@ -1,8 +1,16 @@
 /**
  * Agent Client Protocol (ACP) wire types, protocol version 1.
  *
- * These declarations mirror `@agentclientprotocol/sdk@1.4.0`
- * (`dist/schema/types.gen.d.ts`). Only the parts the ADE host uses are here.
+ * These declarations mirror `@agentclientprotocol/sdk@1.7.0`
+ * (`schema/schema.json`). Only the parts the ADE host uses are here.
+ *
+ * Audited against 1.7.0: it removes `mcp/connect`/`mcp/disconnect`, reshapes
+ * `mcp/message`, adds `notice`, `subagent_update`, `session_message`, and
+ * `session_message_chunk` session updates, and adds `subagents`/`notices`
+ * client capabilities. The host uses none of those, so they are not mirrored;
+ * the session/update allow-list drops the new update kinds, unknown agent
+ * notifications are logged and ignored, and `mcp/*` methods are never
+ * registered. A newer agent therefore degrades to "ignored", not a fault.
  *
  * Why the types live in this repository and not in a dependency:
  *

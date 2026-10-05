@@ -584,10 +584,24 @@ export async function initializeAcpConnection(args: {
       },
       { timeoutMs: args.timeoutMs ?? ACP_HANDSHAKE_TIMEOUT_MS },
     );
+    const advertised = typeof response.protocolVersion === "number" && Number.isFinite(response.protocolVersion)
+      ? response.protocolVersion
+      : null;
+    const protocolVersionAccepted = advertised === null || advertised <= ACP_PROTOCOL_VERSION;
+    if (!protocolVersionAccepted) {
+      // The agent speaks a newer protocol than this build of ADE. Continuing
+      // would fail later on an unrecognized request or session update, so stop
+      // at the handshake with a message that names the CLI and both ways out.
+      throw new Error(
+        `${dialect.displayName} answered with ACP protocol version ${advertised}, but this build of ADE speaks `
+        + `version ${ACP_PROTOCOL_VERSION}. Update ADE, or update ${dialect.displayName} to a build that speaks `
+        + `ACP ${ACP_PROTOCOL_VERSION}.`,
+      );
+    }
     connection.initializeResult = response;
     return {
       response,
-      protocolVersionAccepted: response.protocolVersion <= ACP_PROTOCOL_VERSION,
+      protocolVersionAccepted,
     };
   } catch (error) {
     // A crash during the handshake precedes every exit handler, so the pool's
