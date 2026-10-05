@@ -2720,13 +2720,24 @@ function startHydration(runtime: CachedRuntime) {
   }, 120);
 }
 
-async function loadAddonCtor(moduleName: string, exportName: string): Promise<any | null> {
-  try {
-    const mod = await import(/* @vite-ignore */ moduleName);
-    return (mod as any)?.[exportName] ?? null;
-  } catch {
-    return null;
-  }
+type WebglAddonCtor = typeof import("@xterm/addon-webgl").WebglAddon;
+
+let webglAddonCtorPromise: Promise<WebglAddonCtor | null> | null = null;
+
+/**
+ * The WebGL renderer loads on first use, as its own chunk. The specifier must
+ * stay a string literal: a variable specifier is left for the browser to
+ * resolve, and a bare package name does not resolve in a renderer, so every
+ * terminal used to fall back to the DOM renderer.
+ */
+function loadWebglAddonCtor(): Promise<WebglAddonCtor | null> {
+  webglAddonCtorPromise ??= import("@xterm/addon-webgl")
+    .then((mod) => mod.WebglAddon ?? null)
+    .catch(() => {
+      webglAddonCtorPromise = null;
+      return null;
+    });
+  return webglAddonCtorPromise;
 }
 
 async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): Promise<boolean> {
@@ -2744,7 +2755,7 @@ async function setRenderer(runtime: CachedRuntime, mode: TerminalRendererMode): 
     return true;
   }
 
-  const Ctor = await loadAddonCtor("@xterm/addon-webgl", "WebglAddon");
+  const Ctor = await loadWebglAddonCtor();
   if (!Ctor) return false;
 
   try {
