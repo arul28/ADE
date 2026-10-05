@@ -602,3 +602,41 @@ Measured on a 3.6 MB Claude chat (dev build, 3000 px/s):
 - Background chats are cheap: streaming into a chat that is not open costs
   0.24 ms per event (`perf-chat-stream.mjs --background`).
 - Cold chat open measured 21–28 ms to first rows (history read 6 ms).
+
+### Looping animations and repeated background work (fourth pass, 240 Hz display)
+
+Measured on a 240 Hz display with per-process CPU sampling (`ps` cputime
+deltas) and CDP `Performance.getMetrics`. A smooth looping animation ticks at
+the display rate. On a 240 Hz display that is 240 style passes a second.
+
+- Hold any looping opacity animation at 0.02-opacity steps with `step-end`.
+  The Work sidebar `Working` breathe used a smooth curve. With three working
+  sessions the GPU process used ~19.5% of a core and the renderer ~7%. Stepped:
+  3.8% and 3.2%. Derive the stops from the same ease curve, as for
+  `activity-hdr-pulse`.
+- Do not animate an SVG element itself. Chromium repaints an animated SVG on
+  the main thread each frame. Rotate an HTML wrapper of the same size, and use
+  `steps(N)` so the rate is 60 a second. The Lanes working mark (five lanes)
+  went from a renderer at ~20% to 6.4%.
+- Do not let xterm's DOM renderer run its CSS cursor blink. A paused animation
+  that `lib/xtermCursorBlink.ts` flips every 500 ms gives the same blink. An
+  idle focused shell went from a renderer at 11.7% to 3.6%.
+- Do not re-tokenize a growing code block from the start. `CodeHighlighter`
+  keeps the HTML of the complete lines and Shiki's grammar state. While an
+  agent streamed code, highlighting fell from 14.6% to 0.5% of renderer
+  main-thread samples. The output is byte-identical to `codeToHtml`.
+- Keep periodic disk snapshots slow when live readers use memory. The PTY
+  snapshot (full 2,000-line scrollback, ~0.5 MB) wrote every 500 ms. At 5 s the
+  brain went from 6.3% to 2.2% with three busy shells.
+
+Open finding, not fixed: a switch into a long chat (four long replies, ~48k
+DOM nodes) blocks the main thread for 600–900 ms. The cost is two full style
+passes over ~60k elements, the markdown parse, and `ThreadCommentLayer`
+`getBoundingClientRect` reads (~150 ms). A fix needs virtualization or deferred
+row mount, so measure the visual effect before you change it.
+
+Measured but not changed: the WebGL terminal renderer is not active in dev
+(`loadAddonCtor` does a bare `import("@xterm/addon-webgl")` that Vite does not
+resolve), so dev terminals use the DOM renderer. A forced WebGL renderer gave a
+streaming terminal 5.2% renderer CPU against 8.6% for the DOM renderer. Glyph
+rendering differs, so a change is a product decision.
