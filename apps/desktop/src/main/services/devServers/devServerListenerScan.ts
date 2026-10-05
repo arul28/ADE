@@ -35,15 +35,14 @@ export type ProcessLocation = {
   ancestors?: Array<{ pid: number; commandLine: string | null }>;
 };
 
-export type RunText = (command: string, args: string[], timeoutMs: number) => Promise<string>;
 
 const SCAN_TIMEOUT_MS = 4_000;
 /** Windows pays for a PowerShell start; give it room, it runs rarely. */
 const WINDOWS_SCAN_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
-export const runText: RunText = (command, args, timeoutMs) =>
-  new Promise((resolve, reject) => {
+function runText(command: string, args: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
     execFile(
       command,
       args,
@@ -58,6 +57,7 @@ export const runText: RunText = (command, args, timeoutMs) =>
       },
     );
   });
+}
 
 function portFromAddress(address: string): number | null {
   const match = /:(\d{1,5})$/.exec(address.trim());
@@ -143,17 +143,15 @@ type WindowsListenerRow = {
  */
 export async function scanListeningProcesses(input: {
   platform?: NodeJS.Platform;
-  run?: RunText;
   /** Locations already known for these pids; only new pids are looked up. */
   knownLocations?: ReadonlyMap<number, ProcessLocation>;
 } = {}): Promise<{ sockets: ListeningSocket[]; locations: Map<number, ProcessLocation> } | null> {
   const platform = input.platform ?? process.platform;
-  const run = input.run ?? runText;
   if (platform === "win32") {
     let raw: string;
     try {
       // Never PATH's `powershell.exe`: this runs on agent activity.
-      raw = await run(
+      raw = await runText(
         resolveTrustedWindowsTool("powershell"),
         ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENER_QUERY],
         WINDOWS_SCAN_TIMEOUT_MS,
@@ -199,7 +197,7 @@ export async function scanListeningProcesses(input: {
 
   let listenersText: string;
   try {
-    listenersText = await run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"], SCAN_TIMEOUT_MS);
+    listenersText = await runText("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"], SCAN_TIMEOUT_MS);
   } catch {
     return null;
   }
@@ -213,7 +211,7 @@ export async function scanListeningProcesses(input: {
   }
   if (unknown.length > 0) {
     try {
-      const cwdText = await run(
+      const cwdText = await runText(
         "lsof",
         ["-a", "-d", "cwd", "-F", "pn", "-p", unknown.join(",")],
         SCAN_TIMEOUT_MS,

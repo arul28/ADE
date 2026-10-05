@@ -9,7 +9,6 @@ import { devServerKey, type DevServerRecord } from "../../../shared/types/builtI
 import {
   scanListeningProcesses,
   type ProcessLocation,
-  type RunText,
 } from "./devServerListenerScan";
 
 /**
@@ -65,10 +64,10 @@ type ScanResult = NonNullable<Awaited<ReturnType<typeof scanListeningProcesses>>
 const sharedLocationCache = new Map<number, ProcessLocation>();
 let sharedScan: { at: number; promise: Promise<ScanResult | null> } | null = null;
 
-function scanMachine(platform: NodeJS.Platform, run: RunText | undefined): Promise<ScanResult | null> {
+function scanMachine(platform: NodeJS.Platform): Promise<ScanResult | null> {
   const now = Date.now();
   if (sharedScan && now - sharedScan.at < minScanIntervalMs(platform)) return sharedScan.promise;
-  const promise = scanListeningProcesses({ platform, run, knownLocations: sharedLocationCache })
+  const promise = scanListeningProcesses({ platform, knownLocations: sharedLocationCache })
     .then((result) => {
       if (!result) return null;
       // Forget pids that stopped listening, so a reused pid is looked up afresh.
@@ -99,11 +98,11 @@ export type DevServerWatcher = {
  * The OS reports a process's real directory (`/private/tmp/…` for `/tmp/…` on
  * macOS), so lane roots are compared by their real path too.
  */
-function realPathOrResolved(value: string): string {
+function realPathOrResolved(value: string, platform: NodeJS.Platform): string {
   try {
     return fs.realpathSync.native(value);
   } catch {
-    return path.resolve(value);
+    return (platform === "win32" ? path.win32 : path.posix).resolve(value);
   }
 }
 
@@ -159,7 +158,6 @@ export function createDevServerWatcher(args: {
   /** Processes that are ADE itself (this runtime, its sync listener). */
   excludePids?: number[];
   platform?: NodeJS.Platform;
-  run?: RunText;
 }): DevServerWatcher {
   const platform = args.platform ?? process.platform;
   const excludePids = new Set([process.pid, ...(args.excludePids ?? [])]);
@@ -171,11 +169,11 @@ export function createDevServerWatcher(args: {
     pathsEqual(record.source.projectRoot, args.projectRoot, platform);
 
   const scan = async (): Promise<void> => {
-    const result = await scanMachine(platform, args.run);
+    const result = await scanMachine(platform);
     if (!result || disposed) return;
     const roots = (await args.listLaneRoots().catch(() => []))
       .filter((entry) => entry.laneId && entry.root)
-      .map((entry) => ({ laneId: entry.laneId, root: realPathOrResolved(entry.root) }))
+      .map((entry) => ({ laneId: entry.laneId, root: realPathOrResolved(entry.root, platform) }))
       .sort((left, right) => right.root.length - left.root.length);
 
     const listeningPorts = new Set(result.sockets.map((socket) => socket.port));

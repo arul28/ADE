@@ -536,6 +536,77 @@ describe("remote browser forwarder", () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {
+      label: "`open --panel` while the user talks from another machine",
+      origin: { clientId: "macbook", local: false },
+      method: "navigate" as const,
+      args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
+      localArgs: { openPanel: false },
+      forwardedTo: ["macbook"],
+    },
+    {
+      label: "`open --panel` while the user is at this machine",
+      origin: { clientId: "studio", local: true },
+      method: "navigate" as const,
+      args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
+      localArgs: { openPanel: true },
+      forwardedTo: [],
+    },
+    {
+      label: "`open --panel` when nobody can tell where the user is",
+      origin: null,
+      method: "navigate" as const,
+      args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: true },
+      localArgs: { openPanel: true },
+      forwardedTo: [null],
+    },
+    {
+      label: "an agent opening a tab for itself",
+      origin: { clientId: "macbook", local: false },
+      method: "navigate" as const,
+      args: { url: "http://localhost:4180/", chatSessionId: "chat-1", openPanel: false },
+      localArgs: { openPanel: false },
+      forwardedTo: [],
+    },
+    {
+      label: "`browser panel` while the user talks from another machine",
+      origin: { clientId: "macbook", local: false },
+      method: "showPanel" as const,
+      args: { chatSessionId: "chat-1" },
+      localArgs: null,
+      forwardedTo: ["macbook"],
+    },
+  ])("with a desktop here, routes $label", async ({ origin, method, args, localArgs, forwardedTo }) => {
+    const targets: Array<string | null> = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        const request = payload.event as { requestId: string; targetClientId?: string | null };
+        targets.push(request.targetClientId ?? null);
+        queueMicrotask(() => {
+          forwarder.acknowledgeRemoteRequest({ requestId: request.requestId, desktopLabel: "MacBook", accepted: true });
+        });
+      },
+      logger: forwarderLogger,
+      resolveOrigin: () => origin,
+      ackTimeoutMs: 500,
+    });
+    const local = vi.fn(async () => ({ attached: true }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({ [method]: local }), forwarder);
+
+    await bridge[method](args as never);
+
+    // This machine's desktop keeps the tab an agent drives; it only stays
+    // hidden when the person is looking at another screen.
+    if (localArgs) {
+      expect(local).toHaveBeenCalledTimes(1);
+      expect(local).toHaveBeenCalledWith(expect.objectContaining({ url: args.url, ...localArgs }));
+    } else {
+      expect(local).not.toHaveBeenCalled();
+    }
+    expect(targets).toEqual(forwardedTo);
+  });
+
   it("forwards from a real headless runtime, where the bridge token is missing too", async () => {
     // Regression: the client read the auth token before it ever touched the
     // socket. On a machine with no desktop the token is null too, so the call
