@@ -65,11 +65,33 @@ ADE's own runtime, not just raw stdio. Verify the cancel bug handling
 The spec encodes verified vendor facts. Several are load-bearing and were
 verified once, on one version. Re-verify what you can and flag what you cannot:
 
-- Grok: the auto-mode neutralization (`x.ai/yolo_mode_changed` after
-  `session/new`) and that permissions actually prompt. The user's
-  `~/.claude/settings.json` `defaultMode` leaks into Grok; confirm ADE defeats
-  it. This is the single most important Grok check.
-- Grok: cancel must be a notification, not a request.
+- Grok: the auto-mode neutralization, live-verified 2026-10-05 on 1.0.41
+  (installed) and 1.0.46 (throwaway prefix). The load-bearing half is the
+  `--permission-mode default` spawn flag plus `_GROK_CLAUDE_MARKER_OVERRIDE=1`
+  in the child env; `x.ai/yolo_mode_changed` after `session/new` is
+  method-not-found and is only a best-effort extra. In this ask-style mode a cwd
+  write raises a real `session/request_permission` ADE can reject, and rejecting
+  prevents the write. This holds when the cwd is reached through a symlink. The
+  user's `~/.claude/settings.json` `defaultMode` does not leak through with the
+  neutralization on.
+- Grok: cancel must be a notification, not a request. Re-verified 2026-10-05 on
+  1.0.41 and 1.0.46: a `session/cancel` request answers `-32601`, while the
+  notification form returns `stopReason:"cancelled"`.
+- Grok 1.0.41 (installed) and 1.0.46 (throwaway prefix), live-verified
+  2026-10-05: the `initialize` handshake is byte-identical apart from
+  `agentVersion` and per-model context-window metadata; `session/new` and
+  `session/resume` advertise exactly `model` and `reasoning_effort` (no mode and
+  no context-window option over ACP); `session/close` and `session/resume` both
+  work. A write offers permission options
+  `allow-edits-session`/`allow-once`/`reject-once`; an execute offers
+  `always-allow`/`allow-once`/`reject-once`/`reject-always`. On 1.0.46 every
+  model reports `_meta.totalContextTokens: 256000` plus a
+  `contextWindows: [256000, 500000]` list (1.0.41 reported 500000 for
+  grok-4.6/4.5); ADE reads `totalContextTokens`, so its meter follows the
+  installed CLI. One live 1.0.46 ping repeated the telemetry shape below with
+  extension methods spelled `_x.ai/`. `fixtures/grok.initialize.json` is now
+  captured from 1.0.46. Not verified: the `_x.ai/session/update`
+  subagent/`auto_compact_*` payloads (no such turn was run).
 - Kimi 0.39.1 (baseline) and 2.1.1 (latest), live-verified 2026-10-05: the
   `initialize` handshake is byte-identical apart from `agentInfo.version`;
   `session/close` is advertised and a dummy id returns `{}`; the

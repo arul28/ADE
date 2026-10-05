@@ -228,7 +228,9 @@ Rust, Apache-2.0)
   hosts; leader mode cross-contaminates sessions. ADE owns plan UX. The same
   pair rides the tracked-CLI launch and resume commands.
 - Caps: loadSession, list/resume/close all advertised and verified across host
-  restart. NO image/audio. MCP http/sse.
+  restart. NO image/audio. MCP http/sse. Re-verified on 1.0.41 (installed) and
+  1.0.46: the `initialize` handshake is byte-identical apart from `agentVersion`
+  and model context-window metadata.
 - Permissions ARE standard `session/request_permission`. Critical rules
   (rewritten 2026-08-31 after a live 6-arm experiment on 1.0.13):
   1. Grok merges permission RULES from several sources and evaluates MODE
@@ -340,9 +342,11 @@ Rust, Apache-2.0)
      carries usage (below); its reader maps the hint to nothing.
   6. Read/Grep/WebSearch never prompt (SAFE_COMMAND) — absence of prompts for
      reads is normal.
-  7. Real option ids offered are `allow-edits-session`, `allow-once`,
-     `reject-once` — NOT `enable-always-approve`. The bridge derives a kind
-     from the id, so an unrecognized id still lands on a safe kind.
+  7. Option ids depend on the tool. A write offers `allow-edits-session`,
+     `allow-once`, `reject-once`; an execute offers `always-allow`,
+     `allow-once`, `reject-once`, `reject-always` (measured on 1.0.41 and
+     1.0.46) — NOT `enable-always-approve`. The bridge derives a kind from the
+     id, so an unrecognized id still lands on a safe kind.
 - Cancel: send `session/cancel` as a JSON-RPC NOTIFICATION (request → -32601).
   Result arrives as `stopReason:"cancelled"`.
 - Usage: no standard `usage_update`. Verified live on 1.0.40, it rides xAI
@@ -362,8 +366,11 @@ Rust, Apache-2.0)
     `costUsdTicks` are nano-dollars (1_000_000_000 = $1.00): a captured
     30k-token ping at 86_649_000 ticks is $0.0866, not $86.65.
   - `x.ai/models/update { currentModelId, availableModels[{ modelId,
-    _meta.totalContextTokens }] }` — the requested model and every window
-    (500000 for grok-4.x in the capture).
+    _meta.totalContextTokens }] }` — the requested model and every window.
+    `totalContextTokens` is version-specific: 1.0.41 reported grok-4.6/4.5 at
+    500000, while 1.0.46 reports all four models at 256000 and adds
+    `_meta.contextWindows: [256000, 500000]` (its TUI-only picker sizes). ADE
+    reads `totalContextTokens`, so its meter follows the installed CLI.
   - `x.ai/session/update` `subagent_spawned` / `subagent_finished`
     (`tokens_used`, `tool_calls`, `duration_ms`, `output`) → `subagent_started`
     / `subagent_result`; `auto_compact_started` / `_completed`
@@ -411,9 +418,14 @@ Rust, Apache-2.0)
 - Auth: reuse `grok login` (`~/.grok/auth.json`) or `XAI_API_KEY`; stored
   session token outranks env key. No free tier.
 - Version churn ~daily; record the binary version in diagnostics; compatibility
-  baseline remains ≥1.0.13. The npm `latest` release is 1.0.34, published
-  2026-09-16 04:15:07 UTC; its release notes add generally available Memory and
-  Markdown heading theme colors without changing the ACP launch contract. ADE's
+  baseline remains ≥1.0.13. Verified live on 2026-10-05 against 1.0.41
+  (installed) and 1.0.46 (throwaway prefix): `initialize`, `session/new` config
+  options, cancel-as-notification, close, resume, and a
+  `session/request_permission` for a write and an execute in
+  `--permission-mode default` with `_GROK_CLAUDE_MARKER_OVERRIDE=1`, including a
+  symlinked cwd. The npm `latest` release was 1.0.34, published 2026-09-16
+  04:15:07 UTC; its release notes add generally available Memory and Markdown
+  heading theme colors without changing the ACP launch contract. ADE's
   setup/error copy recommends `@xai-official/grok@1.0.34` for this baseline.
 
 ### Copilot (`copilot --acp`, latest verified **1.0.91**, baseline **1.0.89**, PREVIEW)
