@@ -2338,15 +2338,57 @@ button, [role="button"] {
 /* The Work sidebar's "Working" status label breathes — the one row state that
    is actively changing under you gets the only ambient motion in the list.
    Amplitude is deliberately small: this is a sign of life, not an alert, and
-   `motion-safe:` gates it away entirely for reduced-motion users. */
+   `motion-safe:` gates it away entirely for reduced-motion users.
+
+   The breathe is an `ease-in-out` 1 -> 0.62 -> 1 opacity cycle held at
+   0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
+   the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
+   changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
+   smooth opacity animation makes the compositor draw every display frame, and
+   with three running sessions on a 240 Hz display that held the GPU process at
+   ~20% of a core and the renderer at ~7% on the Work tab. Held steps (~15
+   changes a second) measured ~6% and ~4%. To change the range, re-derive the
+   stops from the same curve. */
 @keyframes ade-session-working-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.62;
-  }
+  0% { opacity: 1.00; }
+  5.76% { opacity: 0.98; }
+  9.84% { opacity: 0.96; }
+  12.61% { opacity: 0.94; }
+  14.87% { opacity: 0.92; }
+  16.85% { opacity: 0.90; }
+  18.64% { opacity: 0.88; }
+  20.32% { opacity: 0.86; }
+  21.92% { opacity: 0.84; }
+  23.47% { opacity: 0.82; }
+  25% { opacity: 0.80; }
+  26.53% { opacity: 0.78; }
+  28.08% { opacity: 0.76; }
+  29.68% { opacity: 0.74; }
+  31.36% { opacity: 0.72; }
+  33.15% { opacity: 0.70; }
+  35.13% { opacity: 0.68; }
+  37.39% { opacity: 0.66; }
+  40.16% { opacity: 0.64; }
+  44.24% { opacity: 0.62; }
+  55.76% { opacity: 0.64; }
+  59.84% { opacity: 0.66; }
+  62.61% { opacity: 0.68; }
+  64.87% { opacity: 0.70; }
+  66.85% { opacity: 0.72; }
+  68.64% { opacity: 0.74; }
+  70.32% { opacity: 0.76; }
+  71.92% { opacity: 0.78; }
+  73.47% { opacity: 0.80; }
+  75% { opacity: 0.82; }
+  76.53% { opacity: 0.84; }
+  78.08% { opacity: 0.86; }
+  79.68% { opacity: 0.88; }
+  81.36% { opacity: 0.90; }
+  83.15% { opacity: 0.92; }
+  85.13% { opacity: 0.94; }
+  87.39% { opacity: 0.96; }
+  90.16% { opacity: 0.98; }
+  94.24% { opacity: 1.00; }
 }
 
 /* Session row detail tooltips render a key/value list, one pair per line.
