@@ -2320,7 +2320,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.89...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.90...HEAD
+[1.2.90]: https://github.com/arul28/ADE/compare/v1.2.89...v1.2.90
 [1.2.89]: https://github.com/arul28/ADE/compare/v1.2.88...v1.2.89
 [1.2.88]: https://github.com/arul28/ADE/compare/v1.2.87...v1.2.88
 [1.2.87]: https://github.com/arul28/ADE/compare/v1.2.86...v1.2.87
