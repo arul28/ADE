@@ -20,6 +20,7 @@ import {
   asNullableString,
   asRecord,
   createMacVirtualDisplayProvider,
+  type MacDesktopDriverClientFactory,
 } from "./macDesktopSeatProvider";
 
 const STATUS_DRIVER_READ_TIMEOUT_MS = 4_000;
@@ -55,14 +56,7 @@ export type MacDesktopDriverLifecycleDeps = {
   resolveExecutablePath?: (() => string | null) | null;
   /** Builds the seat provider. Defaults to the Mac virtual-display provider. */
   createProvider?: ((client: MacDesktopDriverClient) => DesktopSeatProvider) | null;
-  createDriverClient?: ((args: {
-    logger: Logger;
-    platform: NodeJS.Platform;
-    onHealthChanged: (health: MacDesktopDriverHealth) => void;
-    onDriverLost: (reason: string) => void;
-    /** This service's live lanes; a driver shared across projects reconciles against them all. */
-    liveLaneIds: () => string[];
-  }) => MacDesktopDriverClient) | null;
+  createDriverClient?: MacDesktopDriverClientFactory | null;
   assertSupported: () => void;
   serviceError: (code: string, message: string) => Error;
   permissionError: (which: "screenRecording" | "accessibility") => Error;

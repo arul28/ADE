@@ -120,6 +120,7 @@ import {
   asWindows,
   createMacVirtualDisplayProvider,
   type DesktopSeatAdapter,
+  type MacDesktopDriverClientFactory,
 } from "./macDesktopSeatProvider";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
@@ -244,13 +245,7 @@ export type MacDesktopServiceDeps = {
   /** How this build was signed. Defaults to the packaged marker on disk. */
   readSigningState?: (() => MacDesktopSigningState) | null;
   /** Test seam: supply a fake driver client instead of spawning the helper. */
-  createDriverClient?: ((args: {
-    logger: Logger;
-    platform: NodeJS.Platform;
-    onHealthChanged: (health: import("../../../shared/types/macDesktop").MacDesktopDriverHealth) => void;
-    onDriverLost: (reason: string) => void;
-    liveLaneIds?: () => string[];
-  }) => MacDesktopDriverClient) | null;
+  createDriverClient?: MacDesktopDriverClientFactory | null;
 };
 
 type DriverDisplayReply = MacDesktopDisplay & { displayId?: number | null };
