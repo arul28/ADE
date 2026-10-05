@@ -373,7 +373,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Manage dialog for ONE lane on another machine (row key). Separate from the
   // local dialog: every write it makes is pinned to that lane's machine.
   const [foreignManageKey, setForeignManageKey] = useState<string | null>(null);
-  const openForeignManageRef = useRef<(row: MachineLane) => void>(() => {});
+  const openForeignManageRef = useRef<(row: MachineLane, initialTab?: ManageLaneTab | null) => void>(() => {});
   const lanePrTagsRequestRef = useRef(0);
   const laneGithubPrTagsRequestRef = useRef(0);
   const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
@@ -1477,7 +1477,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     // risk, restack and appearance read from its machine).
     const loneForeign = manageable.length === 1 ? foreignRowByKey.get(manageable[0]!) : undefined;
     if (loneForeign) {
-      openForeignManageRef.current(loneForeign);
+      openForeignManageRef.current(loneForeign, initialTab);
       return;
     }
     setManageInitialTab(initialTab);
@@ -2074,8 +2074,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (foreignManageKey && !foreignManageRow && !laneActionBusy) setForeignManageKey(null);
   }, [foreignManageKey, foreignManageRow, laneActionBusy]);
 
-  const openForeignManage = useCallback((row: MachineLane) => {
+  const openForeignManage = useCallback((row: MachineLane, initialTab: ManageLaneTab | null = null) => {
     if (machineBlockedReason(row) || row.lane.laneType === "primary") return;
+    setManageInitialTab(initialTab);
     setLaneActionError(null);
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
@@ -2566,6 +2567,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           onDelete={() => { void deleteForeignLane(); }}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           onStackReorganized={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
+          initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
         />
       ) : null}
