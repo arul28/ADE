@@ -1114,8 +1114,9 @@ Renderer surfaces:
   the user into the quiet header.
   The funnel's by-lane **Fold busy lanes** chip (`workFoldBusyLanes`) adds a
   third, non-quiet shelf: a lane whose live rows are all Working/Waiting (or Done
-  after the user has left them) folds onto a collapsed **Working** shelf between
-  the inbox and the quiet zone, and unfolds when something needs the user or
+  after the user has left them) folds onto a collapsed **Working** shelf, the
+  first shelf inside the quiet zone (only the user opens or closes it; the open
+  chat's lane folds too), and the lane unfolds when something needs the user or
   finishes. The rule is `summarizeLaneFocus` in `workLaneFocus.ts`; a raised
   hand, a stale run, or an unseen finish holds the lane out with its rows
   visible, a finished nested row never does, and pins/primaries never fold. Each

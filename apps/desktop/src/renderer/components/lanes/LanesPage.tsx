@@ -52,6 +52,7 @@ import {
 } from "./laneUtils";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { LaneSidebarList, LANES_FILTER_INPUT_ID } from "./sidebar/LaneSidebarList";
+import { LaneSidebarBulkContextMenu } from "./sidebar/LaneSidebarBulkContextMenu";
 import { LaneSidebarContextMenu } from "./sidebar/LaneSidebarContextMenu";
 import { LaneSidebarBulkRebaseDialog, type LaneBulkRebaseTarget } from "./sidebar/LaneSidebarBulkRebaseDialog";
 import {
@@ -403,6 +404,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
+  const [laneBulkMenu, setLaneBulkMenu] = useState<{ x: number; y: number } | null>(null);
   const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);
   const [laneGithubPrTags, setLaneGithubPrTags] = useState<GitHubPrListItem[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
@@ -1132,11 +1134,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [deletingLaneIds, detailLaneId, lanesById, selectDetailLane, selectableFilteredLaneIds]);
 
   const handleRowContextMenu = useCallback((laneId: string, event: React.MouseEvent) => {
+    // A row inside a multi-selection acts on the selection, the way Finder
+    // does; a row outside it keeps its own single-lane menu.
+    if (multiSelectedLaneIds.size > 1 && multiSelectedLaneIds.has(laneId)) {
+      setLaneContextMenu(null);
+      setLaneBulkMenu({ x: event.clientX, y: event.clientY });
+      return;
+    }
+    setLaneBulkMenu(null);
     const foreignRow = foreignRowByKey.get(laneId);
     // Nothing on an unreachable machine can be acted on.
     if (foreignRow && machineBlockedReason(foreignRow)) return;
     setLaneContextMenu({ laneId, x: event.clientX, y: event.clientY });
-  }, [foreignRowByKey]);
+  }, [foreignRowByKey, multiSelectedLaneIds]);
 
   // The overview's "…" button opens the same menu, just under the button.
   const openLaneMenuAt = useCallback((laneId: string, anchor: DOMRect) => {
@@ -2476,6 +2486,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         )}
       </main>
 
+      {laneBulkMenu ? (
+        <LaneSidebarBulkContextMenu
+          point={laneBulkMenu}
+          laneIds={multiSelectedList}
+          lanesById={lanesById}
+          onClose={() => setLaneBulkMenu(null)}
+          onManage={(ids) => openBatchManage(ids)}
+          onBulkAction={handleGroupBulkAction}
+          onClearSelection={clearMultiSelection}
+        />
+      ) : null}
       {laneContextMenu && !contextMenuForeignRow ? (
         <LaneSidebarContextMenu
           menu={laneContextMenu}
