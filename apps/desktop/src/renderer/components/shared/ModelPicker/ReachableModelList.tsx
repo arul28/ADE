@@ -153,7 +153,7 @@ export const ReachableModelList = memo(function ReachableModelList({
                   disabled={!proxySignInAvailable || proxySigningIn != null}
                   title={proxySignInAvailable ? undefined : "ADE's proxy cannot run on this machine."}
                   onClick={() => onProxySignIn(subscriptionProvider)}
-                  className="shrink-0 rounded border border-white/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="shrink-0 rounded border border-fg/[0.12] px-2 py-0.5 text-[10px] font-semibold text-fg/85 hover:bg-fg/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {proxySigningIn === subscriptionProvider ? "Signing in…" : "Sign in"}
                 </button>
@@ -253,7 +253,7 @@ const ReachableModelRow = memo(function ReachableModelRow({
         "group mx-0.5 flex items-center gap-2 rounded-md border px-2 py-1 transition-colors",
         selected
           ? "border-violet-400/30 bg-violet-500/[0.08]"
-          : "border-transparent hover:border-white/[0.08] hover:bg-white/[0.03]",
+          : "border-transparent hover:border-fg/[0.08] hover:bg-fg/[0.03]",
         disabled && "opacity-50",
       )}
     >
@@ -277,7 +277,7 @@ const ReachableModelRow = memo(function ReachableModelRow({
           <span
             data-reachable-route-tag=""
             title="ADE starts its local proxy to translate between this harness and the model's endpoint."
-            className="shrink-0 rounded-sm bg-white/[0.05] px-1 py-px text-[9.5px] font-medium leading-none text-muted-fg/70"
+            className="shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px text-[9.5px] font-medium leading-none text-muted-fg/70"
           >
             {routeTag}
           </span>
@@ -296,7 +296,7 @@ const ReachableModelRow = memo(function ReachableModelRow({
             onClick={() => onTest(group, model)}
             aria-label={`Test ${model.label}`}
             className={cn(
-              "rounded border border-white/[0.1] px-1.5 py-px text-[10px] font-medium text-fg/75 hover:bg-white/[0.06] disabled:opacity-45",
+              "rounded border border-fg/[0.1] px-1.5 py-px text-[10px] font-medium text-fg/75 hover:bg-fg/[0.06] disabled:opacity-45",
               !testState && !selected && "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
             )}
           >
@@ -353,8 +353,8 @@ export function HarnessChipRow({
               md ? "h-7 px-2.5 text-[11.5px]" : "h-6 px-2 text-[10.5px]",
               active
                 ? "border-violet-400/35 bg-violet-500/[0.12] text-fg"
-                : "border-white/[0.08] bg-white/[0.02] text-fg/75 hover:border-white/[0.14] hover:text-fg",
-              disabled && "cursor-not-allowed opacity-40 hover:border-white/[0.08] hover:text-fg/75",
+                : "border-fg/[0.08] bg-fg/[0.02] text-fg/75 hover:border-fg/[0.14] hover:text-fg",
+              disabled && "cursor-not-allowed opacity-40 hover:border-fg/[0.08] hover:text-fg/75",
             )}
           >
             <ProviderLogo family={bodyLogoFamily(harness)} size={md ? 13 : 11} />

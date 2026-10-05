@@ -281,7 +281,7 @@ export function TimelineToolbar({
       {/* ── Row 0: Surface + lane (commits). The page's top rail, the same
           height and hairline as the sidebar tab row. ── */}
       <div className="ade-page-rail gap-2 px-3">
-        <div role="tablist" aria-label="History view" className="flex h-7 shrink-0 items-center rounded-[8px] bg-white/[0.04] p-0.5">
+        <div role="tablist" aria-label="History view" className="flex h-7 shrink-0 items-center rounded-[8px] bg-fg/[0.04] p-0.5">
           {SURFACE_OPTIONS.map(({ value, label, Icon, tip }) => (
             <PaneTooltip key={value} label={tip}>
               <button
@@ -294,7 +294,7 @@ export function TimelineToolbar({
                 onClick={() => setSurface(value)}
                 className={cn(
                   "flex h-6 items-center gap-1.5 rounded-[6px] px-2 text-[12px] font-medium transition-colors duration-100",
-                  surface === value ? "bg-white/[0.09] text-fg" : "text-muted-fg hover:text-fg",
+                  surface === value ? "bg-fg/[0.09] text-fg" : "text-muted-fg hover:text-fg",
                   WORK_TOOL_CHROME_FOCUS,
                 )}
                 data-testid={`history-surface-${value}`}
@@ -334,7 +334,7 @@ export function TimelineToolbar({
       </div>
 
       {showActivityControls ? (
-      <div className="flex flex-col gap-2 border-b border-white/[0.06] px-3 py-2">
+      <div className="flex flex-col gap-2 border-b border-fg/[0.06] px-3 py-2">
       {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
@@ -360,7 +360,7 @@ export function TimelineToolbar({
         </div>
 
         {/* Separator */}
-        <div className="h-4 w-px bg-white/[0.06]" />
+        <div className="h-4 w-px bg-fg/[0.06]" />
 
         {/* Scope selector */}
         <div className="flex items-center gap-0.5">
@@ -384,7 +384,7 @@ export function TimelineToolbar({
         </div>
 
         {/* Separator */}
-        <div className="h-4 w-px bg-white/[0.06]" />
+        <div className="h-4 w-px bg-fg/[0.06]" />
 
         {/* Search */}
         <div className="relative flex-1">
@@ -398,7 +398,7 @@ export function TimelineToolbar({
             value={filters.searchQuery}
             onChange={handleSearch}
             className={cn(
-              "h-8 w-full rounded-md border border-white/[0.06] bg-white/[0.03]",
+              "h-8 w-full rounded-md border border-fg/[0.06] bg-fg/[0.03]",
               "pl-7 pr-3 font-mono text-xs text-[var(--color-fg)]",
               "placeholder:text-[var(--color-muted-fg)]/50 focus:border-[var(--color-accent)]/40 focus:outline-none",
             )}
@@ -473,7 +473,7 @@ export function TimelineToolbar({
 
         {/* Divider dot */}
         {uniqueCategories.length > 0 && (
-          <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
+          <Circle size={3} weight="fill" className="mx-0.5 text-fg/[0.08]" />
         )}
 
         {/* Status chips */}
@@ -507,7 +507,7 @@ export function TimelineToolbar({
         })}
 
         {/* Divider dot */}
-        <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
+        <Circle size={3} weight="fill" className="mx-0.5 text-fg/[0.08]" />
 
         {/* Time range chips */}
         {TIME_RANGES.map(({ value, label }) => (
@@ -529,7 +529,7 @@ export function TimelineToolbar({
 
         {/* Divider dot */}
         {uniqueLanes.length > 0 && (
-          <Circle size={3} weight="fill" className="mx-0.5 text-white/[0.08]" />
+          <Circle size={3} weight="fill" className="mx-0.5 text-fg/[0.08]" />
         )}
 
         {/* Lane chips */}
@@ -693,11 +693,11 @@ function LaneGitActionsMenu({
           style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
-          <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+          <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
             {actionGroups.map((group, groupIndex) => (
               <div
                 key={group.id}
-                className={cn(groupIndex > 0 ? "border-t border-white/[0.06] pt-1" : undefined)}
+                className={cn(groupIndex > 0 ? "border-t border-fg/[0.06] pt-1" : undefined)}
               >
                 <div className="px-2 py-1 font-sans text-[10px] font-semibold text-muted-fg">
                   {group.label}
@@ -713,7 +713,7 @@ function LaneGitActionsMenu({
                       onClick={() => void run(action.id)}
                       className={cn(
                         "flex w-full flex-col rounded px-2 py-1.5 text-left outline-none transition-colors",
-                        "hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-40",
+                        "hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-40",
                       )}
                     >
                       <span
@@ -733,12 +733,12 @@ function LaneGitActionsMenu({
               </div>
             ))}
             {notice ? (
-              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-accent" title={notice}>
+              <div className="truncate border-t border-fg/[0.06] px-2 py-1 font-mono text-[10px] text-accent" title={notice}>
                 {notice}
               </div>
             ) : null}
             {error ? (
-              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-red-300" title={error}>
+              <div className="truncate border-t border-fg/[0.06] px-2 py-1 font-mono text-[10px] text-red-300" title={error}>
                 {error}
               </div>
             ) : null}
@@ -779,7 +779,7 @@ function ColumnSettingsMenu({
           style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
-          <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+          <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
             <div className="px-2 py-1 font-sans text-[11px] font-medium text-muted-fg">
               Columns
             </div>
@@ -788,7 +788,7 @@ function ColumnSettingsMenu({
                 key={column.id}
                 className={cn(
                   "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
-                  "font-sans text-[12px] text-fg hover:bg-white/[0.04]",
+                  "font-sans text-[12px] text-fg hover:bg-fg/[0.04]",
                 )}
               >
                 <input

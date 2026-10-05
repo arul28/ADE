@@ -256,7 +256,7 @@ export function BackgroundJobRunRow({
           : <CaretRight size={10} weight="bold" className="shrink-0 text-fg/40" aria-hidden />}
       </button>
       {open ? (
-        <ul className="mt-1 min-w-0 max-w-[var(--chat-content-width,52rem)] border-l border-white/[0.08] pl-3">
+        <ul className="mt-1 min-w-0 max-w-[var(--chat-content-width,52rem)] border-l border-fg/[0.08] pl-3">
           {members.map((member) => (
             <BackgroundJobListItem
               key={member.key}

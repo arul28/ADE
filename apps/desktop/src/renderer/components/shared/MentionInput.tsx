@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { PaperPlaneTilt, Paperclip } from "@phosphor-icons/react";
 import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
-import { MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ChatAttachmentTray } from "../chat/ChatAttachmentTray";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 
@@ -198,7 +198,7 @@ export function MentionInput({
               fontFamily: SANS_FONT,
               textTransform: "uppercase",
               letterSpacing: "1px",
-              color: "#71717A",
+              color: "var(--color-muted-fg)",
               borderBottom: "1px solid #2a2535",
             }}
           >
@@ -210,7 +210,7 @@ export function MentionInput({
               className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
               style={{
                 background: index === selectedIndex ? "#A78BFA18" : "transparent",
-                color: index === selectedIndex ? "#FAFAFA" : "#A1A1AA",
+                color: index === selectedIndex ? "var(--color-fg)" : "var(--color-secondary-fg)",
               }}
               onMouseDown={(event) => {
                 event.preventDefault();
@@ -228,7 +228,7 @@ export function MentionInput({
               {participant.role ? (
                 <span
                   className="ml-auto shrink-0 text-[9px] uppercase tracking-wider"
-                  style={{ color: "#52525B", fontFamily: SANS_FONT }}
+                  style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", fontFamily: SANS_FONT }}
                 >
                   {participant.role}
                 </span>
@@ -261,9 +261,9 @@ export function MentionInput({
                 disabled={disabled}
                 className="inline-flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] transition-opacity hover:opacity-90 disabled:opacity-40"
                 style={{
-                  border: "1px solid color-mix(in srgb, var(--chat-accent) 18%, rgba(255,255,255,0.08))",
+                  border: `1px solid color-mix(in srgb, var(--chat-accent) 18%, ${fgTint(8)})`,
                   background: "color-mix(in srgb, var(--chat-accent) 10%, rgba(16,12,24,0.92))",
-                  color: "#D4D4D8",
+                  color: "color-mix(in srgb, var(--color-fg) 85%, var(--color-bg))",
                   fontFamily: MONO_FONT,
                 }}
               >
@@ -289,7 +289,7 @@ export function MentionInput({
               className="shrink-0 flex items-center gap-1.5 rounded-[var(--chat-radius-pill)] px-3 py-2 text-[11px] font-bold uppercase tracking-[0.16em] transition-opacity disabled:opacity-40"
               style={{
                 background: "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 90%, white 10%) 0%, color-mix(in srgb, var(--chat-accent) 66%, #60A5FA 34%) 100%)",
-                color: "#0F0D14",
+                color: "var(--color-accent-fg)",
                 fontFamily: MONO_FONT,
                 letterSpacing: "1px",
               }}
@@ -319,10 +319,10 @@ export function MentionInput({
             autoCapitalize="sentences"
             spellCheck={true}
             rows={1}
-            className="block w-full min-w-0 max-w-full resize-none rounded-[var(--chat-radius-card)] border border-white/8 bg-black/12 px-4 py-3 text-[12px] outline-none transition-colors placeholder:text-white/24 disabled:opacity-50"
+            className="block w-full min-w-0 max-w-full resize-none rounded-[var(--chat-radius-card)] border border-fg/8 bg-black/12 px-4 py-3 text-[12px] outline-none transition-colors placeholder:text-white/24 disabled:opacity-50"
             style={{
               fontFamily: MONO_FONT,
-              color: "#FAFAFA",
+              color: "var(--color-fg)",
               lineHeight: "1.55",
               minHeight: 72,
               maxHeight: 160,

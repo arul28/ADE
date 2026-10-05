@@ -365,7 +365,7 @@ function ResetCreditNoticeRow({
           disabled={spending}
           onClick={() => { void spend(); }}
           data-testid="reset-credit-use"
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-white/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Use reset
         </button>
@@ -624,7 +624,7 @@ function TurnDiffSummaryFallback({
   const threadAdditions = threadFiles.reduce((sum, file) => sum + file.additions, 0);
   const threadDeletions = threadFiles.reduce((sum, file) => sum + file.deletions, 0);
   return (
-    <div className="my-2 w-full max-w-full rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
+    <div className="my-2 w-full max-w-full rounded-lg border border-fg/10 bg-fg/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="inline-flex items-center gap-1.5 font-semibold text-fg/85">
           <FileCode size={13} weight="bold" aria-hidden />
@@ -929,7 +929,7 @@ function ChatOriginDivider({ icon, label, className, testId }: {
   return (
     <div
       className={cn(
-        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--chat-fg,#e6e6e6))]",
+        "flex w-full items-center gap-2.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-[color:color-mix(in_srgb,var(--chat-accent)_72%,var(--color-fg))]",
         className,
       )}
       data-testid={testId}
@@ -1195,7 +1195,7 @@ function UnprocessedMessageAction({
           <button
             type="button"
             disabled={running}
-            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/58 transition-colors hover:bg-white/[0.06] hover:text-fg/82 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/58 transition-colors hover:bg-fg/[0.06] hover:text-fg/82 disabled:pointer-events-none disabled:opacity-55"
             onClick={() => onEdit(event)}
           >
             Edit
@@ -1205,7 +1205,7 @@ function UnprocessedMessageAction({
           <button
             type="button"
             disabled={running}
-            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/72 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/72 disabled:pointer-events-none disabled:opacity-55"
             onClick={() => void dismiss()}
           >
             Dismiss
@@ -1262,7 +1262,7 @@ function MessageCopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
+        "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
       onClick={() => void copy(value)}
@@ -1481,7 +1481,7 @@ function InlineDisclosureRow({
         type="button"
         aria-expanded={expandable ? open : undefined}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-white/[0.04]",
+          "flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.04]",
           !expandable && "cursor-default hover:bg-transparent",
         )}
         onClick={() => {
@@ -1491,7 +1491,7 @@ function InlineDisclosureRow({
         {expandable ? (
           open ? <CaretDown size={10} weight="bold" className="text-fg/28" /> : <CaretRight size={10} weight="bold" className="text-fg/28" />
         ) : (
-          <span className="ml-[2px] inline-flex h-1.5 w-1.5 rounded-full bg-white/12" aria-hidden="true" />
+          <span className="ml-[2px] inline-flex h-1.5 w-1.5 rounded-full bg-fg/12" aria-hidden="true" />
         )}
         <div className="min-w-0 flex-1">{summary}</div>
       </button>
@@ -1613,12 +1613,12 @@ function CollapsibleCard({
   const isOpen = forceOpen === true ? !userCollapsed : open;
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "transition-all hover:border-white/[0.08]", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
+    <div className={cn(GLASS_CARD_CLASS, "transition-all hover:border-fg/[0.08]", className)} style={styleProp ?? SURFACE_INLINE_CARD_STYLE}>
       <button
         type="button"
         aria-expanded={isOpen}
         aria-controls={panelId}
-        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors hover:bg-white/[0.02]"
+        className="flex w-full items-center gap-2.5 px-4 py-3 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors hover:bg-fg/[0.02]"
         onClick={() => {
           if (forceOpen === true) {
             setUserCollapsed((v) => !v);
@@ -1630,7 +1630,7 @@ function CollapsibleCard({
         {isOpen ? <CaretDown size={10} weight="bold" className="text-violet-400/40" /> : <CaretRight size={10} weight="bold" className="text-violet-400/40" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
-      {isOpen ? <div id={panelId} className="border-t border-white/[0.05] px-4 pb-4 pt-3">{children}</div> : null}
+      {isOpen ? <div id={panelId} className="border-t border-fg/[0.05] px-4 pb-4 pt-3">{children}</div> : null}
     </div>
   );
 }
@@ -2038,7 +2038,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           ) : null}
           {timedOutLabel ? (
             <span
-              className="inline-flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
+              className="inline-flex items-center gap-1 rounded-md border border-fg/[0.07] bg-fg/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
               title={event.backgroundCwdHint ? `Running in ${event.backgroundCwdHint}` : undefined}
             >
               auto-backgrounded after {timedOutLabel}
@@ -2259,12 +2259,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
+      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
         <span className="select-none text-amber-500/40">$ </span>
         {event.command}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
           {event.output}
         </pre>
       ) : null}
@@ -2631,7 +2631,7 @@ function renderEvent(
             <span className="group-open:hidden">What the agent was told</span>
             <span className="hidden group-open:inline">Hide what the agent was told</span>
           </summary>
-          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-white/[0.02] p-2 font-sans leading-relaxed text-fg/60">
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-fg/[0.02] p-2 font-sans leading-relaxed text-fg/60">
             {event.text}
           </pre>
         </details>
@@ -2688,7 +2688,7 @@ function renderEvent(
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
-                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-[#fef3c7] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
                 title="Undo the file changes the agent made after this message. Conversation stays intact."
                 aria-label="Undo file changes after this message"
                 onClick={() => options.onRewindFiles?.({
@@ -2746,7 +2746,7 @@ function renderEvent(
                     {parsed.chips.map((label, idx) => (
                       <span
                         key={`ios-chip-${idx}`}
-                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
+                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-[#ecfeff]/85 align-baseline"
                         title={label}
                         data-testid="user-message-ios-context-chip"
                       >
@@ -2885,7 +2885,7 @@ function renderEvent(
           "group relative overflow-hidden rounded-xl border p-0",
           isFailed
             ? "border-red-500/12 bg-gradient-to-br from-red-950/20 to-red-950/5"
-            : "border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 via-[#0a0e14] to-[#0d0d10]",
+            : "border-cyan-500/10 bg-gradient-to-br from-cyan-950/25 via-(color:--color-surface-recessed) to-(color:--chat-canvas-bg)",
         )}
       >
         {/* Subtle top accent line */}
@@ -3102,7 +3102,7 @@ function renderEvent(
     const duration = formatCompactDuration(event.durationMs);
     const isRunning = event.status === "running";
     return (
-      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
+      <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
         {isRunning ? <ChatStatusGlyph status="working" size={12} /> : <Circle size={10} weight="fill" className="shrink-0 text-fg/32" />}
         <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-fg/38">wait</span>
         <span className="min-w-0 truncate">{duration ? `Sleeping ${duration}` : "Sleeping"}</span>
@@ -3762,7 +3762,7 @@ function renderEvent(
           )}
         </div>
         {isPlanApproval && bodyText.trim().length > 0 ? (
-          <div className="mt-2 rounded-lg border border-white/[0.06] bg-black/15 px-3 py-2">
+          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2">
             <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         ) : null}
@@ -3817,7 +3817,7 @@ function renderEvent(
               <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
               </summary>
-              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-white/[0.06] bg-black/15 px-3 py-2">
+              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55">
                   {errorCopyValue}
                 </div>
@@ -4074,9 +4074,9 @@ function renderEvent(
   /* ── Fallback ── */
   return (
     <div className="flex items-center gap-3 py-0.5">
-      <div className="h-px flex-1 bg-white/6" />
+      <div className="h-px flex-1 bg-fg/6" />
       <span className="font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/20">event</span>
-      <div className="h-px flex-1 bg-white/6" />
+      <div className="h-px flex-1 bg-fg/6" />
     </div>
   );
 }
@@ -4119,13 +4119,13 @@ function TurnSourcesChip({
       <span>{label}</span>
     </>
   );
-  const className = "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45";
+  const className = "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45";
   return onOpen ? (
     <button
       type="button"
       onClick={() => onOpen(turnId)}
       title="Show the sources used in this turn"
-      className={cn(className, "transition-colors hover:border-white/[0.16] hover:text-fg/75")}
+      className={cn(className, "transition-colors hover:border-fg/[0.16] hover:text-fg/75")}
       data-testid="turn-sources-chip"
     >
       {body}
@@ -4489,7 +4489,7 @@ function DoneTurnDivider({
       aria-expanded={proofOpen}
       onClick={() => setProofOpen((open) => !open)}
       title={proofOpen ? "Hide the proof captured in this turn" : "Show the proof captured in this turn"}
-      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-white/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-white/[0.16] hover:text-fg/75"
+      className="inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-fg/[0.07] px-1.5 py-px font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/45 transition-colors hover:border-fg/[0.16] hover:text-fg/75"
     >
       <Cube size={10} weight="bold" aria-hidden />
       {turnProof.length} proof
@@ -4503,7 +4503,7 @@ function DoneTurnDivider({
           aria-expanded={usageDetailsOpen}
           aria-label={`${usageDetailsOpen ? "Hide" : "Show"} details from this turn`}
           onClick={() => setUsageDetailsOpen((open) => !open)}
-          className="rounded-md py-0.5 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
+          className="rounded-md py-0.5 transition-colors hover:bg-fg/[0.025] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35"
         >
           {content}
         </button>
@@ -4519,7 +4519,7 @@ function DoneTurnDivider({
           aria-label="Fork from here"
           title="Fork from here: a new chat with the conversation up to this point"
           onClick={() => onForkFromTurn({ turnId: event.turnId!, timestamp })}
-          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-white/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--chat-fg,#e6e6e6))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/35 transition-[color,opacity] hover:bg-fg/[0.05] hover:text-[color:color-mix(in_srgb,var(--chat-accent)_80%,var(--color-fg))] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--chat-accent)]/40 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/turnend:opacity-100"
         >
           <GitFork size={11} weight="bold" aria-hidden />
         </button>
@@ -4569,7 +4569,7 @@ function DoneTurnDivider({
             animate={{ opacity: 1, height: "auto", y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-white/[0.08] pl-4"
+            className="mt-2 w-full max-w-[var(--chat-content-width,52rem)] overflow-hidden border-l border-fg/[0.08] pl-4"
           >
             <div
               data-testid="done-turn-usage-detail"
@@ -4912,14 +4912,14 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
-          <span className="h-px flex-1 bg-white/[0.06]" />
+          <span className="h-px flex-1 bg-fg/[0.06]" />
           <span
             className="shrink-0 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/38"
             title={turnModel?.label ?? undefined}
           >
             {turnDividerLabel ?? "Turn"}
           </span>
-          <span className="h-px flex-1 bg-white/[0.06]" />
+          <span className="h-px flex-1 bg-fg/[0.06]" />
         </div>
       ) : null}
       {envelope.event.type === "turn_fold" ? (
@@ -8268,7 +8268,7 @@ function AgentChatMessageListMain({
                   type="button"
                   onClick={onRetryOlderHistory}
                   disabled={loadingOlderHistory}
-                  className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+                  className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-fg/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
                   aria-label={loadingOlderHistory ? "Loading earlier messages" : "Retry loading earlier messages"}
                   aria-busy={loadingOlderHistory}
                   title={olderHistoryError}

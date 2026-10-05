@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { motion } from "motion/react";
 import { ArrowSquareOut, ChatTeardropText, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -126,14 +127,14 @@ export function ThreadCommentEditor({
             if (canSave) onSave(body.trim());
           }
         }}
-        className="w-full resize-none rounded-md border border-white/[0.08] bg-black/25 px-2 py-1.5 font-sans text-[12px] leading-[1.5] text-fg/90 outline-none placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]"
+        className="w-full resize-none rounded-md border border-fg/[0.08] bg-black/25 px-2 py-1.5 font-sans text-[12px] leading-[1.5] text-fg/90 outline-none placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]"
       />
       {error ? <div className="font-sans text-[11px] text-red-300/85">{error}</div> : null}
       <div className="flex items-center justify-end gap-1.5">
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+          className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
         >
           Cancel
         </button>
@@ -145,7 +146,7 @@ export function ThreadCommentEditor({
             "rounded-md px-2 py-0.5 font-sans text-[11px] font-medium transition-colors",
             canSave
               ? "bg-[var(--chat-accent)] text-white hover:brightness-110"
-              : "cursor-not-allowed bg-white/[0.06] text-fg/30",
+              : "cursor-not-allowed bg-fg/[0.06] text-fg/30",
           )}
         >
           {saveLabel}
@@ -181,7 +182,7 @@ export function ThreadCommentListItem({
   return (
     <div
       className={cn(
-        "group/comment flex flex-col gap-1 rounded-lg px-2.5 py-2 transition-colors hover:bg-white/[0.035]",
+        "group/comment flex flex-col gap-1 rounded-lg px-2.5 py-2 transition-colors hover:bg-fg/[0.035]",
         !comment.includeInNextSend && "opacity-60",
       )}
       data-testid="thread-comment-item"
@@ -193,11 +194,11 @@ export function ThreadCommentListItem({
         </div>
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/comment:opacity-100 focus-within:opacity-100">
           {onJump ? (
-            <button type="button" aria-label="Show in thread" title="Show in thread" onClick={onJump} className="rounded p-1 text-fg/45 hover:bg-white/[0.06] hover:text-fg/85">
+            <button type="button" aria-label="Show in thread" title="Show in thread" onClick={onJump} className="rounded p-1 text-fg/45 hover:bg-fg/[0.06] hover:text-fg/85">
               <ArrowSquareOut size={12} />
             </button>
           ) : null}
-          <button type="button" aria-label="Edit comment" title="Edit" onClick={onStartEdit} className="rounded p-1 text-fg/45 hover:bg-white/[0.06] hover:text-fg/85">
+          <button type="button" aria-label="Edit comment" title="Edit" onClick={onStartEdit} className="rounded p-1 text-fg/45 hover:bg-fg/[0.06] hover:text-fg/85">
             <PencilSimple size={12} />
           </button>
           <button type="button" aria-label="Delete comment" title="Delete" onClick={onDelete} className="rounded p-1 text-fg/45 hover:bg-red-500/15 hover:text-red-200">
@@ -320,7 +321,7 @@ export function ComposerThreadCommentsButton({
           "inline-flex h-7 shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap font-sans text-[11px] font-semibold tabular-nums transition-colors",
           carrying
             ? "rounded-l-full border-r border-black/15 bg-[var(--chat-accent)] pl-2.5 pr-2 text-white hover:brightness-110"
-            : "rounded-full bg-white/[0.05] px-2 text-fg/50 hover:bg-white/[0.08]",
+            : "rounded-full bg-fg/[0.05] px-2 text-fg/50 hover:bg-fg/[0.08]",
         )}
       >
         <ChatTeardropText size={14} weight={carrying ? "fill" : "regular"} aria-hidden />
@@ -355,10 +356,10 @@ export function ComposerThreadCommentsButton({
               role="dialog"
               aria-label="Thread comments"
               data-testid="composer-thread-comments-menu"
-              className="pointer-events-auto absolute flex max-h-[min(60vh,520px)] flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute flex max-h-[min(60vh,520px)] flex-col overflow-hidden", POPOVER_SURFACE_CLASS)}
               style={menuStyleAbove(rect)}
             >
-              <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
+              <div className="flex items-center justify-between border-b border-fg/[0.06] px-3 py-2">
                 <span className="font-sans text-[12px] font-semibold text-fg/85">Comments</span>
                 <span className="font-sans text-[10.5px] text-fg/45">
                   {sendCount > 0 ? `${sendCount} go with your next message` : "None go with your next message"}
@@ -377,7 +378,7 @@ export function ComposerThreadCommentsButton({
                 ))}
               </div>
               {actions.error && !actions.editingId ? (
-                <div className="border-t border-white/[0.06] px-3 py-1.5 font-sans text-[11px] text-red-300/85">{actions.error}</div>
+                <div className="border-t border-fg/[0.06] px-3 py-1.5 font-sans text-[11px] text-red-300/85">{actions.error}</div>
               ) : null}
             </div>
           </ViewportOverlayPortal>

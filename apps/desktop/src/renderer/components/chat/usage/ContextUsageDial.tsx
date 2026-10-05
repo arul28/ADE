@@ -177,13 +177,13 @@ export function ContextUsageDial({
 
   const inner =
     !isMeasured ? (
-      <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-white/[0.12] text-[9px] font-semibold text-fg/55">
+      <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-fg/[0.12] text-[9px] font-semibold text-fg/55">
         {usage.state === "unknown" ? "?" : "…"}
       </span>
     ) : ratio != null ? (
       <span className="relative inline-flex h-5 w-5 shrink-0 items-center justify-center">
         <svg viewBox="0 0 20 20" className="h-5 w-5 -rotate-90" aria-hidden>
-          <circle cx="10" cy="10" r={RING_RADIUS} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-white/[0.09]" />
+          <circle cx="10" cy="10" r={RING_RADIUS} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-fg/[0.09]" />
           <circle
             cx="10"
             cy="10"

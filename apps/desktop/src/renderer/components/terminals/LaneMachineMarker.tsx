@@ -27,7 +27,7 @@ export function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }
       <span
         role="img"
         tabIndex={0}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/45"
+        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-fg/[0.08] bg-fg/[0.03] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/45"
         aria-label={`${marker.machineName}, offline`}
         data-machine-id={marker.machineId}
         data-machine-marker-mode={marker.mode}

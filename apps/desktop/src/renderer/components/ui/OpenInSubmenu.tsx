@@ -17,7 +17,7 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { EditorTargetLogo } from "./EditorTargetLogo";
 
 const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.07] focus-visible:bg-white/[0.07] outline-none";
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-fg/[0.07] focus-visible:bg-fg/[0.07] outline-none";
 
 export function OpenInSubmenu({
   rootPath,

@@ -57,7 +57,7 @@ function PrimaryButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-8 shrink-0 items-center gap-2 rounded-lg px-3.5 text-[12px] font-semibold text-[#0F0D14] transition-[filter,background-color] duration-100 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100",
+        "inline-flex h-8 shrink-0 items-center gap-2 rounded-lg px-3.5 text-[12px] font-semibold text-(color:--ade-on-tone-ink) transition-[filter,background-color] duration-100 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100",
         tone === "warning" ? "bg-amber-300" : "bg-violet-400",
       )}
     >
@@ -86,7 +86,7 @@ function SurfaceSwitch({
     <div
       role="radiogroup"
       aria-label="Open as"
-      className="inline-flex h-7 shrink-0 items-center rounded-full border border-white/[0.07] bg-white/[0.03] p-0.5"
+      className="inline-flex h-7 shrink-0 items-center rounded-full border border-fg/[0.07] bg-fg/[0.03] p-0.5"
     >
       {surfaces.map((surface) => {
         const selected = surface === value;
@@ -100,7 +100,7 @@ function SurfaceSwitch({
             onClick={() => onChange(surface)}
             className={cn(
               "inline-flex h-6 items-center rounded-full px-2.5 text-[11px] font-medium transition-colors duration-100 disabled:cursor-not-allowed",
-              selected ? "bg-white/[0.1] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]" : "text-muted-fg/70 hover:text-fg",
+              selected ? "bg-fg/[0.1] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]" : "text-muted-fg/70 hover:text-fg",
             )}
           >
             {SURFACE_LABELS[surface]}
@@ -118,7 +118,7 @@ function LockedLanePill({ name, color, reason }: { name: string; color: string |
         tabIndex={0}
         data-testid="import-locked-lane"
         aria-label={`${name}. ${reason}`}
-        className="inline-flex h-7 min-w-0 max-w-[260px] cursor-default items-center gap-1.5 rounded-full border border-white/[0.05] px-2.5 text-[11px] text-fg/75 outline-none focus-visible:border-white/[0.16]"
+        className="inline-flex h-7 min-w-0 max-w-[260px] cursor-default items-center gap-1.5 rounded-full border border-fg/[0.05] px-2.5 text-[11px] text-fg/75 outline-none focus-visible:border-fg/[0.16]"
       >
         <LaneDot color={color} />
         <span className="min-w-0 truncate">{name}</span>
@@ -154,7 +154,7 @@ export function ImportActionBar({
 
   if (openExisting) {
     return (
-      <footer className="shrink-0 border-t border-white/[0.06] px-5 py-3">
+      <footer className="shrink-0 border-t border-fg/[0.06] px-5 py-3">
         <div className="flex items-center gap-3">
           <span className="text-[11.5px] text-muted-fg/65">Already in ADE.</span>
           <div className="ml-auto">
@@ -175,7 +175,7 @@ export function ImportActionBar({
   );
 
   return (
-    <footer className="shrink-0 border-t border-white/[0.06] px-5 py-3">
+    <footer className="shrink-0 border-t border-fg/[0.06] px-5 py-3">
       {plan.surface ? (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
           <SurfaceSwitch surfaces={plan.surfaces} value={plan.surface} disabled={busy} onChange={onSurfaceChange} />
@@ -208,7 +208,7 @@ export function ImportActionBar({
                   type="button"
                   onClick={onCancelCopy}
                   disabled={busy}
-                  className="inline-flex h-8 items-center rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-8 items-center rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-fg/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -226,7 +226,7 @@ export function ImportActionBar({
                     type="button"
                     onClick={() => onRun(secondary)}
                     disabled={busy}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-medium text-muted-fg/80 transition-colors hover:bg-fg/[0.05] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {running === secondary.mode ? <CircleNotch size={12} className="animate-spin" /> : null}
                     {secondary.label}

@@ -43,6 +43,7 @@ import {
   inlineBadge,
   outlineButton,
   primaryButton,
+  fgTint,
 } from "../lanes/laneDesignTokens";
 import { SettingsSectionShell } from "./settingsSectionUi";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -153,7 +154,7 @@ function PolicyChip({ label }: { label: string }) {
       style={inlineBadge(COLORS.textSecondary, {
         fontSize: 10.5,
         padding: "2px 8px",
-        background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+        background: COLORS.hoverBg,
         border: `1px solid ${COLORS.borderMuted}`,
         color: COLORS.textSecondary,
       })}
@@ -181,7 +182,7 @@ function BreakdownBar({ categories }: { categories: StorageCategorySnapshot[] })
           height: 14,
           borderRadius: 7,
           overflow: "hidden",
-          background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
+          background: fgTint(7),
         }}
       >
         {legend.map((category) => (
@@ -253,12 +254,12 @@ function DiskGauge({
           height: 8,
           borderRadius: 5,
           overflow: "hidden",
-          background: "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+          background: COLORS.hoverBg,
         }}
       >
         {adeUsed > 0 ? <div style={{ flexGrow: adeUsed, flexBasis: 0, minWidth: 3, background: COLORS.accent }} /> : null}
         {otherUsed > 0 ? (
-          <div style={{ flexGrow: otherUsed, flexBasis: 0, background: "color-mix(in srgb, var(--color-fg) 24%, transparent)" }} />
+          <div style={{ flexGrow: otherUsed, flexBasis: 0, background: fgTint(24) }} />
         ) : null}
         {freeBytes > 0 ? <div style={{ flexGrow: freeBytes, flexBasis: 0 }} /> : null}
       </div>
@@ -425,7 +426,7 @@ function ItemRow({
         padding: "8px 10px",
         borderRadius: 9,
         border: `1px solid ${COLORS.borderMuted}`,
-        background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+        background: fgTint(2.5),
         opacity: muted ? 0.72 : 1,
       }}
     >
@@ -642,7 +643,7 @@ function DatabaseCard({
               padding: "9px 11px",
               borderRadius: 9,
               border: `1px solid ${COLORS.borderMuted}`,
-              background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+              background: fgTint(2.5),
             }}
           >
             <div style={{ minWidth: 0 }}>
@@ -1631,7 +1632,7 @@ function StorageSkeleton() {
   const shimmer: React.CSSProperties = {
     ...PANEL_STYLE,
     height: 96,
-    background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+    background: fgTint(4),
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

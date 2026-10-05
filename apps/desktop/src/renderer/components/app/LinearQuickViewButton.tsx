@@ -50,6 +50,7 @@ import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -62,7 +63,7 @@ const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 
 const HEADER_STATUS_MENU_ROW_CLASS =
-  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg/90";
+  "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] font-medium text-muted-fg/80 transition-colors duration-150 hover:bg-fg/[0.06] hover:text-fg/90";
 
 type LinearVisibilityCacheEntry = {
   reader: unknown;
@@ -604,10 +605,10 @@ export function LinearQuickViewButton({
       panelStyle={{
         background: "var(--ade-shell-surface, #121019)",
         borderRadius: 12,
-        borderColor: "rgba(255, 255, 255, 0.12)",
+        borderColor: fgTint(12),
       }}
     >
-      <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
+      <div className="flex items-start gap-3 border-b border-fg/10 px-4 py-3">
         <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
           <Warning size={15} weight="fill" />
         </span>
@@ -636,7 +637,7 @@ export function LinearQuickViewButton({
           </div>
         ) : null}
       </div>
-      <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
+      <div className="flex justify-end gap-2 border-t border-fg/10 px-4 py-3">
         <button
           type="button"
           className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"

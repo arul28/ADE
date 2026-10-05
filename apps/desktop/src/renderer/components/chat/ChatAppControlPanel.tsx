@@ -1736,12 +1736,12 @@ export function ChatAppControlPanel({
           data-testid="app-control-stage"
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[10px]",
-            "bg-[var(--color-surface)] ring-1 ring-inset ring-white/[0.08]",
+            "bg-[var(--color-surface)] ring-1 ring-inset ring-fg/[0.08]",
           )}
         >
           {snapshot?.url ? (
             <div
-              className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
+              className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-fg/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
               title={snapshot.url}
             >
               {snapshot.title ?? snapshot.url}
@@ -1806,7 +1806,7 @@ export function ChatAppControlPanel({
                 />
                 {screenshotBlank ? (
                   <div className="absolute inset-0 flex items-center justify-center rounded-[9px] border border-amber-300/18 bg-black/70 px-4 text-center backdrop-blur-sm">
-                    <div className="max-w-[360px] text-[11px] leading-5 text-amber-100/85">
+                    <div className="max-w-[360px] text-[11px] leading-5 text-[#fef3c7]/85">
                       Renderer attached, but the screenshot is blank. Open the app window or menu bar item, then refresh Snapshot.
                     </div>
                   </div>
@@ -1895,8 +1895,8 @@ export function ChatAppControlPanel({
                   onClick={() => void reconnect()}
                   className={cn(
                     "inline-flex h-[26px] items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 text-[11px] font-medium",
-                    "border border-white/[0.12] bg-white/[0.05] text-fg/85",
-                    "transition-colors duration-[120ms] ease-out hover:bg-white/[0.1]",
+                    "border border-fg/[0.12] bg-fg/[0.05] text-fg/85",
+                    "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.1]",
                     "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                     "disabled:cursor-not-allowed disabled:opacity-45",
                   )}
@@ -1965,7 +1965,7 @@ export function ChatAppControlPanel({
         <div className={cn(WORK_TOOL_CHROME_ROW, "flex-nowrap justify-end gap-1")} data-testid="app-control-idle-row">
           {remoteLabel ? (
             <span
-              className="mr-auto inline-flex h-5 shrink-0 items-center rounded-full bg-white/[0.06] px-2 text-[10px] font-medium text-fg/70"
+              className="mr-auto inline-flex h-5 shrink-0 items-center rounded-full bg-fg/[0.06] px-2 text-[10px] font-medium text-fg/70"
               title={`App Control runs on ${remoteLabel}`}
             >
               remote: {remoteLabel}
@@ -1994,7 +1994,7 @@ export function ChatAppControlPanel({
 
       {/* Control-mode keyboard input — the one action the frame can't express. */}
       {mode === "control" && hasActiveSession ? (
-        <div className="flex h-[28px] shrink-0 items-center gap-1 border-t border-white/[0.08] pl-2 focus-within:bg-white/[0.02]">
+        <div className="flex h-[28px] shrink-0 items-center gap-1 border-t border-fg/[0.08] pl-2 focus-within:bg-fg/[0.02]">
           <Keyboard size={10} className="shrink-0 text-muted-fg/55" />
           <input
             value={typeText}
@@ -2011,8 +2011,8 @@ export function ChatAppControlPanel({
             disabled={Boolean(busy) || !canType}
             onClick={typeIntoApp}
             className={cn(
-              "inline-flex h-full shrink-0 items-center justify-center border-l border-white/[0.06] px-2 text-[10.5px] font-medium",
-              "text-fg/80 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]",
+              "inline-flex h-full shrink-0 items-center justify-center border-l border-fg/[0.06] px-2 text-[10.5px] font-medium",
+              "text-fg/80 transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06]",
               "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
               "disabled:cursor-not-allowed disabled:opacity-45",
             )}
@@ -2026,14 +2026,14 @@ export function ChatAppControlPanel({
 
       {/* Inspect-mode detail — what the last click attached. */}
       {mode === "inspect" ? (
-        <div className="flex min-h-[28px] shrink-0 items-center gap-2 border-t border-white/[0.08] px-2">
+        <div className="flex min-h-[28px] shrink-0 items-center gap-2 border-t border-fg/[0.08] px-2">
           {focusElement ? (
             <>
               <span className="min-w-0 truncate text-[11px] font-medium text-fg/85" title={elementLabel(focusElement)}>
                 {elementLabel(focusElement)}
               </span>
               {elementSubLabel(focusElement) ? (
-                <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.03] px-1 font-mono text-[9px] uppercase tracking-wide text-muted-fg">
+                <span className="shrink-0 rounded border border-fg/[0.08] bg-fg/[0.03] px-1 font-mono text-[9px] uppercase tracking-wide text-muted-fg">
                   {elementSubLabel(focusElement)}
                 </span>
               ) : null}
@@ -2071,7 +2071,7 @@ export function ChatAppControlPanel({
             }}
             className={cn(
               "ml-auto inline-flex h-[20px] shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[10.5px] font-medium",
-              "text-muted-fg transition-colors duration-[120ms] ease-out hover:bg-white/[0.06] hover:text-fg/85",
+              "text-muted-fg transition-colors duration-[120ms] ease-out hover:bg-fg/[0.06] hover:text-fg/85",
               "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
               "disabled:cursor-not-allowed disabled:opacity-45",
             )}

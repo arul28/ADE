@@ -34,7 +34,7 @@ import {
   type PrRequirementChip,
 } from "../../../../shared/prNextStep";
 import { classifyPrAuthor, normalizeGithubLogin } from "../../../../shared/prBotIdentity";
-import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { PrAgentAvatar } from "./PrAgentAvatar";
 import { PrMarkdownEditor } from "./PrMarkdownEditor";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
@@ -157,7 +157,7 @@ function CardHeader({ icon: Glyph, title, onClose, trailing }: { icon: Icon; tit
       <span className="flex-1" />
       {trailing}
       {onClose ? (
-        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-0.5 hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-0.5 hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       ) : null}
@@ -306,7 +306,7 @@ export function PrMergeCard({
             <div className="mt-0.5 text-[12px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>{step.detail}</div>
           ) : null}
         </div>
-        <button type="button" onClick={onClose} aria-label="Close panel" className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       </div>
@@ -315,7 +315,7 @@ export function PrMergeCard({
       {step.chips.length > 0 ? (
         <ul
           className="flex flex-col overflow-hidden rounded-xl"
-          style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
+          style={{ background: fgTint(3.5), boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
           data-testid="pr-merge-chips"
         >
           {step.chips.map((chip, index) => (
@@ -325,7 +325,7 @@ export function PrMergeCard({
                 onClick={() => actions.onChip?.(chip)}
                 data-chip={chip.id}
                 data-state={chip.state}
-                className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] hover:bg-white/[0.03]"
+                className="flex h-8 w-full items-center gap-2 px-3 text-left text-[12px] hover:bg-fg/[0.03]"
                 style={{ color: chip.state === "pass" ? COLORS.textSecondary : COLORS.textPrimary, background: "none", border: "none", cursor: actions.onChip ? "pointer" : "default", fontFamily: SANS_FONT }}
               >
                 <span className="inline-flex shrink-0" style={{ color: CHIP_COLOR[chip.state] }}><ChipGlyph state={chip.state} /></span>
@@ -367,8 +367,8 @@ export function PrMergeCard({
               onClick={() => runAction(secondary.action)}
               disabled={secondary.busy}
               data-testid="pr-merge-card-secondary"
-              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-white/[0.08]"
-              style={{ color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-fg) 6%, transparent)", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
+              className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium hover:bg-fg/[0.08]"
+              style={{ color: COLORS.textSecondary, background: COLORS.hoverBg, border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
             >
               {secondary.busy ? <CircleNotch size={12} className="animate-spin" /> : null}
               {secondary.label}
@@ -382,10 +382,10 @@ export function PrMergeCard({
               title={mergeBlockedReason ?? anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
               data-testid="pr-merge-anyway"
               data-bypass={anyway.bypass || undefined}
-              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
+              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-fg/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
               style={{
                 color: anyway.bypass ? COLORS.danger : COLORS.textSecondary,
-                background: anyway.bypass ? `color-mix(in srgb, ${COLORS.danger} 12%, transparent)` : "color-mix(in srgb, var(--color-fg) 6%, transparent)",
+                background: anyway.bypass ? `color-mix(in srgb, ${COLORS.danger} 12%, transparent)` : fgTint(6),
                 border: "none",
                 cursor: "pointer",
                 fontFamily: SANS_FONT,
@@ -516,7 +516,7 @@ function PrStackMergeCard({
         <button
           type="button"
           onClick={() => void window.ade.app.openExternal(pr.githubUrl)}
-          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] hover:bg-white/[0.07]"
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] hover:bg-fg/[0.07]"
           style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer", fontFamily: SANS_FONT }}
         >
           GitHub <ArrowSquareOut size={12} />
@@ -539,7 +539,7 @@ function PrStackMergeCard({
                 className="h-7 flex-1 rounded-md text-[11.5px]"
                 style={{
                   color: method === option ? COLORS.textPrimary : COLORS.textMuted,
-                  background: method === option ? "color-mix(in srgb, var(--color-fg) 10%, transparent)" : "transparent",
+                  background: method === option ? fgTint(10) : "transparent",
                   border: `1px solid ${COLORS.border}`,
                   cursor: "pointer",
                   fontFamily: SANS_FONT,
@@ -659,7 +659,7 @@ export function PrCommentCard({
     <div ref={cardRef} data-testid="pr-comment-card" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
         {canReview ? (
-          <div role="tablist" aria-label="Comment or review" className="inline-flex rounded-lg p-0.5" style={{ background: "color-mix(in srgb, var(--color-fg) 6%, transparent)" }}>
+          <div role="tablist" aria-label="Comment or review" className="inline-flex rounded-lg p-0.5" style={{ background: COLORS.hoverBg }}>
             {(["comment", "review"] as const).map((value) => (
               <button
                 key={value}
@@ -670,7 +670,7 @@ export function PrCommentCard({
                 className="rounded-md px-3 py-1 text-[12px] font-medium capitalize"
                 style={{
                   color: mode === value ? COLORS.textPrimary : COLORS.textMuted,
-                  background: mode === value ? "color-mix(in srgb, var(--color-fg) 11%, transparent)" : "transparent",
+                  background: mode === value ? fgTint(11) : "transparent",
                   border: "none",
                   cursor: "pointer",
                   fontFamily: SANS_FONT,
@@ -684,7 +684,7 @@ export function PrCommentCard({
           <span className="text-[11px] font-semibold uppercase tracking-[0.07em]" style={{ color: COLORS.textMuted }}>Comment</span>
         )}
         <span className="flex-1" />
-        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-1 hover:bg-white/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+        <button type="button" onClick={onClose} aria-label="Close panel" className="inline-flex rounded p-1 hover:bg-fg/[0.07]" style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}>
           <X size={12} />
         </button>
       </div>
@@ -703,7 +703,7 @@ export function PrCommentCard({
                 className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[12px] font-medium"
                 style={{
                   color: on ? tone : COLORS.textMuted,
-                  background: on ? `color-mix(in srgb, ${tone} 13%, transparent)` : "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+                  background: on ? `color-mix(in srgb, ${tone} 13%, transparent)` : fgTint(4),
                   boxShadow: on ? `inset 0 0 0 1px color-mix(in srgb, ${tone} 38%, transparent)` : "none",
                   border: "none",
                   cursor: "pointer",
@@ -720,7 +720,7 @@ export function PrCommentCard({
       <div
         className="overflow-hidden rounded-xl"
         data-testid="pr-comment-card-editor"
-        style={{ background: "color-mix(in srgb, var(--color-fg) 3.5%, transparent)", boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
+        style={{ background: fgTint(3.5), boxShadow: `inset 0 0 0 1px ${COLORS.border}` }}
       >
         <PrMarkdownEditor
           value={draft}

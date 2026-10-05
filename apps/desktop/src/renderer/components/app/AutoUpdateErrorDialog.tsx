@@ -100,7 +100,7 @@ export function AutoUpdateErrorDialog({
                 <Dialog.Close asChild>
                   <button
                     type="button"
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-fg/[0.06] hover:text-fg"
                     aria-label="Close update error details"
                   >
                     <X size={14} weight="bold" />
@@ -108,7 +108,7 @@ export function AutoUpdateErrorDialog({
                 </Dialog.Close>
               </div>
 
-              <dl className="mt-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-white/[0.08] bg-black/15 p-3 text-xs">
+              <dl className="mt-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-fg/[0.08] bg-black/15 p-3 text-xs">
                 <dt className="text-muted-fg">Version</dt>
                 <dd className="text-right text-fg">
                   {snapshot.currentVersion ? `v${snapshot.currentVersion}` : "Current"} → {versionLabel(snapshot.version)}

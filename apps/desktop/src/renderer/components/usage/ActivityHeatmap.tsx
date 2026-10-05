@@ -10,6 +10,7 @@ import {
 } from "./activityIntensity";
 import { USAGE_TEXT } from "./usageDesign";
 import { cn } from "../ui/cn";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const HEATMAP_GAP = 3;
 const HEATMAP_MIN_CELL = 6;
@@ -53,12 +54,12 @@ const HEATMAP_RAMP: Record<Exclude<ActivityLevel, 0>, RampPair> = {
 };
 
 /** Empty day: structure, not damage — a visible tile, not a hole in the card. */
-const HEATMAP_EMPTY_BG = "color-mix(in srgb, var(--color-fg) 7%, transparent)";
-const HEATMAP_EMPTY_EDGE = "inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 5%, transparent)";
+const HEATMAP_EMPTY_BG = fgTint(7);
+const HEATMAP_EMPTY_EDGE = `inset 0 0 0 1px ${fgTint(5)}`;
 /** Ring drawn just outside today's cell, into the 3px gutter. */
-const HEATMAP_TODAY_RING = "0 0 0 1.5px color-mix(in srgb, var(--color-fg) 45%, transparent)";
+const HEATMAP_TODAY_RING = `0 0 0 1.5px ${fgTint(45)}`;
 /** Forced-contrast displays get a hairline on every tile so steps stay crisp. */
-const HEATMAP_CONTRAST_EDGE = "inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 26%, transparent)";
+const HEATMAP_CONTRAST_EDGE = `inset 0 0 0 1px ${fgTint(26)}`;
 
 export type HeatmapLayout = {
   rows: number;

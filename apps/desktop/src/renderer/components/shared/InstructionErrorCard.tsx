@@ -47,7 +47,7 @@ export function InstructionErrorCard({
               type="button"
               disabled={disabled}
               onClick={onRetry}
-              className="mt-3 inline-flex h-8 items-center justify-center rounded-lg bg-amber-400/90 px-3 text-[12.5px] font-semibold text-[#1a1206] transition-colors hover:bg-amber-300 disabled:opacity-60"
+              className="mt-3 inline-flex h-8 items-center justify-center rounded-lg bg-amber-400/90 px-3 text-[12.5px] font-semibold text-(color:--ade-on-tone-ink) transition-colors hover:bg-amber-300 disabled:opacity-60"
             >
               {retryLabel}
             </button>

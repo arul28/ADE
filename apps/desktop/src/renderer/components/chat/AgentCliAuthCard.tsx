@@ -54,11 +54,11 @@ const AMBER_ACCENT: AccentTokens = {
 const CLAUDE_ACCENT: AccentTokens = {
   cardBorder: "border-[#d97757]/16",
   cardBg: "bg-[#d97757]/[0.06]",
-  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-[#f3b79b]",
-  title: "text-[#f5cbb6]",
+  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-tone-[#f3b79b]",
+  title: "text-tone-[#f5cbb6]",
   label: "text-[#d97757]/65",
   runButton:
-    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
+    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-tone-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
 };
 
 function CommandCopyButton({ command, label }: { command: string; label: string }) {
@@ -68,7 +68,7 @@ function CommandCopyButton({ command, label }: { command: string; label: string 
     <button
       type="button"
       onClick={() => void copy(command)}
-      className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
+      className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
       title={copied ? "Copied" : `Copy ${label}`}
     >
       <CopySimple size={12} weight={copied ? "fill" : "regular"} aria-hidden />
@@ -289,7 +289,7 @@ export function AgentCliAuthCard({
                 <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
                   Install
                 </div>
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                   <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                     {agentCli.installCommand}
                   </code>
@@ -309,7 +309,7 @@ export function AgentCliAuthCard({
               <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
                 Authenticate
               </div>
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
                   {agentCli.authCommand}
                 </code>
@@ -355,7 +355,7 @@ export function AgentCliAuthCard({
                     "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-55",
                     loginStarted
                       ? "border-emerald-400/40 bg-emerald-400/[0.12] text-emerald-100 shadow-[0_0_18px_rgba(52,211,153,0.16)] hover:border-emerald-400/55 hover:bg-emerald-400/[0.18]"
-                      : "border-white/[0.1] bg-white/[0.04] text-fg/70 hover:border-white/[0.18] hover:bg-white/[0.07] hover:text-fg",
+                      : "border-fg/[0.1] bg-fg/[0.04] text-fg/70 hover:border-fg/[0.18] hover:bg-fg/[0.07] hover:text-fg",
                   )}
                   title="Re-check authentication and resend the last message"
                 >

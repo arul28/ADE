@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 
 export const panelStyle: CSSProperties = {
   display: "grid",
@@ -12,7 +12,7 @@ export const machineRowStyle: CSSProperties = {
   padding: "12px 14px",
   borderRadius: 8,
   border: `1px solid ${COLORS.border}`,
-  background: "rgba(255,255,255,0.02)",
+  background: fgTint(2),
 };
 
 export const inlineDetailStyle: CSSProperties = {

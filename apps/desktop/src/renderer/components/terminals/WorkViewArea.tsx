@@ -25,6 +25,7 @@ import { useAppStore, type WorkDraftKind, type WorkGridSet } from "../../state/a
 import { findGridSetForSession } from "../../lib/workGrid";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { TerminalView } from "./TerminalView";
@@ -278,7 +279,7 @@ function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
   })), [rows]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
       {renderedRows.map((row) => (
         <div key={row.key} className="min-h-[1.25em] whitespace-pre">
           {row.runs.map(({ item: run, key }) => (
@@ -518,7 +519,7 @@ function WorkCliContinuationComposer({
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {modelDescriptor ? (
-                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-fg/80">
+                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/80">
                   <ModelRowLogo
                     modelFamily={modelDescriptor.family}
                     cliCommand={modelDescriptor.cliCommand}
@@ -533,7 +534,7 @@ function WorkCliContinuationComposer({
                 <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
               )}
               {resolvedLaunch?.reasoningEffort ? (
-                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
+                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
                   {resolvedLaunch.reasoningEffort}
                 </span>
               ) : null}
@@ -543,7 +544,7 @@ function WorkCliContinuationComposer({
                 </span>
               ) : null}
               {permissionLabel ? (
-                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
+                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
                   {permissionLabel}
                 </span>
               ) : null}
@@ -556,7 +557,7 @@ function WorkCliContinuationComposer({
               className={cn(
                 "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                 sending || !draft.trim()
-                  ? "bg-white/[0.06] text-muted-fg/20"
+                  ? "bg-fg/[0.06] text-muted-fg/20"
                   : "bg-white/90 text-zinc-900 hover:bg-white",
               )}
             >
@@ -701,7 +702,7 @@ function ClosedCliSessionSurface({
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-fg/[0.06] pb-2">
           <div className="min-w-0 truncate text-[11px] text-muted-fg/60">
             {endedLabel}
             {exitLabel ? ` · ${exitLabel}` : ""}
@@ -726,7 +727,7 @@ function ClosedCliSessionSurface({
         {useSnapshotPreview ? (
           <TerminalSnapshotTranscript rows={snapshotRows} />
         ) : (
-          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
             {transcriptText}
           </pre>
         )}
@@ -989,13 +990,13 @@ function SessionSurface({
     <div
       className="flex h-full w-full items-center justify-center px-6"
       style={{
-        background: "radial-gradient(circle at top, color-mix(in srgb, var(--color-fg) 5%, transparent) 0%, transparent 42%), var(--color-card)",
+        background: `radial-gradient(circle at top, ${fgTint(5)} 0%, transparent 42%), var(--color-card)`,
       }}
     >
       <div className="ade-liquid-glass-menu flex w-full max-w-md flex-col gap-4 rounded-lg px-5 py-5">
         {/* Header: tool logo + session name */}
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: "rgba(255,255,255,0.05)" }}>
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ background: fgTint(5) }}>
             <ToolLogo toolType={session.toolType} size={16} />
           </div>
           <div className="min-w-0 flex-1">

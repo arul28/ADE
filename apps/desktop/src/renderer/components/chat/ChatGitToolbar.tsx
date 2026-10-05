@@ -535,13 +535,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         </button>
         {allPrs.length > 1 ? (
           <div style={{ zIndex: Z_LAYERS.popover }} className="pointer-events-none invisible absolute right-0 top-full w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
-            <div className="rounded-lg border border-white/[0.10] bg-[#17171b] p-1.5 shadow-2xl shadow-black/30">
+            <div className="rounded-lg border border-fg/[0.10] bg-(color:--work-popover-bg) p-1.5 shadow-2xl shadow-black/30">
               <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">Pull requests · {allPrs.length}</div>
               {allPrs.map((candidate) => (
                 <button
                   type="button"
                   key={candidate.id}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.06]"
                   onClick={() => openPr(candidate)}
                   title={candidate.title || `PR #${candidate.githubPrNumber}`}
                 >
@@ -561,7 +561,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
               ))}
               <button
                 type="button"
-                className="mt-0.5 flex w-full items-center rounded-md border-t border-white/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-white/[0.06] hover:text-fg/85"
+                className="mt-0.5 flex w-full items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
                 onClick={() => {
                   if (runtimePin) {
                     // The local PR tab cannot resolve a foreign machine's rows,
@@ -630,10 +630,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         </button>
 
         {/* Vertical separator */}
-        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-white/[0.08]" />
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-fg/[0.08]" />
 
         {/* Live status preview */}
-        <div className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-white/[0.04] bg-white/[0.015] px-2.5 py-1 font-mono text-[10px] text-fg/55">
+        <div className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-fg/[0.04] bg-fg/[0.015] px-2.5 py-1 font-mono text-[10px] text-fg/55">
           {prChecksLoading && !prChecks ? (
             <span className="inline-flex items-center gap-1 text-fg/35">
               <CircleNotch size={9} className="animate-spin" />
@@ -773,4 +773,4 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 });
 
 const btnBase =
-  "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex items-center gap-1 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-2 py-0.5 font-sans text-[10px] font-medium text-fg/50 transition-all hover:border-violet-400/15 hover:bg-violet-500/[0.04] hover:text-fg/80 disabled:pointer-events-none disabled:opacity-40";

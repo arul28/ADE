@@ -70,7 +70,7 @@ export function ImportFloatingBadge({
         // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
         data-draft-depart="fade"
         className={cn(
-          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
+          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-(color:--color-card) to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",
         )}
       >
@@ -103,7 +103,7 @@ export function ImportFloatingBadge({
           type="button"
           aria-label="Hide import hint"
           onClick={dismiss}
-          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-white/10 hover:text-fg hover:opacity-100"
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg/70 opacity-70 transition-opacity hover:bg-fg/10 hover:text-fg hover:opacity-100"
         >
           <X size={11} />
         </button>

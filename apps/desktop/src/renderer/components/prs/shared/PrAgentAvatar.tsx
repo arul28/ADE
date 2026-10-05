@@ -14,7 +14,7 @@ import opencodeLogo from "@lobehub/icons-static-svg/icons/opencode.svg";
 import googleLogo from "@lobehub/icons-static-svg/icons/google-color.svg";
 
 import { classifyPrAuthor, type PrAuthorIdentity } from "../../../../shared/prBotIdentity";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { PrUserAvatar } from "./PrUserAvatar";
 
 /**
@@ -87,7 +87,7 @@ export const PrAgentAvatar = React.memo(function PrAgentAvatar({
         title={title}
         data-agent-kind={identity.kind}
         className="inline-flex shrink-0 items-center justify-center rounded-[5px]"
-        style={{ width: size, height: size, background: "color-mix(in srgb, var(--color-fg) 7%, transparent)" }}
+        style={{ width: size, height: size, background: fgTint(7) }}
       >
         {mark.mono ? (
           <span

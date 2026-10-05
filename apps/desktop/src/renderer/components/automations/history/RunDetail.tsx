@@ -60,7 +60,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
           {(laneId || prUrl) ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {laneId ? (
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[10.5px] text-muted-fg/75">
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 text-[10.5px] text-muted-fg/75">
                   <GitBranch size={11} weight="regular" />
                   <span className="font-mono">{laneId.slice(0, 12)}</span>
                 </span>
@@ -90,7 +90,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
               <div className="text-sm font-semibold text-fg">Automation thread</div>
               <div className="mt-1 text-xs text-muted-fg/60">This thread lives in Automations history. It doesn't appear in the Work tab.</div>
             </div>
-            <div className="h-[560px] overflow-hidden rounded-xl border border-white/[0.06] bg-black/[0.18]">
+            <div className="h-[560px] overflow-hidden rounded-xl border border-fg/[0.06] bg-black/[0.18]">
               <AgentChatPane
                 laneId={detail.chatSession.laneId}
                 initialSessionSummary={detail.chatSession}
@@ -119,7 +119,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
                 return (
                   <div
                     key={action.id}
-                    className={cn("rounded-lg border p-3", isLaneSetup ? "border-accent/25 bg-accent/[0.04]" : "border-white/[0.06] bg-black/[0.14]")}
+                    className={cn("rounded-lg border p-3", isLaneSetup ? "border-accent/25 bg-accent/[0.04]" : "border-fg/[0.06] bg-black/[0.14]")}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-sm font-semibold text-fg">
@@ -130,7 +130,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
                     </div>
                     {action.errorMessage ? <div className="mt-2 text-sm text-red-400">{action.errorMessage}</div> : null}
                     {action.output ? (
-                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/[0.3] p-3 font-mono text-[11px] leading-relaxed text-fg/80">
+                      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-fg/[0.06] bg-black/[0.3] p-3 font-mono text-[11px] leading-relaxed text-fg/80">
                         {action.output}
                       </pre>
                     ) : null}

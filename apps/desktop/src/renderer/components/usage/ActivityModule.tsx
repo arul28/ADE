@@ -37,6 +37,7 @@ import {
   USAGE_SEGMENT_ITEM_IDLE_CLASS,
   USAGE_TEXT,
 } from "./usageDesign";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -521,7 +522,7 @@ function SkeletonChart({ height, bars }: { height: number; bars: number }) {
         <span
           key={index}
           className="flex-1 rounded-t-[2px]"
-          style={{ height: Math.max(4, fraction * height), background: "color-mix(in srgb, var(--color-fg) 8%, transparent)" }}
+          style={{ height: Math.max(4, fraction * height), background: fgTint(8) }}
         />
       ))}
     </div>
@@ -531,7 +532,7 @@ function SkeletonChart({ height, bars }: { height: number; bars: number }) {
 const EMPTY_BAR_HEIGHTS = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.66, 0.4, 0.54];
 const EMPTY_GRID_COLUMNS = 14;
 const EMPTY_GRID_ROWS = 7;
-const EMPTY_TILE_BG = "color-mix(in srgb, var(--color-fg) 8%, transparent)";
+const EMPTY_TILE_BG = fgTint(8);
 
 /**
  * A day with no data still has a shape. The activity tab previews the grid it

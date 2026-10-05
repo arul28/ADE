@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, CircleNotch, Robot } from "@phosphor-icons/react";
 import type { AiPermissionSettings, LinearAgentOverview, ModelConfig } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
@@ -270,7 +270,7 @@ export function LinearAgentSection({ connected }: { connected: boolean }) {
       ) : null}
 
       {installed && rules.length === 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14, borderRadius: 10, background: "rgba(255,255,255,0.025)", border: `1px solid ${COLORS.border}` }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14, borderRadius: 10, background: fgTint(2.5), border: `1px solid ${COLORS.border}` }}>
           <div>
             <div style={{ fontSize: 12.5, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>Choose the model for your delegations</div>
             <div style={{ ...HINT, marginTop: 2 }}>

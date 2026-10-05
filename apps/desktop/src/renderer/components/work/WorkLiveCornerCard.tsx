@@ -69,6 +69,7 @@ import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
 import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
 import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
 import { showToast } from "../app/toast/toastStore";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 /**
  * The floating live-preview card.
@@ -1113,7 +1114,7 @@ export function WorkLiveCornerCard({
                     style={{
                       background: index === timelineIndex
                         ? hue
-                        : "color-mix(in srgb, var(--color-fg) 24%, transparent)",
+                        : fgTint(24),
                     }}
                   />
                 ))}
@@ -1252,7 +1253,7 @@ export function WorkLiveCornerCard({
                 className={cn(
                   "-mr-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px]",
                   "text-muted-fg/80 transition-colors duration-[120ms] motion-reduce:transition-none",
-                  "hover:bg-white/[0.08] hover:text-fg",
+                  "hover:bg-fg/[0.08] hover:text-fg",
                   "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
                 )}
               >

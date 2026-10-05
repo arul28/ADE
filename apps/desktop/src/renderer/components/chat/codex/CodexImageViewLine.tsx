@@ -133,7 +133,7 @@ function OpenButton({ target }: { target: ImageViewTarget }) {
 function ImageViewTile({ event }: { event: ImageViewEvent }) {
   const target = imageViewTarget(event);
   const src = useImageViewSrc(target);
-  const tileClass = "relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-white/[0.07] bg-black/25";
+  const tileClass = "relative h-[68px] w-[108px] shrink-0 overflow-hidden rounded-md border border-fg/[0.07] bg-black/25";
   const body = src ? (
     <img src={src} alt={target.displayName} loading="lazy" draggable={false} className="h-full w-full object-cover" />
   ) : (
@@ -150,7 +150,7 @@ function ImageViewTile({ event }: { event: ImageViewEvent }) {
       onClick={target.open}
       title={target.localPath ?? target.url ?? target.displayName}
       aria-label={`Open ${target.displayName}`}
-      className={`${tileClass} transition-colors hover:border-white/[0.18]`}
+      className={`${tileClass} transition-colors hover:border-fg/[0.18]`}
     >
       {body}
     </button>
@@ -196,14 +196,14 @@ export function CodexImageViewLine({ event, siblings }: CodexImageViewLineProps)
           <button
             type="button"
             onClick={target.open}
-            className="inline-flex w-fit max-w-full rounded-lg border border-white/[0.07] bg-black/25 p-1 transition-colors hover:border-white/[0.16]"
+            className="inline-flex w-fit max-w-full rounded-lg border border-fg/[0.07] bg-black/25 p-1 transition-colors hover:border-fg/[0.16]"
             aria-label={`Open ${target.displayName}`}
           >
             <PreviewImage src={previewSrc} name={target.displayName} />
           </button>
         ) : (
           // Nothing to open (a data URI): a picture, not a dead button.
-          <span className="inline-flex w-fit max-w-full rounded-lg border border-white/[0.07] bg-black/25 p-1">
+          <span className="inline-flex w-fit max-w-full rounded-lg border border-fg/[0.07] bg-black/25 p-1">
             <PreviewImage src={previewSrc} name={target.displayName} />
           </span>
         )

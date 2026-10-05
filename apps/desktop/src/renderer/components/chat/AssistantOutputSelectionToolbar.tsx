@@ -88,7 +88,7 @@ export function AssistantOutputSelectionToolbar({
     <ViewportOverlayPortal layer="popover">
       <div
         data-testid="assistant-output-selection-toolbar"
-        className="ade-assistant-add-to-chat pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-white/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+        className="ade-assistant-add-to-chat pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-fg/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
         style={{ left: state.left, top: state.top }}
         onMouseDown={keepSelection}
       >
@@ -96,7 +96,7 @@ export function AssistantOutputSelectionToolbar({
           <button
             type="button"
             data-testid="assistant-output-add-to-chat"
-            className={cn(BUTTON_CLASS, "hover:bg-white/[0.07]")}
+            className={cn(BUTTON_CLASS, "hover:bg-fg/[0.07]")}
             title="Quote this in your message"
             onClick={(event) => {
               event.preventDefault();
@@ -118,8 +118,8 @@ export function AssistantOutputSelectionToolbar({
             disabled={!state.canComment}
             className={cn(
               BUTTON_CLASS,
-              onAddToChat && "border-l border-white/[0.08]",
-              state.canComment ? "hover:bg-white/[0.07]" : "cursor-not-allowed text-fg/35",
+              onAddToChat && "border-l border-fg/[0.08]",
+              state.canComment ? "hover:bg-fg/[0.07]" : "cursor-not-allowed text-fg/35",
             )}
             title={state.canComment ? "Leave a comment here. It goes with your next message." : "Wait for the turn to end to comment on this reply."}
             onClick={(event) => {

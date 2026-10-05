@@ -26,7 +26,7 @@ export function RunRow({
       onClick={onSelect}
       className={cn(
         "w-full rounded-lg px-3 py-2.5 text-left transition-colors",
-        selected ? "border-l-2 border-accent bg-white/[0.04]" : "border border-white/[0.06] hover:bg-white/[0.05]",
+        selected ? "border-l-2 border-accent bg-fg/[0.04]" : "border border-fg/[0.06] hover:bg-fg/[0.05]",
       )}
     >
       <div className="flex items-start justify-between gap-3">

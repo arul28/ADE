@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
@@ -42,7 +43,7 @@ function SessionTypeToggle({
     <div
       role="group"
       aria-label="Session type"
-      className="inline-flex h-6 shrink-0 items-center rounded-md border border-white/[0.08] bg-white/[0.02] p-0.5"
+      className="inline-flex h-6 shrink-0 items-center rounded-md border border-fg/[0.08] bg-fg/[0.02] p-0.5"
     >
       {([
         { key: "chat", label: "Chat", Icon: ChatCircleDots },
@@ -59,7 +60,7 @@ function SessionTypeToggle({
             onClick={() => onChange(key)}
             className={cn(
               "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[10.5px] font-medium leading-none transition-colors",
-              active ? "bg-white/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
+              active ? "bg-fg/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
               disabled && "cursor-not-allowed opacity-45",
             )}
           >
@@ -116,7 +117,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {claudeOpen ? (
-          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
+          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CLAUDE_PERMISSION_OPTIONS.map((option) => {
                 const active = option.value === claudeSelectionMode(nativeControls);
@@ -130,7 +131,7 @@ function LaunchNativePermissionControls({
                       }}
                       className={cn(
                         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors",
-                        active ? "bg-white/[0.06] text-fg" : "text-fg/72 hover:bg-white/[0.04]",
+                        active ? "bg-fg/[0.06] text-fg" : "text-fg/72 hover:bg-fg/[0.04]",
                       )}
                       title={option.detail}
                     >
@@ -164,7 +165,7 @@ function LaunchNativePermissionControls({
           <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
         </button>
         {codexOpen ? (
-          <div className="absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md" style={{ zIndex: Z_LAYERS.popover }}>
+          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
             <ul className="py-1">
               {CODEX_PERMISSION_PRESETS.map((option) => {
                 const active = preset === option.value;
@@ -178,7 +179,7 @@ function LaunchNativePermissionControls({
                       }}
                       className={cn(
                         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors",
-                        active ? "bg-white/[0.06] text-fg" : "text-fg/72 hover:bg-white/[0.04]",
+                        active ? "bg-fg/[0.06] text-fg" : "text-fg/72 hover:bg-fg/[0.04]",
                       )}
                       title={option.detail}
                     >
@@ -198,7 +199,7 @@ function LaunchNativePermissionControls({
   if (provider === "cursor") {
     const modeValue = nativeControls.cursorModeId ?? "agent";
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5">
+      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
         <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Mode</span>
         <select
           value={modeValue}
@@ -216,7 +217,7 @@ function LaunchNativePermissionControls({
 
   if (provider === "droid") {
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5">
+      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
         <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Autonomy</span>
         <select
           value={nativeControls.droidPermissionMode}
@@ -236,7 +237,7 @@ function LaunchNativePermissionControls({
   }
 
   return (
-    <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5">
+    <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
       <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Permissions</span>
       <select
         value={nativeControls.opencodePermissionMode}

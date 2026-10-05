@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
@@ -81,10 +82,12 @@ const REASONING_TONE_STYLES: Record<
   auto: {
     color: "#A1A1AA",
     rgb: "161 161 170",
-    trigger: "border-white/[0.06] bg-white/[0.03] text-fg/80 hover:border-white/[0.10] hover:bg-white/[0.055]",
-    chip: "border-white/[0.08] bg-white/[0.055] text-muted-fg/78",
-    thumb: "border-zinc-200/70 bg-zinc-200 text-zinc-950",
-    ridge: "bg-white/20",
+    trigger: "border-fg/[0.06] bg-fg/[0.03] text-fg/80 hover:border-fg/[0.10] hover:bg-fg/[0.055]",
+    chip: "border-fg/[0.08] bg-fg/[0.055] text-muted-fg/78",
+    // Pinned hexes: the light-mode palette remap would turn zinc-200 deep while
+    // zinc-950 text stays deep. A pale chip with dark text reads on any theme.
+    thumb: "border-[#e4e4e7]/70 bg-[#e4e4e7] text-[#09090b]",
+    ridge: "bg-fg/20",
   },
   low: {
     color: "#6EE7B7",
@@ -483,8 +486,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           <div
             data-reasoning-effort-picker-content="true"
             className={cn(
-              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
-              "bg-[#17151A]/96 p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
+              "ade-reasoning-effort-content relative isolate flex w-[232px] flex-col overflow-hidden rounded-xl border border-fg/[0.08]",
+              "bg-(color:--work-popover-bg) p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md",
               isUltraActive && "ade-reasoning-effort-content-ultra",
             )}
             data-reasoning-ultra={isUltraActive ? "true" : undefined}
@@ -501,7 +504,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                   key={displayedEffort ?? "auto"}
                   className="ade-reasoning-effort-word font-semibold"
                   data-direction={effortTransitionDirection}
-                  style={{ color: activeTone.color }}
+                  style={{ color: toneText(activeTone.color) }}
                 >
                   {activeLabel}
                 </span>
@@ -521,7 +524,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
             ) : null}
             <div
               data-reasoning-slider-track
-              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-[#242327] p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
+              className="ade-reasoning-slider-track relative mt-3 h-[18px] touch-none cursor-grab rounded-md bg-secondary p-[3px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045),inset_0_1px_3px_rgba(0,0,0,0.45)] active:cursor-grabbing"
               onPointerDown={handleTrackPointerDown}
               onPointerMove={handleTrackPointerMove}
               onPointerUp={handleTrackPointerUp}
@@ -568,7 +571,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
                       <span
                         className={cn(
                           "h-1 w-1 rounded-full transition-all duration-200",
-                          isActive ? cn("h-1.5 w-1.5", tone.ridge, "shadow-[0_0_10px_currentColor]") : "bg-white/20",
+                          isActive ? cn("h-1.5 w-1.5", tone.ridge, "shadow-[0_0_10px_currentColor]") : "bg-fg/20",
                         )}
                         aria-hidden
                       />
@@ -631,8 +634,8 @@ const ReasoningEffortTrigger = memo(
               : "h-8 px-2 text-[11px] sm:text-[12px]",
             tone.trigger,
             ultra && "ade-reasoning-effort-trigger-ultra",
-            open && "ring-1 ring-white/[0.06]",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            open && "ring-1 ring-fg/[0.06]",
+            disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
             className,
           )}
         >
@@ -642,7 +645,7 @@ const ReasoningEffortTrigger = memo(
               "shrink-0 font-medium leading-none",
               compact ? "text-[9px]" : "text-[11px] sm:text-[12px]",
             )}
-            style={{ color: tone.color }}
+            style={{ color: toneText(tone.color) }}
           >
             <span className="hidden @sm:inline">{label}</span>
             <span className="@sm:hidden">{shortLabel}</span>

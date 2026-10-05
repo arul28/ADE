@@ -25,6 +25,7 @@ import {
   type ProviderGroupKey,
 } from "../../../../shared/modelCatalog";
 import { cn } from "../../ui/cn";
+import { POPOVER_SURFACE_CLASS } from "../../ui/paneMenuTokens";
 import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { isPiRoutedModel, providerLabel, subProviderKey, subProviderLabel } from "./modelFacts";
@@ -896,8 +897,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     <div
       data-model-picker-content="true"
       className={cn(
-        "flex w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-xl border border-white/[0.08]",
-        "bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+        "flex w-[460px] max-w-[calc(100vw-32px)] flex-col overflow-hidden",
+        POPOVER_SURFACE_CLASS,
       )}
       onKeyDown={handleListKeyDown}
     >
@@ -909,7 +910,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
           providerAuthStatus={effectiveAuth}
         />
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-1.5 border-b border-white/[0.06] px-2.5 py-2">
+          <div className="flex items-center gap-1.5 border-b border-fg/[0.06] px-2.5 py-2">
             <MagnifyingGlass size={13} className="shrink-0 text-muted-fg/55" />
             <input
               ref={searchRef}
@@ -926,7 +927,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 // ring too; `outline-none` alone does not cover it.
                 "text-fg placeholder:text-muted-fg/45 outline-none focus:outline-none focus-visible:outline-none",
                 "shadow-none focus:shadow-none focus-visible:shadow-none focus:ring-0 focus-visible:ring-0",
-                "border-b border-transparent focus-visible:border-white/20",
+                "border-b border-transparent focus-visible:border-fg/20",
               )}
             />
             {/* The harnesses tab lists saved presets, not the model catalog, so
@@ -949,14 +950,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
                 !authOnly
                   ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
-                  : "border-white/[0.08] bg-white/[0.02] text-muted-fg/70 hover:border-white/[0.12] hover:text-fg/85",
+                  : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/70 hover:border-fg/[0.12] hover:text-fg/85",
               )}
             >
               <span
                 aria-hidden
                 className={cn(
                   "relative inline-block h-3 w-5 rounded-full transition-colors",
-                  !authOnly ? "bg-violet-400/70" : "bg-white/[0.10]",
+                  !authOnly ? "bg-violet-400/70" : "bg-fg/[0.10]",
                 )}
               >
                 <span
@@ -975,7 +976,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 	            <div
               role="group"
               aria-label={activeProviderFamily === "pi" ? "Pi providers" : "Provider sources"}
-	              className="flex gap-1 overflow-x-auto border-b border-white/[0.05] bg-[#13111A]/95 px-2.5 py-1 backdrop-blur"
+	              className="flex gap-1 overflow-x-auto border-b border-fg/[0.05] bg-(color:--work-popover-bg) px-2.5 py-1 backdrop-blur"
 	            >
 	              {providerTabs.map((tab) => {
 	                const active = tab.key === activeProviderTabKey;
@@ -990,7 +991,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                       "h-6 shrink-0 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
                       active
                         ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
-                        : "border-white/[0.07] bg-white/[0.02] text-muted-fg/65 hover:border-white/[0.12] hover:text-fg/85",
+                        : "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/65 hover:border-fg/[0.12] hover:text-fg/85",
                     )}
                     onClick={() => setActiveProviderTabKey(tab.key)}
                     onKeyDown={handleProviderTabKeyDown}
@@ -1006,7 +1007,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               model and still honours an explicit pick. This only says which
               account a new chat would start on. */}
           {smartBalanceNote ? (
-            <div className="border-b border-white/[0.05] px-2.5 py-1 text-[10px] leading-tight text-muted-fg/60">
+            <div className="border-b border-fg/[0.05] px-2.5 py-1 text-[10px] leading-tight text-muted-fg/60">
               {smartBalanceNote}
             </div>
           ) : null}

@@ -2708,7 +2708,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveWidth(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive width"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <span aria-hidden="true" className="text-[10px] text-muted-fg/60">×</span>
         <input
@@ -2716,7 +2716,7 @@ export function ChatBuiltInBrowserPanel({
           onChange={(event) => setResponsiveHeight(event.target.value)}
           inputMode="numeric"
           aria-label="Responsive height"
-          className="h-6 w-[58px] rounded-[5px] border border-white/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
+          className="h-6 w-[58px] rounded-[5px] border border-fg/[0.08] bg-black/25 px-1.5 text-center font-mono text-[10.5px] text-fg/85 outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_35%,transparent)]"
         />
         <button
           type="button"
@@ -2774,7 +2774,7 @@ export function ChatBuiltInBrowserPanel({
       onKeyDownCapture={handlePanelKeyDown}
       className="flex h-full min-h-0 min-w-0 flex-col font-sans text-[12px] text-fg/75"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[var(--color-bg)]">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-fg/[0.08] bg-[var(--color-bg)]">
         <BrowserTabStrip
           stripRef={tabStripRef}
           tabs={orderedBrowserTabs}
@@ -2890,7 +2890,7 @@ export function ChatBuiltInBrowserPanel({
         {message ? (
           <div
             className={cn(
-              "flex shrink-0 items-start gap-2 border-b border-white/[0.07] px-2.5 py-1.5 text-[11.5px]",
+              "flex shrink-0 items-start gap-2 border-b border-fg/[0.07] px-2.5 py-1.5 text-[11.5px]",
               message.tone === "error" ? "text-rose-200/85" : "text-fg/75",
             )}
             role={message.tone === "error" ? "alert" : "status"}

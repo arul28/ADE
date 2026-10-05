@@ -28,7 +28,7 @@ export function ChatComposerShell({
         className,
       )}
       style={glowColor ? {
-        boxShadow: `0 0 24px -6px ${glowColor}, 0 0 48px -16px ${glowColor}, 0 26px 64px -34px rgba(0,0,0,0.72), 0 0 0 1px color-mix(in srgb, ${glowColor} 30%, rgba(255,255,255,0.04))`,
+        boxShadow: `0 0 24px -6px ${glowColor}, 0 0 48px -16px ${glowColor}, 0 26px 64px -34px rgba(0,0,0,0.72), 0 0 0 1px color-mix(in srgb, ${glowColor} 30%, color-mix(in srgb, var(--color-fg) 4%, transparent))`,
         borderColor: `color-mix(in srgb, ${glowColor} 30%, transparent)`,
       } : undefined}
       data-chat-composer-mode={mode}

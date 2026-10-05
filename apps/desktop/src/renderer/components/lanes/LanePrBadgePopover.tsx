@@ -117,7 +117,7 @@ export function LanePrBadgePopover({
                 key={candidate.id}
                 role="button"
                 tabIndex={0}
-                className="flex cursor-pointer items-center gap-2 px-3 py-2 transition-colors hover:bg-white/[0.05]"
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 transition-colors hover:bg-fg/[0.05]"
                 onClick={(event) => activate(event, candidate)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -145,7 +145,7 @@ export function LanePrBadgePopover({
             {onOpenList ? (
               <button
                 type="button"
-                className="flex w-full items-center border-t border-white/[0.06] px-3 py-2 text-left text-[10px] transition-colors hover:bg-white/[0.05]"
+                className="flex w-full items-center border-t border-fg/[0.06] px-3 py-2 text-left text-[10px] transition-colors hover:bg-fg/[0.05]"
                 style={{ color: COLORS.textMuted }}
                 onClick={(event) => {
                   event.stopPropagation();

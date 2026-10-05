@@ -5,7 +5,7 @@ import { cn } from "../ui/cn";
  * first snapshot lands does not resize under the pointer when it arrives.
  */
 export function ActivityCardSkeleton({ compact = false }: { compact?: boolean }) {
-  const bar = "rounded-full bg-white/[0.07] motion-safe:animate-pulse";
+  const bar = "rounded-full bg-fg/[0.07] motion-safe:animate-pulse";
   return (
     <div
       aria-hidden

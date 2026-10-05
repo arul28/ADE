@@ -155,7 +155,7 @@ export function TimelineCompactView({
   return (
     <div className="flex flex-1 flex-col min-h-0">
       {/* ---- header ---- */}
-      <div className="flex items-center border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-2">
+      <div className="flex items-center border-b border-fg/[0.06] bg-fg/[0.02] backdrop-blur-xl px-2">
         {activeColumns.map((col) => {
           const active = sortField === col.field;
           const SortIcon = sortDir === "asc" ? CaretUp : CaretDown;
@@ -196,8 +196,8 @@ export function TimelineCompactView({
                 "flex h-7 w-full items-center border-l-2 border-l-transparent px-2",
                 "transition-colors duration-75",
                 selected
-                  ? "border-l-accent bg-white/[0.05]"
-                  : "hover:bg-white/[0.03]",
+                  ? "border-l-accent bg-fg/[0.05]"
+                  : "hover:bg-fg/[0.03]",
                 isEventMachineOffline(ev) && "opacity-50",
               )}
             >

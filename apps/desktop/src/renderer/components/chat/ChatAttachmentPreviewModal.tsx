@@ -152,14 +152,14 @@ export function ChatAttachmentPreviewModal({
       }}
     >
       <div ref={containerRef} className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/8 px-3 py-2">
+        <div className="flex shrink-0 items-center gap-2 border-b border-fg/8 px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[11px] text-fg/80" title={attachmentPath}>
             {title}
           </span>
           <button
             ref={closeButtonRef}
             type="button"
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-white/10 bg-black/40 text-white/75 transition-colors hover:bg-black hover:text-white"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-fg/10 bg-black/40 text-white/75 transition-colors hover:bg-black hover:text-white"
             title="Close"
             aria-label="Close"
             onClick={onClose}

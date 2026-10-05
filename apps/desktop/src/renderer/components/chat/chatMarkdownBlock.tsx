@@ -54,7 +54,7 @@ const PATH_LINK_BASE =
   "inline-flex max-w-full cursor-pointer items-baseline gap-1 whitespace-normal [overflow-wrap:anywhere] rounded-md align-baseline"
   + " decoration-1 underline-offset-[3px] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-1";
 const PATH_LINK_TONE = {
-  neutral: "bg-white/[0.06] text-white/88 decoration-white/40 hover:bg-white/[0.1] hover:text-white focus-visible:ring-white/30",
+  neutral: "bg-(color:--chat-ink)/[0.06] text-(color:--chat-ink)/88 decoration-(color:--chat-ink)/40 hover:bg-(color:--chat-ink)/[0.1] hover:text-(color:--chat-ink) focus-visible:ring-(color:--chat-ink)/30",
   accent: "bg-sky-400/[0.08] text-sky-200/95 decoration-sky-300/45 hover:bg-sky-400/[0.14] hover:text-sky-100 focus-visible:ring-sky-300/40",
 } as const;
 
@@ -283,29 +283,29 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
     ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
     li: ({ children }) => (
-      <li className={neu ? "pl-1 text-white/86" : "pl-1 text-fg/88"}>{children}</li>
+      <li className={neu ? "pl-1 text-(color:--chat-ink)/86" : "pl-1 text-fg/88"}>{children}</li>
     ),
     blockquote: ({ children }) => (
       <blockquote
-        className={neu ? "border-l-2 border-white/20 pl-4 italic text-white/74" : "border-l-2 border-white/20 pl-4 italic text-fg/72"}
+        className={neu ? "border-l-2 border-(color:--chat-ink)/20 pl-4 italic text-(color:--chat-ink)/74" : "border-l-2 border-(color:--chat-ink)/20 pl-4 italic text-fg/72"}
       >
         {children}
       </blockquote>
     ),
     table: ({ children }) => (
-      <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#0A090E]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      <div className="my-4 overflow-x-auto rounded-xl border border-(color:--chat-ink)/[0.06] bg-(color:--chat-table-bg) shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
         <table className="min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]">{children}</table>
       </div>
     ),
-    thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
+    thead: ({ children, node: _, ...props }) => <thead className="bg-(color:--chat-ink)/[0.04]" {...props}>{children}</thead>,
     tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
     tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
     th: ({ children, node: _, ...props }) => (
       <th
         className={
           neu
-            ? "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-white/88 first:rounded-tl-xl last:rounded-tr-xl"
-            : "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
+            ? "break-words border-b border-(color:--chat-ink)/[0.06] px-3 py-2 text-left font-medium text-(color:--chat-ink)/88 first:rounded-tl-xl last:rounded-tr-xl"
+            : "break-words border-b border-(color:--chat-ink)/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
         }
         {...props}
       >
@@ -316,8 +316,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       <td
         className={
           neu
-            ? "break-words border-b border-white/[0.05] px-3 py-2 align-top text-white/82 last:border-r-0"
-            : "break-words border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
+            ? "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-(color:--chat-ink)/82 last:border-r-0"
+            : "break-words border-b border-(color:--chat-ink)/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
         }
         {...props}
       >
@@ -382,8 +382,8 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
               // Wrap at the token, not inside it: `break-all` split identifiers
               // mid-word ("technic|alDetail"). `anywhere` breaks only a token
               // too long for a line of its own.
-              ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
-              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+              ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.1] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-(color:--chat-ink)/90"
+              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.08] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
           }
         >
           {children}
@@ -433,7 +433,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           }}
           className={
             neu
-              ? "text-white/85 underline decoration-white/28 underline-offset-2 transition-colors hover:text-white hover:decoration-white/45"
+              ? "text-(color:--chat-ink)/85 underline decoration-(color:--chat-ink)/28 underline-offset-2 transition-colors hover:text-(color:--chat-ink) hover:decoration-(color:--chat-ink)/45"
               : "text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
           }
         >
@@ -453,11 +453,11 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             ? "ade-bubble-prose text-[length:var(--chat-font-size)] leading-[1.7]"
             : "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
         neu
-          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
+          ? "text-(color:--chat-ink)/92 prose-headings:text-(color:--chat-ink)/95 prose-p:text-(color:--chat-ink)/88 prose-li:text-(color:--chat-ink)/86 prose-strong:text-(color:--chat-ink) prose-blockquote:text-(color:--chat-ink)/76"
           : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
         "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
         "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
-        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
+        "prose-blockquote:border-l-2 prose-blockquote:border-l-(color:--chat-ink)/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-(color:--chat-ink)/[0.08]",
       )}
     >
       <MarkdownBody markdown={markdown} components={components} remarkPlugins={remarkPlugins} />

@@ -54,7 +54,7 @@ import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../sta
 import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
-import { MONO_FONT } from "../lanes/laneDesignTokens";
+import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
@@ -849,7 +849,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       data-machine-marker-mode="glyph"
       role="img"
       aria-label={`On ${machineMarker.machineName}, offline`}
-      className="inline-flex shrink-0 items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-1 py-px leading-none"
+      className="inline-flex shrink-0 items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-1 py-px leading-none"
     >
       <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
     </span>
@@ -892,7 +892,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         data-session-lane-identity={lane.name}
         className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
-        style={{ color: laneAccent ?? undefined }}
+        style={{ color: laneAccent ? toneText(laneAccent) : undefined }}
       >
         <span
           aria-hidden
@@ -949,7 +949,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         title={ctoChipTitle}
         // Same neutral pill as the Subagent/Peer chip below — lineage is
         // identity, and identity never spends a status hue.
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -978,7 +978,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         /* One pill, not a loose glyph beside loose text — same chip idiom as the
            machine marker. Neutral, never amber: lineage is identity, and amber
            means "your move" (see `sessionStatusPresentation.ts`). */
-        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -1079,7 +1079,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     id: "lane",
     icon: <LaneIcon size={13} style={laneAccent ? { color: laneAccent } : undefined} />,
     value: (
-      <span style={laneAccent ? { color: laneAccent } : undefined}>
+      <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
           laneName={lane?.name ?? session.laneName}
           naming={namingLane}
@@ -1493,7 +1493,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         "group/v2-row relative w-full select-none overflow-hidden rounded-md text-left outline-none transition-[background-color,opacity] duration-100",
         launchRowJustAppeared && "ade-launch-row-enter",
         disabledReason ? "cursor-default" : "cursor-pointer",
-        isHighlighted ? "bg-white/[0.06]" : "hover:bg-white/[0.05]",
+        isHighlighted ? "bg-fg/[0.06]" : "hover:bg-fg/[0.05]",
         isMultiSelected && "ring-1 ring-accent/35",
       )}
       {...(disabledReason

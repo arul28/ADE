@@ -226,8 +226,8 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
 // One weight and size wherever a chip sits: inside **bold** prose it must not
 // turn bold, inside a heading it must not grow.
 const CHIP_CLASS =
-  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-white/[0.14]"
-  + " bg-white/[0.08] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
+  "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center gap-1 rounded-md border border-fg/[0.14]"
+  + " bg-fg/[0.08] px-1.5 py-px align-baseline font-sans text-[length:calc(var(--chat-font-size)*11.5/14)]"
   + " font-medium not-italic leading-5 tracking-normal text-white/90";
 
 type ChipFacts = {
@@ -317,7 +317,7 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
     <>
       <span
         ref={hoverCard.triggerRef}
-        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-[filter,background-color] hover:bg-white/[0.14] hover:brightness-125" : ""}`}
+        className={`${CHIP_CLASS}${actionable ? " cursor-pointer transition-[filter,background-color] hover:bg-fg/[0.14] hover:brightness-125" : ""}`}
         style={laneColorStyle(facts.color)}
         data-chip-kind={chip.kind}
         // The token is the truth behind the label; a hover always reveals it.

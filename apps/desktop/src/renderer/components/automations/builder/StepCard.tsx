@@ -31,7 +31,7 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2">
       <span className="min-w-0">
         <span className="block text-[11.5px] text-fg/90">{label}</span>
         {hint ? <span className="mt-0.5 block text-[10px] text-muted-fg/60">{hint}</span> : null}
@@ -124,14 +124,14 @@ export function StepCard({
   return (
     <div
       className={cn(
-        "rounded-xl border bg-white/[0.03] shadow-card",
-        isCleanup ? "border-amber-500/25" : "border-white/[0.07]",
+        "rounded-xl border bg-fg/[0.03] shadow-card",
+        isCleanup ? "border-amber-500/25" : "border-fg/[0.07]",
       )}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-fg/[0.06] px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.04]"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]"
           >
             <Icon size={12} weight="fill" style={{ color: def.accent }} />
           </span>

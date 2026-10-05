@@ -68,8 +68,8 @@ function ActivityMachineChip({ item, size }: { item: AttentionItem; size: number
       className={cn(
         "inline-flex min-w-0 shrink-0 items-center gap-1 rounded-full border px-1.5 py-px leading-none",
         online
-          ? "border-white/[0.09] bg-white/[0.04] text-muted-fg/75"
-          : "border-white/[0.05] bg-white/[0.02] text-muted-fg/40",
+          ? "border-fg/[0.09] bg-fg/[0.04] text-muted-fg/75"
+          : "border-fg/[0.05] bg-fg/[0.02] text-muted-fg/40",
       )}
       title={
         online

@@ -31,6 +31,7 @@ import {
   cardStyle,
   inlineBadge,
   outlineButton,
+  fgTint,
 } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
@@ -486,7 +487,7 @@ export const PrReviewThreadCard = memo(
           onKeyUp={(e) => {
             if (e.key === "Enter" || e.key === " ") setExpanded(true);
           }}
-          className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
+          className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-fg/[0.04]"
           style={containerStyle}
         >
           <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
@@ -549,7 +550,7 @@ export const PrReviewThreadCard = memo(
             type="button"
             aria-label="Collapse thread"
             onClick={() => setExpanded(false)}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] transition-colors hover:bg-white/[0.06]"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] transition-colors hover:bg-fg/[0.06]"
             style={{ color: COLORS.textMuted }}
           >
             <X size={12} weight="bold" />
@@ -639,7 +640,7 @@ export const PrReviewThreadCard = memo(
         {thread.path || canMutate ? (
           <div
             className="flex flex-wrap items-center gap-2 border-t px-4 py-2"
-            style={{ borderColor: COLORS.border, background: "rgba(255,255,255,0.01)" }}
+            style={{ borderColor: COLORS.border, background: fgTint(1) }}
           >
             {thread.path ? (
               <button

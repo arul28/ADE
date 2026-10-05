@@ -265,7 +265,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   return (
     <div className={cn("flex min-h-[220px] overflow-hidden", className)} style={{ maxHeight }}>
       {/* File list (left pane) */}
-      <div className="w-[220px] shrink-0 overflow-y-auto border-r border-white/[0.04] max-sm:w-[150px]">
+      <div className="w-[220px] shrink-0 overflow-y-auto border-r border-fg/[0.04] max-sm:w-[150px]">
         {files.map((file) => {
           const isSelected = selectedPath === file.path;
           return (
@@ -274,7 +274,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
               type="button"
               className={cn(
                 "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors",
-                isSelected ? "bg-white/[0.05]" : "hover:bg-white/[0.03]",
+                isSelected ? "bg-fg/[0.05]" : "hover:bg-fg/[0.03]",
               )}
               onClick={() => void handleSelectFile(file.path)}
             >
@@ -349,8 +349,8 @@ function NestedFileChangesSection({
   const files = useMemo(() => aggregateFiles(summaries), [summaries]);
   if (!files.length) return null;
   return (
-    <details className="group/changes overflow-hidden rounded-lg border border-white/[0.06] bg-black/[0.16]">
-      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-white/[0.03]">
+    <details className="group/changes overflow-hidden rounded-lg border border-fg/[0.06] bg-black/[0.16]">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-2 outline-none transition-colors hover:bg-fg/[0.03]">
         <CaretDown
           size={12}
           weight="bold"
@@ -361,7 +361,7 @@ function NestedFileChangesSection({
           <FileChangesSummary files={files} muted />
         </span>
       </summary>
-      <div className="border-t border-white/[0.05]">
+      <div className="border-t border-fg/[0.05]">
         <FileChangesBrowser
           summaries={summaries}
           sessionId={sessionId}
@@ -409,7 +409,7 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
 
   return (
     <details className={cn("group", CHAT_CARD_WIDTH_CLASS)}>
-      <summary className="cursor-pointer list-none border-b border-white/[0.06] px-0.5 py-2 outline-none">
+      <summary className="cursor-pointer list-none border-b border-fg/[0.06] px-0.5 py-2 outline-none">
         <ChatCardRow
           icon={GitDiff}
           tone="neutral"

@@ -43,7 +43,7 @@ export function ChatSourceIcon({ source, size = 16 }: { source: ChatSource; size
       className={
         showFavicon
           ? "flex shrink-0 items-center justify-center overflow-hidden rounded-[3px]"
-          : "flex shrink-0 items-center justify-center rounded-[4px] border border-white/[0.07] bg-white/[0.04] font-sans font-semibold leading-none text-fg/55"
+          : "flex shrink-0 items-center justify-center rounded-[4px] border border-fg/[0.07] bg-fg/[0.04] font-sans font-semibold leading-none text-fg/55"
       }
       data-testid="chat-source-icon"
     >
@@ -73,7 +73,7 @@ function CopyLinkButton({ link }: { link: string }) {
         void copyTextToClipboard(link).then((ok) => setCopied(ok));
       }}
       onMouseLeave={() => setCopied(false)}
-      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/40 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-fg/80 focus-visible:opacity-100 group-hover:opacity-100"
+      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg/40 opacity-0 transition-opacity hover:bg-fg/[0.06] hover:text-fg/80 focus-visible:opacity-100 group-hover:opacity-100"
       data-testid="chat-source-copy"
     >
       {copied ? <Check size={11} weight="bold" aria-hidden /> : <Copy size={11} aria-hidden />}
@@ -113,7 +113,7 @@ function SourceRow({ source }: { source: ChatSource }) {
   const bodyClass = "flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1 text-left";
   return (
     <div
-      className="group flex min-w-0 items-center rounded-md transition-colors hover:bg-white/[0.035]"
+      className="group flex min-w-0 items-center rounded-md transition-colors hover:bg-fg/[0.035]"
       data-testid="chat-source-row"
     >
       {source.url ? (
@@ -162,7 +162,7 @@ function SourceGroup({
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="ml-[30px] mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
+          className="ml-[30px] mt-0.5 rounded px-1 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
           data-testid={`chat-sources-toggle-${group}`}
         >
           {expanded ? "Show less" : `Show ${hidden} more`}
@@ -228,7 +228,7 @@ export function ChatSourcesPanel({
           <button
             type="button"
             onClick={onShowAll}
-            className="rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
+            className="rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-fg/[0.04] hover:text-fg/75"
             data-testid="chat-sources-show-all"
           >
             This turn · Show all

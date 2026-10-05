@@ -84,7 +84,7 @@ const LINEAR_MARKDOWN_COMPONENTS: Components = buildChatMarkdownComponents("neut
         alt={alt ?? ""}
         title={title}
         loading="lazy"
-        className="my-2 max-w-full rounded-md border border-white/10"
+        className="my-2 max-w-full rounded-md border border-fg/10"
       />
     );
   },
@@ -114,7 +114,7 @@ function PropRow({ label, value, children }: { label: string; value?: string; ch
 function IssueMetadata({ issue, branchName }: { issue: BrowserIssue; branchName: string | null }) {
   const normalized = isNormalizedIssue(issue) ? issue : null;
   return (
-    <dl className="mt-5 border-t border-white/[0.06] pt-3">
+    <dl className="mt-5 border-t border-fg/[0.06] pt-3">
       <PropRow label="Project" value={issueProjectLabel(issue)} />
       <PropRow label="Team" value={issue.teamName ?? issue.teamKey} />
       {normalized?.cycleName ? <PropRow label="Cycle" value={normalized.cycleName} /> : null}
@@ -163,7 +163,7 @@ function RelationGroup({
           key={ref.id}
           type="button"
           disabled={!onOpenIssue}
-          className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-white/[0.04] disabled:hover:bg-transparent"
+          className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-fg/[0.04] disabled:hover:bg-transparent"
           onClick={() => onOpenIssue?.(ref)}
           title={`${ref.identifier} ${ref.title}${ref.stateName ? ` · ${ref.stateName}` : ""}`}
         >
@@ -195,7 +195,7 @@ function IssueRelations({
   const children = issue.childIssues ?? [];
   if (parent.length + blockedBy.length + blocking.length + related.length + children.length === 0) return null;
   return (
-    <section className="mt-5 border-t border-white/[0.06] pt-3" data-linear-relations="true">
+    <section className="mt-5 border-t border-fg/[0.06] pt-3" data-linear-relations="true">
       <RelationGroup title="Parent" refs={parent} onOpenIssue={onOpenIssue} loadingIssueId={loadingIssueId} />
       <RelationGroup
         title="Blocked by"
@@ -256,7 +256,7 @@ function ActivitySection({ issueId }: { issueId: string }) {
             <div className="text-[10px] text-red-400/70">{commentError}</div>
           ) : comments && comments.length > 0 ? (
             comments.map((comment) => (
-              <div key={comment.id} className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2.5 py-2">
+              <div key={comment.id} className="rounded-md border border-fg/[0.05] bg-fg/[0.02] px-2.5 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-medium text-fg/80">{comment.userDisplayName || comment.userName}</span>
                   <span className="text-[10px] text-muted-fg/40">{formatDate(comment.createdAt)}</span>
@@ -292,7 +292,7 @@ function OpenInLinearButton({ url }: { url: string | null | undefined }) {
   return (
     <button
       type="button"
-      className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-white/[0.07] text-muted-fg/70 transition-colors hover:border-white/[0.14] hover:bg-white/[0.04] hover:text-fg"
+      className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-fg/[0.07] text-muted-fg/70 transition-colors hover:border-fg/[0.14] hover:bg-fg/[0.04] hover:text-fg"
       aria-label="Open in Linear"
       title="Open in Linear"
       onClick={() => openIssueUrl(url)}
@@ -318,7 +318,7 @@ function DockButton({
   );
 }
 
-const DOCK_CLASS = "shrink-0 border-t border-white/10 bg-[color:color-mix(in_srgb,var(--ade-shell-surface,#121019)_92%,black_8%)] px-4 py-2.5";
+const DOCK_CLASS = "shrink-0 border-t border-fg/10 bg-[color:color-mix(in_srgb,var(--ade-shell-surface,#121019)_92%,black_8%)] px-4 py-2.5";
 
 export function LinearIssueDetails({
   issue,
@@ -480,9 +480,9 @@ export function LinearBatchActionView({
           {selectedIssues.map((issue) => {
             const issueConflict = conflicts?.get(issue.id) ?? null;
             return (
-              <div key={issue.id} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1">
+              <div key={issue.id} className="flex items-center gap-2 rounded-md bg-fg/[0.03] px-2 py-1">
                 <LinearStateIcon stateType={issue.stateType} size={11} />
-                <span className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
+                <span className="rounded bg-fg/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">{issue.identifier}</span>
                 <span className="min-w-0 flex-1 truncate text-[11px] text-muted-fg/70">{issue.title}</span>
                 {issueConflict ? <LinearConflictBadge conflict={issueConflict} /> : null}
               </div>

@@ -26,7 +26,7 @@ function Card({
   // conversation instead of a stack of cards.
   return (
     <div
-      className="group flex gap-3 rounded-[10px] px-3 py-3 transition-colors hover:bg-white/[0.02]"
+      className="group flex gap-3 rounded-[10px] px-3 py-3 transition-colors hover:bg-fg/[0.02]"
       style={{ borderBottom: `1px solid ${COLORS.borderMuted}` }}
       data-testid="pr-comment-card"
     >

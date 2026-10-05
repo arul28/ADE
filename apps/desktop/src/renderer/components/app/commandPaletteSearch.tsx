@@ -238,7 +238,7 @@ export const SearchResultRow = React.memo(function SearchResultRow({
         data-cmd-item
         className={cn(
           "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors",
-          isSelected ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
+          isSelected ? "bg-fg/[0.06]" : "hover:bg-fg/[0.04]",
         )}
         onMouseEnter={() => onHover(index)}
         onClick={() => onActivate(item)}
@@ -294,8 +294,8 @@ export function ShowMoreRow({
         className={cn(
           "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left text-xs transition-colors",
           isSelected
-            ? "bg-white/[0.06] text-[var(--color-fg)]"
-            : "text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
+            ? "bg-fg/[0.06] text-[var(--color-fg)]"
+            : "text-[var(--color-muted-fg)] hover:bg-fg/[0.04]",
         )}
         onMouseEnter={() => onHover(index)}
         onClick={() => onToggle(kind)}

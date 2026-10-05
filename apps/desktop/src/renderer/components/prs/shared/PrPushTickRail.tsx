@@ -1,5 +1,5 @@
 import React from "react";
-import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import type { DigestPushTick } from "./prDigestTimelineModel";
 
@@ -40,7 +40,7 @@ export function PrPushTickRail({
         overflowY: "auto",
         scrollbarWidth: "none",
         background: "color-mix(in srgb, var(--color-card, #16141c) 94%, transparent)",
-        boxShadow: "0 6px 18px -10px rgba(0,0,0,0.7), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent)",
+        boxShadow: `0 6px 18px -10px rgba(0,0,0,0.7), inset 0 0 0 1px ${fgTint(8)}`,
         backdropFilter: "blur(8px)",
       }}
     >
@@ -84,7 +84,7 @@ export function PrPushTickRail({
           style={{
             top: Math.max(0, hover.top - 18),
             background: "var(--color-popup-bg, var(--color-card))",
-            boxShadow: "0 16px 40px -16px rgba(0,0,0,0.8), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent)",
+            boxShadow: `0 16px 40px -16px rgba(0,0,0,0.8), inset 0 0 0 1px ${fgTint(8)}`,
             fontFamily: SANS_FONT,
           }}
         >

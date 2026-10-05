@@ -128,7 +128,7 @@ export function WorkFilterBar({
         <button
           key={`${token.key}:${token.value}`}
           type="button"
-          className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:bg-white/[0.1]"
+          className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-fg/[0.06] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:bg-fg/[0.1]"
           aria-label={`Remove ${token.key} filter ${token.value}`}
           onClick={() => onRemove(token)}
         >
@@ -146,8 +146,8 @@ export function WorkFilterBar({
         type="button"
         className={
           filterMenuKey
-            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-white/[0.06] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
-            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.04] hover:text-[var(--color-fg)]"
+            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-fg/[0.06] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
+            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-fg/[0.04] hover:text-[var(--color-fg)]"
         }
         aria-label="Add Work filter"
         aria-expanded={filterMenuKey !== null}

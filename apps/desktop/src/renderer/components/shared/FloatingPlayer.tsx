@@ -324,7 +324,7 @@ export function useCanvasPictureInPicture(getCanvas: () => HTMLCanvasElement | n
 }
 
 const BAR_TEXT_BUTTON =
-  "shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg";
+  "shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-fg/[0.07] hover:text-fg";
 
 /**
  * A recording of the picture, as the player shows it: the live pill with its
@@ -582,7 +582,7 @@ export function FloatingPlayerShell({
                 type="button"
                 aria-label="Picture in picture"
                 disabled={!pip.supported || !pip.ready}
-                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg hover:bg-white/[0.07] hover:text-fg disabled:opacity-40"
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg hover:bg-fg/[0.07] hover:text-fg disabled:opacity-40"
                 onClick={pip.onToggle}
               >
                 <PictureInPicture size={12} />

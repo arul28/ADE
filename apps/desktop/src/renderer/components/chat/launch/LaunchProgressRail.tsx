@@ -36,7 +36,7 @@ const FILL_TONE: Record<ChatLaunchStage["status"], string> = {
   done: "bg-emerald-400/70",
   warning: "bg-amber-300/70",
   failed: "bg-amber-400/80",
-  skipped: "bg-white/[0.14]",
+  skipped: "bg-fg/[0.14]",
   running: "bg-violet-400/80",
   pending: "bg-transparent",
 };
@@ -45,9 +45,9 @@ const TRACK_TONE: Record<ChatLaunchStage["status"], string> = {
   done: "bg-emerald-400/20",
   warning: "bg-amber-300/20",
   failed: "bg-amber-400/20",
-  skipped: "bg-white/[0.06]",
+  skipped: "bg-fg/[0.06]",
   running: "bg-violet-400/[0.16]",
-  pending: "bg-white/[0.07]",
+  pending: "bg-fg/[0.07]",
 };
 
 export const LaunchProgressRail = React.memo(function LaunchProgressRail({

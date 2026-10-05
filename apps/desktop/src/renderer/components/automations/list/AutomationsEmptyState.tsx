@@ -31,7 +31,7 @@ export function AutomationsEmptyState({
               key={template.id}
               type="button"
               onClick={() => onUseTemplate(template.draft)}
-              className={cn(cardCls, "flex w-full items-start gap-2.5 p-3 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]")}
+              className={cn(cardCls, "flex w-full items-start gap-2.5 p-3 text-left transition-colors hover:border-accent/30 hover:bg-fg/[0.05]")}
             >
               <SourceIconBadge source={source} size={28} icon={Icon} />
               <span className="min-w-0 flex-1">
@@ -82,7 +82,7 @@ export function AutomationsFilterEmptyState({
       </div>
       <button
         type="button"
-        className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg"
+        className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
         onClick={onShowAll}
       >
         Show all

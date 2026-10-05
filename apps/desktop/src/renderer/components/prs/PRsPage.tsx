@@ -12,7 +12,7 @@ import type { GitHubTabSort } from "./tabs/prBlockedSort";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { PrsListHostProvider } from "./shared/PrsListHost";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
-import { SANS_FONT } from "../lanes/laneDesignTokens";
+import { SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import {
   buildPrsRouteSearch,
   parsePrsRouteState,
@@ -397,7 +397,7 @@ function PRsPageInner({ active }: { active: boolean }) {
           background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
           border: "none",
           cursor: "pointer",
-          boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
+          boxShadow: `0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 ${fgTint(10)}`,
           transition: "all 150ms ease",
         }}
       >
@@ -420,7 +420,7 @@ function PRsPageInner({ active }: { active: boolean }) {
         }
       `}</style>
       <div className="prs-shimmer-bar h-4 w-44 rounded-md" />
-      <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: "#71717A" }}>
+      <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: "var(--color-muted-fg)" }}>
         Loading pull requests...
       </div>
     </div>
@@ -435,7 +435,7 @@ function PRsPageInner({ active }: { active: boolean }) {
           role="tablist"
           aria-label="PR surfaces"
           className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg p-0.5"
-          style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }}
+          style={{ background: fgTint(3), border: `1px solid ${fgTint(5)}` }}
         >
           {([
             { id: "github", label: "GitHub" },
@@ -450,13 +450,13 @@ function PRsPageInner({ active }: { active: boolean }) {
                 aria-selected={selected}
                 className={cn(
                   "flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 transition-colors duration-150",
-                  selected ? "text-[#FAFAFA]" : "text-[#71717A] hover:text-[#A1A1AA]",
+                  selected ? "text-fg" : "text-muted-fg hover:text-secondary-fg",
                 )}
                 style={{
                   fontFamily: SANS_FONT,
                   fontSize: 11.5,
                   fontWeight: selected ? 600 : 500,
-                  background: selected ? "rgba(255,255,255,0.08)" : "transparent",
+                  background: selected ? fgTint(8) : "transparent",
                 }}
                 onClick={() => {
                   if (surface.id === "github") {
@@ -477,7 +477,7 @@ function PRsPageInner({ active }: { active: boolean }) {
           aria-label="Create PR"
           title="Create PR"
           onClick={() => openCreatePr()}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#C4B5FD] transition-colors duration-150 hover:bg-[rgba(167,139,250,0.14)] hover:text-[#EDE9FE]"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-tone-[#C4B5FD] transition-colors duration-150 hover:bg-[rgba(167,139,250,0.14)] hover:text-tone-[#EDE9FE]"
           style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.16)" }}
         >
           <Plus size={13} weight="bold" />
@@ -492,7 +492,7 @@ function PRsPageInner({ active }: { active: boolean }) {
       {hasProjectSidebar ? (
         <ProjectSidebarSlot active={active}>{listColumn}</ProjectSidebarSlot>
       ) : (
-        <div className="flex h-full w-[320px] shrink-0 flex-col" style={{ borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="flex h-full w-[320px] shrink-0 flex-col" style={{ borderRight: `1px solid ${fgTint(6)}` }}>
           {listColumn}
         </div>
       )}

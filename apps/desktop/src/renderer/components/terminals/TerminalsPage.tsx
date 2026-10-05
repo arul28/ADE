@@ -1718,7 +1718,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               aria-live="polite"
               aria-busy="true"
             >
-              <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
+              <div className="flex items-center gap-2 rounded-lg border border-fg/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
                 {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
               </div>
@@ -1901,7 +1901,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     mainArea = (
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          className="flex min-h-0 shrink-0 flex-col border-r border-white/[0.06]"
+          className="flex min-h-0 shrink-0 flex-col border-r border-fg/[0.06]"
           style={{ width: PROJECT_SIDEBAR_DEFAULT_WIDTH }}
           data-testid="work-sessions-column"
         >

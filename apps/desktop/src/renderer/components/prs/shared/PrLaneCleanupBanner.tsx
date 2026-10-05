@@ -5,7 +5,7 @@ import { Archive, Trash, Warning } from "@phosphor-icons/react";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { Banner, NoticeBadge } from "../../ui/notice";
 import type { LaneSummary, PrSummary } from "../../../../shared/types";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, dangerButton, fgTint } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./laneBranchTargets";
 
 type PrLaneCleanupBannerProps = {
@@ -130,7 +130,7 @@ export function PrLaneCleanupBanner({
                       padding: "8px 10px",
                       fontSize: textSize,
                       fontFamily: SANS_FONT,
-                      background: deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 14%, transparent)" : "rgba(255,255,255,0.03)",
+                      background: deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 14%, transparent)" : fgTint(3),
                       border: `1px solid ${deleteMode === opt.value ? "color-mix(in srgb, var(--color-error) 40%, transparent)" : COLORS.border}`,
                       borderRadius: 6,
                       cursor: "pointer",

@@ -111,7 +111,7 @@ export function AdeActionEditor({
           onToggleJson={() => setShowJson((current) => !current)}
         />
       ) : (
-        <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-[11px] text-muted-fg/70">
+        <div className="rounded-lg border border-fg/[0.08] bg-fg/[0.03] px-3 py-3 text-[11px] text-muted-fg/70">
           Pick a domain and action to fill in its parameters.
         </div>
       )}
@@ -199,8 +199,8 @@ function ActionPicker({
         className={cn(
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 transition-colors",
           open
-            ? "border-accent/45 bg-white/[0.04]"
-            : "border-white/[0.08] bg-white/[0.03] hover:border-white/[0.14] hover:bg-white/[0.04]",
+            ? "border-accent/45 bg-fg/[0.04]"
+            : "border-fg/[0.08] bg-fg/[0.03] hover:border-fg/[0.14] hover:bg-fg/[0.04]",
         )}
       >
         {summary}
@@ -219,9 +219,9 @@ function ActionPicker({
         offset={6}
         matchAnchorWidth
         remeasureKey={search}
-        className="max-h-[420px] overflow-hidden rounded-xl border border-white/[0.08] bg-surface-overlay shadow-2xl"
+        className="max-h-[420px] overflow-hidden rounded-xl border border-fg/[0.08] bg-surface-overlay shadow-2xl"
       >
-        <div className="flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.04] px-2.5 py-2">
+        <div className="flex items-center gap-2 border-b border-fg/[0.06] bg-fg/[0.04] px-2.5 py-2">
           <MagnifyingGlass size={11} weight="bold" className="text-muted-fg/70" />
           <input
             autoFocus
@@ -264,7 +264,7 @@ function ActionPicker({
                       }}
                       className={cn(
                         "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
-                        active ? "bg-accent/15" : "hover:bg-white/[0.05]",
+                        active ? "bg-accent/15" : "hover:bg-fg/[0.05]",
                       )}
                     >
                       <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
@@ -352,7 +352,7 @@ function ActionParamsEditor({
           </div>
         </>
       ) : (
-        <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 text-[11px] text-muted-fg/70">
+        <div className="rounded-lg border border-fg/[0.08] bg-fg/[0.03] px-3 py-2.5 text-[11px] text-muted-fg/70">
           <span className="block text-fg/85">
             {schema?.description ?? "No structured form for this action yet."}
           </span>
@@ -402,7 +402,7 @@ function ParamField({
   if (param.type === "boolean") {
     const checked = value === true;
     return (
-      <label className="flex cursor-pointer items-center justify-between rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-fg/85 hover:border-white/[0.14]">
+      <label className="flex cursor-pointer items-center justify-between rounded-md border border-fg/[0.08] bg-fg/[0.03] px-3 py-2 text-[11px] text-fg/85 hover:border-fg/[0.14]">
         <span className="min-w-0 flex-1">
           <span className="block text-[10.5px] font-semibold text-fg/85">
             {param.name}
@@ -540,7 +540,7 @@ function PlaceholderRow() {
   // be blocked (e.g., insecure context) — the hook then leaves the chip idle.
   const { copy, isCopied } = useCopyToClipboard({ timeout: 1200 });
   return (
-    <details className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[10px]">
+    <details className="rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2.5 py-1.5 text-[10px]">
       <summary className="cursor-pointer text-[10px] uppercase tracking-[1px] text-muted-fg/70 hover:text-fg/85">
         Trigger variables — click to copy
       </summary>
@@ -553,7 +553,7 @@ function PlaceholderRow() {
               "rounded border px-1.5 py-0.5 text-[10px] transition-colors",
               isCopied(placeholder.value)
                 ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70 hover:border-accent/40 hover:text-fg",
+                : "border-fg/[0.08] bg-fg/[0.03] text-muted-fg/70 hover:border-accent/40 hover:text-fg",
             )}
             onClick={() => void copy(placeholder.value, placeholder.value)}
             title={placeholder.value}

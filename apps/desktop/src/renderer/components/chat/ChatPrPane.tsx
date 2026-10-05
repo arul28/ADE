@@ -96,7 +96,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/[0.08] bg-transparent px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
+        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-fg/[0.08] bg-transparent px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:border-fg/[0.14] hover:text-fg/85"
       >
         <GitPullRequest size={11} weight="bold" className="opacity-60" />
         Link a PR by number or URL
@@ -134,7 +134,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
           type="button"
           onClick={() => void submit()}
           disabled={busy || value.trim().length === 0}
-          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/[0.14] bg-white/[0.06] px-3 py-1.5 text-[11px] font-medium text-fg/85 transition-colors hover:bg-white/[0.10] disabled:cursor-default disabled:opacity-50"
+          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-fg/[0.14] bg-fg/[0.06] px-3 py-1.5 text-[11px] font-medium text-fg/85 transition-colors hover:bg-fg/[0.10] disabled:cursor-default disabled:opacity-50"
         >
           {busy ? (
             <>
@@ -149,7 +149,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
           type="button"
           onClick={close}
           disabled={busy}
-          className="inline-flex items-center justify-center rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:text-fg/85 disabled:opacity-50"
+          className="inline-flex items-center justify-center rounded-lg border border-fg/[0.08] px-3 py-1.5 text-[11px] font-medium text-fg/55 transition-colors hover:text-fg/85 disabled:opacity-50"
         >
           Cancel
         </button>
@@ -171,10 +171,10 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
  */
 
 const titleBarIconButton =
-  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
+  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
 const paneAction =
-  "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
+  "inline-flex w-full items-center gap-2 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-fg/[0.10] hover:bg-fg/[0.04] hover:text-fg/85";
 
 /** Human relative age for a sync timestamp. Computed at render (no ticking). */
 function relTime(iso: string | null): string {
@@ -879,7 +879,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col font-sans" style={accentShadow ? { boxShadow: accentShadow } : undefined}>
-      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-white/[0.06] px-3">
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-fg/[0.06] px-3">
         <GitPullRequest size={12} weight="bold" className="shrink-0 text-fg/45" />
         <span className="min-w-0 truncate text-[11.5px] font-medium text-fg/70">
           {prSwitcher && pr ? `#${pr.githubPrNumber}` : "Pull request"}

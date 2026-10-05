@@ -23,21 +23,21 @@ export function EmptyState({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
       className={cn("flex flex-col items-center justify-center p-10 text-center", className)}
-      style={{ background: "#13101A", border: "1px solid #1E1B26" }}
+      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
     >
       {Icon ? (
         <div className="mb-4 inline-flex items-center justify-center">
-          <Icon size={iconSize} weight="regular" className="text-[#52525B]" />
+          <Icon size={iconSize} weight="regular" className="text-muted-fg/75" />
         </div>
       ) : null}
       <div
-        className="text-[14px] font-bold tracking-[-0.3px] text-[#FAFAFA]"
+        className="text-[14px] font-bold tracking-[-0.3px] text-fg"
         style={{ fontFamily: "var(--font-sans)" }}
       >
         {title}
       </div>
       {description ? (
-        <div className="mt-2 font-mono text-[11px] text-[#71717A] max-w-[45ch] mx-auto leading-relaxed">
+        <div className="mt-2 font-mono text-[11px] text-muted-fg max-w-[45ch] mx-auto leading-relaxed">
           {description}
         </div>
       ) : null}

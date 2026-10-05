@@ -30,29 +30,23 @@ export const Button = React.forwardRef<
 
   const sizes = size === "sm" ? "h-7 px-3" : "h-8 px-4";
 
+  // Theme tokens, so every variant reads on light themes as well as dark.
   const variants: Record<Variant, string> = {
     primary:
-      "text-[#0F0D14] hover:brightness-110",
+      "bg-accent text-accent-fg hover:brightness-110",
     outline:
-      "text-[#A1A1AA] hover:text-[#FAFAFA] hover:border-[#A78BFA50]",
+      "border border-border bg-transparent text-secondary-fg hover:text-fg hover:border-accent/30",
     ghost:
-      "text-[#71717A] hover:text-[#FAFAFA] hover:bg-[#1A1720]",
+      "bg-transparent text-muted-fg hover:text-fg hover:bg-muted",
     danger:
-      "text-[#EF4444] hover:brightness-110",
-  };
-
-  const variantStyles: Record<Variant, React.CSSProperties> = {
-    primary: { background: "#A78BFA" },
-    outline: { background: "transparent", border: "1px solid #27272A" },
-    ghost: { background: "transparent" },
-    danger: { background: "#EF444418", border: "1px solid #EF444430" },
+      "border border-error/20 bg-error/10 text-error hover:brightness-110",
   };
 
   return (
     <button
       ref={ref}
       className={cn(base, casings[casing], sizes, variants[variant], className)}
-      style={{ ...variantStyles[variant], ...styleProp }}
+      style={styleProp}
       {...rest}
     />
   );

@@ -229,38 +229,38 @@ function ChipCardBody({ data }: { data: ChipCardData }) {
   if (data.kind === "pr") {
     return (
       <>
-        <div className="flex items-center gap-1.5 text-[11px] text-white/60">
+        <div className="flex items-center gap-1.5 text-[11px] text-fg/60">
           <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${PR_STATE_DOT[data.state]}`} />
-          <span className="font-medium text-white/85">#{data.number}</span>
+          <span className="font-medium text-fg/85">#{data.number}</span>
           <span className="capitalize">{data.state}</span>
           {data.repo ? <span className="truncate">· {data.repo}</span> : null}
         </div>
-        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-white/90">{data.title}</div> : null}
+        {data.title ? <div className="mt-1 line-clamp-2 text-[12px] text-fg/90">{data.title}</div> : null}
       </>
     );
   }
   if (data.kind === "lane") {
     return (
       <>
-        <div className="truncate text-[12px] font-medium text-white/90">{data.name}</div>
-        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-white/55">{data.branch}</div> : null}
+        <div className="truncate text-[12px] font-medium text-fg/90">{data.name}</div>
+        {data.branch ? <div className="mt-0.5 truncate font-mono text-[11px] text-fg/55">{data.branch}</div> : null}
       </>
     );
   }
   if (data.kind === "chat") {
     return (
       <>
-        <div className="line-clamp-2 text-[12px] font-medium text-white/90">{data.title}</div>
+        <div className="line-clamp-2 text-[12px] font-medium text-fg/90">{data.title}</div>
         {data.lastActivity
-          ? <div className="mt-0.5 text-[11px] text-white/55">Last activity {relativeWhen(data.lastActivity)}</div>
+          ? <div className="mt-0.5 text-[11px] text-fg/55">Last activity {relativeWhen(data.lastActivity)}</div>
           : null}
       </>
     );
   }
   return (
     <>
-      <div className="text-[11px] font-medium text-white/60">{data.identifier}</div>
-      <div className="mt-0.5 line-clamp-2 text-[12px] text-white/90">{data.title}</div>
+      <div className="text-[11px] font-medium text-fg/60">{data.identifier}</div>
+      <div className="mt-0.5 line-clamp-2 text-[12px] text-fg/90">{data.title}</div>
     </>
   );
 }
@@ -429,8 +429,8 @@ export function useChipHoverCard(
             role="tooltip"
             data-chip-hover-card={data.kind}
             className={
-              "pointer-events-none absolute max-w-[300px] rounded-lg border border-white/12"
-              + " bg-[#16161b]/95 px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
+              "pointer-events-none absolute max-w-[300px] rounded-lg border border-fg/12"
+              + " bg-(color:--work-popover-bg) px-2.5 py-2 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-sm"
             }
             style={{
               top: coords?.y ?? 0,

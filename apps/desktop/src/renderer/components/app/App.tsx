@@ -44,6 +44,7 @@ import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
 import { applyInterfacePreferences } from "../../theme/applyInterface";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
+import { fgTint } from "../lanes/laneDesignTokens";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -192,7 +193,7 @@ const RouteLoadingFallback = (
   >
     <div
       className="flex h-14 shrink-0 items-center gap-3 px-5"
-      style={{ borderBottom: "1px solid var(--color-border)", background: "color-mix(in srgb, var(--color-fg) 3%, transparent)" }}
+      style={{ borderBottom: "1px solid var(--color-border)", background: fgTint(3) }}
     >
       <div className="h-4 w-28 animate-pulse rounded bg-muted/40" />
       <div className="h-4 w-16 animate-pulse rounded bg-muted/30" />
@@ -204,7 +205,7 @@ const RouteLoadingFallback = (
           <div
             key={`route-fallback-list-${index}`}
             className="h-10 animate-pulse rounded-md"
-            style={{ background: "color-mix(in srgb, var(--color-fg) 5%, transparent)" }}
+            style={{ background: fgTint(5) }}
           />
         ))}
       </div>
@@ -213,7 +214,7 @@ const RouteLoadingFallback = (
           <div
             key={`route-fallback-panel-${index}`}
             className="animate-pulse rounded-lg border border-border"
-            style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+            style={{ background: fgTint(4) }}
           />
         ))}
       </div>

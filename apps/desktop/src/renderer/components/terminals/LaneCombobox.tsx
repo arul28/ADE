@@ -528,9 +528,9 @@ export function LaneCombobox({
   // single line at that scale in both variants — never a two-line block.
   const triggerClass = cn(
     "ade-lane-trigger group inline-flex min-w-0 shrink items-center gap-1.5",
-    "border border-white/[0.07] bg-white/[0.03] text-[11px] font-normal text-fg/80",
-    "transition-colors duration-100 hover:border-white/[0.13] hover:bg-white/[0.06]",
-    "data-[open=true]:border-white/[0.16] data-[open=true]:bg-white/[0.07]",
+    "border border-fg/[0.07] bg-fg/[0.03] text-[11px] font-normal text-fg/80",
+    "transition-colors duration-100 hover:border-fg/[0.13] hover:bg-fg/[0.06]",
+    "data-[open=true]:border-fg/[0.16] data-[open=true]:bg-fg/[0.07]",
     variant === "pill" ? "rounded-full" : "rounded-md",
     compact ? "h-7 px-2" : "h-[30px] px-2.5",
     fullWidth

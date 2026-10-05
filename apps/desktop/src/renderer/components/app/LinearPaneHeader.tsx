@@ -97,7 +97,7 @@ export function LinearPaneHeader({
 
   return (
     <div
-      className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
+      className="flex shrink-0 items-center justify-between gap-3 border-b border-fg/10 px-3 py-2"
       style={{ background: brand.surface }}
     >
       <div className="flex min-w-0 items-center gap-2">

@@ -7,7 +7,7 @@ import {
   ADE_GITHUB_URL,
   ADE_WINDOWS_SUPPORT_DOC_URL,
 } from "../../../shared/productLinks";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
 import { openExternalUrl } from "../../lib/openExternal";
 import { rendererPackageChannel } from "../../lib/packageChannel";
@@ -60,7 +60,7 @@ function LinkRow({
         }`,
         background: hover
           ? "color-mix(in srgb, var(--color-accent) 7%, transparent)"
-          : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          : fgTint(3),
         cursor: "pointer",
         fontFamily: SANS_FONT,
         transition: "background 120ms ease, border-color 120ms ease",
@@ -77,7 +77,7 @@ function LinkRow({
           flexShrink: 0,
           borderRadius: 7,
           color: COLORS.textSecondary,
-          background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+          background: fgTint(5),
         }}
       >
         {icon}

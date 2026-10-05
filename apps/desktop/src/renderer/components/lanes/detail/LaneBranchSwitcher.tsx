@@ -5,7 +5,7 @@ import { useAppStore } from "../../../state/appStore";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "../laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, fgTint } from "../laneDesignTokens";
 import {
   formatBranchCheckoutError,
   stripRemotePrefix,
@@ -30,7 +30,7 @@ const fieldStyle: React.CSSProperties = {
   fontSize: 12,
   fontFamily: MONO_FONT,
   color: COLORS.textPrimary,
-  background: "rgba(255,255,255,0.04)",
+  background: fgTint(4),
   border: `1px solid ${COLORS.outlineBorder}`,
   borderRadius: 6,
   padding: "0 8px",
@@ -354,7 +354,7 @@ export function LaneBranchSwitcher({
                     height: 30,
                     border: `1px solid ${COLORS.outlineBorder}`,
                     borderRadius: 6,
-                    background: "rgba(255,255,255,0.05)",
+                    background: fgTint(5),
                     color: COLORS.textPrimary,
                     fontSize: 12,
                     fontFamily: SANS_FONT,

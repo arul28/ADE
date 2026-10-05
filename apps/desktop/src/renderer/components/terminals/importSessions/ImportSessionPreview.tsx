@@ -35,7 +35,7 @@ function CopyIdButton({ id }: { id: string }) {
         type="button"
         onClick={copy}
         aria-label="Copy session ID"
-        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
       >
         {copied ? <Check size={12} weight="bold" className="text-emerald-300" /> : <Copy size={12} />}
       </button>
@@ -46,11 +46,11 @@ function CopyIdButton({ id }: { id: string }) {
 function TranscriptSkeleton() {
   return (
     <div className="flex flex-col gap-4 px-6 py-6" aria-hidden="true">
-      <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-white/[0.05]" />
-      <div className="h-4 w-4/5 animate-pulse rounded bg-white/[0.04]" />
-      <div className="h-4 w-3/5 animate-pulse rounded bg-white/[0.04]" />
-      <div className="ml-auto h-9 w-2/5 animate-pulse rounded-2xl bg-white/[0.05]" />
-      <div className="h-4 w-2/3 animate-pulse rounded bg-white/[0.04]" />
+      <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-fg/[0.05]" />
+      <div className="h-4 w-4/5 animate-pulse rounded bg-fg/[0.04]" />
+      <div className="h-4 w-3/5 animate-pulse rounded bg-fg/[0.04]" />
+      <div className="ml-auto h-9 w-2/5 animate-pulse rounded-2xl bg-fg/[0.05]" />
+      <div className="h-4 w-2/3 animate-pulse rounded bg-fg/[0.04]" />
     </div>
   );
 }
@@ -92,7 +92,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
 
   return (
     <>
-      <header className="shrink-0 border-b border-white/[0.06] px-5 pb-3 pt-3.5">
+      <header className="shrink-0 border-b border-fg/[0.06] px-5 pb-3 pt-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={18} className="shrink-0" />
           <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fg" title={heading}>
@@ -102,7 +102,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
           <CopyIdButton id={summary.id} />
         </div>
         <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 pl-[28px] text-[11px] text-muted-fg/65">
-          <span className="inline-flex max-w-[220px] items-center rounded-full border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 text-fg/80">
+          <span className="inline-flex max-w-[220px] items-center rounded-full border border-fg/[0.07] bg-fg/[0.03] px-2 py-0.5 text-fg/80">
             <PlaceLabel place={place} />
           </span>
           {meta.map((entry) => (

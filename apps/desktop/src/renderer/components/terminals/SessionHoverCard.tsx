@@ -283,7 +283,7 @@ export function SessionHoverCard({
       ref={ref}
       role="tooltip"
       data-testid="session-hover-card"
-      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/[0.08] px-3 py-2.5 shadow-2xl"
+      className="ade-liquid-glass ade-liquid-glass-menu pointer-events-auto w-[19rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-fg/[0.08] px-3 py-2.5 shadow-2xl"
       initial={false}
       animate={{
         opacity: position ? 1 : 0,
@@ -364,7 +364,7 @@ function SessionHoverCardFact({ row }: { row: SessionHoverCardRow }) {
       data-testid={row.testId}
       title={row.activateLabel}
       aria-label={row.activateLabel}
-      className={cn(className, "cursor-pointer transition-colors hover:bg-white/[0.06]")}
+      className={cn(className, "cursor-pointer transition-colors hover:bg-fg/[0.06]")}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();

@@ -881,7 +881,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           id="history-detail"
           defaultSize={`${splitLayout["history-detail"] ?? 40}%`}
           minSize="20%"
-          className="flex min-h-0 min-w-0 flex-col border-l border-white/[0.06]"
+          className="flex min-h-0 min-w-0 flex-col border-l border-fg/[0.06]"
         >
           {detailBody}
         </Panel>
@@ -932,7 +932,7 @@ function CommitChangesPage({
               type="button"
               onClick={onBack}
               title="Back to commits (Esc)"
-              className="-ml-1.5 mr-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium text-fg/80 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
+              className="-ml-1.5 mr-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-medium text-fg/80 transition-colors duration-100 hover:bg-fg/[0.06] hover:text-fg"
               data-testid="history-changes-back"
             >
               <ArrowLeft size={13} />
@@ -954,7 +954,7 @@ function MachineLoadNotes({ loads }: { loads: Record<string, MachineReadLoad> })
   if (entries.length === 0) return null;
   return (
     <div
-      className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-white/[0.04] px-3 py-1 font-mono text-[10px] text-muted-fg/50"
+      className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-fg/[0.04] px-3 py-1 font-mono text-[10px] text-muted-fg/50"
       data-testid="history-machine-notes"
     >
       {entries.map(([key, load]) => (

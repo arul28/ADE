@@ -595,7 +595,7 @@ const LegacyFastModeButton = memo(function LegacyFastModeButton({
           : "h-8 gap-1 px-2 text-[11px]",
         active
           ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-          : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+          : "border-fg/[0.07] bg-fg/[0.025] text-muted-fg/60 hover:bg-fg/[0.06] hover:text-fg/80",
       )}
     >
       <Lightning size={compact ? 10 : 13} weight="fill" />
@@ -713,10 +713,10 @@ const ModelPickerTrigger = memo(
             compact
               ? "h-6 px-1 text-[9px]"
               : "h-8 px-2 text-[11px] sm:text-[12px]",
-            "border-white/[0.06] bg-white/[0.03] text-fg/80",
+            "border-fg/[0.06] bg-fg/[0.03] text-fg/80",
             "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
             open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
-            disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+            disabled && "cursor-not-allowed opacity-60 hover:border-fg/[0.06] hover:bg-fg/[0.03]",
             className,
           )}
         >

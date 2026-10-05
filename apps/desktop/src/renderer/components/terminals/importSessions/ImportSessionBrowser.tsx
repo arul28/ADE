@@ -570,7 +570,7 @@ export function ImportSessionBrowser({
         <button
           type="button"
           onClick={() => setLaneFilterChoice(ALL_LANES_ID)}
-          className="mt-3 inline-flex h-7 items-center rounded-full border border-white/[0.1] px-3 text-[11px] text-fg/85 transition-colors hover:bg-white/[0.05]"
+          className="mt-3 inline-flex h-7 items-center rounded-full border border-fg/[0.1] px-3 text-[11px] text-fg/85 transition-colors hover:bg-fg/[0.05]"
         >
           {showAllLanesLabel}
         </button>
@@ -625,7 +625,7 @@ export function ImportSessionBrowser({
                 type="button"
                 onClick={() => void load()}
                 disabled={loading}
-                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full border border-white/[0.1] px-3 text-[11px] text-fg hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-3 inline-flex h-7 items-center gap-1.5 rounded-full border border-fg/[0.1] px-3 text-[11px] text-fg hover:bg-fg/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ArrowClockwise size={12} className={loading ? "animate-spin" : undefined} /> Retry scan
               </button>
@@ -639,7 +639,7 @@ export function ImportSessionBrowser({
           />
         ) : (
           <div className="flex min-h-0 flex-1">
-            <aside className="flex w-[360px] shrink-0 flex-col border-r border-white/[0.06]">
+            <aside className="flex w-[360px] shrink-0 flex-col border-r border-fg/[0.06]">
               <ImportSessionList
                 groups={groups}
                 activeKey={activeKey}
@@ -681,9 +681,9 @@ export function ImportSessionBrowser({
                 </>
               ) : loading ? (
                 <div className="flex flex-1 flex-col gap-4 px-6 py-6" aria-hidden="true">
-                  <div className="h-4 w-1/3 animate-pulse rounded bg-white/[0.05]" />
-                  <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-white/[0.04]" />
-                  <div className="h-4 w-3/5 animate-pulse rounded bg-white/[0.035]" />
+                  <div className="h-4 w-1/3 animate-pulse rounded bg-fg/[0.05]" />
+                  <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-fg/[0.04]" />
+                  <div className="h-4 w-3/5 animate-pulse rounded bg-fg/[0.035]" />
                 </div>
               ) : null}
             </section>

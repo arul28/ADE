@@ -30,13 +30,13 @@ export type CloudAgentRowActions = {
 };
 
 const CHIP =
-  "inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.035] px-1.5 py-[1px] text-[10.5px] leading-[15px] text-muted-fg/75";
+  "inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full border border-fg/[0.08] bg-fg/[0.035] px-1.5 py-[1px] text-[10.5px] leading-[15px] text-muted-fg/75";
 
 const ICON_BUTTON =
-  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:opacity-40";
+  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg/70 transition-colors hover:bg-fg/[0.08] hover:text-fg disabled:opacity-40";
 
 const MENU_ITEM =
-  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-fg/80 transition-colors hover:bg-white/[0.07] hover:text-fg disabled:opacity-40";
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-fg/80 transition-colors hover:bg-fg/[0.07] hover:text-fg disabled:opacity-40";
 
 function StatusDot({ agent }: { agent: CloudAgent }) {
   const tone = STATUS_TONE[agent.status];
@@ -104,7 +104,7 @@ export function CloudAgentRow({
       }}
       className={cn(
         "group/cloud-row relative flex w-full cursor-pointer select-none gap-3 rounded-xl px-3 py-2.5 text-left outline-none transition-colors duration-100",
-        "hover:bg-white/[0.045] focus-visible:bg-white/[0.06]",
+        "hover:bg-fg/[0.045] focus-visible:bg-fg/[0.06]",
         agent.status === "needs_you" && "bg-amber-400/[0.04] hover:bg-amber-400/[0.07]",
       )}
     >
@@ -150,7 +150,7 @@ export function CloudAgentRow({
           {pr ? (
             <button
               type="button"
-              className={cn(CHIP, "hover:border-white/20 hover:text-fg/90")}
+              className={cn(CHIP, "hover:border-fg/20 hover:text-fg/90")}
               title={pr.title ?? pr.url}
               onClick={(event) => {
                 event.stopPropagation();
@@ -246,7 +246,7 @@ export function CloudAgentRow({
         }}
         placement="bottom-end"
         zIndex={Z_LAYERS.dialogPopover}
-        className="w-[230px] rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+        className="w-[230px] rounded-xl border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
         role="menu"
       >
         <div onClick={(event) => event.stopPropagation()}>
@@ -288,14 +288,14 @@ export function CloudAgentRow({
                     placeholder="3000 or 8080:3000"
                     aria-label="VM port to forward"
                     onChange={(event) => setPortDraft(event.target.value.replace(/[^0-9:]/g, ""))}
-                    className="h-7 min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.04] px-2 font-mono text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/35 focus:border-sky-400/40"
+                    className="h-7 min-w-0 flex-1 rounded-md border border-fg/10 bg-fg/[0.04] px-2 font-mono text-[11px] text-fg/85 outline-none placeholder:text-muted-fg/35 focus:border-sky-400/40"
                   />
                   <button type="submit" disabled={!portDraft.trim()} className="h-7 rounded-md bg-sky-500/80 px-2 text-[11px] font-medium text-white disabled:opacity-40">
                     Go
                   </button>
                 </form>
               )}
-              <div className="my-1 h-px bg-white/[0.06]" />
+              <div className="my-1 h-px bg-fg/[0.06]" />
             </>
           ) : null}
           {agent.provider === "cursor" && agent.webUrl && agent.status !== "archived" ? (

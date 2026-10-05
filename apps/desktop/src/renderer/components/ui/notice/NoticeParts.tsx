@@ -12,6 +12,7 @@ import {
 import { openExternalUrl } from "../../../lib/openExternal";
 import { noticeTone, type NoticeTone } from "./noticeTones";
 import "./notice.css";
+import { fgTint } from "../../lanes/laneDesignTokens";
 
 /**
  * Building blocks shared by every notice surface: the tone icon tile, action
@@ -335,8 +336,8 @@ export function NoticeChip({
         fontFamily: SANS,
         fontSize: 10.5,
         color: color ?? "var(--color-muted-fg)",
-        background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-fg) 9%, transparent)",
+        background: fgTint(4),
+        border: `1px solid ${fgTint(9)}`,
         overflow: "hidden",
       }}
     >

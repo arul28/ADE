@@ -95,7 +95,7 @@ function ClaudeGoalCard({
               disabled={!canEdit}
               aria-label="Edit goal"
               title={canEdit ? "Edit goal" : lockedTitle}
-              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/30 opacity-0 transition-all hover:bg-white/[0.06] hover:text-fg/75 focus-visible:opacity-100 group-hover:opacity-100 disabled:hover:bg-transparent disabled:hover:text-fg/30"
+              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/30 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-fg/75 focus-visible:opacity-100 group-hover:opacity-100 disabled:hover:bg-transparent disabled:hover:text-fg/30"
             >
               <PencilSimple aria-hidden size={11} weight="bold" />
             </button>
@@ -107,7 +107,7 @@ function ClaudeGoalCard({
               disabled={locked}
               aria-label="Clear goal"
               title={locked ? lockedTitle : "Clear goal"}
-              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/30 opacity-0 transition-all hover:bg-white/[0.06] hover:text-rose-200/80 focus-visible:opacity-100 group-hover:opacity-100 disabled:hover:bg-transparent disabled:hover:text-fg/30"
+              className="flex h-5 w-5 items-center justify-center rounded-sm text-fg/30 opacity-0 transition-all hover:bg-fg/[0.06] hover:text-rose-200/80 focus-visible:opacity-100 group-hover:opacity-100 disabled:hover:bg-transparent disabled:hover:text-fg/30"
             >
               <X aria-hidden size={11} weight="bold" />
             </button>
@@ -134,7 +134,7 @@ function ClaudeGoalCard({
                 }
               }}
               rows={2}
-              className="block w-full resize-none rounded-md bg-white/[0.04] px-2 py-1 font-sans text-[12.5px] leading-5 text-fg/85 outline-none ring-1 ring-inset ring-white/[0.08] focus:ring-white/[0.16]"
+              className="block w-full resize-none rounded-md bg-fg/[0.04] px-2 py-1 font-sans text-[12.5px] leading-5 text-fg/85 outline-none ring-1 ring-inset ring-fg/[0.08] focus:ring-fg/[0.16]"
               aria-label="Edit goal"
             />
             <div className="mt-1 font-sans text-[10px] leading-4 text-fg/35">Enter to save · Esc to cancel</div>

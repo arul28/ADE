@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { ChatTeardropText } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -452,10 +453,10 @@ export function ThreadCommentLayer({
                   data-thread-comment-ignore=""
                   data-testid="thread-comment-card"
                   className={cn(
-                    "pointer-events-auto absolute left-5 right-0 rounded-lg border bg-[#15131c]/95 shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-[border-color,top] duration-150",
+                    "pointer-events-auto absolute left-5 right-0 rounded-lg border bg-(color:--work-popover-bg) shadow-[0_8px_24px_rgba(0,0,0,0.35)] transition-[border-color,top] duration-150",
                     active
                       ? "border-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]"
-                      : "border-white/[0.07] hover:border-white/[0.14]",
+                      : "border-fg/[0.07] hover:border-fg/[0.14]",
                   )}
                   style={{ top }}
                   onMouseEnter={() => {
@@ -481,7 +482,7 @@ export function ThreadCommentLayer({
             <div
               data-thread-comment-ignore=""
               data-testid="thread-comment-popover"
-              className="pointer-events-auto absolute rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className={cn("pointer-events-auto absolute", POPOVER_SURFACE_CLASS, "p-1")}
               style={{ ...placeNear(openRange.getBoundingClientRect(), "below"), width: POPOVER_WIDTH_PX }}
               onMouseDown={(event) => event.stopPropagation()}
             >
@@ -493,7 +494,7 @@ export function ThreadCommentLayer({
                     stopEditing();
                     setOpenCommentId(null);
                   }}
-                  className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-white/[0.06] hover:text-fg/85"
+                  className="rounded-md px-2 py-0.5 font-sans text-[11px] text-fg/55 hover:bg-fg/[0.06] hover:text-fg/85"
                 >
                   Close
                 </button>
@@ -510,7 +511,7 @@ export function ThreadCommentLayer({
             <div
               data-thread-comment-ignore=""
               data-testid="thread-comment-draft"
-              className="pointer-events-auto absolute rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-[#13111A]/95 p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-(color:--work-popover-bg) p-2 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={{ ...placeNear(draft.rect, "above"), width: POPOVER_WIDTH_PX }}
             >
               <ThreadCommentEditor
@@ -535,7 +536,7 @@ export function ThreadCommentLayer({
               data-testid="thread-comment-row-button"
               aria-label="Comment on this row"
               title="Comment on this row"
-              className="pointer-events-auto absolute inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/[0.1] bg-[#15131c]/95 text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-[#1d1a26]"
+              className="pointer-events-auto absolute inline-flex h-6 w-6 items-center justify-center rounded-md border border-fg/[0.1] bg-(color:--work-popover-bg) text-[var(--chat-accent)] shadow-[0_6px_18px_rgba(0,0,0,0.4)] transition-colors hover:bg-(color:--color-surface-raised)"
               style={(() => {
                 const zoom = cssZoomOf();
                 return {

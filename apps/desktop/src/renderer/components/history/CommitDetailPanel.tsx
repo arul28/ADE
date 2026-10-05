@@ -68,15 +68,15 @@ type CommitDetailPanelProps = {
 };
 
 const ROW = "flex min-w-0 items-center gap-2 text-[12.5px]";
-const LINK = "inline-flex min-w-0 items-center gap-1 rounded-[5px] px-1 -mx-1 text-fg/85 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg";
+const LINK = "inline-flex min-w-0 items-center gap-1 rounded-[5px] px-1 -mx-1 text-fg/85 transition-colors duration-100 hover:bg-fg/[0.06] hover:text-fg";
 const BUTTON = cn(
   "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] font-medium",
-  "bg-white/[0.05] text-fg/85 transition-colors duration-100 hover:bg-white/[0.09] hover:text-fg",
+  "bg-fg/[0.05] text-fg/85 transition-colors duration-100 hover:bg-fg/[0.09] hover:text-fg",
   "disabled:pointer-events-none disabled:opacity-40",
 );
 const MENU_ITEM = cn(
   "flex cursor-pointer select-none items-center rounded-[6px] px-2 py-1.5 text-[12px] outline-none",
-  "data-[highlighted]:bg-white/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
+  "data-[highlighted]:bg-fg/[0.07] data-[disabled]:cursor-default data-[disabled]:opacity-40",
 );
 
 export function CommitDetailPanel({
@@ -266,7 +266,7 @@ export function CommitDetailPanel({
 
   return (
     <div key={resolvedCommit.sha} className="flex h-full min-h-0 flex-col" data-testid="commit-detail">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/[0.06] pl-3 pr-1.5">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-fg/[0.06] pl-3 pr-1.5">
         <GitCommit size={14} weight="bold" className="shrink-0 text-muted-fg" aria-hidden />
         <button
           type="button"
@@ -276,7 +276,7 @@ export function CommitDetailPanel({
               .then(() => setNotice({ text: "SHA copied", error: false }))
               .catch(() => setNotice({ text: "Could not copy SHA", error: true }));
           }}
-          className="inline-flex shrink-0 items-center gap-1 rounded-[5px] px-1 font-mono text-[12px] text-fg/85 transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
+          className="inline-flex shrink-0 items-center gap-1 rounded-[5px] px-1 font-mono text-[12px] text-fg/85 transition-colors duration-100 hover:bg-fg/[0.06] hover:text-fg"
         >
           {resolvedCommit.shortSha}
           <Copy size={11} className="opacity-50" aria-hidden />
@@ -296,7 +296,7 @@ export function CommitDetailPanel({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-muted-fg transition-colors duration-100 hover:bg-white/[0.06] hover:text-fg"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-muted-fg transition-colors duration-100 hover:bg-fg/[0.06] hover:text-fg"
         >
           <X size={14} />
         </button>
@@ -316,7 +316,7 @@ export function CommitDetailPanel({
               {avatar ? (
                 <img src={avatar} alt="" className="h-4 w-4 shrink-0 rounded-full" />
               ) : (
-                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-[9px] font-semibold text-fg/70">
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-fg/[0.08] text-[9px] font-semibold text-fg/70">
                   {resolvedCommit.authorName.charAt(0).toUpperCase() || "?"}
                 </span>
               )}
@@ -402,12 +402,12 @@ export function CommitDetailPanel({
                   align="start"
                   sideOffset={4}
                   collisionPadding={8}
-                  className="max-h-[min(70vh,560px)] min-w-[220px] overflow-y-auto rounded-[9px] border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
+                  className="max-h-[min(70vh,560px)] min-w-[220px] overflow-y-auto rounded-[9px] border border-fg/[0.08] bg-[var(--color-card)] p-1 shadow-xl"
                   style={{ zIndex: Z_LAYERS.popover }}
                 >
                   {groups.map((group, index) => (
                     <React.Fragment key={group.id}>
-                      {index > 0 ? <DropdownMenu.Separator className="my-1 h-px bg-white/[0.06]" /> : null}
+                      {index > 0 ? <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" /> : null}
                       <DropdownMenu.Label className="px-2 pb-0.5 pt-1 text-[11px] text-muted-fg">{group.label}</DropdownMenu.Label>
                       {group.actions.map((action) => (
                         <DropdownMenu.Item
@@ -457,7 +457,7 @@ export function CommitDetailPanel({
                       type="button"
                       title={path}
                       onClick={() => onOpenChanges?.(resolvedCommit, path)}
-                      className="-mx-2 flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[12px] text-fg/85 transition-colors duration-100 hover:bg-white/[0.05]"
+                      className="-mx-2 flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[12px] text-fg/85 transition-colors duration-100 hover:bg-fg/[0.05]"
                     >
                       <FileIcon size={13} className="shrink-0" style={{ color }} aria-hidden />
                       <span className="max-w-[calc(100%-21px)] shrink-0 truncate">{name}</span>
@@ -488,7 +488,7 @@ export function CommitDetailPanel({
                     disabled={!onOpenEvent}
                     onClick={() => onOpenEvent?.(event.id)}
                     title="Show in Activity"
-                    className="-mx-2 flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors duration-100 enabled:hover:bg-white/[0.05]"
+                    className="-mx-2 flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors duration-100 enabled:hover:bg-fg/[0.05]"
                   >
                     <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: event.color }} />
                     <span className="min-w-0 flex-1 truncate text-fg/85">{event.label}</span>

@@ -52,7 +52,7 @@ export function LinearAssigneeAvatar({
   }
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-full bg-white/[0.10] font-medium text-fg/75"
+      className="grid shrink-0 place-items-center rounded-full bg-fg/[0.10] font-medium text-fg/75"
       style={{ ...dimension, fontSize: Math.max(7, Math.round(size * 0.45)) }}
       title={name}
       aria-label={name}
@@ -130,7 +130,7 @@ export function ScopeNavButton({
       type="button"
       className={cn(
         "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-        active ? "bg-white/[0.06] text-fg" : "text-muted-fg/80 hover:bg-white/[0.04] hover:text-fg",
+        active ? "bg-fg/[0.06] text-fg" : "text-muted-fg/80 hover:bg-fg/[0.04] hover:text-fg",
       )}
       onClick={onClick}
       title={title}
@@ -159,7 +159,7 @@ export function ProjectFilterButton({
       type="button"
       className={cn(
         "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-        active ? "bg-white/[0.06] text-fg" : "text-muted-fg/80 hover:bg-white/[0.04] hover:text-fg",
+        active ? "bg-fg/[0.06] text-fg" : "text-muted-fg/80 hover:bg-fg/[0.04] hover:text-fg",
       )}
       onClick={onClick}
       title={project.name}
@@ -213,9 +213,9 @@ export function LinearBrowserIssueRow({
       aria-pressed={active}
       data-linear-issue-row={issue.id}
       className={cn(
-        "group/row flex w-full items-center gap-2 border-b border-white/[0.04] px-3 text-left transition-colors outline-none focus-visible:bg-white/[0.06]",
+        "group/row flex w-full items-center gap-2 border-b border-fg/[0.04] px-3 text-left transition-colors outline-none focus-visible:bg-fg/[0.06]",
         busy && "pointer-events-none opacity-50",
-        active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]",
+        active ? "bg-fg/[0.06]" : "hover:bg-fg/[0.03]",
       )}
       style={{ height: ISSUE_ROW_HEIGHT }}
       onClick={() => { if (!busy) onClick(); }}
@@ -242,7 +242,7 @@ export function LinearBrowserIssueRow({
           aria-checked={checked}
           aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
           onClick={(e) => { e.stopPropagation(); onToggleCheck(e); }}
-          className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-white/[0.06]"
+          className="-ml-1 grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md outline-none focus-visible:bg-fg/[0.06]"
         >
           <span
             className={cn(
@@ -250,11 +250,11 @@ export function LinearBrowserIssueRow({
               checked
                 ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
                 : anyRowChecked
-                  ? "border-white/[0.18] bg-transparent group-hover/row:border-white/35"
-                  : "border-white/[0.12] bg-transparent group-hover/row:border-white/35",
+                  ? "border-fg/[0.18] bg-transparent group-hover/row:border-white/35"
+                  : "border-fg/[0.12] bg-transparent group-hover/row:border-white/35",
             )}
           >
-            {checked ? <Check size={10} weight="bold" className="text-[#0F0D14]" /> : null}
+            {checked ? <Check size={10} weight="bold" className="text-accent-fg" /> : null}
           </span>
         </button>
       ) : null}

@@ -43,7 +43,7 @@ export function DemoChapters({ metadata, videoRef, children }: {
             <button
               key={`${index}:${chapter.t}`}
               type="button"
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/70 hover:bg-white/[0.06] hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.07] bg-fg/[0.03] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/70 hover:bg-fg/[0.06] hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45"
               onClick={() => seekVideoAndPlay(videoRef.current, chapter.t)}
             >
               <span className="tabular-nums text-muted-fg">{formatProofDuration(chapter.t * 1000)}</span>

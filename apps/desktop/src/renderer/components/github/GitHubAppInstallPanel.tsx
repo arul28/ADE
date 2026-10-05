@@ -7,7 +7,7 @@ import type {
 } from "../../../shared/types";
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
-import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import {
   deriveGithubAccountAuthState,
   deriveGithubRepoConnectionState,
@@ -650,7 +650,7 @@ function blocksWrapStyle(compact: boolean): CSSProperties {
     marginTop: compact ? 12 : 14,
     border: `1px solid ${COLORS.borderMuted}`,
     borderRadius: 10,
-    background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+    background: fgTint(2.5),
     overflow: "hidden",
   };
 }
@@ -746,7 +746,7 @@ const eventChipStyle: CSSProperties = {
   fontSize: 10,
   fontFamily: SANS_FONT,
   color: COLORS.textSecondary,
-  background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+  background: fgTint(5),
   border: `1px solid ${COLORS.borderMuted}`,
 };
 

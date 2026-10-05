@@ -209,7 +209,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
         ) : null}
         {failed && !diff.isBinary ? (
           <div className="h-full w-full overflow-auto p-3 text-xs">
-            <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
+            <div className="mb-2 rounded border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-amber-200">
               Monaco failed to load in dev mode. Showing plain-text diff fallback.
             </div>
             <div className="grid h-[calc(100%-36px)] grid-cols-1 gap-2 md:grid-cols-2">

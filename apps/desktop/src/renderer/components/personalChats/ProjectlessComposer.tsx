@@ -90,7 +90,7 @@ export function ProjectlessComposer({
           <button type="button" onClick={onDismissError} aria-label="Dismiss error" className="mt-0.5 shrink-0 text-rose-200/60 hover:text-rose-100"><X size={12} /></button>
         </div>
       ) : null}
-      <div className="rounded-2xl border border-white/[0.09] bg-[color:var(--color-surface-raised)]/95 p-2 shadow-[0_24px_80px_-42px_rgba(0,0,0,0.9)] backdrop-blur-xl transition-colors focus-within:border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)]">
+      <div className="rounded-2xl border border-fg/[0.09] bg-[color:var(--color-surface-raised)]/95 p-2 shadow-[0_24px_80px_-42px_rgba(0,0,0,0.9)] backdrop-blur-xl transition-colors focus-within:border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)]">
         <textarea
           ref={textareaRef}
           value={draft}
@@ -127,7 +127,7 @@ export function ProjectlessComposer({
             onRuntimeCatalogRefreshed={onRuntimeCatalogRefreshed}
           />
           <ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} compact disabled={controlsDisabled} onChange={onReasoningChange} />
-          <select value={permissionMode} disabled={controlsDisabled} onChange={(event) => onPermissionChange(event.target.value as AgentChatPermissionMode)} className="h-7 max-w-[112px] rounded-md border border-white/[0.06] bg-white/[0.025] px-2 font-sans text-[10px] text-fg/60 outline-none" aria-label="Permission mode">
+          <select value={permissionMode} disabled={controlsDisabled} onChange={(event) => onPermissionChange(event.target.value as AgentChatPermissionMode)} className="h-7 max-w-[112px] rounded-md border border-fg/[0.06] bg-fg/[0.025] px-2 font-sans text-[10px] text-fg/60 outline-none" aria-label="Permission mode">
             <option value="default">Default</option>
             <option value="plan">Plan</option>
             <option value="full-auto">Full access</option>
