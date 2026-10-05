@@ -211,6 +211,8 @@ export type ModelRouterService = {
   shadowSummary(args?: { days?: number }): Promise<RouterShadowSummary>;
   efficiency(args?: { days?: number }): Promise<RouterEfficiencyReport>;
   refreshRegistry(options?: { force?: boolean }): Promise<ModelRegistryStatus>;
+  /** Stops the stale-subagent timer. */
+  dispose(): void;
 };
 
 type PendingSubagent = {
@@ -265,6 +267,9 @@ export function createModelRouterService(args: {
    */
   const settled = new Map<string, { runs: number; prompt: string | null; description: string; agentType: string | null }>();
   let lastSweepMs = 0;
+  // A quiet brain sends no events, so a timer also gives up on stale subagents.
+  const sweepTimer = enabled ? setInterval(() => sweepStale(), PENDING_GIVE_UP_MS / 6) : null;
+  sweepTimer?.unref?.();
   let warnedWrite = false;
 
   const append = (row: RouterShadowDecisionRow | RouterShadowOutcomeRow): void => {
@@ -458,11 +463,15 @@ export function createModelRouterService(args: {
     if (event.taskType && event.taskType !== "subagent") return;
     const key = `${sessionId}:${event.taskId}`;
     const existing = pending.get(key);
-    if (existing) {
+    const nextToolUse = event.parentToolUseId ?? null;
+    if (existing && (!nextToolUse || !existing.parentToolUseId || nextToolUse === existing.parentToolUseId)) {
       // A corrected start: the tool input or the child's effort arrived late.
       mergeFacts(existing, event);
       return;
     }
+    // The same task id from another tool call is a follow-up run whose start
+    // beat the previous run's result: the previous run ends here, unfinished.
+    if (existing) settle(existing, null);
     const childSessionId = event.taskId.startsWith("chat:") ? event.taskId.slice(5) : null;
     const previous = settled.get(key);
     const run = (previous?.runs ?? 0) + 1;
@@ -730,6 +739,10 @@ export function createModelRouterService(args: {
     refreshRegistry(options) {
       return args.registry.refresh(options);
     },
+
+    dispose() {
+      if (sweepTimer) clearInterval(sweepTimer);
+    },
   };
 }
 
@@ -810,7 +823,10 @@ export function attachSharedModelRouter(args: {
       // The router and its registry fetcher close over the first scope's
       // directory configuration, so leave nothing behind once every scope has
       // detached; the next scope builds a fresh one against its own config.
-      if (current.sources.length === 0) sharedRouters.delete(key);
+      if (current.sources.length === 0) {
+        sharedRouters.delete(key);
+        current.service.dispose();
+      }
     },
   };
 }

@@ -16824,6 +16824,9 @@ export function createAgentChatService(args: {
       ? selfChatRuntimeOwner()
       : prevPersisted?.runtimeOwner ?? null;
     const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
+    const claudeResultCostTotalUsd = managed.runtime?.kind === "claude"
+      ? managed.runtime.resultCostBaseline
+      : managed.session.provider === "claude" ? prevPersisted?.claudeResultCostTotalUsd ?? null : null;
     const claudeBackgroundResumeSessionId = managed.session.provider === "claude"
       ? managed.claudeBackgroundResumeSessionId
         ?? prevPersisted?.claudeBackgroundResumeSessionId
@@ -17052,11 +17055,7 @@ export function createAgentChatService(args: {
       ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
         ? { claudeBackgroundResumeSessionId }
         : {}),
-      ...(managed.runtime?.kind === "claude" && managed.runtime.resultCostBaseline != null
-        ? { claudeResultCostTotalUsd: managed.runtime.resultCostBaseline }
-        : managed.session.provider === "claude" && prevPersisted?.claudeResultCostTotalUsd != null
-          ? { claudeResultCostTotalUsd: prevPersisted.claudeResultCostTotalUsd }
-          : {}),
+      ...(claudeResultCostTotalUsd != null ? { claudeResultCostTotalUsd } : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundLogText
         ? { claudeBackgroundLogText: managed.claudeBackgroundLogText.slice(-64_000) }
         : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: prevPersisted.claudeBackgroundLogText.slice(-64_000) } : {}),
@@ -25575,6 +25574,7 @@ export function createAgentChatService(args: {
         parentToolUseId,
         background: patch.is_backgrounded === true || existing?.background === true,
         finalSummary: existing?.finalSummary,
+        ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
         ...(agentType ? { agentType } : {}),
         ...(agentId ? { agentId } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
@@ -25644,6 +25644,7 @@ export function createAgentChatService(args: {
       parentToolUseId,
       background: patch.is_backgrounded === true || existing?.background === true,
       finalSummary: existing?.finalSummary,
+      ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
       ...(agentType ? { agentType } : {}),
       ...(agentId ? { agentId } : {}),
       ...(parentAgentId ? { parentAgentId } : {}),
@@ -27542,6 +27543,7 @@ export function createAgentChatService(args: {
             parentToolUseId,
             background: existing?.background,
             finalSummary: existing?.finalSummary,
+            ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
             ...(parentAgentId ? { parentAgentId } : {}),
@@ -27665,6 +27667,7 @@ export function createAgentChatService(args: {
               parentToolUseId,
               background,
               finalSummary: existing?.finalSummary,
+              ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
               ...(agentType ? { agentType } : {}),
               ...(agentId ? { agentId } : {}),
               ...(parentAgentId ? { parentAgentId } : {}),
@@ -27733,6 +27736,7 @@ export function createAgentChatService(args: {
               parentToolUseId,
               background,
               finalSummary: existing?.finalSummary,
+              ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
               ...(agentType ? { agentType } : {}),
               ...(agentId ? { agentId } : {}),
               ...(parentAgentId ? { parentAgentId } : {}),
@@ -37475,6 +37479,7 @@ export function createAgentChatService(args: {
                 ...(existing?.taskType ? { taskType: existing.taskType } : {}),
                 ...(existing?.workflowName ? { workflowName: existing.workflowName } : {}),
                 ...(resolvedModel ? { model: resolvedModel } : {}),
+                ...(existing?.reasoningEffort ? { reasoningEffort: existing.reasoningEffort } : {}),
               });
             }
             return { continue: true };
@@ -38698,6 +38703,9 @@ export function createAgentChatService(args: {
       options.sessionId = runtime.sdkSessionId;
       persistChatState(managed);
     }
+    // A query without `resume` is a fresh transcript whose running cost starts
+    // at zero; a resumed or forked one continues the saved total.
+    if (!options.resume) runtime.resultCostBaseline = null;
 
     logger.info("agent_chat.claude_query_start", {
       sessionId: managed.session.id,

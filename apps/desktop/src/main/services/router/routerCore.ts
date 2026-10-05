@@ -91,18 +91,19 @@ const TEST_WORDS = /\b(run (the )?(tests?|suite|ci)|typecheck|lint|test shard|fl
  * A brief that forbids all edits: the strongest signal a prompt carries. A
  * scoped ban ("do not edit anything under apps/ios", "never touch the owner's
  * machines") is an edit brief with a fence, so the object must be every file.
- */
-const NO_EDIT_WORDS = /\b(read[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])|report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
+ */const NO_EDIT_BAN = /\b(report[- ]only|research (task )?only|review only|you (only )?(review|report)|return (the )?findings|no edits|do not (build|generate) anything)|\b(do not|don't|never|must not)\s+(edit|modify|change|write)\s+(any\s+)?(repository\s+)?(files?|code|anything)\b(?!\s+(under|outside|in|beyond|other|except))/i;
+/** "Read-only research", "read-only:": a no-edit rule, but often about one step ("start by doing read-only analysis"). */
+const READ_ONLY_PHRASE = /(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\s*(research|investigation|review|re-review|task|analysis|audit|forensics?|[:;—(])/i;
 /** "Read-only" in a brief's opening lines is a whole-task rule; later it is about one command or file. */
-const OPENING_READ_ONLY = /^[\s\S]{0,160}\bread[- ]only\b/i;
-const OPENING_READ_ONLY_WORD = /\bread[- ]only\b/i;
+const OPENING_READ_ONLY = /^[\s\S]{0,160}(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\b/i;
+const OPENING_READ_ONLY_WORD = /(?<!\b(doing|by|with|some|a)\s)\bread[- ]only\b/i;
 /** Boilerplate every ADE brief carries; it says nothing about the task. */
 const BRIEF_BOILERPLATE = /do not start subagents or parallel reviewers; do all the work yourself\.?/gi;
 /** "Read /tmp/brief.md and follow it": an instruction to load the brief, not a read task. */
 const READ_THE_BRIEF = /\bread\s+(the\s+(file\s+)?)?[\w./~-]+\.(md|txt|prompt)\b/gi;
 
 /** Opening clauses that hand a worker code to change. */
-const EDIT_BRIEF_WORDS = /\b(you\s+(are\s+)?(implement(ing)?|apply(ing)?|fix(ing)?|build(ing)?|writ(e|ing)|port(ing)?|refactor(ing)?|add(ing)?|own|updat(e|ing)|the\s+\w+\s+implementer)|implementer\b|implement\s+(the|a|an|part|unit|phase|stage)|apply\s+(the\s+|these\s+|verified\s+|final\s+)?(\/quality\s+)?(fix|finding|change|delta)|edit\s+(only|files only)|work\s+only\s+in|allowlist|leave changes uncommitted)/i;
+const EDIT_BRIEF_WORDS = /\b(you\s+(are\s+)?(implement(ing)?|apply(ing)?|fix(ing)?|build(ing)?|writ(e|ing)|port(ing)?|refactor(ing)?|add(ing)?|own|updat(e|ing)|the\s+\w+\s+implementer)|implementer\b|implement\s+(the|a|an|part|unit|phase|stage)|apply\s+(the\s+|these\s+|verified\s+|final\s+)?(\/quality\s+)?(fix|finding|change|delta)|edit\s+(only|files only)|work\s+only\s+in|your\s+edits|allowlist|leave changes uncommitted)/i;
 /** An imperative edit verb that opens a sentence: "Fix …", "Task: write …". */
 const OPENING_EDIT_VERB = /(^|[.:!]\s+)(fix|implement|write|add|build|apply|port|refactor|update|rewrite|remove|migrate|redesign|create)\b/i;
 const LIGHT_EDIT_WORDS = /\b(docs?|documentation|logging|tests?|rename|typo|copy)\b/i;
@@ -133,18 +134,22 @@ export function classifyRouterTaskDetailed(
     const heavy = !LIGHT_EDIT_WORDS.test(label) && (HEAVY_WORDS.test(label) || (HEAVY_WORDS.test(head) && brief.length >= 4_000));
     return heavy ? "heavy_edit" : "light_edit";
   };
-  // The opening sentence states the job, so the earlier of an edit clause and a
-  // no-edit rule wins: "READ-ONLY: … Work only in the worktree" is a review, and
-  // "Task: write read-only log extractors" is an edit. A later "read-only" is
-  // usually about one command or file.
+  // Precedence, first match wins:
+  // 1. An edit clause in the opening 250 characters, when it comes before any
+  //    no-edit rule ("Task: write read-only log extractors" is an edit, and
+  //    "READ-ONLY: … Work only in the worktree" is not).
+  // 2. A ban on every edit, or "read-only" in the opening lines.
+  // 3. The label's own verb ("Fix …").
+  // 4. A "read-only research/analysis" phrase anywhere in the head.
+  // 5. An edit clause anywhere in the head ("…, then apply the fix").
   const editAt = firstIndex(opening, [EDIT_BRIEF_WORDS, OPENING_EDIT_VERB]);
-  const noEditAt = firstIndex(head, [NO_EDIT_WORDS, OPENING_READ_ONLY_WORD]);
+  const noEditAt = firstIndex(head, [NO_EDIT_BAN, READ_ONLY_PHRASE, OPENING_READ_ONLY_WORD]);
+  const noEditKind = (): RouterTaskKind => (REVIEW_WORDS.test(label) || REVIEW_WORDS.test(head) ? "review" : "read_only");
   const readOnlyOpening = OPENING_READ_ONLY.test(head);
   if (brief && editAt != null && (noEditAt == null || editAt < noEditAt)) return { kind: editKind(), source: "prompt" };
-  if (EDIT_WORDS.test(labelVerb) && !readOnlyOpening) return { kind: editKind(), source: "description" };
-  if (brief && (NO_EDIT_WORDS.test(head) || OPENING_READ_ONLY.test(head))) {
-    return { kind: REVIEW_WORDS.test(label) || REVIEW_WORDS.test(head) ? "review" : "read_only", source: "prompt" };
-  }
+  if (brief && (NO_EDIT_BAN.test(head) || readOnlyOpening)) return { kind: noEditKind(), source: "prompt" };
+  if (EDIT_WORDS.test(labelVerb)) return { kind: editKind(), source: "description" };
+  if (brief && READ_ONLY_PHRASE.test(head)) return { kind: noEditKind(), source: "prompt" };
   if (brief && EDIT_BRIEF_WORDS.test(head)) return { kind: editKind(), source: "prompt" };
   const fromLabel = classifyText(label);
   if (fromLabel !== "unknown") return { kind: fromLabel, source: "description" };
