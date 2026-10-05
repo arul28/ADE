@@ -110,7 +110,8 @@ function sharedDriverKey(adeHome: string, platform: NodeJS.Platform): string {
  *     sent is every attached project's live lanes, plus every screen a
  *     project asked for and has not destroyed, never one project's alone;
  *   - health changes and a lost driver reach every project;
- *   - the host stops only when the last project releases it.
+ *   - the host stops only when the last project releases it; a project that
+ *     releases it earlier has its screens reconciled away.
  */
 export function acquireSharedWindowsDesktopDriverClient(deps: {
   logger: Logger;
@@ -211,8 +212,27 @@ export function acquireSharedWindowsDesktopDriverClient(deps: {
       released = true;
       attachments.delete(attachment);
       for (const [laneId, owner] of [...laneOwner]) if (owner === attachment) laneOwner.delete(laneId);
-      for (const [laneId, owner] of [...heldLanes]) if (owner === attachment) heldLanes.delete(laneId);
-      if (attachments.size > 0) return;
+      let heldAScreen = false;
+      for (const [laneId, owner] of [...heldLanes]) {
+        if (owner !== attachment) continue;
+        heldLanes.delete(laneId);
+        heldAScreen = true;
+      }
+      if (attachments.size > 0) {
+        // A closing project does not destroy its screens, and the host stays
+        // up for the others. Reconcile so its screens, and the private seat
+        // one of them may hold, do not outlive it.
+        if (heldAScreen && client.isRunning()) {
+          const live = new Set<string>(heldLanes.keys());
+          for (const other of attachments) for (const id of other.liveLaneIds?.() ?? []) live.add(id);
+          client.request(MAC_DESKTOP_DRIVER_OPS.reconcileDisplays, { liveLaneIds: [...live] }).catch((error) => {
+            deps.logger.warn("windows_desktop.release_reconcile_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+        return;
+      }
       sharedDrivers.delete(key);
       client.dispose();
     },

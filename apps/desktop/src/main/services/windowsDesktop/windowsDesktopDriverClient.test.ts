@@ -122,14 +122,23 @@ describe("the Windows driver shared by every open project", () => {
 
   it("keeps the host while any project holds it, and stops it after the last one leaves", async () => {
     const { children, spawnProcess, attach } = setup();
-    const projectA = attach([]);
-    const projectB = attach([]);
+    const projectA = attach(["lane-a"]);
+    const projectB = attach(["lane-b"]);
     await projectA.client.ensureStarted();
+    const host = children[0]!;
+    const create = projectA.client.request("display.create", { laneId: "lane-a" });
+    await settle();
+    host.stdout.write(`${JSON.stringify({ id: JSON.parse(host.stdin.read()!.toString()).id, ok: true, result: {} })}\n`);
+    await create;
 
+    // A closes without destroying its screen; the host must not keep it.
     projectA.client.dispose();
     await settle();
+    const cleanup = JSON.parse(host.stdin.read()!.toString());
+    expect(cleanup.op).toBe("display.reconcile");
+    expect(cleanup.liveLaneIds).toEqual(["lane-b"]);
     expect(projectB.client.isRunning()).toBe(true);
-    expect(children[0]!.killed).toBe(false);
+    expect(host.killed).toBe(false);
 
     projectB.client.dispose();
     await settle();
