@@ -2048,7 +2048,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
       };
     });
-    invalidateAiDiscoveryCache(project.rootPath);
+    // Opening or switching to a project changes no CLI login or shell PATH,
+    // so refill without forcing the brain to re-probe them.
+    invalidateAiDiscoveryCache(project.rootPath, { forceRefresh: false });
     invalidateProjectConfigCache(project.rootPath);
     void Promise.allSettled([
       get().refreshLanes({ includeStatus: false }),
@@ -3256,7 +3258,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           });
-      invalidateAiDiscoveryCache(rootPath);
+      // Opening or switching to a project changes no CLI login or shell PATH,
+      // so refill without forcing the brain to re-probe them.
+      invalidateAiDiscoveryCache(rootPath, { forceRefresh: false });
       invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
@@ -3449,7 +3453,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneCacheByProject,
         };
       });
-      invalidateAiDiscoveryCache(binding.rootPath);
+      // Opening or switching to a project changes no CLI login or shell PATH,
+      // so refill without forcing the brain to re-probe them.
+      invalidateAiDiscoveryCache(binding.rootPath, { forceRefresh: false });
       invalidateProjectConfigCache(binding.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),

@@ -693,7 +693,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
       if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
-      refreshAiStatus({ force: true });
+      refreshAiStatus({ force: detail?.forceRefresh !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
     return () => {
