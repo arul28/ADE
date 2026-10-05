@@ -340,9 +340,8 @@ describe("SceneFrame", () => {
     /** A minimized or hidden window answers with no picture; nothing else would wake the capture. */
     it("tries again after the host returns no picture", async () => {
       stubShellRect({});
-      const snapshot = vi.fn<() => Promise<string | null>>()
-        .mockResolvedValueOnce(null)
-        .mockResolvedValue(SCENE_STILL_DATA_URL);
+      const snapshot = vi.fn(async (): Promise<string | null> => SCENE_STILL_DATA_URL)
+        .mockResolvedValueOnce(null);
       const { storeStill, settle } = await renderSettlingScene({ snapshot });
 
       settle();
