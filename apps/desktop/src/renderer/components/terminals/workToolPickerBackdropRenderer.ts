@@ -502,7 +502,16 @@ export function createBackdropRenderer(options: {
    * a terminal and a chat stream. The rect cannot change more than once per
    * frame anyway, so coalescing loses nothing.
    */
+  let layoutStale = false;
   const updateLayout = () => {
+    // Out of view includes a parked project surface (`content-visibility:
+    // hidden`), where reading the rect forces the browser to render the whole
+    // hidden surface, and the capture-phase scroll listener fires for every
+    // scroll in the visible one. Measure once it is back in view instead.
+    if (!inView) {
+      layoutStale = true;
+      return;
+    }
     if (layoutRaf !== 0 || disposed) return;
     layoutRaf = requestAnimationFrame(() => {
       layoutRaf = 0;
@@ -556,6 +565,10 @@ export function createBackdropRenderer(options: {
   resizeObserver.observe(canvas);
   const intersectionObserver = new IntersectionObserver(([entry]) => {
     inView = entry?.isIntersecting ?? true;
+    if (inView && layoutStale) {
+      layoutStale = false;
+      updateLayout();
+    }
     if (inView) wake();
     else stop();
   });
