@@ -640,3 +640,44 @@ The WebGL terminal renderer was never active until the fifth pass:
 Vite nor the packaged `app.asar` resolved `@xterm/addon-webgl`. Keep the
 specifier a string literal (`loadWebglAddonCtor`). A streaming shell demo:
 renderer 23.7% (DOM) → 12.7% (WebGL).
+
+### Project and page switches (fifth pass)
+
+Measured with two warm projects, one holding a long chat (12,900 elements)
+and one with a printing shell. Use long tasks, the worst frame gap, a
+screencast filmstrip, and per-toggle style timings on the surface root.
+
+- Do not let recency set the DOM order of keep-alive surfaces. Moving a
+  node detaches and re-attaches its subtree: a full restyle and relayout,
+  and every scroll container in it starts at 0. `mountedProjects` picks warm
+  surfaces by recency and renders them in tab order. Before: a chat scrolled
+  up into history reopened at its first message.
+- Hide a parked surface with `content-visibility: hidden`
+  (`HIDDEN_PAGE_STYLE`), not with `inert`, `pointer-events: none` or a
+  `[attr] *` CSS rule. Each of those three restyled every element of the
+  surface (~200 ms apiece); `content-visibility` toggles in ~3 ms, keeps the
+  rendering state, stops animations and blocks hit-testing and focus. Code
+  that asks "is my surface parked?" checks `[data-ade-surface-hidden]`.
+  Result: switch long tasks 450–640 ms → 0, worst frame gap ~480 → ~120 ms.
+- Never use a Tailwind `selection:` variant on a large container. It compiles
+  to `.x *::selection`, matched against every element on every restyle (40% of
+  selector time). Chromium inherits `::selection`, so one rule on the root
+  (`.ade-app-selection::selection`) colors the same. Full restyle of the chat
+  surface: 205 → 39 ms. Measure selector cost with a trace that includes the
+  `disabled-by-default-blink.debug` category (SelectorStats events).
+- A project switch must not force a machine-wide AI re-probe. Forced
+  `ai.getStatus` re-reads the login shell's PATH with synchronous shells,
+  which blocks the brain's event loop and every call behind it (the terminal
+  stream resumed 323 ms after the click; now 83 ms). Use
+  `invalidateAiDiscoveryCache(root, { forceRefresh: false })` and
+  `getAiStatusCached({ revalidate: true })` for a cache bypass.
+- Do not rebuild the WebGL terminal renderer on reveal. Creating the DOM
+  renderer measures glyphs with a forced full-document layout (~157 ms).
+- `onRuntimeStatusChanged` is also a 15 s heartbeat. Use
+  `subscribeRuntimeIdentityChanges` for "the brain may have changed".
+
+Open findings: the return to a project with a long chat still costs ~100 ms
+of native layout and paint; `useWorkSessions` polls `session.list` every 5 s
+for a hidden project too (~6 ms of brain time each round); opening a long
+chat still forces layout in `ThreadCommentLayer` and re-parses markdown
+(~45 ms).
