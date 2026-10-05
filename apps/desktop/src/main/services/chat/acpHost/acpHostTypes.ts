@@ -70,10 +70,10 @@ export function behaviorOf<TBehavior>(entry: AcpCapability<TBehavior>): TBehavio
 /**
  * How to stop a running turn.
  *
- * Grok, Copilot, Qwen, and Kimi answer a `session/cancel` REQUEST with -32601
- * on every version checked and accept the same call as a notification. Devin
- * accepts the request form. A request that meets -32601 falls back to the
- * notification, so a wrong style still stops the turn.
+ * Grok, Copilot, Qwen, Kimi, and Devin answer a `session/cancel` REQUEST with
+ * -32601 on every version checked and accept the same call as a notification.
+ * A request that meets -32601 falls back to the notification, so a wrong style
+ * still stops the turn.
  */
 export type AcpCancelStyle = "request" | "notification";
 

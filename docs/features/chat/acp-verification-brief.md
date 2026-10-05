@@ -135,6 +135,19 @@ verified once, on one version. Re-verify what you can and flag what you cannot:
   deadlock without a seed or `--add-dir` on either version, and a cancel
   notification returns `end_turn` on 1.0.89 but `cancelled` on 1.0.91.
 
+- Devin 3000.11.3 (macOS arm64), handshake and unauthenticated methods only,
+  verified 2026-10-05 with no login and the binary copied into a temp dir
+  (`fixtures/devin.initialize.json`): `session/new` succeeds without a login and
+  advertises `mode`/`model` config options; `session/cancel` as a request is
+  -32601 (notification is the only form); there is no `session/close`,
+  `session/resume`, `session/fork`, or `session/set_model` (all -32601), so
+  rejoin is `load_only` and the model is set through the `model` config option;
+  an unauthenticated `session/prompt` is -32000 "Please log in to use Devin.
+  Use `/login` to authenticate again." Because `session/new` succeeds
+  unauthenticated, the auth probe reads Devin as ready without a credential —
+  still open. The cloud relay exits "Not logged in" before `initialize`, so
+  `devinCloud.ts` stays from an earlier session and was not re-verified.
+
 ### 3. Hunt the classes of bug a mock hides
 
 Read the ADE bug classes in `.claude/skills/quality/references/` if present, and

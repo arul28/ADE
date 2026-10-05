@@ -225,6 +225,12 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bdevin\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required|no credentials|sign\s*in)\b/i,
       /\brun\s+[`'"]?devin\s+auth\s+login[`'"]?/i,
       /\bwindsurf[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+      // `devin acp` answers an unauthenticated `session/prompt` with -32000
+      // "Please log in to use Devin. Use `/login` to authenticate again."
+      // `devin acp --cloud` instead exits with "Not logged in. Please run
+      // `auth login` first." before it answers `initialize`.
+      /\blog\s*in\s+to\s+use\s+devin\b/i,
+      /\bnot\s+logged\s+in\b[\s\S]{0,120}\brun\s+[`'"]?auth\s+login[`'"]?/i,
     ],
   },
 ];

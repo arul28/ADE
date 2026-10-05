@@ -23,7 +23,7 @@ a message naming the CLI and telling the user to update ADE or the CLI.
 | grok | 1.0.46 | 1.0.41 | Handshake, live turn, cancel, permissions, close, resume | 2026-10-05 |
 | qwen | 0.25.0 | 0.22.3 | Handshake, config options, cancel, close; no live turn (no reachable model) | 2026-10-05 |
 | kimi | 2.1.1 | 0.39.1 | Handshake and unauthenticated methods only (no active login) | 2026-10-05 |
-| devin | not verified | — | — | — |
+| devin | 3000.11.3 | — | Handshake and unauthenticated methods only (no login; cloud relay unreachable) | 2026-10-05 |
 
 Copilot CLI updates itself, so a user on any Copilot release usually runs the
 newest one.
@@ -567,6 +567,52 @@ Rust, Apache-2.0)
   `--continue`. `--model` is a FIXED enum — map or reject. No plan mode → map
   ADE plan to `--deny-tool write,shell` or reject the mode. `--no-alt-screen`.
 - Windows: npm `.cmd` shim → prompt rides PTY.
+
+### Devin (`devin acp`, latest verified **3000.11.3**, PREVIEW)
+- Spawn: `devin acp [--model <name>]`. `--model` is a global default for every
+  session the server opens (accepts the same fuzzy family name as `/model` and
+  `DEVIN_MODEL`); the per-session `model` config option still overrides it.
+  `--cloud` is the separate relay dialect; `--agent-type` and `--model` are
+  ignored under `--cloud`.
+- Verification scope (2026-10-05, macOS arm64): handshake and unauthenticated
+  methods only. No Devin login exists on the machine, so `session/prompt`
+  beyond the auth error, usage, compaction, and `authenticate` are unverified.
+  The binary's `--version` is `3000.11.3 (9c803229faa4)`; its `initialize`
+  `agentInfo` reports name `affogato`, version `0.0.0-dev`.
+  `fixtures/devin.initialize.json` is the captured handshake.
+- Caps: `loadSession`, image prompts (`image: true`, audio false), MCP http/sse,
+  and session `list`/`delete`/`additionalDirectories`. **No `session/close`,
+  no `session/resume`, no `session/fork`** (all -32601). `_meta.mcpConfigPath`
+  lands inside `$XDG_CONFIG_HOME/devin`.
+- Lifecycle: `session/cancel` is a **notification** — the request form answers
+  -32601, same as the other four CLIs. Rejoin is `session/load` only; a stored
+  id replays through it. With no `session/close`, the host releases the pooled
+  process rather than evicting it.
+- `session/new` succeeds **without** a login and advertises `mode` and `model`
+  config options. `session/set_config_option` on `mode` works (`accept-edits`,
+  `smart`, `ask`, `plan`, `bypass`); an unknown config id is -32002, an unknown
+  value -32602. `session/set_mode` returns `{}`. `model` has a `currentValue`
+  and an empty choice list pre-login. **Model selection is the `model` config
+  option**: `session/set_model` is -32601, so the dialect declares no
+  `modelSelection` and ADE sends `session/set_config_option` (as for Grok,
+  Qwen, and Kimi).
+- Auth: `devin auth login` browser OAuth; the handshake advertises only the
+  `devin-browser` method. `devin acp` exports `WINDSURF_API_KEY` when a user
+  saved one, but that path is unverified here. An unauthenticated
+  `session/prompt` is `-32000 "Please log in to use Devin. Use \`/login\` to
+  authenticate again."`, which `isAcpAuthError` reads as auth; the CLI
+  registry's `notAuthErrorPatterns` gained patterns for it and for
+  `devin acp --cloud`'s `"Not logged in. Please run \`auth login\` first."`.
+- **Auth-probe false positive (unfixed, needs a decision):** because
+  `session/new` succeeds without a login, `probeAcpProviderAuth` reads Devin as
+  `ready` even when the user is not signed in; only a prompt reveals the auth
+  error. The probe's "session/new proves the credential" rule does not hold for
+  Devin.
+- Devin Cloud (`devin acp --cloud`): the relay needs a login and exits before
+  `initialize` without one, so its handshake is not verifiable here. The cloud
+  dialect's recorded relay facts (config options `repos`/`devin_version`/
+  `platform`, load-only rejoin) remain from an earlier session and were not
+  re-checked.
 
 ### 3.5 Shared telemetry (all four dialects)
 

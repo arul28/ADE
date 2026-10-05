@@ -4,7 +4,8 @@
  * opens runs on a Devin VM, not on this machine. It rides the CLI's own
  * `devin auth login`; no API token is involved.
  *
- * What differs from the local dialect, all verified against the live relay:
+ * What differs from the local dialect, recorded from an earlier session
+ * against the live relay and NOT re-verified here:
  * - `session/new` mints a cloud session (`devin-<hex>`, the same entity the
  *   REST API and app.devin.ai call `<hex>`) and offers config options
  *   `repos`, `devin_version` (the model), `platform` and `persona_slug`.
@@ -13,6 +14,11 @@
  * - Only `session/load` rejoins, and it replays the full history, user
  *   messages included; messages sent from app.devin.ai arrive the same way.
  * - There is no branch option. The chat service pins a branch in the prompt.
+ *
+ * The 2026-10-05 local-dialect verification did not extend to this relay:
+ * without a login, `devin acp --cloud` exits with "Not logged in. Please run
+ * `auth login` first." before it answers `initialize`, so the cloud handshake
+ * could not be captured on this machine.
  */
 
 import {
