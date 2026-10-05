@@ -2847,6 +2847,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   takeovers. Profile diagnostics and remembered-permission administration stay
   in the trusted ADE renderer.
 
+  Every tab shares the user's sign-ins unless it is opened --isolated. An
+  isolated tab has its own cookies and storage, kept in memory and wiped when
+  its last tab closes, so signing in there as a test account does not sign the
+  user out. --profile <name> names the sign-in (one per chat and name), so a
+  test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
+  fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
+  and "open --profile viewer" reuses only this chat's "viewer" tab.
+
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
     $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
@@ -2856,6 +2864,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser open https://example.com --panel --text
     $ ade --socket browser open localhost:5173 --new-tab --text
     $ ade --socket browser open localhost:5173 --active-tab --text
+    $ ade --socket browser open localhost:3000/login --isolated --text
+    $ ade --socket browser open localhost:3000/login --profile viewer --text
     $ ade --socket browser open https://example.com --no-panel
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
@@ -2969,6 +2979,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --panel, --show-panel
                          Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
+    --isolated           open/new-tab: use a throwaway sign-in, not the user's.
+    --profile <name>     open/new-tab: the isolated sign-in to use; implies --isolated.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
     --browser-session <id>
                          Target the tab bound to a browser agent session.
@@ -4135,6 +4147,16 @@ function readBrowserLeaseArgs(args: string[]): JsonObject {
   return {
     ...(readFlag(args, ["--force"]) ? { force: true } : {}),
     ...(leaseTtlMs == null ? {} : { leaseTtlMs }),
+  };
+}
+
+/** `--isolated` and `--profile <name>` (which implies it) for open/new-tab. */
+function readBrowserIsolationArgs(args: string[]): JsonObject {
+  const profile = readValue(args, ["--profile"]);
+  const isolated = readFlag(args, ["--isolated"]);
+  return {
+    ...(isolated || profile ? { isolated: true } : {}),
+    ...(profile ? { profile } : {}),
   };
 }
 
@@ -14105,6 +14127,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       "--same-tab",
     ]);
     const newTab = readFlag(args, ["--new-tab"]);
+    const isolation = readBrowserIsolationArgs(args);
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const claimArgs = {
@@ -14133,6 +14156,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       activate: agentOwnedCall && !activeTab && !showPanel ? false : undefined,
       reuseOwnedTab: autoReuseOwnedTab ? true : undefined,
       openPanel: showPanel || (!noPanel && !agentOwnedCall),
+      ...isolation,
       ...claimArgs,
       ...genericArgs,
     });
@@ -14172,6 +14196,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
+    const isolation = readBrowserIsolationArgs(args);
     const showPanel = readFlag(args, ["--panel", "--show-panel", "--reveal-panel"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
@@ -14195,6 +14220,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           url,
           activate: background || (Boolean(claimArgs.laneId || claimArgs.chatSessionId) && !showPanel) ? false : undefined,
           openPanel: showPanel || (!noPanel && !claimArgs.laneId && !claimArgs.chatSessionId),
+          ...isolation,
           ...claimArgs,
           ...genericArgs,
         }),
@@ -27816,6 +27842,10 @@ function formatBrowserStatus(value: unknown): string {
     return [lane, chat].filter(Boolean).join(" / ");
   };
   const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  const signInForTab = (tab: Record<string, unknown>): string => {
+    const profile = asString(tab.isolatedProfile);
+    return profile ? `isolated profile "${profile}"` : "shared (the user's)";
+  };
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
@@ -27838,6 +27868,7 @@ function formatBrowserStatus(value: unknown): string {
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
+        ["sign-in", targetTab ? signInForTab(targetTab) : null],
         ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
       ]),
     ].join("\n");

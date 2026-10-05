@@ -211,6 +211,7 @@ export function buildCodingAgentSystemPrompt(args: {
     "Before the first meaningful tool burst, send one short preamble sentence describing what you are about to do.",
     "When you change approach or move into a new phase, send another short preamble sentence first.",
     "Keep progress updates concise and high-signal. Do not narrate every micro-step or dump raw logs back to the user.",
+    "When the user asks a question while you work, answer it in visible text. The user does not see your thinking unless they expand it.",
     "",
     "## Tool Use Rules",
     toolNames.length

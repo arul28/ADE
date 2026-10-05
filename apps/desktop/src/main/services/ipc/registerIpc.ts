@@ -996,7 +996,7 @@ import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithin
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
 import { sceneDocumentStore } from "../scenes/sceneDocumentStore";
 import {
-  clampSceneCaptureRect,
+  resolveSceneCaptureRect,
   decodeScenePngDataUrl,
   type SceneCaptureRect,
 } from "../scenes/sceneSnapshot";
@@ -9463,7 +9463,13 @@ export function registerIpc({
         const win = BrowserWindow.fromWebContents(event.sender);
         if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return null;
         const [contentWidth, contentHeight] = win.getContentSize();
-        const rect = clampSceneCaptureRect(arg, { width: contentWidth, height: contentHeight });
+        // The renderer measured in CSS px; the crop is in DIP. See
+        // `resolveSceneCaptureRect` for the zoom and the refused partial crop.
+        const rect = resolveSceneCaptureRect(
+          arg,
+          { width: contentWidth, height: contentHeight },
+          event.sender.getZoomFactor(),
+        );
         if (!rect) return null;
         // Capture the webContents that measured the rect, not the window: the
         // renderer's `getBoundingClientRect()` is in its own client space.

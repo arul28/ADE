@@ -16,6 +16,7 @@ import type {
   BuiltInBrowserClickArgs,
   BuiltInBrowserContextItem,
   BuiltInBrowserCreateTabArgs,
+  BuiltInBrowserIsolationArgs,
   BuiltInBrowserDiagnostics,
   BuiltInBrowserDispatchKeyArgs,
   BuiltInBrowserDomSnapshot,
@@ -347,9 +348,21 @@ function navigationApprovalEffect(
   };
 }
 
+/**
+ * A tab's own throwaway sign-in: the in-memory partition it was created in and
+ * the profile name the agent asked for. Null on a shared-profile tab.
+ */
+export type BrowserTabIsolation = {
+  partition: string;
+  profile: string;
+  /** Names the (collection, chat or lane, profile) jar across generations. */
+  key: string;
+};
+
 export type BrowserTabState = {
   id: string;
   view: WebContentsView | null;
+  isolation: BrowserTabIsolation | null;
   webContents: WebContents;
   ownsWebContents: boolean;
   consoleDiagnostics: BuiltInBrowserDiagnostics["console"];
@@ -2113,7 +2126,9 @@ function createBuiltInBrowserWindowService(args: {
     reconcileAgentViewports();
     const status = getStatus();
     if (!restoringTabs && args.onStateChange) {
-      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+      // An isolated tab's sign-in lives only in memory, so restoring its URL
+      // after a restart would reopen it in the user's own profile.
+      const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed() && !tab.isolation);
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
         tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
@@ -2260,6 +2275,7 @@ function createBuiltInBrowserWindowService(args: {
         teardownTabCapabilities(tab);
       }
       tabs = nextTabs;
+      releaseUnusedIsolatedSessions();
     }
     endSessionsForMissingTabs(new Set(tabs.map((tab) => tab.id)));
     pruneBrowserSessions();
@@ -2604,14 +2620,26 @@ function createBuiltInBrowserWindowService(args: {
     && !tab.handoff?.previousOwner.laneId
     && !tab.handoff?.previousOwner.chatSessionId;
 
-  const reusableOwnedTabForInput = (input: BuiltInBrowserClaimArgs = {}): BrowserTabState | null => {
+  /**
+   * `partition`, when given, also requires the tab's sign-in to match: the
+   * shared profile for `null`, one isolated jar for its partition. `open`
+   * passes it so a chat never drifts between identities by reusing a tab.
+   */
+  const reusableOwnedTabForInput = (
+    input: BuiltInBrowserClaimArgs = {},
+    partition?: string | null,
+  ): BrowserTabState | null => {
     pruneDestroyedTabs();
+    const matches = (entry: BrowserTabState): boolean => (
+      tabMatchesOwnerInput(entry, input)
+      && (partition === undefined || (entry.isolation?.partition ?? null) === partition)
+    );
     // Prefer the tab the user most recently activated for this lane; otherwise
     // fall back to the newest matching tab (reverse creation order) so a lane
     // with multiple owned tabs doesn't keep driving the oldest one.
     const current = activeTab();
-    if (current && tabMatchesOwnerInput(current, input)) return current;
-    return [...tabs].reverse().find((entry) => tabMatchesOwnerInput(entry, input)) ?? null;
+    if (current && matches(current)) return current;
+    return [...tabs].reverse().find(matches) ?? null;
   };
 
   const clearSelectionInternal = (): void => {
@@ -3085,9 +3113,11 @@ function createBuiltInBrowserWindowService(args: {
           const popupWebContents = (
             options as Electron.BrowserWindowConstructorOptions & { webContents?: WebContents }
           ).webContents;
+          // Chromium opens a popup in its opener's partition, so an isolated
+          // tab's popup (an OAuth window, a "share" link) keeps its sign-in.
           const nextView = popupWebContents
             ? new WebContentsView({ webContents: popupWebContents })
-            : new WebContentsView({ webPreferences: browserWebPreferences() });
+            : new WebContentsView({ webPreferences: browserWebPreferences(opener?.isolation?.partition) });
           const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
           if (!popupWebContents) {
             void tab.webContents.loadURL(popupUrl).catch((error) => {
@@ -3285,8 +3315,8 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
-  const browserWebPreferences = (): Electron.WebPreferences => ({
-    partition: BROWSER_PARTITION,
+  const browserWebPreferences = (partition: string = BROWSER_PARTITION): Electron.WebPreferences => ({
+    partition,
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -3294,7 +3324,10 @@ function createBuiltInBrowserWindowService(args: {
     backgroundThrottling: false,
   });
 
-  const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
+  const createTabStateForView = (
+    nextView: WebContentsView,
+    isolation: BrowserTabIsolation | null = null,
+  ): BrowserTabState => {
     // Match a normal browser canvas. Many sites leave their root background
     // transparent, so a dark ADE-specific backing color makes light pages
     // unreadable even though the site's own text remains dark.
@@ -3307,6 +3340,7 @@ function createBuiltInBrowserWindowService(args: {
     return {
       id: `tab-${randomUUID()}`,
       view: nextView,
+      isolation,
       webContents: wc,
       ownsWebContents: true,
       consoleDiagnostics: [],
@@ -3343,11 +3377,12 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createTabState = (): BrowserTabState => {
+  const createTabState = (isolation: BrowserTabIsolation | null = null): BrowserTabState => {
     configureBrowserSession();
+    if (isolation) configureIsolatedSession(isolation);
     return createTabStateForView(new WebContentsView({
-      webPreferences: browserWebPreferences(),
-    }));
+      webPreferences: browserWebPreferences(isolation?.partition),
+    }), isolation);
   };
 
   const popupUrlForOpen = (url: string): string | null => {
@@ -3370,7 +3405,7 @@ function createBuiltInBrowserWindowService(args: {
     options: { activate: boolean },
   ): BrowserTabState => {
     configureBrowserSession();
-    const tab = createTabStateForView(nextView);
+    const tab = createTabStateForView(nextView, opener?.isolation ?? null);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     const shouldActivate = options.activate || !activeTab();
@@ -3831,6 +3866,78 @@ function createBuiltInBrowserWindowService(args: {
       // ignore session teardown races
     }
     browserDownloadListener = null;
+  };
+
+  /**
+   * Isolated sign-ins this window created, by partition. A partition without
+   * `persist:` lives only in memory; it is also wiped when its last tab closes
+   * so "throwaway" holds within one run of the app, not just across runs.
+   */
+  const isolatedSessions = new Map<string, {
+    session: Electron.Session;
+    downloadListener: BrowserDownloadListener | null;
+    key: string;
+  }>();
+  /**
+   * Bumped each time a jar is thrown away, so the next tab with that profile
+   * gets a new partition rather than one whose wipe is still in flight.
+   */
+  const isolatedGenerations = new Map<string, number>();
+
+  const isolationForInput = (input: BuiltInBrowserIsolationArgs): BrowserTabIsolation | null => {
+    const requested = typeof input.profile === "string" ? input.profile.trim() : "";
+    if (!input.isolated && !requested) return null;
+    const profile = requested || "default";
+    if (!/^[A-Za-z0-9._-]{1,40}$/.test(profile)) {
+      throw new Error("An isolated browser profile name uses 1-40 letters, digits, '.', '_' or '-'.");
+    }
+    // One jar per (collection, chat or lane, name): two chats that both say
+    // "viewer" must not sign each other out.
+    const claim = input as BuiltInBrowserClaimArgs;
+    const scope = claim.chatSessionId?.trim() || claim.laneId?.trim() || "user";
+    const key = createHash("sha256")
+      .update(`${args.collection.key}\u0000${scope}\u0000${profile}`)
+      .digest("hex")
+      .slice(0, 24);
+    const generation = isolatedGenerations.get(key) ?? 0;
+    return { partition: `ade-browser-isolated-${key}-${generation}`, profile, key };
+  };
+
+  const configureIsolatedSession = ({ partition, key }: BrowserTabIsolation): void => {
+    if (isolatedSessions.has(partition)) return;
+    const isolatedSession = session.fromPartition(partition);
+    args.permissionController.configureSession(isolatedSession);
+    args.networkRouter.configureSession(isolatedSession);
+    const downloadListener = browserDownloadListener;
+    if (downloadListener) isolatedSession.on("will-download", downloadListener);
+    isolatedSessions.set(partition, { session: isolatedSession, downloadListener, key });
+  };
+
+  const releaseUnusedIsolatedSessions = (): void => {
+    if (!isolatedSessions.size) return;
+    const liveIsolations = tabs
+      .filter((tab) => !tab.webContents.isDestroyed())
+      .map((tab) => tab.isolation)
+      .filter((isolation): isolation is BrowserTabIsolation => Boolean(isolation));
+    const inUse = new Set(liveIsolations.map((isolation) => isolation.partition));
+    for (const [partition, { session: isolatedSession, downloadListener, key }] of isolatedSessions) {
+      if (inUse.has(partition)) continue;
+      isolatedSessions.delete(partition);
+      isolatedGenerations.set(key, (isolatedGenerations.get(key) ?? 0) + 1);
+      if (downloadListener) {
+        try {
+          isolatedSession.removeListener("will-download", downloadListener);
+        } catch {
+          // ignore session teardown races
+        }
+      }
+      void Promise.allSettled([
+        isolatedSession.clearStorageData(),
+        isolatedSession.clearCache(),
+      ]).then(() => {
+        logger()?.info("built_in_browser.isolated_profile_cleared", { partition });
+      });
+    }
   };
 
   const configureBrowserSession = (): void => {
@@ -4627,10 +4734,16 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     await tabRestorationPromise;
     const targetUrl = normalizeBrowserUrl(input.url);
+    const isolation = isolationForInput(input);
     const explicitNewTab = Boolean(input.newTab);
     const reuseOwnedTab = Boolean(input.reuseOwnedTab) && !explicitNewTab && !input.tabId;
-    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input) : null;
-    let createNewTab = explicitNewTab || (reuseOwnedTab && !reusableOwnedTab);
+    const reusePartition = isolation?.partition ?? null;
+    const reusableOwnedTab = reuseOwnedTab ? reusableOwnedTabForInput(input, reusePartition) : null;
+    // An isolated open never lands in whatever tab happens to be active: that
+    // tab is in some other sign-in.
+    let createNewTab = explicitNewTab
+      || (reuseOwnedTab && !reusableOwnedTab)
+      || (Boolean(isolation) && !input.tabId && !reusableOwnedTab);
     const shouldActivate = input.openPanel === true || input.activate !== false || !activeTabId;
     if (createNewTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
@@ -4641,6 +4754,11 @@ function createBuiltInBrowserWindowService(args: {
     if (!createNewTab && input.tabId) {
       existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+      if (isolation && existingTab.isolation?.partition !== isolation.partition) {
+        throw new Error(
+          `Browser tab ${input.tabId} is not in the isolated profile "${isolation.profile}". A tab's sign-in is fixed when it opens; open a new tab with that profile instead.`,
+        );
+      }
     } else if (reusableOwnedTab) {
       existingTab = reusableOwnedTab;
     }
@@ -4658,7 +4776,7 @@ function createBuiltInBrowserWindowService(args: {
     // prompt. Deciding before the wait let each of them see "no owned tab yet"
     // and open its own — three example.com tabs for one intent.
     if (reuseOwnedTab && !reusableOwnedTab) {
-      const ownedNow = reusableOwnedTabForInput(input);
+      const ownedNow = reusableOwnedTabForInput(input, reusePartition);
       if (ownedNow) {
         assertHandoffAllowsAgentAction(ownedNow, input);
         assertTabLeaseAvailable(ownedNow, input);
@@ -4676,7 +4794,7 @@ function createBuiltInBrowserWindowService(args: {
     if (switchingTabs) {
       clearSelectionInternal();
     }
-    let tab = createNewTab ? createTabState() : null;
+    let tab = createNewTab ? createTabState(isolation) : null;
     if (tab) {
       tabs = [...tabs, tab];
       if (shouldActivate) activeTabId = tab.id;
@@ -4720,7 +4838,7 @@ function createBuiltInBrowserWindowService(args: {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
     }
-    const tab = createTabState();
+    const tab = createTabState(isolationForInput(input));
     // No URL means "give me somewhere to start": the tab stays on about:blank
     // and the pane renders its launchpad. ADE never picks a home page for you,
     // and never issues a request you did not ask for.
@@ -4807,6 +4925,7 @@ function createBuiltInBrowserWindowService(args: {
     if (activeTabId === tabId) {
       activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
     }
+    releaseUnusedIsolatedSessions();
     attachViewsToCurrentWindow();
     emitStatus();
     return scopeStatusForInput(getStatus(), input);
@@ -5412,6 +5531,7 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [];
     browserSessions = [];
     activeTabId = null;
+    releaseUnusedIsolatedSessions();
     configuredBrowserSession = null;
   }
 
@@ -6415,6 +6535,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     url,
     title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
     isLaunchpad,
+    isolatedProfile: tab.isolation?.profile ?? null,
     faviconUrl: tab.faviconUrl,
     isLoading: wc.isDestroyed() ? false : wc.isLoading(),
     canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),

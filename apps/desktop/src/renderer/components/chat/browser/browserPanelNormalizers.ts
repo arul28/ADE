@@ -155,6 +155,7 @@ export function normalizeTab(value: unknown): BrowserTab | null {
     id,
     faviconUrl: stringField(value.faviconUrl),
     isLaunchpad: booleanField(value.isLaunchpad, false),
+    isolatedProfile: stringField(value.isolatedProfile),
     url: stringField(value.url),
     title: stringField(value.title),
     isLoading: booleanField(value.isLoading, false),

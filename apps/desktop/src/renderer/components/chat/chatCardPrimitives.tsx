@@ -441,6 +441,16 @@ export function ChatProofFilmstrip({
               );
             }
             const src = broken || !isImageArtifact(artifact) ? null : (resolveThumbnailSrc?.(artifact) ?? null);
+            if (!broken && !src && isImageArtifact(artifact)) {
+              return (
+                <ProofFilmstripImageTile
+                  key={artifact.id}
+                  artifact={artifact}
+                  allowLocalArtifactProtocol={allowLocalArtifactProtocol}
+                  onOpen={onOpenArtifact}
+                />
+              );
+            }
             return (
               <button
                 key={artifact.id}
@@ -535,6 +545,54 @@ function ProofFilmstripVideoTile({
         >
           <VideoCamera size={14} weight="duotone" aria-hidden />
           {label}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * A proof picture the caller has no local URL for, such as a chat on a paired
+ * computer. It reads the bytes through the same preview path the drawer and
+ * answer citations use, and shows the kind until they arrive or when they
+ * cannot.
+ */
+function ProofFilmstripImageTile({
+  artifact,
+  allowLocalArtifactProtocol,
+  onOpen,
+}: {
+  artifact: ComputerUseArtifactView;
+  allowLocalArtifactProtocol: boolean;
+  onOpen?: (artifact: ComputerUseArtifactView) => void;
+}) {
+  const { containerRef, preview, failed, onMediaError } = useArtifactPreview<HTMLButtonElement>(
+    artifact,
+    allowLocalArtifactProtocol,
+  );
+  return (
+    <button
+      ref={containerRef}
+      type="button"
+      title={artifact.title || artifact.uri || artifact.id}
+      onClick={() => onOpen?.(artifact)}
+      className="w-24 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.07] bg-black/25 transition-colors hover:border-white/[0.16]"
+    >
+      {preview && !failed ? (
+        <img
+          src={preview}
+          alt={artifact.title || "Proof"}
+          className="aspect-[16/10] w-full object-cover"
+          onError={onMediaError}
+        />
+      ) : (
+        <span
+          className={cn(
+            "flex aspect-[16/10] w-full items-center justify-center px-1 text-center text-fg/35",
+            CHAT_CARD_MICRO_TEXT,
+          )}
+        >
+          {artifact.kind}
         </span>
       )}
     </button>

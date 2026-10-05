@@ -8035,6 +8035,7 @@ export function buildComputerUseDirective(
         : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
+      "Web pages and localhost go in ADE's browser (`ade browser`, the **ade-browser** skill), which shares the user's sign-ins. To sign in as a test account or a second role, open an isolated tab with `ade browser open <url> --profile <name>` so the user stays signed in; never use a headless or external browser for that.",
       "App Control (`ade app-control`, the **ade-app-control** skill) drives a dev Electron app, one session per lane: `launch`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
       "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
@@ -8095,19 +8096,6 @@ export function buildComputerUseDirective(
         "- Use ghost_annotate for a labeled screenshot with clickable coordinates",
         "- For web apps in Chrome, prefer dom_id for clicking elements",
         "- Use ghost_wait after clicks in web apps to wait for state changes",
-      ].join("\n"),
-    );
-  }
-
-  // --- agent-browser section (only if detected) ---
-  const agentBrowserBackend = backendStatus?.backends.find(
-    (b) => b.available && /agent-browser/i.test(b.name),
-  );
-  if (agentBrowserBackend) {
-    sections.push(
-      [
-        "### agent-browser (Browser Automation)",
-        "agent-browser is available for browser automation. Use it for web interactions, form filling, screenshots, and trace capture.",
       ].join("\n"),
     );
   }

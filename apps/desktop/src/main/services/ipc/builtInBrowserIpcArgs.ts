@@ -17,6 +17,7 @@ import type {
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserExportHarArgs,
   BuiltInBrowserFindInPageArgs,
+  BuiltInBrowserIsolationArgs,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserNetworkLogArgs,
   BuiltInBrowserOpenPanelArgs,
@@ -119,7 +120,14 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const newTab = record.newTab === true ? true : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, tabId, newTab, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
+    return {
+      url,
+      tabId,
+      newTab,
+      openPanel,
+      ...parseBuiltInBrowserIsolationArgs(record, channel),
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+    };
   };
 
   function optionalBuiltInBrowserString(
@@ -238,8 +246,26 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
     const activate = record.activate === false ? false : undefined;
     const openPanel = optionalBoolean(record.openPanel);
-    return { url, activate, openPanel, ...parseBuiltInBrowserClaimArgs(record, channel) };
+    return {
+      url,
+      activate,
+      openPanel,
+      ...parseBuiltInBrowserIsolationArgs(record, channel),
+      ...parseBuiltInBrowserClaimArgs(record, channel),
+    };
   };
+
+  /** The service validates the profile name; this only keeps the shape. */
+  function parseBuiltInBrowserIsolationArgs(
+    record: Record<string, unknown>,
+    channel: string,
+  ): BuiltInBrowserIsolationArgs {
+    const profile = optionalBuiltInBrowserString(record, "profile", channel, 64);
+    return {
+      ...(record.isolated === true ? { isolated: true } : {}),
+      ...(profile ? { profile } : {}),
+    };
+  }
 
   const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
     const record = builtInBrowserRecord(value, channel, false);
