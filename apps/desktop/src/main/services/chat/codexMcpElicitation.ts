@@ -71,14 +71,14 @@ export function mcpElicitationSessionPersistScope(...metas: unknown[]): "session
   return null;
 }
 
-/** `Allow the <server> MCP server to run tool "<tool>"?` — Codex 0.156.1's wording. */
+/** `Allow the <server> MCP server to run tool "<tool>"?` — Codex's wording (0.156.1 through 0.160.0). */
 const CODEX_MCP_TOOL_APPROVAL_MESSAGE = /\brun tool "(.+)"\?\s*$/s;
 
 /**
  * Recognize Codex's own MCP tool-call approval among its elicitations, and
  * name the tool it is about.
  *
- * Codex 0.156.1 asks before an MCP tool call by sending
+ * Codex (0.156.1 through 0.160.0) asks before an MCP tool call by sending
  * `mcpServer/elicitation/request` with `_meta.codex_approval_kind:
  * "mcp_tool_call"` and an empty form schema (measured against a live
  * app-server). The payload carries `tool_title`, `tool_description`, and
