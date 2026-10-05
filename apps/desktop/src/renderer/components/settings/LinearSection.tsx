@@ -16,6 +16,7 @@ import {
   SettingsManagerPage,
 } from "./primitives/SettingsManagerPage";
 import { LinearAgentSection } from "./LinearAgentSection";
+import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
@@ -88,6 +89,14 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   // routes cleanly to the remote machine's credential store.
   const isRemoteRuntime = useAppStore((s) => s.projectBinding?.kind === "remote");
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
+  const announcedConnectedRef = useRef<boolean | null>(null);
+  const linearConnected = connection ? connection.connected === true : null;
+  useEffect(() => {
+    if (linearConnected === null) return;
+    const previous = announcedConnectedRef.current;
+    announcedConnectedRef.current = linearConnected;
+    if (previous !== null && previous !== linearConnected) announceLinearConnectionChanged();
+  }, [linearConnected]);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);

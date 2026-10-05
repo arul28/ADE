@@ -49,9 +49,14 @@ import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
-const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+// A backstop for a connection made outside this window (the CLI, another
+// device). Settings in this window announces its changes, and window focus
+// re-checks, so the button does not need to ask the brain every 3 s while
+// Linear is disconnected.
+const VISIBILITY_RETRY_INTERVAL_MS = 60_000;
 const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
@@ -293,9 +298,11 @@ export function LinearQuickViewButton({
         });
     };
     window.addEventListener("focus", refresh);
+    window.addEventListener(LINEAR_CONNECTION_CHANGED_EVENT, refresh);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(LINEAR_CONNECTION_CHANGED_EVENT, refresh);
     };
   }, [loadVisibility, activeProjectRoot, shouldAutoCheckVisibility]);
 
