@@ -526,10 +526,13 @@ describe("handshake", () => {
     connection.dispose("test finished");
   });
 
-  it("refuses an agent that speaks a newer protocol, naming the CLI and both remedies", async () => {
+  it.each([
+    { label: "a newer protocol", initialize: { protocolVersion: 2 }, message: /protocol version 2/ },
+    { label: "no protocol version", initialize: {}, message: /without a protocol version/ },
+  ])("refuses an agent with $label, naming the CLI and the remedy", async ({ initialize, message }) => {
     const agent = createMockAcpAgent();
     agent.on(ACP_METHOD.initialize, () => ({
-      result: { protocolVersion: 2, agentCapabilities: {}, agentInfo: { name: "Grok", version: "9.0.0" } },
+      result: { ...initialize, agentCapabilities: {}, agentInfo: { name: "Grok", version: "9.0.0" } },
     }));
     const connection = createAcpConnection({
       dialect: grokDialect,
@@ -537,9 +540,9 @@ describe("handshake", () => {
       spawnOverride: () => agent.child,
     });
     const attempt = initializeAcpConnection({ connection, dialect: grokDialect });
-    await withDeadline("initialize", expect(attempt).rejects.toThrow(/protocol version 2/));
+    await withDeadline("initialize", expect(attempt).rejects.toThrow(message));
     await expect(attempt).rejects.toThrow(/Grok/);
-    await expect(attempt).rejects.toThrow(/Update ADE/);
+    await expect(attempt).rejects.toThrow(/Update/);
     expect(connection.initializeResult).toBeNull();
     connection.dispose("test finished");
   });
@@ -1183,14 +1186,16 @@ describe("tool call translation", () => {
     })).toEqual([expect.objectContaining({ type: "command", command: "npm test", itemId: "late-kind" })]);
   });
 
-  it("renders an edit tool as file_change rows with diff content", () => {
+  // Grok reports file writes as `write`, which is not an ACP kind; it must
+  // render like an edit, not as a generic tool that swallows the diff.
+  it.each(["edit", "write"])("renders a %s tool as file_change rows with diff content", (kind) => {
     const translator = createAcpEventTranslator();
     translator.beginTurn("turn-1");
     translator.translate({
       sessionUpdate: "tool_call",
       toolCallId: "tc2",
       title: "Edit file",
-      kind: "edit",
+      kind,
       status: "in_progress",
     });
     const events = translator.translate({

@@ -195,6 +195,8 @@ describe("captured initialize fixtures", () => {
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("resume");
     expect(init.agentCapabilities?.sessionCapabilities).not.toHaveProperty("close");
     expect(devinDialect.closeStyle).toBe("kill_process");
+    // With no close, ending a chat can only end its session by ending the process.
+    expect(devinDialect.oneProcessPerSession).toBe(true);
     expect(devinDialect.loadPolicy).toBe("load_only");
     expect(devinDialect.resumeSession.declared).toBe(false);
     expect(devinDialect.cancelStyle).toBe("notification");
