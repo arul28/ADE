@@ -71,13 +71,27 @@ export type ResolveLaneBranchDriftArgs = {
   acknowledgeActiveWork?: boolean;
 };
 
+/** Why ADE did or did not adopt the branch an agent switched its lane to. */
+export type AdoptAgentBranchSwitchResult =
+  | { adopted: true; previousBranchRef: string; branchRef: string }
+  | {
+      adopted: false;
+      reason:
+        | "no_drift"
+        | "primary_lane"
+        | "branch_moved_before_turn"
+        | "old_branch_has_unpushed_commits"
+        | "branch_owned_by_other_lane"
+        | "unavailable";
+    };
+
 export type ResolveLaneBranchDriftResult = {
   lane: LaneSummary;
   resolution: LaneBranchDriftResolution;
   previousBranchRef: string;
   branchRef: string;
-  /** Set by `keep-head` when the lane display name was re-pointed too. */
-  previousLaneName: string | null;
+  /** Always null: adopting a branch never renames the lane. Still sent for older readers. */
+  previousLaneName: null;
   laneName: string;
 };
 
@@ -641,6 +655,12 @@ export type LaneLifecycleEvent = {
   previousLaneName?: string | null;
   color?: string | null;
   lane?: LaneSummary;
+  /** `lane-branch-updated` from a drift resolution: the branch the lane left. */
+  previousBranchRef?: string;
+  /** `lane-branch-updated` from a drift resolution: the branch the lane follows now. */
+  branchRef?: string;
+  /** True when ADE adopted the branch on its own because an agent in the lane switched to it. */
+  adoptedByAgent?: boolean;
 };
 
 export type LaneDeleteRisk = {

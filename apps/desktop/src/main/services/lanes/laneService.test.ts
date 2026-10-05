@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
+import type { LaneLifecycleEvent } from "../../../shared/types";
 import { decodeActiveDayKeys, writeLaneUsageTombstone } from "./laneUsageTombstone";
 
 vi.mock("../git/git", () => ({
@@ -7613,6 +7614,10 @@ describe("laneService branch drift", () => {
     repoRoot: string;
     headBranchByPath: Record<string, string>;
     dirtyPaths?: string[];
+    /** `git rev-list --count <old> --not HEAD --remotes`: local-only commits HEAD lacks; null = git fails. */
+    commitsOnlyOnOldBranch?: number | null;
+    /** The old branch no longer exists locally (`show-ref --verify` fails). */
+    missingBranches?: string[];
   }) {
     const checkouts: Array<{ cwd: string; branch: string }> = [];
     vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
@@ -7640,7 +7645,14 @@ describe("laneService branch drift", () => {
       if (gitArgs[0] === "status") {
         return { exitCode: 0, stdout: dirty ? " M src/app.ts\n" : "", stderr: "" };
       }
-      if (gitArgs[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
+      if (gitArgs[0] === "show-ref") {
+        const missing = (args.missingBranches ?? []).some((branch) => gitArgs.includes(`refs/heads/${branch}`));
+        return { exitCode: missing ? 1 : 0, stdout: "", stderr: "" };
+      }
+      if (gitArgs[0] === "rev-list" && gitArgs[1] === "--count") {
+        if (args.commitsOnlyOnOldBranch === null) return { exitCode: 128, stdout: "", stderr: "fatal: bad revision" };
+        return { exitCode: 0, stdout: `${args.commitsOnlyOnOldBranch ?? 0}\n`, stderr: "" };
+      }
       return { exitCode: 1, stdout: "", stderr: "" };
     });
     return { checkouts };
@@ -7736,24 +7748,24 @@ describe("laneService branch drift", () => {
     });
   });
 
-  it("keep-head re-points branch_ref and the branch-derived lane name in one write", async () => {
+  it.each([
+    { label: "a name that restates the old branch", laneName: "feature/child" },
+    { label: "a hand-written name", laneName: "Auth work" },
+  ])("keep-head re-points branch_ref and keeps $label", async ({ laneName }) => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-keep", repoRoot });
-    // The lane name is literally advertising the branch it tracks.
-    db.run("update lanes set name = ? where id = ?", ["feature/child", "lane-child"]);
+    db.run("update lanes set name = ? where id = ?", [laneName, "lane-child"]);
     const childPath = path.join(repoRoot, "child");
-    const { checkouts } = stubDriftGit({
-      repoRoot,
-      headBranchByPath: { [childPath]: "hotfix-auth" },
-    });
-
+    const { checkouts } = stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
+    const lifecycleEvents: LaneLifecycleEvent[] = [];
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
       projectId: "proj-drift-keep",
       defaultBaseRef: "main",
       worktreesDir: path.join(repoRoot, "worktrees"),
+      onLifecycleEvent: (event) => lifecycleEvents.push(event),
     });
 
     const result = await service.resolveBranchDrift({
@@ -7766,41 +7778,116 @@ describe("laneService branch drift", () => {
       resolution: "keep-head",
       previousBranchRef: "feature/child",
       branchRef: "hotfix-auth",
-      previousLaneName: "feature/child",
-      laneName: "hotfix-auth",
+      previousLaneName: null,
+      laneName,
     });
     // keep-head never touches the worktree — HEAD is already where we want it.
     expect(checkouts).toHaveLength(0);
     expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
       branch_ref: "hotfix-auth",
-      name: "hotfix-auth",
+      name: laneName,
     });
+    expect(lifecycleEvents.filter((event) => event.type === "lane-renamed")).toHaveLength(0);
+    expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+      type: "lane-branch-updated",
+      laneId: "lane-child",
+      previousBranchRef: "feature/child",
+      branchRef: "hotfix-auth",
+    }));
   });
 
-  it("keep-head preserves a hand-written lane name", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-name-");
+  it.each([
+    {
+      label: "adopts a branch the agent switched to during its turn",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: true, previousBranchRef: "feature/child", branchRef: "hotfix-auth" },
+      branchRef: "hotfix-auth",
+    },
+    {
+      label: "asks when the old branch has commits on neither the new branch nor a remote",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: 2,
+      expected: { adopted: false, reason: "old_branch_has_unpushed_commits" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "adopts when the old branch is gone, since nothing is left to lose",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      missingBranches: ["feature/child"],
+      expected: { adopted: true, previousBranchRef: "feature/child", branchRef: "hotfix-auth" },
+      branchRef: "hotfix-auth",
+    },
+    {
+      label: "asks, naming no false reason, when git cannot answer",
+      laneId: "lane-child",
+      branchAtTurnStart: "feature/child",
+      commitsOnlyOnOldBranch: null,
+      expected: { adopted: false, reason: "unavailable" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "asks when the lane was already off its branch before the turn",
+      laneId: "lane-child",
+      branchAtTurnStart: "some-other-branch",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: false, reason: "branch_moved_before_turn" },
+      branchRef: "feature/child",
+    },
+    {
+      label: "never moves the primary checkout",
+      laneId: "lane-main",
+      branchAtTurnStart: "main",
+      commitsOnlyOnOldBranch: 0,
+      expected: { adopted: false, reason: "primary_lane" },
+      branchRef: "main",
+    },
+  ] as Array<{
+    label: string;
+    laneId: string;
+    branchAtTurnStart: string;
+    commitsOnlyOnOldBranch: number | null;
+    missingBranches?: string[];
+    expected: Record<string, unknown>;
+    branchRef: string;
+  }>)("adoptAgentBranchSwitch $label", async ({ laneId, branchAtTurnStart, commitsOnlyOnOldBranch, missingBranches, expected, branchRef }) => {
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-adopt-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-drift-keep-name", repoRoot });
-    // A hand-written name — it advertises no branch, so it must survive.
-    db.run("update lanes set name = ? where id = ?", ["Auth work", "lane-child"]);
-    const childPath = path.join(repoRoot, "child");
-    stubDriftGit({ repoRoot, headBranchByPath: { [childPath]: "hotfix-auth" } });
-
+    await seedProjectAndStack(db, { projectId: "proj-drift-adopt", repoRoot });
+    const laneRow = db.get<{ name: string; worktree_path: string }>(
+      "select name, worktree_path from lanes where id = ?",
+      [laneId],
+    );
+    expect(laneRow, "seeded lane").toBeTruthy();
+    stubDriftGit({
+      repoRoot,
+      headBranchByPath: { [laneRow!.worktree_path]: "hotfix-auth" },
+      commitsOnlyOnOldBranch,
+      missingBranches,
+    });
+    const lifecycleEvents: LaneLifecycleEvent[] = [];
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
-      projectId: "proj-drift-keep-name",
+      projectId: "proj-drift-adopt",
       defaultBaseRef: "main",
       worktreesDir: path.join(repoRoot, "worktrees"),
+      onLifecycleEvent: (event) => lifecycleEvents.push(event),
     });
 
-    const result = await service.resolveBranchDrift({ laneId: "lane-child", resolution: "keep-head" });
+    const result = await service.adoptAgentBranchSwitch({ laneId, branchAtTurnStart });
 
-    expect(result.previousLaneName).toBeNull();
-    expect(db.get("select branch_ref, name from lanes where id = ?", ["lane-child"])).toMatchObject({
-      branch_ref: "hotfix-auth",
-      name: "Auth work",
+    expect(result).toEqual(expected);
+    expect(db.get("select branch_ref, name from lanes where id = ?", [laneId])).toMatchObject({
+      branch_ref: branchRef,
+      name: laneRow!.name,
     });
+    const adoptedEvents = lifecycleEvents.filter((event) => event.adoptedByAgent === true);
+    expect(adoptedEvents).toHaveLength(expected.adopted ? 1 : 0);
   });
 
   it("rejects branch resolution when expected HEAD differs from the worktree", async () => {

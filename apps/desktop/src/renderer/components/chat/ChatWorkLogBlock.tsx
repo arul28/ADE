@@ -1072,6 +1072,7 @@ export function ChatTurnWorkSummary({
   sessionId,
   leading,
   tokenUsage,
+  trailing,
   checkpointFiles = null,
   checkpointDetail = null,
   align = "end",
@@ -1086,6 +1087,8 @@ export function ChatTurnWorkSummary({
   /** Clock, duration, and timestamp that open the line. */
   leading?: React.ReactNode;
   tokenUsage?: TurnTokenUsage | null;
+  /** Drawn after the usage on the same line (the turn's scheduled wake-ups). */
+  trailing?: React.ReactNode;
   /**
    * Checkpoint diff for this turn. When the provider recorded one, it replaces
    * the entry-derived file list and sits on this same line.
@@ -1114,7 +1117,7 @@ export function ChatTurnWorkSummary({
       }
     : null);
   const tokens = <TurnTokenBlurb usage={tokenUsage} />;
-  if (!leading && !tokens && tools.length === 0 && !fileStat) return null;
+  if (!leading && !tokens && !trailing && tools.length === 0 && !fileStat) return null;
 
   const toggle = (which: "tools" | "files") => {
     if (which === "files") workspacePaths?.ensureWorkspacesLoaded?.();
@@ -1129,6 +1132,8 @@ export function ChatTurnWorkSummary({
             {leading}
             {leading && tokens ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
             {tokens}
+            {trailing && (leading || tokens) ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
+            {trailing}
           </div>
         ) : null}
         <div className={cn("flex shrink-0 items-center gap-3", align === "end" && "ml-auto")}>

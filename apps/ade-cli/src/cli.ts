@@ -26913,7 +26913,6 @@ function formatLaneDrift(value: unknown): string {
       ["resolution", resolution],
       ["previous branch", record.previousBranchRef],
       ["branch", record.branchRef],
-      ["previous lane name", record.previousLaneName],
       ["lane name", record.laneName],
     ]);
   }

@@ -246,8 +246,10 @@ What to do instead when you finish: say so in your final message, and use
 row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
 Update the note along the way as the state changes; do not wait until the end.
 
-If you realize the lane, branch, or chat name is wrong, rename it rather than
-living with a bad label:
+Lane and chat names are yours to keep accurate. When the work changes
+direction or moves to a new branch, rename the lane or the chat without asking.
+A lane keeps its name when its branch changes, so a name that still describes
+the old work is yours to fix:
 
 ```bash
 ade chat generate-names                      # title, lane name, and status line

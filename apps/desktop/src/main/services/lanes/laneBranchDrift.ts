@@ -84,25 +84,6 @@ export function parseWorktreeStatusPorcelainV2(stdout: string): WorktreeStatusPo
 }
 
 /**
- * True when the lane's display name is just restating the branch it tracks —
- * either the whole ref (`ade/fix-auth`) or its last segment (`fix-auth`).
- *
- * Only those names are re-pointed when a lane adopts a drifted HEAD; a
- * hand-written name like "Auth work" advertises no branch and is left alone.
- */
-export function laneNameAdvertisesBranch(
-  laneName: string | null | undefined,
-  branchRef: string | null | undefined,
-): boolean {
-  const name = (laneName ?? "").trim().toLowerCase();
-  const branch = normalizeBranchName((branchRef ?? "").trim()).trim().toLowerCase();
-  if (!name || !branch) return false;
-  if (name === branch) return true;
-  const lastSegment = branch.split("/").filter(Boolean).pop() ?? "";
-  return Boolean(lastSegment) && name === lastSegment;
-}
-
-/**
  * Compare the lane's recorded branch against the worktree's live HEAD.
  *
  * Returns `null` (no drift) when either side is unknown — an unavailable

@@ -954,6 +954,8 @@ import {
 import {
   deriveBackgroundItems,
   resolveScheduledWorkTiming,
+  mergeScheduledWorkEvent,
+  SCHEDULED_WAKE_FIRE_TOLERANCE_MS,
 } from "../../../shared/chatScheduledWork";
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
@@ -2554,6 +2556,8 @@ type ClaudeRuntime = {
    */
   workflowAgentsByTask: Map<string, Map<string, ClaudeWorkflowAgentEmitState>>;
   scheduledWorkSignatures: Map<string, string>;
+  /** Last emitted scheduled-work event per id; later partial updates patch it. */
+  scheduledWorkLastEvents: Map<string, Extract<AgentChatEvent, { type: "scheduled_work_update" }>>;
   /**
    * Claude Code TaskCreate/TaskUpdate tracker. The harness assigns ordinal
    * task ids ("1", "2", …) in the TaskCreate tool *result*, which this
@@ -10911,6 +10915,8 @@ export function createAgentChatService(args: {
    */
   let scheduledWorkLoaded = false;
   const durableScheduleUiStatusById = new Map<string, ChatScheduledWorkStatus>();
+  /** Schedules the user cancelled from chat actions; their cancel event names the user. */
+  const userCancelledScheduleIds = new Set<string>();
 
   const runScheduledWorkMutation = (operation: string, mutation: Promise<unknown>): void => {
     void mutation.catch((error) => {
@@ -20253,6 +20259,7 @@ export function createAgentChatService(args: {
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
     noteMacDesktopTurnBoundary(managed, normalizedEvent);
+    noteLaneBranchTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
     }
@@ -20311,6 +20318,66 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  };
+
+  /**
+   * The lane's recorded branch when each chat's current turn began, or null
+   * when the worktree was already on another branch then. Read at turn end to
+   * tell a branch switch this turn's agent made from one made before it.
+   */
+  const laneBranchAtTurnStart = new Map<string, Promise<string | null>>();
+
+  /**
+   * An agent that checks out a new branch in its lane (a follow-up PR, `/ship`)
+   * moves the lane with it: at turn end ADE adopts the branch without asking
+   * (`adoptAgentBranchSwitch`). A switch made before the turn, in the primary
+   * checkout, or away from unmerged commits stays a question in the drift chip.
+   */
+  const noteLaneBranchTurnBoundary = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+  ): void => {
+    const laneId = managed.session.laneId;
+    if (!laneId) return;
+    const sessionId = managed.session.id;
+    if (event.type === "status" && event.turnStatus === "started") {
+      // Each turn owns its own pending read; `done` awaits it, so a fast turn
+      // is still judged against where it started, never a later turn's read.
+      laneBranchAtTurnStart.set(sessionId, (async () => {
+        const drift = await laneService.getBranchDrift({ laneId });
+        if (drift) return null;
+        return (await laneService.getSummary(laneId))?.branchRef ?? null;
+      })().catch(() => null));
+      return;
+    }
+    if (event.type !== "done") return;
+    const branchRead = laneBranchAtTurnStart.get(sessionId);
+    laneBranchAtTurnStart.delete(sessionId);
+    if (!branchRead) return;
+    void branchRead
+      .then((branchAtTurnStart) => (branchAtTurnStart
+        ? laneService.adoptAgentBranchSwitch({ laneId, branchAtTurnStart })
+        : null))
+      .then((result) => {
+        if (!result) return;
+        if (result.adopted) {
+          logger.info("lane.agent_branch_adopted", {
+            laneId,
+            sessionId,
+            previousBranchRef: result.previousBranchRef,
+            branchRef: result.branchRef,
+          });
+        } else if (result.reason !== "no_drift") {
+          logger.info("lane.agent_branch_not_adopted", { laneId, sessionId, reason: result.reason });
+        }
+      })
+      .catch((error: unknown) => {
+        logger.warn("lane.agent_branch_adopt_failed", {
+          laneId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
 
   const applyClaudeActiveGoal = (
@@ -21172,10 +21239,13 @@ export function createAgentChatService(args: {
     return namespaceSplit.split(/[.:/]/).filter(Boolean).pop() ?? namespaceSplit;
   };
 
+  // Provider bookkeeping (which tool call or task reported it, the one-shot's
+  // internal cron string) is not a change a reader can see.
   const scheduledWorkSignature = (event: ScheduledWorkEvent): string => {
-    const { turnId: _turnId, ...stable } = event;
-    return JSON.stringify(stable);
+    const { turnId: _turnId, sourceTaskId: _taskId, sourceToolUseId: _toolUseId, cron, recurring, ...stable } = event;
+    return JSON.stringify(event.kind === "cron" ? { ...stable, cron, recurring } : stable);
   };
+
 
   const emitClaudeScheduledWorkUpdate = (
     managed: ManagedChatSession,
@@ -21184,11 +21254,13 @@ export function createAgentChatService(args: {
   ): void => {
     const id = event.id.trim();
     if (!id) return;
-    const normalized: ScheduledWorkEvent = {
+    // Inventory snapshots and cancels carry fewer fields than the tool call
+    // that created the schedule; patch the last event so nothing is dropped.
+    const normalized: ScheduledWorkEvent = mergeScheduledWorkEvent(runtime.scheduledWorkLastEvents.get(id), {
       ...event,
       id,
       kind: runtime.scheduledWorkKindById.get(id) ?? event.kind,
-    };
+    }, nowIso());
     runtime.scheduledWorkKindById.set(id, normalized.kind);
     if (normalized.sourceToolUseId?.trim()) {
       runtime.scheduledWorkIdByToolUseId.set(normalized.sourceToolUseId.trim(), id);
@@ -21196,6 +21268,7 @@ export function createAgentChatService(args: {
     if (normalized.sourceTaskId?.trim()) {
       runtime.scheduledWorkIdByTaskId.set(normalized.sourceTaskId.trim(), id);
     }
+    runtime.scheduledWorkLastEvents.set(id, normalized);
     const signature = scheduledWorkSignature(normalized);
     if (runtime.scheduledWorkSignatures.get(id) === signature) return;
     runtime.scheduledWorkSignatures.set(id, signature);
@@ -22143,7 +22216,9 @@ export function createAgentChatService(args: {
         kind,
         status: "scheduled",
         origin: kind === "loop" ? "loop" : kind === "cron" ? "cron" : "schedule_wakeup",
-        title: durableSchedule?.prompt ?? prompt ?? (recurring ? "Cron scheduled" : "Wakeup scheduled"),
+        title: durableSchedule?.reason ?? durableSchedule?.prompt ?? prompt ?? (recurring ? "Cron scheduled" : "Wakeup scheduled"),
+        ...(durableSchedule?.reason ? { reason: durableSchedule.reason } : {}),
+        ...(durableSchedule?.fireAt != null ? { nextRunAt: new Date(durableSchedule.fireAt).toISOString() } : {}),
         cron: cronSchedule,
         prompt: durableSchedule?.prompt ?? prompt,
         recurring,
@@ -22192,7 +22267,14 @@ export function createAgentChatService(args: {
           && schedule.providerSessionId === providerSessionId
           && !providerCronIds.has(schedule.providerScheduleId ?? schedule.id)
         ) {
-          await scheduledWorkScheduler.cancel(schedule.id);
+          // A one-shot leaves Claude's inventory when it fires. Gone after its
+          // fire time means Claude delivered it (usually the turn that just
+          // ended), so it settles as fired; gone before then means it was dropped.
+          const deliveredByProvider = schedule.kind !== "cron"
+            && schedule.fireAt != null
+            && schedule.fireAt <= Date.now() + SCHEDULED_WAKE_FIRE_TOLERANCE_MS;
+          if (deliveredByProvider) await scheduledWorkScheduler.markFired(schedule.id);
+          else await scheduledWorkScheduler.cancel(schedule.id);
         }
       }
     }
@@ -23939,6 +24021,7 @@ export function createAgentChatService(args: {
     managedSessions.delete(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
+    laneBranchAtTurnStart.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -38767,6 +38850,7 @@ export function createAgentChatService(args: {
     }
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
+    runtime.scheduledWorkLastEvents.clear();
     // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
@@ -39926,6 +40010,7 @@ export function createAgentChatService(args: {
       subagentEffortById: new Map(),
       workflowAgentsByTask: new Map(),
       scheduledWorkSignatures: new Map(),
+      scheduledWorkLastEvents: new Map(),
       taskTodos: { seeded: false, byId: new Map() },
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),
@@ -55723,6 +55808,8 @@ export function createAgentChatService(args: {
     if (isAutoResumeScheduledWork(existing)) {
       autoResume.noteScheduleDismissed(normalizedSessionId);
     }
+    // The transcript must read this as the user's cancel, never as a delivery.
+    userCancelledScheduleIds.add(existing.id);
     if (existing.provider === "claude") {
       const cancellation = await requestClaudeScheduledWorkCancellation(
         [existing],
@@ -62566,6 +62653,9 @@ export function createAgentChatService(args: {
         emitTransientChatEnvelope(schedule.sessionId, { type: "session_meta_updated" });
         return;
       }
+      // The user-cancel mark is spent by this transition; a provider-side
+      // cancel already reported it, so it must not linger for a later one.
+      const cancelledByUser = status === "cancelled" && userCancelledScheduleIds.delete(schedule.id);
       if (durableScheduleUiStatusById.get(schedule.id) === status) {
         // Tool/hook events are emitted immediately for responsive Chat Info.
         // Nudge summary consumers again after the durable write completes so
@@ -62627,6 +62717,7 @@ export function createAgentChatService(args: {
             }
           : {}),
         ...(schedule.lateFlag ? { late: true } : {}),
+        ...(cancelledByUser ? { stopSource: "user" as const } : {}),
         recurring: schedule.kind === "cron",
         durable: schedule.durable === true,
       });

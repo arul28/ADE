@@ -3,6 +3,7 @@
  *
  * - `Banner` + `useAppBanner` / `AppBannerHost`: banners (docked, floating, inline)
  * - `showToast` (components/app/toast/toastStore) + `ToastCard`: bottom-right toasts
+ * - `StatusStrip` + `StatusChip`: one row of small status chips on a composer's edge
  * - `noticeTone`: the shared tone palette
  */
 export { Banner, type BannerDismiss, type BannerLayout, type BannerModel } from "./Banner";
@@ -26,3 +27,4 @@ export {
   type NoticeActionVariant,
 } from "./NoticeParts";
 export { noticeTone, type NoticeTone, type NoticeToneTokens } from "./noticeTones";
+export { StatusChip, StatusStrip, type StatusChipAction } from "./StatusChip";

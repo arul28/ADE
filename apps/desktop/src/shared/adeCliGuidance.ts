@@ -55,7 +55,7 @@ export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
   "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
-  "- If the lane, branch, or chat name is wrong, rename it: `ade chat generate-names`, `ade chat update --title`, or `ade lanes rename`.",
+  "- Lane and chat names are yours to keep accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
 /**

@@ -7630,3 +7630,103 @@ describe("AgentChatMessageList — the chat's one task list", () => {
     expect(screen.getByTestId("chat-task-list-card").textContent).toBe("Tasks·0/1·Deploying to staging");
   });
 });
+
+describe("AgentChatMessageList self-paced wake loops", () => {
+  it("opens both the closed chain and the check's own fold when a jump lands inside them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        nextRunAt: at(dueMinute),
+        turnId,
+      });
+    const events = [
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      // Check B: its interim line is inside B's fold, and B is inside the chain.
+      envelope(6, { type: "text", text: "Reading the run log.", itemId: "b-interim", turnId: "B" }),
+      envelope(6, { type: "command", command: "gh run view", cwd: "/repo", output: "", itemId: "b-cmd", status: "completed", turnId: "B" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", itemId: "b-answer", turnId: "B" }),
+      wake(6, "B", "w2", 10),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: deploy finished.", turnId: "C" }),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Reading the run log.");
+    const interimKey = buildTranscriptEventRowKeys(events)[4]!;
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(view.container.textContent).toContain("Reading the run log.");
+    expect(screen.getByRole("button", { name: "Hide 1 more check" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("draws each wake-up on its turn-end line and folds earlier checks under the line that started them", () => {
+    const at = (minute: number) => `2026-10-05T01:${String(minute).padStart(2, "0")}:00.000Z`;
+    const envelope = (minute: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: at(minute),
+      event,
+    });
+    const wake = (minute: number, turnId: string, id: string, status: "scheduled" | "completed", dueMinute: number) =>
+      envelope(minute, {
+        type: "scheduled_work_update",
+        id,
+        kind: "wakeup",
+        status,
+        origin: "schedule_wakeup",
+        reason: `deploy-watch ${id}`,
+        ...(status === "scheduled" ? { nextRunAt: at(dueMinute) } : { firedAt: at(dueMinute) }),
+        turnId,
+      });
+    const rendered = renderMessageList([
+      envelope(0, { type: "user_message", text: "Watch the deploy", turnId: "A" }),
+      envelope(1, { type: "text", text: "Watching the deploy.", turnId: "A" }),
+      wake(1, "A", "w1", "scheduled", 5),
+      envelope(2, { type: "done", turnId: "A", status: "completed" }),
+      envelope(6, { type: "text", text: "Check 2: still queued.", turnId: "B" }),
+      wake(6, "B", "w2", "scheduled", 10),
+      wake(6, "B", "w1", "completed", 5),
+      envelope(7, { type: "done", turnId: "B", status: "completed" }),
+      envelope(11, { type: "text", text: "Check 3: still queued.", turnId: "C" }),
+      wake(11, "C", "w3", "scheduled", 15),
+      wake(11, "C", "w2", "completed", 10),
+      envelope(12, { type: "done", turnId: "C", status: "completed" }),
+      envelope(16, { type: "text", text: "Check 4: deploy finished.", turnId: "D" }),
+      wake(16, "D", "w3", "completed", 15),
+      envelope(17, { type: "done", turnId: "D", status: "completed" }),
+    ]);
+
+    let text = rendered.container.textContent ?? "";
+    expect(text).toContain("Watching the deploy.");
+    expect(text).toContain("Check 4: deploy finished.");
+    expect(text).not.toContain("Check 2: still queued.");
+    expect(text).not.toContain("Check 3: still queued.");
+    // The wake-up rides the turn-end line that scheduled it; no row of its own.
+    expect(rendered.container.querySelectorAll('[data-scheduled-work="w1"]')).toHaveLength(1);
+    expect(text).toMatch(/woke at/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more checks" }));
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("Check 2: still queued.");
+    expect(text).toContain("Check 3: still queued.");
+    expect(text.indexOf("Watching the deploy.")).toBeLessThan(text.indexOf("Check 2: still queued."));
+  });
+});

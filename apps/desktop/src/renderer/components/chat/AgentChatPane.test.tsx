@@ -10216,7 +10216,7 @@ describe("AgentChatPane submit recovery", () => {
       .toBe(String(openedAtMs));
   });
 
-  it("shows unattended scheduled wakes as one compact review card", async () => {
+  it("marks what arrived while the chat was closed with one New since divider", async () => {
     const openedAtMs = Date.parse("2026-07-10T12:00:00.000Z");
     vi.spyOn(Date, "now").mockReturnValue(openedAtMs);
     const session = buildSession("session-1", { title: "Scheduled work" });
@@ -10224,7 +10224,6 @@ describe("AgentChatPane submit recovery", () => {
       `ade.chat.lastViewed.v1:${session.sessionId}`,
       String(Date.parse("2026-07-10T10:00:00.000Z")),
     );
-    const longOutcome = "Deployment completed after a very long diagnostic summary that should remain in the transcript instead of being crammed into the notice.";
     installAdeMocks({
       sessions: [session],
       eventHistory: {
@@ -10234,47 +10233,15 @@ describe("AgentChatPane submit recovery", () => {
         events: [
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:30:00.000Z",
+            timestamp: "2026-07-10T09:00:00.000Z",
             sequence: 1,
-            event: {
-              type: "user_message",
-              text: "Check CI",
-              deliveryState: "delivered",
-              turnId: "turn-wake-1",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-1",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T10:30:00.000Z",
-                  reason: "Check CI",
-                },
-              },
-            },
+            event: { type: "text", text: "Read before you left", turnId: "turn-old" },
           },
           {
             sessionId: session.sessionId,
-            timestamp: "2026-07-10T10:31:00.000Z",
+            timestamp: "2026-07-10T10:30:00.000Z",
             sequence: 2,
-            event: { type: "text", text: longOutcome, turnId: "turn-wake-1" },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T11:30:00.000Z",
-            sequence: 3,
-            event: {
-              type: "user_message",
-              text: "Check deployment",
-              deliveryState: "delivered",
-              turnId: "turn-wake-2",
-              metadata: {
-                scheduledWake: {
-                  scheduleId: "wake-2",
-                  kind: "wakeup",
-                  firedAt: "2026-07-10T11:30:00.000Z",
-                  reason: "Check deployment",
-                },
-              },
-            },
+            event: { type: "text", text: "Arrived while you were away", turnId: "turn-new" },
           },
         ],
       },
@@ -10282,18 +10249,13 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const digest = await screen.findByTestId("chat-away-digest");
-    expect(within(digest).getByText("While you were away")).toBeTruthy();
-    expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
-    expect(within(digest).queryByText(longOutcome)).toBeNull();
-    expect(screen.getByTestId("chat-composer-notice-overlay").contains(digest)).toBe(true);
-
-    const review = within(digest).getByRole("button", { name: "Review" });
-    expect(review.getAttribute("title")).toBe("First wakeup: Check CI");
-    expect(within(digest).getAllByRole("button")).toHaveLength(2);
-
-    fireEvent.click(within(digest).getByRole("button", { name: "Dismiss while-you-were-away summary" }));
-    await waitFor(() => expect(screen.queryByTestId("chat-away-digest")).toBeNull());
+    const divider = await screen.findByTestId("chat-new-since-divider");
+    const before = await screen.findByText("Read before you left");
+    const after = screen.getByText("Arrived while you were away");
+    expect(before.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(divider.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByTestId("chat-new-since-divider")).toHaveLength(1);
+    expect(screen.queryByTestId("chat-away-digest")).toBeNull();
   });
 
   it("does not reserve an empty notice row above a live app-panel composer", async () => {

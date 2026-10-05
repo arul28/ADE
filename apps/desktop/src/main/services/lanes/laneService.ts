@@ -72,6 +72,7 @@ import type {
   RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
+  AdoptAgentBranchSwitchResult,
   RebaseAbortArgs,
   RebaseRun,
   RebaseRunEventPayload,
@@ -91,7 +92,6 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   detectLaneBranchDrift,
-  laneNameAdvertisesBranch,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
 import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
@@ -6300,12 +6300,17 @@ export function createLaneService({
      *   delegates to `switchBranch`, which refuses (throwing, changing nothing)
      *   when the worktree is dirty, and rolls the checkout back if the DB write
      *   fails.
-     * - `keep-head` re-points `branch_ref` at the live HEAD and, when the lane
-     *   name was merely advertising the old branch, renames the lane to match —
-     *   both inside one transaction, so the lane can never end up pointing at
-     *   one branch while its name advertises another.
+     * - `keep-head` re-points `branch_ref` (and the branch profile) at the
+     *   live HEAD in one transaction. It never renames the lane.
+     *
+     * `internal` is unreachable from IPC, remote commands, and actions, which
+     * all pass one argument: only `adoptAgentBranchSwitch` marks an adoption
+     * as the agent's.
      */
-    async resolveBranchDrift(args: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> {
+    async resolveBranchDrift(
+      args: ResolveLaneBranchDriftArgs,
+      internal: { adoptedByAgent?: boolean } = {},
+    ): Promise<ResolveLaneBranchDriftResult> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required.");
       const row = getLaneRow(laneId);
@@ -6360,26 +6365,6 @@ export function createLaneService({
         throw new Error(`Branch '${targetBranchRef}' is already active in lane '${duplicate.name}'.`);
       }
 
-      // Only re-point the name when it is literally advertising the branch the
-      // lane no longer tracks. A hand-written lane name ("Auth work") advertises
-      // nothing and must survive.
-      const previousLaneName = row.name;
-      const nameAdvertisesOldBranch = laneNameAdvertisesBranch(row.name, drift.expectedBranchRef);
-      const nameTaken = db.get<{ id: string }>(
-        `
-          select id from lanes
-          where project_id = ?
-            and id != ?
-            and archived_at is null
-            and lower(name) = lower(?)
-          limit 1
-        `,
-        [projectId, row.id, targetBranchRef],
-      );
-      const nextLaneName = row.lane_type !== "primary" && nameAdvertisesOldBranch && !nameTaken
-        ? targetBranchRef
-        : row.name;
-
       db.run("begin");
       try {
         const existingProfile = getBranchProfileRow(row.id, targetBranchRef);
@@ -6396,8 +6381,7 @@ export function createLaneService({
             update lanes
             set branch_ref = ?,
                 base_ref = ?,
-                parent_lane_id = ?,
-                name = ?
+                parent_lane_id = ?
             where id = ?
               and project_id = ?
           `,
@@ -6405,7 +6389,6 @@ export function createLaneService({
             targetBranchRef,
             profile?.base_ref ?? row.base_ref ?? defaultBaseRef,
             profile?.parent_lane_id ?? row.parent_lane_id,
-            nextLaneName,
             row.id,
             projectId,
           ],
@@ -6416,16 +6399,17 @@ export function createLaneService({
         throw err;
       }
       invalidateLaneListCache();
-
-      if (nextLaneName !== previousLaneName) {
-        broadcastLifecycleEvent({
-          type: "lane-renamed",
-          laneId: row.id,
-          laneName: nextLaneName,
-          previousLaneName,
-          color: row.color,
-        });
-      }
+      // The lane keeps its name: a name says what the work is about, and the
+      // agent renames the lane itself when that changes.
+      broadcastLifecycleEvent({
+        type: "lane-branch-updated",
+        laneId: row.id,
+        laneName: row.name,
+        color: row.color,
+        previousBranchRef: drift.expectedBranchRef,
+        branchRef: targetBranchRef,
+        ...(internal.adoptedByAgent ? { adoptedByAgent: true } : {}),
+      });
 
       const refreshed = (await listLanes({ includeArchived: false, includeStatus: true }))
         .find((lane) => lane.id === row.id);
@@ -6435,9 +6419,59 @@ export function createLaneService({
         resolution: "keep-head",
         previousBranchRef: drift.expectedBranchRef,
         branchRef: targetBranchRef,
-        previousLaneName: nextLaneName !== previousLaneName ? previousLaneName : null,
-        laneName: nextLaneName,
+        previousLaneName: null,
+        laneName: refreshed.name,
       };
+    },
+
+    /**
+     * Adopt the branch an agent switched this lane to during one of its turns,
+     * without asking. `branchAtTurnStart` is the lane's recorded branch when
+     * the turn began; it guards against adopting a switch someone else made
+     * before the turn. Refuses, so the drift chip asks instead, when the lane
+     * is the primary checkout, or when the old branch has commits that are on
+     * neither the new branch nor any remote: adopting would drop that local
+     * work out of the lane's view unseen. Pushed work (a merged or open PR)
+     * stays reachable, and the chat keeps that PR linked.
+     */
+    async adoptAgentBranchSwitch(args: {
+      laneId: string;
+      branchAtTurnStart: string;
+    }): Promise<AdoptAgentBranchSwitchResult> {
+      const row = getLaneRow(args.laneId.trim());
+      if (!row || row.status === "archived") return { adopted: false, reason: "unavailable" };
+      if (row.lane_type === "primary") return { adopted: false, reason: "primary_lane" };
+      const drift = await laneServiceApi.getBranchDrift({ laneId: row.id });
+      if (!drift) return { adopted: false, reason: "no_drift" };
+      if (normalizeBranchKey(args.branchAtTurnStart) !== drift.expectedBranchRef) {
+        return { adopted: false, reason: "branch_moved_before_turn" };
+      }
+      if (findActiveBranchOwner(drift.headBranchRef, row.id)) {
+        return { adopted: false, reason: "branch_owned_by_other_lane" };
+      }
+      const oldRef = `refs/heads/${drift.expectedBranchRef}`;
+      const oldExists = await runGit(["show-ref", "--verify", "--quiet", oldRef], {
+        cwd: row.worktree_path,
+        timeoutMs: 5_000,
+      }).catch(() => null);
+      // A deleted old branch has nothing left to lose.
+      if (oldExists?.exitCode === 0) {
+        // HEAD is the checked-out commit itself, whatever its branch is called.
+        const unpushed = await runGit(
+          ["rev-list", "--count", oldRef, "--not", "HEAD", "--remotes"],
+          { cwd: row.worktree_path, timeoutMs: 5_000 },
+        ).catch(() => null);
+        const unpushedCount = unpushed?.exitCode === 0 ? Number.parseInt(unpushed.stdout.trim(), 10) : Number.NaN;
+        if (!Number.isFinite(unpushedCount)) return { adopted: false, reason: "unavailable" };
+        if (unpushedCount > 0) {
+          return { adopted: false, reason: "old_branch_has_unpushed_commits" };
+        }
+      }
+      const result = await laneServiceApi.resolveBranchDrift(
+        { laneId: row.id, resolution: "keep-head", expectedHeadBranchRef: drift.headBranchRef },
+        { adoptedByAgent: true },
+      );
+      return { adopted: true, previousBranchRef: result.previousBranchRef, branchRef: result.branchRef };
     },
 
     async getChildren(laneId: string): Promise<LaneSummary[]> {
