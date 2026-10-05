@@ -23,6 +23,7 @@
     "tools:manifest": "node ./scripts/generate-tools-manifest.mjs",
     "tools:manifest:check": "node ./scripts/generate-tools-manifest.mjs --check",
     "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run tools:manifest:check",
     "test": "vitest run"
   },
   "dependencies": {
