@@ -74,6 +74,7 @@ export function PrWatchPill({
 
   useEffect(() => {
     setWatch(null);
+    setUnknown(false);
     void load();
   }, [load]);
 

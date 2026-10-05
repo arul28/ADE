@@ -190,15 +190,6 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
   return out;
 }
 
-/**
- * Compare the PR with what its agent was last told.
- *
- * `checks` / `remarks` are null when they could not be read this pass; their
- * news then waits for a later pass. `ignoredRemarkIds` are comments ADE itself
- * posted for the agent — its own replies must never wake it. The user's own
- * comments are not ignored: a reviewer who is also the account owner still
- * gets heard.
- */
 /** Remarks newer than what the watch already told, and the new high-water mark. */
 function readFreshRemarks(
   previous: PrWatchState,
@@ -228,6 +219,15 @@ function readFreshRemarks(
   };
 }
 
+/**
+ * Compare the PR with what its agent was last told.
+ *
+ * `checks` / `remarks` are null when they could not be read this pass; their
+ * news then waits for a later pass. `ignoredRemarkIds` are comments ADE itself
+ * posted for the agent — its own replies must never wake it. The user's own
+ * comments are not ignored: a reviewer who is also the account owner still
+ * gets heard.
+ */
 export function evaluatePrWatch(args: {
   mode: PrWatchMode;
   state: PrWatchState;

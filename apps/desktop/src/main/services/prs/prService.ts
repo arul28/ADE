@@ -12569,7 +12569,7 @@ export function createPrService({
         const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
         const candidates = Number.isInteger(number)
           ? db.all<PullRequestRow>(
-            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and detached_at is null`,
+            `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and ${LIVE_PR_ROWS}`,
             [projectId, number],
           )
           : [];

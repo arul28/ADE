@@ -1527,6 +1527,7 @@ extension WorkSessionDestinationView {
       ADEHaptics.success()
     } catch {
       ADEHaptics.error()
+      guard session == sessionId, chatPrWatchTarget?.id == pr.id else { return }
       let message = SyncUserFacingError.message(for: error)
       prChatWatchError = message
       // The menu is closed by now; say it where the chat shows its errors.

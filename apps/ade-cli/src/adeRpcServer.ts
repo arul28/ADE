@@ -3309,8 +3309,12 @@ function scopeChatAdeActionArgs(
   if (action === "armWait") {
     // A wake wait wakes `callerSessionId` when it fires: a bound agent may only
     // ask to be woken itself. A send wait ("start B after A") wakes nobody.
-    if (isUnboundAdeCliCaller(session) || asOptionalTrimmedString(chatArgs.sendToSessionId)) return chatArgs;
+    if (isUnboundAdeCliCaller(session)) return chatArgs;
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (asOptionalTrimmedString(chatArgs.sendToSessionId)) {
+      // Recorded on the waiter (it lists under that chat): only ever the caller.
+      return { ...chatArgs, callerSessionId: callerChatSessionId ?? null };
+    }
     const requestedCaller = asOptionalTrimmedString(chatArgs.callerSessionId);
     if (!callerChatSessionId || (requestedCaller && requestedCaller !== callerChatSessionId)) {
       chatAccessDenied(method, { callerChatSessionId, requestedSessionId: requestedCaller });
