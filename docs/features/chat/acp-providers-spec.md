@@ -39,7 +39,7 @@ argv, env, auth probe, capability quirks, cancel/close/usage behavior, and the
 slash-command allowlist.
 
 - New host code lives in `apps/desktop/src/main/services/chat/acpHost/`.
-- Dependency: `@agentclientprotocol/sdk` (protocol v1; do NOT target v2 draft).
+- Protocol types: mirrored in-repo (`acpHost/acpProtocolTypes.ts`) from `@agentclientprotocol/sdk` 1.7.0, protocol v1; the SDK is not a dependency. Do NOT target the v2 draft.
 - Do NOT restore `droidAcpPool.ts` / `acpEventMapper.ts` patterns from git
   history; this is a fresh design informed by their failure modes.
 - Live IPC publishes uncompacted `liveEnvelope` — the mapper must not slim live
