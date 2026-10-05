@@ -47061,8 +47061,8 @@ export function createAgentChatService(args: {
         itemId,
         toolName: waiter.toolName,
       });
+      // The waiter's resolve removes it from `permissionWaiters`.
       cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for ADE's approval.");
-      runtime.permissionWaiters.delete(itemId);
       emitPendingInputResolved(managed, {
         itemId,
         decision: "cancel",

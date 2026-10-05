@@ -31,7 +31,7 @@ export const CURSOR_SDK_PRECOMPACT_ENV = "ADE_CURSOR_SDK_PRECOMPACT";
  * is that number. The gate script stops waiting a little earlier and denies
  * with a reason the model can relay, instead of being killed mid-wait.
  */
-export const CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS = 24 * 60 * 60;
+const CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS = 24 * 60 * 60;
 const CURSOR_SDK_TOOL_GATE_RESPONSE_TIMEOUT_MS = (CURSOR_SDK_TOOL_GATE_TIMEOUT_SECONDS - 15) * 1000;
 const ADE_HOOK_FILE_NAMES = [
   ADE_HOOK_SCRIPT_NAME,
