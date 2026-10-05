@@ -527,6 +527,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         before: resolvedAgainst,
         ...clickShape(args.payload),
         lease: leases.checkRealInput({ laneId, holderId }),
+        realInputNeedsNoCard: (seatOf(laneId) ?? "mac") !== "mac",
       });
       if (!refused) throw failure;
       const code = (failure as { code?: unknown }).code;
@@ -574,6 +575,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       before: resolvedAgainst,
       ...clickShape(args.payload),
       lease: leases.checkRealInput({ laneId, holderId }),
+      realInputNeedsNoCard: (seatOf(laneId) ?? "mac") !== "mac",
     });
     return {
       ok: true,
