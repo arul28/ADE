@@ -23,7 +23,7 @@ import {
 import { createMacDesktopService } from "./macDesktopService";
 import type { DesktopSeatAdapter } from "./macDesktopSeatProvider";
 import type { MacDesktopRequestChatInput } from "./macDesktopLeaseFlow";
-import { createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
+import { asWindowsDesktopStatus, createWindowsDesktopSeatAdapter } from "../windowsDesktop/windowsDesktopSeatProvider";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import { describeDesktopSeat, desktopSeatKind } from "../../../shared/desktopSeat";
@@ -308,6 +308,44 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       expect(windows.driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toBe(false);
     }
     windows.service.dispose();
+  });
+
+  it("rides the card body and the agent's reason on the Allow option, for both seats", async () => {
+    // The card draws the question and its options, not the body, so what Allow
+    // means has to be the Allow option's description or the user sees a bare
+    // button with no explanation of what they are granting.
+    const seen: Array<{ question: string; description: string }> = [];
+    const requestChatInput: MacDesktopRequestChatInput = async (input) => {
+      const question = input.questions?.[0];
+      const allow = (question?.options ?? []).find((option) => option.value === "allow");
+      seen.push({ question: question?.question ?? "", description: allow?.description ?? "" });
+      return {
+        decision: "accept",
+        answers: { [question?.id ?? "q"]: ["allow"] },
+        responseText: null,
+      };
+    };
+
+    const mac = makeService({ requestChatInput });
+    try {
+      await mac.service.start({ laneId: "lane-1" });
+      await mac.service.requestInputLease({ laneId: "lane-1", chatSessionId: "chat-1", reason: "click the save button" });
+    } finally { mac.service.dispose(); }
+
+    const windows = windowsService({ requestChatInput });
+    try {
+      await windows.service.requestSharedDesktop({ laneId: "lane-1", chatSessionId: "chat-1", reason: "check the tray" });
+    } finally { windows.service.dispose(); }
+
+    expect(seen).toHaveLength(2);
+    // The Mac input lease explains what real input is being asked for.
+    expect(seen[0]!.description).toContain("click the save button");
+    expect(seen[0]!.description.length).toBeGreaterThan(0);
+    // The Windows shared seat carries the agent's reason on the same option.
+    expect(seen[1]!.description).toContain("check the tray");
+    expect(seen[1]!.description.length).toBeGreaterThan(0);
+    // Two different cards, so the two descriptions cannot be one shared string.
+    expect(seen[0]!.question).not.toBe(seen[1]!.question);
   });
 
   it("asks for the main desktop once per chat, forgets it with the chat, and never asks without a chat", async () => {
@@ -2506,5 +2544,25 @@ describe("macDesktopService persistent log", () => {
     // No screenshot path, no window title.
     expect(JSON.stringify(persistent)).not.toContain(os.tmpdir());
     service.dispose();
+  });
+});
+
+describe("asWindowsDesktopStatus holder lane names", () => {
+  // The driver reports the holder by the display name it was given
+  // ("Windows Desktop · <lane>"); clients name the lane, so the product prefix
+  // comes off and a display with no lane name has none.
+  it.each([
+    ["Windows Desktop · foo", "foo"],
+    ["Windows Desktop lane", null],
+    ["Windows Desktop · Windows Desktop lane", "Windows Desktop lane"],
+    ["foo", "foo"],
+    [null, null],
+  ] as const)("maps a holder display name of %s to %s", (heldByLaneName, expected) => {
+    const status = asWindowsDesktopStatus({ heldByLaneName, holderLaneId: "lane-9", state: "held" });
+    expect(status.heldByLaneName).toBe(expected);
+    expect(status.heldByLaneId).toBe("lane-9");
+    // The holder also drives the private-unavailable reason, so one read that
+    // drops the name cannot leave the card pointing at the wrong state.
+    expect(status.privateUnavailableReason).toBe("held");
   });
 });

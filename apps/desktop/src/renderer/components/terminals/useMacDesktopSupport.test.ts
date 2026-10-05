@@ -1,9 +1,10 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useAppStore } from "../../state/appStore";
 import {
   resetMacDesktopSupportCache,
   useMacDesktopSupport,
@@ -40,6 +41,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetMacDesktopSupportCache();
+  useAppStore.setState({ projectBinding: null });
   vi.restoreAllMocks();
 });
 
@@ -69,6 +71,36 @@ describe("useMacDesktopSupport", () => {
     // Back to Studio: the cached answer, no third read.
     rerender({ pin: studioPin });
     await waitFor(() => expect(result.current?.supported).toBe(false));
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops to unknown when the bound project changes, and serves each key's own cache", async () => {
+    // A chat with no pin reads the window's bound project. A project tab on
+    // another machine has no answer yet, so the first project's answer must
+    // not stand in for it — that is how a Windows tab answered "Mac Desktop".
+    const bindingA: OpenProjectBinding = { ...studioPin, key: "bound-project-a" };
+    const bindingB: OpenProjectBinding = { ...studioPin, key: "bound-project-b" };
+    let calls = 0;
+    getStatus.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve({ supported: true, unsupportedReason: null });
+      // The second project's host never answers while it is the focused one.
+      return new Promise(() => {});
+    });
+
+    useAppStore.setState({ projectBinding: bindingA });
+    const { result } = renderHook(() => useMacDesktopSupport({ runtimePin: null, enabled: true }));
+    await waitFor(() => expect(result.current?.supported).toBe(true));
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => { useAppStore.setState({ projectBinding: bindingB }); });
+    await waitFor(() => expect(result.current).toBeNull());
+    expect(getStatus).toHaveBeenCalledTimes(2);
+    expect(result.current).toBeNull();
+
+    // Back to the first project: its cached answer, no third read.
+    await act(async () => { useAppStore.setState({ projectBinding: bindingA }); });
+    await waitFor(() => expect(result.current?.supported).toBe(true));
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 
